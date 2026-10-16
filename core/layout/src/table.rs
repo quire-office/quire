@@ -327,7 +327,20 @@ impl TableLayout {
             let cells: Vec<CellFrag> = rg
                 .cells
                 .iter()
-                .map(|cg| frag_of_cell(self, cg, r, b, take, h, starts_row, ends_row))
+                .map(|cg| {
+                    frag_of_cell(
+                        self,
+                        cg,
+                        SliceWin {
+                            row: r,
+                            band: b,
+                            take,
+                            h,
+                            starts_row,
+                            ends_row,
+                        },
+                    )
+                })
                 .collect();
             frag_rows.push(RowFrag {
                 height_pt: h,
@@ -362,28 +375,30 @@ impl TableLayout {
     }
 }
 
+/// 切片視窗參數（frag_of_cell 用）：列 r 內自帶 b 起取 take 帶。
+#[derive(Clone, Copy)]
+struct SliceWin {
+    row: usize,
+    band: u32,
+    take: u32,
+    h: f32,
+    starts_row: bool,
+    ends_row: bool,
+}
+
 /// 一格在切片 (r, b..b+take) 內的顯示形態。
 ///
 /// 文字定位統一模型：格的「內容原點帶」block0＝vMerge 時為 restart 列帶 0，
 /// 否則為本列帶 0；第 i 條文字佔帶 block0＋pad_top＋i，**只在其所屬列的切片
 /// 視窗內繪製**——merged block 文字因此天然跨列、且不重複。
-fn frag_of_cell(
-    tl: &TableLayout,
-    cg: &CellGeom,
-    r: usize,
-    b: u32,
-    take: u32,
-    h: f32,
-    starts_row: bool,
-    ends_row: bool,
-) -> CellFrag {
-    let win0 = tl.row_base[r] + b; // 切片視窗（全域帶）
-    let win1 = win0 + take;
+fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
+    let win0 = tl.row_base[w.row] + w.band; // 切片視窗（全域帶）
+    let win1 = win0 + w.take;
     let mut edges = cg.edges.clone();
-    if !starts_row {
+    if !w.starts_row {
         edges[EDGE_TOP] = None; // 列被拆頁處不補造橫線
     }
-    if !ends_row {
+    if !w.ends_row {
         edges[EDGE_BOTTOM] = None;
     }
     // vMerge：block 內部橫線不出（head 底邊除單格 block 外不畫；continue 頂邊
@@ -391,9 +406,9 @@ fn frag_of_cell(
     // 搬給末格、把 head/中間格的對應邊清空）。
     let block0 = tl.row_base[cg.block_head_row];
     let mut texts = Vec::new();
-    let shift = valign_shift(cg.valign, h, cg.content_bands, tl.line_h);
-    let mut cur = block0 + cg.pad_top_bands;
-    for ln in &cg.lines {
+    let shift = valign_shift(cg.valign, w.h, cg.content_bands, tl.line_h);
+    for (k, ln) in cg.lines.iter().enumerate() {
+        let cur = block0 + cg.pad_top_bands + k as u32;
         if cur >= win1 {
             break;
         }
@@ -404,7 +419,6 @@ fn frag_of_cell(
                 text: ln.text.clone(),
             });
         }
-        cur += 1;
     }
     let nested = if matches!(cg.merge, Some((_, false))) {
         Vec::new()
@@ -416,7 +430,7 @@ fn frag_of_cell(
                 // 外層 x_off 不在這裡加，避免雙重計入）。
                 let (f, _, _) = n.fragment(0, 0, u32::MAX, true, cg.x);
                 (
-                    valign_shift(cg.valign, h, cg.content_bands, tl.line_h)
+                    valign_shift(cg.valign, w.h, cg.content_bands, tl.line_h)
                         + cg.pad_top_bands as f32 * tl.line_h,
                     f,
                 )
@@ -621,14 +635,14 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
 
             // 收集參加格資料（一次讀完，避免多輪 borrow）。
             let mut members: Vec<(usize, u32, u32, u32, Vec<Line>)> = Vec::new();
-            for rr in head..=last {
-                let g = rows[rr]
+            for (k, row) in rows[head..=last].iter().enumerate() {
+                let g = row
                     .cells
                     .iter()
                     .find(|g| g.col == c && g.col_span == 1)
                     .expect("參加格存在");
                 members.push((
-                    rr,
+                    head + k,
                     g.pad_top_bands,
                     g.pad_bottom_bands,
                     g.text_bands,
@@ -686,12 +700,9 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
                     }
                 }
             }
-            for rr in head + 1..=last {
-                if let Some(g) = rows[rr]
-                    .cells
-                    .iter_mut()
-                    .find(|g| g.col == c && g.col_span == 1)
-                {
+            for (k, row) in rows[head + 1..=last].iter_mut().enumerate() {
+                if let Some(g) = row.cells.iter_mut().find(|g| g.col == c && g.col_span == 1) {
+                    let rr = head + 1 + k;
                     g.merge = Some((block, false));
                     g.block_head_row = head;
                     g.block_tail = rr == last;

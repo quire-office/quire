@@ -128,7 +128,7 @@ pub fn table_style_borders(styles_xml: &[u8]) -> HashMap<String, EdgeSetInput> {
             let Some((borders, based_on)) = own.get(key) else {
                 break;
             };
-            if seen.iter().any(|s| *s == key) {
+            if seen.contains(&key) {
                 break; // 鏈環：老實停在已合成結果
             }
             seen.push(key);
@@ -234,7 +234,7 @@ pub fn table_input(
             .as_deref()
             .and_then(|s| styles.get(s))
             .cloned()
-            .filter(|e| has_any_edges(e)),
+            .filter(has_any_edges),
         cell_margins: p.cell_margins.as_ref().map(cell_margins),
         rows: t
             .rows
