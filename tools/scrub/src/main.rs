@@ -14,7 +14,7 @@ struct Job {
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     let b = s.as_bytes();
-    if b.len() % 2 != 0 {
+    if !b.len().is_multiple_of(2) {
         return Err("hex 長度非偶數".into());
     }
     let nib = |c: u8| -> Result<u8, String> {
