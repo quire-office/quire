@@ -19,6 +19,18 @@ use thiserror::Error;
 // shells 需要顯示列表型別但只能 import 本 crate：在此 re-export（分層鐵律的唯一合法通道）。
 pub use quire_render_trait::{DrawItem, PageDisplayList, Renderer, FLAG_BOLD, FLAG_ITALIC};
 
+// 表格 canonical model（Phase3-1a）：型別定義在 quire-ooxml（PM 補正 5），
+// 本 crate 只做 pass-through re-export——3-1b 的 layout/render 以這裡
+// 暴露的 `BodyTable`/`Block` 樹為輸入契約；無損寫回仍走 parts 明文，
+// canonical 永不參與序列化（PM 補正 1）。
+pub use quire_ooxml::{
+    Block as CanonicalBlock, BodyTable, Border as CanonicalBorder, Borders as CanonicalBorders,
+    CellProps as CanonicalCellProps, GridCol as CanonicalGridCol, Margins as CanonicalMargins,
+    RowProps as CanonicalRowProps, Shading as CanonicalShading, Table as CanonicalTable,
+    TableCell as CanonicalTableCell, TableProps as CanonicalTableProps,
+    TableRow as CanonicalTableRow, TblWidth as CanonicalTblWidth,
+};
+
 #[derive(Error, Debug)]
 pub enum EngineError {
     #[error(transparent)]
@@ -95,6 +107,17 @@ impl Engine {
     /// lossless 主張的最低保證：所有 zip part 都還在。
     pub fn preserved_part_count(&self) -> usize {
         self.doc.parts.len()
+    }
+
+    /// body 級表格數（canonical 投影，Phase3-1a）。只讀——本數不參與存檔，
+    /// 無損寫回來源仍是 parts 明文（PM 補正 1）。
+    pub fn table_count(&self) -> usize {
+        self.doc.tables.len()
+    }
+
+    /// body 級表格樹 JSON（含巢狀；wasm/JS 邊界序列化入口）。
+    pub fn tables_json(&self) -> String {
+        serde_json::to_string(&self.doc.tables).unwrap_or_else(|_| "[]".to_string())
     }
 
     pub fn page_lines(&self, page: usize) -> Option<Vec<String>> {
@@ -450,6 +473,28 @@ mod tests {
             "未觸碰對照必須綠燈:\n{}",
             d.report()
         );
+    }
+
+    /// Phase3-1a：表格 canonical 投影經 engine 暴露（3-1b 的上游契約），
+    /// 且含表格檔案的 byte-level 無損鐵律不倒退（唯讀來源隔離的實證）。
+    #[test]
+    fn table_projection_exposed_and_round_trip_stays_byte_identical() {
+        const TABLE_MIXED: &[u8] = include_bytes!("../../../fixtures/table_mixed.docx");
+        let engine = Engine::from_docx_bytes(TABLE_MIXED).unwrap();
+        assert_eq!(engine.table_count(), 1, "body 級表一張（巢狀表掛 tc 內）");
+        // wasm/JS 邊界：tables_json 可解析且欄數正確。
+        let json = engine.tables_json();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v[0]["table"]["grid"].as_array().unwrap().len(), 3);
+        // typed 路徑：re-export 型別（CanonicalBlock／BodyTable）經 engine 可用。
+        let typed = serde_json::from_str::<Vec<BodyTable>>(&json).unwrap();
+        let CanonicalBlock::Table(nested) = &typed[0].table.rows[2].cells[1].blocks[1] else {
+            panic!("巢狀表格必須經 canonical 樹暴露");
+        };
+        assert_eq!(nested.grid_col_count(), 2);
+        let _: &CanonicalTable = &typed[0].table;
+        // 無損鐵律：開檔→不動→存檔位元組級相同（解析純讀入，不碰寫回來源）。
+        assert_eq!(engine.save_docx().unwrap().as_slice(), TABLE_MIXED);
     }
 
     #[test]

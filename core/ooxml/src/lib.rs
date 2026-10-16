@@ -11,10 +11,15 @@
 
 mod diff;
 mod sectpr;
+mod table;
 mod zip_struct;
 
 pub use diff::{diff_untouched, diff_zip_structure, EntryDiff, ZipDiff, ZipStructureError};
 pub use sectpr::{read_sections_per_paragraph, SectionGeometry, SectionSpec};
+pub use table::{
+    Block, BodyTable, Border, Borders, CellProps, GridCol, Margins, RowProps, Shading, Table,
+    TableCell, TableProps, TableRow, TblWidth,
+};
 pub use zip_struct::{Change, ZipBundle, ZipEntry, ZipError};
 
 use serde::{Deserialize, Serialize};
@@ -53,6 +58,9 @@ pub struct Paragraph {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OoxmlDoc {
     pub paragraphs: Vec<Paragraph>,
+    /// body 級表格的 canonical 投影（只讀；寫回來源仍是 parts 明文，
+    /// 見 [`table`] 模組頭「唯讀來源隔離」）。段落以索引引用 `paragraphs`。
+    pub tables: Vec<BodyTable>,
     /// 全部 zip part 的明文（解壓後）——編輯面的工作副本；save() 以此為準寫回。
     pub parts: BTreeMap<String, Vec<u8>>,
     /// zip 結構快照：存回時未觸碰 entry 原樣搬運的依據。
@@ -124,8 +132,11 @@ pub fn parse(bytes: &[u8]) -> Result<OoxmlDoc, OoxmlError> {
         .get("word/document.xml")
         .ok_or(OoxmlError::MissingDocument)?;
     let paragraphs = parse_document_xml(xml)?;
+    // 表格投影：純讀入（PM 補正 1——唯讀來源隔離；無損寫回路徑完全不經此处）。
+    let tables = table::read_body_tables(xml);
     Ok(OoxmlDoc {
         paragraphs,
+        tables,
         parts,
         bundle,
     })
