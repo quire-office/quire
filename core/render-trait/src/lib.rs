@@ -24,12 +24,27 @@ pub enum DrawItem {
         h: f32,
         fill_argb: u32,
     },
+    /// 筆畫（表格框線等）：寬度/顏色/虛線樣式齊備（Phase3-1b）。
+    /// 新增欄位全部帶 serde default——舊顯示列表 JSON 仍可解析（向後兼容）。
     Rule {
         x1: f32,
         y1: f32,
         x2: f32,
         y2: f32,
+        /// 線寬（pt）；0 → 渲染端自行選預設。
+        #[serde(default)]
+        width_pt: f32,
+        /// 筆畫顏色（0xAARRGGBB）。
+        #[serde(default = "default_opaque_black")]
+        color_argb: u32,
+        /// 虛線樣式（SVG stroke-dasharray 語義，如 "2 2"；None＝實線）。
+        #[serde(default)]
+        dash: Option<String>,
     },
+}
+
+fn default_opaque_black() -> u32 {
+    0xFF00_0000
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

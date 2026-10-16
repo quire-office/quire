@@ -1285,8 +1285,10 @@ mod tests {
     }
 
     /// corpus 閘門（PM 補正 2）：manifest 標 table 的全部檔案，解析不 panic，
-    /// 且解析出的 column 定義數與 `w:tblGrid` 的 `w:gridCol` 出現數一致
-    /// （AlternateContent 子樹除外——那本子樹不進 canonical，見上測）。
+    /// 且解析出的 column 定義數與「可投影」的 `w:gridCol` 出現數一致——
+    /// 不可投影 = AlternateContent 子樹（不進 canonical）或段落/VML 圖形
+    /// 容器（`w:pict`/`w:drawing` 的 `w:txbxContent`：Frame::P 包圍幀整棵吞沒，
+    /// 同為不進 canonical 之類；口徑見 count_tag_unprojected）。
     #[test]
     fn corpus_table_files_parse_and_grid_counts_match() {
         let manifest =
@@ -1304,8 +1306,8 @@ mod tests {
             let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("讀 {path:?}: {e}"));
             let xml = doc_xml_of(&bytes);
             let tables = read_body_tables(&xml); // 不 panic 即第一閘門
-                                                 // 全域對照：gridCol 出現數（排除 AlternateContent 子樹）。
-            let expect = count_tag_outside_alt(&xml, b"<w:gridCol");
+                                                 // 全域對照：gridCol 出現數（口徑見 count_tag_unprojected）。
+            let expect = count_tag_unprojected(&xml, b"<w:gridCol");
             let got: usize = tables.iter().map(grid_cols_of_root).sum();
             assert_eq!(
                 got, expect,
@@ -1337,9 +1339,16 @@ mod tests {
     }
 
     /// 統計 `tag`（如 `<w:gridCol`）在 XML 中的出現次數（含邊界檢查），
-    /// 排除 `mc:AlternateContent` 子樹。
-    fn count_tag_outside_alt(xml: &[u8], tag: &[u8]) -> usize {
-        let spans = alt_spans(xml);
+    /// 排除「不進 canonical」的子樹：`mc:AlternateContent`（Skip 幀吞沒）、
+    /// `w:pict`／`w:drawing`／`w:txbxContent`（VML/圖形文字框——其內容的
+    /// `w:tbl` 因 tbl_parent 遇 Frame::P 壁壘判 Invalid，整棵不投影）。
+    /// 口徑必須與解析器的投影邊界一致，否則柵欄會把「解析器故意不看」
+    /// 誤報成漏解析（270 檔擴充後首發：3 檔表格藏於 VML text box）。
+    fn count_tag_unprojected(xml: &[u8], tag: &[u8]) -> usize {
+        let mut spans = alt_spans(xml);
+        spans.extend(tagged_spans(xml, b"<w:pict", b"</w:pict>"));
+        spans.extend(tagged_spans(xml, b"<w:drawing", b"</w:drawing>"));
+        spans.extend(tagged_spans(xml, b"<w:txbxContent", b"</w:txbxContent>"));
         let mut n = 0;
         let mut from = 0usize;
         while let Some(i) = find_bytes(xml, tag, from) {
@@ -1353,6 +1362,36 @@ mod tests {
             from = after;
         }
         n
+    }
+
+    /// 泛化版最外層區間集合：`open`／`close` 如 `<w:pict`／`</w:pict>`。
+    fn tagged_spans(xml: &[u8], open: &[u8], close: &[u8]) -> Vec<(usize, usize)> {
+        let mut spans = Vec::new();
+        let mut stack: Vec<usize> = Vec::new();
+        let mut i = 0usize;
+        loop {
+            match (find_bytes(xml, open, i), find_bytes(xml, close, i)) {
+                (Some(o), Some(c)) if o < c => {
+                    stack.push(o);
+                    i = o + open.len();
+                }
+                (_, Some(c)) => {
+                    if stack.len() == 1 {
+                        if let Some(s) = stack.pop() {
+                            spans.push((s, c + close.len()));
+                        }
+                    } else {
+                        stack.pop();
+                    }
+                    i = c + close.len();
+                }
+                _ => break,
+            }
+        }
+        if let Some(s) = stack.first() {
+            spans.push((*s, xml.len()));
+        }
+        spans
     }
 
     /// mc:AlternateContent 最外層區間集合（巢狀 MC 合併進外層；尾部截斷

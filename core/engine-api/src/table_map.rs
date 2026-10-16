@@ -1,0 +1,358 @@
+//! canonical 表格樹 → layout 層 `TableInput`／`TableSlot`（Phase3-1b 映射層）。
+//!
+//! 分層：canonical 型別定義在 quire-ooxml、幾何演算法在 quire-layout，本模組
+//! 只在 engine 層把前者餵成後者的輸入契約（與 sectPr 同款三段式）。換算
+//! （twip→pt、pct→%）在此完成，layout 只吃 pt／百分比。
+//!
+//! 樣式框線：`w:tblStyle` 查 `word/styles.xml` 的 `w:style[@w:type='table']`
+//! → `w:tblPr/w:tblBorders`，並沿 `w:basedOn` 鏈向上繼承（鏈環／斷鏈停住，
+//! 容錯不 panic）。這是 v1 的最小查表——`tblStylePr` 條件底紋/條件框線
+//! （firstRow/band1Horz 等）不實作，與 layout 層头注的取捨一致。
+
+use std::collections::HashMap;
+
+use quire_layout::table::{
+    CellInput, CellMarginInput, EdgeSetInput, PenInput, RowInput, TableInput, WidthSpec,
+};
+use quire_layout::{LayoutParams, SectionSpec, TableSlot, TextMeasurer};
+use quire_ooxml::{Block, BodyTable, Borders, Margins, Table, TblWidth};
+
+/// twip → pt。非法／缺＝None（容錯鐵律：不猜、不虚構）。
+fn twip_pt(raw: Option<&str>) -> Option<f32> {
+    raw.and_then(|s| s.trim().parse::<f32>().ok()).map(|v| v / 20.0)
+}
+
+/// `w:tblW`/`w:tcW` → `WidthSpec`。dxa→Pt；pct→Pct（pct 單位是 1/50%，
+/// ECMA-376 §17.18.90）；auto/nil/缺＝None（由 layout 退回自然寬）。
+fn width_spec(tw: &TblWidth) -> Option<WidthSpec> {
+    let num = tw.num()? as f32;
+    match tw.typ.as_deref() {
+        Some("dxa") => Some(WidthSpec::Pt((num / 20.0).max(0.0))),
+        Some("pct") => Some(WidthSpec::Pct((num / 50.0).max(0.0))),
+        _ => None,
+    }
+}
+
+/// 邊距單側：dxa→pt；pct/非法＝None（退回上層預設——v1 不做 pct 邊距）。
+fn side_pt(tw: Option<&TblWidth>) -> Option<f32> {
+    let tw = tw?;
+    if matches!(tw.typ.as_deref(), Some("dxa") | None) {
+        twip_pt(tw.w.as_deref())
+    } else {
+        None
+    }
+}
+
+fn pen(b: Option<&quire_ooxml::Border>) -> Option<PenInput> {
+    b.map(|b| PenInput {
+        val: b.val.clone(),
+        sz: b.sz.clone(),
+        // color 原字串直送：auto/theme 名→黑、RRGGBB→RGB 的判定在 layout。
+        color: b.color.clone(),
+    })
+}
+
+fn edge_set(bs: &Borders) -> EdgeSetInput {
+    EdgeSetInput {
+        top: pen(bs.top.as_ref()),
+        left: pen(bs.left.as_ref()),
+        bottom: pen(bs.bottom.as_ref()),
+        right: pen(bs.right.as_ref()),
+        inside_h: pen(bs.inside_h.as_ref()),
+        inside_v: pen(bs.inside_v.as_ref()),
+    }
+}
+
+/// `w:tblCellMar`／`w:tcMar` → 四側 pt：新式 start/end 優先，舊式 left/right 後備。
+fn cell_margins(m: &Margins) -> CellMarginInput {
+    CellMarginInput {
+        top: side_pt(m.top.as_ref()),
+        left: side_pt(m.start.as_ref()).or_else(|| side_pt(m.left.as_ref())),
+        bottom: side_pt(m.bottom.as_ref()),
+        right: side_pt(m.end.as_ref()).or_else(|| side_pt(m.right.as_ref())),
+    }
+}
+
+fn has_any_edges(e: &EdgeSetInput) -> bool {
+    [
+        e.top.as_ref(),
+        e.left.as_ref(),
+        e.bottom.as_ref(),
+        e.right.as_ref(),
+        e.inside_h.as_ref(),
+        e.inside_v.as_ref(),
+    ]
+    .into_iter()
+    .any(|p| p.is_some_and(|p| p.val.is_some()))
+}
+
+/// `word/styles.xml` → styleId → 表格框線（沿 basedOn 鏈合成後的結果）。
+///
+/// 實作：先收錄每張樣式「自帶」的 tblBorders，再逐樣式沿 basedOn 向上補缺位
+/// （缺位＝該方位未宣告，非宣告 none）。鏈長上限 16＋拜訪集防環。
+pub fn table_style_borders(styles_xml: &[u8]) -> HashMap<String, EdgeSetInput> {
+    let xml = String::from_utf8_lossy(styles_xml);
+    // ---- 第一趟：逐 <w:style …>…</w:style> 記錄自帶框線與 basedOn ----
+    let mut own: HashMap<String, (Option<EdgeSetInput>, Option<String>)> = HashMap::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = xml[cursor..].find("<w:style ") {
+        let start = cursor + rel;
+        let end = match xml[start..].find("</w:style>") {
+            Some(e) => start + e + "</w:style>".len(),
+            None => xml.len(),
+        };
+        cursor = end;
+        let seg = &xml[start..end];
+        if !seg.contains("w:type=\"table\"") {
+            continue;
+        }
+        let Some(id) = attr(seg, "w:styleId") else { continue };
+        let based_on = {
+            let re_at = seg.find("<w:basedOn ");
+            re_at.and_then(|i| attr(&seg[i..], "w:val"))
+        };
+        let borders = find_tbl_borders(seg).map(|bs| edge_set(&bs));
+        own.insert(id, (borders, based_on));
+    }
+    // ---- 第二趟：沿 basedOn 補缺位 ----
+    let mut out: HashMap<String, EdgeSetInput> = HashMap::new();
+    for id in own.keys() {
+        let mut acc: EdgeSetInput = Default::default();
+        let mut seen: Vec<&String> = Vec::new();
+        let mut cur: Option<&String> = Some(id);
+        for _ in 0..16 {
+            let Some(key) = cur else { break };
+            let Some((borders, based_on)) = own.get(key) else { break };
+            if seen.iter().any(|s| *s == key) {
+                break; // 鏈環：老實停在已合成結果
+            }
+            seen.push(key);
+            if let Some(b) = borders {
+                fill_missing(&mut acc, b);
+            }
+            cur = based_on.as_ref().and_then(|b| own.get_key_value(b)).map(|(k, _)| k);
+        }
+        if has_any_edges(&acc) {
+            out.insert(id.clone(), acc);
+        }
+    }
+    out
+}
+
+fn fill_missing(dst: &mut EdgeSetInput, src: &EdgeSetInput) {
+    let e = [
+        (&mut dst.top, &src.top),
+        (&mut dst.left, &src.left),
+        (&mut dst.bottom, &src.bottom),
+        (&mut dst.right, &src.right),
+        (&mut dst.inside_h, &src.inside_h),
+        (&mut dst.inside_v, &src.inside_v),
+    ];
+    for (d, s) in e {
+        if d.is_none() {
+            *d = s.clone();
+        }
+    }
+}
+
+fn attr(seg: &str, name: &str) -> Option<String> {
+    let pat = format!("{name}=\"");
+    let i = seg.find(&pat)? + pat.len();
+    let j = seg[i..].find('"')?;
+    let v = &seg[i..i + j];
+    (!v.is_empty()).then(|| v.to_string())
+}
+
+/// 在 style 段落內找 `w:tblBorders`（簡易字首掃描：tblBorders 只出現在
+/// tblPr 內，一段 style 一份，取首份即可）。
+fn find_tbl_borders(seg: &str) -> Option<Borders> {
+    let i = seg.find("<w:tblBorders")?;
+    let j = seg[i..]
+        .find("</w:tblBorders>")
+        .map(|j| i + j)
+        .unwrap_or(seg.len());
+    let region = &seg[i..j];
+    let pick = |tag: &str| -> Option<quire_ooxml::Border> {
+        let pat = format!("<w:{tag} ");
+        let k = region.find(&pat)?;
+        let e = region[k..].find("/>").map(|e| k + e).unwrap_or(region.len());
+        let one = &region[k..e];
+        let b = quire_ooxml::Border {
+            val: attr(one, "w:val"),
+            sz: attr(one, "w:sz"),
+            space: attr(one, "w:space"),
+            color: attr(one, "w:color"),
+            theme_color: attr(one, "w:themeColor"),
+            theme_shade: attr(one, "w:themeShade"),
+            theme_tint: attr(one, "w:themeTint"),
+        };
+        (!b.is_empty()).then_some(b)
+    };
+    let bs = Borders {
+        top: pick("top"),
+        left: pick("left"),
+        bottom: pick("bottom"),
+        right: pick("right"),
+        inside_h: pick("insideH"),
+        inside_v: pick("insideV"),
+        tl2br: None,
+        tr2bl: None,
+    };
+    (!bs.is_empty()).then_some(bs)
+}
+
+/// canonical 表 → layout 輸入（遞迴巢狀表；樣式框線查 `styles`）。
+pub fn table_input(
+    t: &Table,
+    texts: &[String],
+    styles: &HashMap<String, EdgeSetInput>,
+) -> TableInput {
+    let p = &t.props;
+    TableInput {
+        grid_pt: t.grid.iter().map(|g| g.w_pt.unwrap_or(0.0)).collect(),
+        width: p.width.as_ref().and_then(width_spec),
+        fixed_layout: p.layout_fixed == Some(true),
+        indent_pt: match p.indent_typ.as_deref() {
+            Some("pct") => None, // v1：pct 縮排不換算（退回 0，不虚構）
+            _ => twip_pt(p.indent_raw.as_deref()),
+        },
+        justify: p.justify.clone(),
+        borders: p.borders.as_ref().map(edge_set),
+        style_borders: p
+            .style
+            .as_deref()
+            .and_then(|s| styles.get(s))
+            .cloned()
+            .filter(|e| has_any_edges(e)),
+        cell_margins: p.cell_margins.as_ref().map(cell_margins),
+        rows: t
+            .rows
+            .iter()
+            .map(|r| RowInput {
+                cant_split: r.props.cant_split,
+                height_pt: twip_pt(r.props.height_raw.as_deref()),
+                height_exact: r.props.height_rule.as_deref() == Some("exact"),
+                header: r.props.header,
+                cells: r
+                    .cells
+                    .iter()
+                    .map(|c| {
+                        let mut text = Vec::new();
+                        let mut nested = Vec::new();
+                        for b in &c.blocks {
+                            match b {
+                                // 段落索引引用扁平序列：越界＝畸形檔，跳過（容錯）。
+                                Block::Paragraph { index } => {
+                                    if let Some(s) = texts.get(*index) {
+                                        text.push(s.clone());
+                                    }
+                                }
+                                Block::Table(inner) => {
+                                    nested.push(table_input(inner, texts, styles))
+                                }
+                            }
+                        }
+                        CellInput {
+                            width: c.props.width.as_ref().and_then(width_spec),
+                            grid_span: c.props.grid_span(),
+                            vmerge: c.props.vmerge_restart(),
+                            text,
+                            nested,
+                            borders: c.props.borders.as_ref().map(edge_set),
+                            fill: c
+                                .props
+                                .shading
+                                .as_ref()
+                                .and_then(|s| s.fill.clone())
+                                .filter(|f| !f.is_empty() && f != "auto"),
+                            valign: c.props.valign.clone(),
+                            margins: c.props.margins.as_ref().map(cell_margins),
+                        }
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+/// 表格（含全部巢狀表）覆蓋的段落上界（不含）＝最大段索引＋1；全無段落＝para_start。
+fn table_para_end(t: &Table, para_start: usize) -> usize {
+    let mut end = para_start;
+    t.walk(&mut |sub| {
+        for row in &sub.rows {
+            for cell in &row.cells {
+                for b in &cell.blocks {
+                    if let Block::Paragraph { index } = b {
+                        end = end.max(index + 1);
+                    }
+                }
+            }
+        }
+    });
+    end
+}
+
+/// 逐頁 section 的可用寬（首 section 缺件時退回 params 基準值）。
+fn avail_w_for(sections: &[SectionSpec], params: &LayoutParams, para: usize) -> f32 {
+    match sections.get(para) {
+        Some(s) => (s.geo.page_w_pt - s.geo.margin_left_pt - s.geo.margin_right_pt).max(1.0),
+        None => params.content_w_pt(),
+    }
+}
+
+/// 由 canonical 樹＋扁平文字建出排版完成的表格槽序列（engine 開啟文件時呼叫）。
+/// 回傳依 para_start 排序（parser 保證 body 序單調），`build_flow` 契约直接成立。
+pub fn build_slots(
+    tables: &[BodyTable],
+    texts: &[String],
+    styles_xml: Option<&[u8]>,
+    params: &LayoutParams,
+    sections: &[SectionSpec],
+) -> Vec<TableSlot> {
+    let styles = styles_xml.map(table_style_borders).unwrap_or_default();
+    let m = TextMeasurer::new(params.font_size_pt);
+    let line_h = params.line_h_pt();
+    let mut prev_end = 0usize; // 逐槽正規化游標：槽區間必不重疊且 ≤ n_paras
+    let n_paras = texts.len();
+    tables
+        .iter()
+        .map(|bt| {
+            let input = table_input(&bt.table, texts, &styles);
+            let avail_w = avail_w_for(sections, params, bt.para_start);
+            let layout = quire_layout::table::layout_table(&input, avail_w, line_h, &m, 0);
+            let raw_end = table_para_end(&bt.table, bt.para_start);
+            // 索引空間對齊（corpus 實測）：`para_start` 出自表格解析器自己的
+            // 段落計數器，遇 `w:pict/txbxContent` 壁壘會**少計**文字框段落，
+            // 而 `Block::Paragraph{index}` 引用的是主解析器扁平序號——兩個計數
+            // 器在有文字框的文件會分岔（WC048 實證）。因此：
+            // 1. 表格有可見段落時，錨點以「可見段落最小索引」為準（真話空間）；
+            // 2. 無可見段落退回解析器值，再統一 clamp 進 [prev_end, n_paras]。
+            let visible = min_visible_para(&bt.table);
+            let start = visible.unwrap_or(bt.para_start).max(prev_end).min(n_paras);
+            let end = raw_end.max(start).min(n_paras).max(start);
+            prev_end = end;
+            TableSlot {
+                para_start: start,
+                para_end: end,
+                layout,
+            }
+        })
+        .collect()
+}
+
+/// 表格（含巢狀）可見段落的最小扁平索引；全無＝None（錨點只能退回解析器計數）。
+fn min_visible_para(t: &Table) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    t.walk(&mut |sub| {
+        for row in &sub.rows {
+            for cell in &row.cells {
+                for b in &cell.blocks {
+                    if let Block::Paragraph { index } = b {
+                        best = Some(best.map_or(*index, |v: usize| v.min(*index)));
+                    }
+                }
+            }
+        }
+    });
+    best
+}
