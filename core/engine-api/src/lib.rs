@@ -176,7 +176,9 @@ impl Engine {
         let line_h = self.params.line_h_pt();
         let size = self.params.font_size_pt;
         let mut items: Vec<DrawItem> = Vec::new();
-        // 先表格（底層：填色＋框線＋格內文字），後正文行（頂層）。
+        // 底層先畫表格（填色＋框線＋格內文字），再疊正文行；最後對「文字項」
+        // 依 (y, x) 幾何閱讀序重排——跨表格/正文統一由上而下、由左而右。
+        // 填色與框線保持推入序（穩定排序 key 同鍵，不互相顛倒遮蓋次序）。
         for tp in &p.tables {
             push_frag_items(&mut items, tp.frag.x_pt, tp.frag.y_pt, &tp.frag, size);
         }
@@ -191,6 +193,15 @@ impl Engine {
                 text: l.text.clone(),
             });
         }
+        // 穩定排序：非文字項（填色/框線）同鍵保持原序且恆在前；文字項依基線 y
+        // 再依 x 排列，讓「正文→表格→正文」的閱讀序與 PDF 抽取端一致。
+        items.sort_by(|a, b| {
+            let key = |it: &DrawItem| match it {
+                DrawItem::Text { x, y, .. } => (1i8, (*y * 4.0).round() as i64, (*x * 4.0).round() as i64),
+                _ => (0i8, 0, 0),
+            };
+            key(a).cmp(&key(b))
+        });
         Some(PageDisplayList {
             page,
             width_pt: p.width_pt,
