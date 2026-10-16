@@ -28,5 +28,8 @@ python3 "$HERE/check_xml.py" "selfgen__*.docx" >/dev/null
 echo "== 5/6 挑選 -> $REPO/corpus =="
 python3 "$HERE/select.py" "$WORK" "$REPO/corpus" "$WORK/pool"
 
+echo "== 5.5/6 PII 消毒（引擎無損 set_part，quarantine 檔跳過）=="
+python3 "$REPO/scripts/scrub_corpus.py"
+
 echo "== 6/6 驗證 =="
 python3 "$REPO/scripts/verify_corpus.py" "$REPO/corpus"

@@ -238,6 +238,29 @@ def ftr(pn, text, page_field=True):
                 f'<w:r><w:t xml:space="preserve">{text}</w:t></w:r>{pf}</w:p></w:ftr>')
 
 
+def tc(paras: list[str], w: int = 2000, *, gridspan: int = 0, vmerge: str = "",
+       wtype: str = "dxa", numpr: bool = False, inner: str = "") -> str:
+    """一個儲存格：paras 逐段輸出；numpr=True 每段掛清單；inner 追加巢狀表格 XML。"""
+    tcpr = f'<w:tcW w:w="{w}" w:type="{wtype}"/>'
+    if gridspan:
+        tcpr += f'<w:gridSpan w:val="{gridspan}"/>'
+    if vmerge == "restart":
+        tcpr += '<w:vMerge w:val="restart"/>'
+    elif vmerge == "cont":
+        tcpr += "<w:vMerge/>"
+    ppr = "<w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr>" if numpr else ""
+    body = "".join(para(t, ppr) for t in paras) + inner
+    return f"<w:tc><w:tcPr>{tcpr}</w:tcPr>{body}</w:tc>"
+
+
+def tbl(*, cols: int, rows: str, tblpr_extra: str = "", grid_cols: str = "") -> str:
+    """cols＝grid 欄數（gridCol 等寬 w=9000//cols）；rows＝預先組好的 w:tr XML 串接。"""
+    g = grid_cols or "".join("<w:gridCol w:w=\"{}\"/>".format(9000 // cols) for _ in range(cols))
+    return ("<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/>"
+            + tblpr_extra
+            + "</w:tblPr><w:tblGrid>" + g + "</w:tblGrid>" + rows + "</w:tbl>")
+
+
 def main():
     # 1) 繁體中文商業報告：表格(合併)＋頁首頁尾＋頁碼欄位＋樣式＋編號清單
     tbl = ('<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/><w:tblBorders>'
@@ -421,5 +444,194 @@ def main():
                binary={"word/embeddings/ole1.xlsx": xlsx_buf.getvalue(), "word/media/image1.png": png})
 
 
+NUMBERING_LIST = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering {W}>'
+                  '<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="•"/><w:pPr><w:ind w:left="360" w:hanging="180"/></w:pPr></w:lvl></w:abstractNum>'
+                  '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>')
+
+
+def gen_pathological_tables():
+    """PM 病態表格量化門檻補齊（2026-10-16）：
+    nested_table_3plus / table_cell_multi_para / table_cell_list /
+    table_across_pages / tbl_layout_autofit / merged_interleave / table_in_columns。
+    """
+    # P1 深巢狀表格（3 層：外→中→內）＋ cell 多段落
+    inner = tbl(cols=2, rows="".join(
+        "<w:tr>" + tc([f"內格 R{r}C1"], 1500) + tc([f"內格 R{r}C2"], 1500) + "</w:tr>"
+        for r in range(3)))
+    mid = tbl(cols=2, rows="".join(
+        "<w:tr><w:tc><w:tcPr><w:tcW w:w=\"3000\" w:type=\"dxa\"/></w:tcPr>"
+        + para(f"中層第 {r} 列") + inner + "</w:tc>" + tc([f"中欄 {r}"], 3000) + "</w:tr>"
+        for r in range(2)))
+    outer = tbl(cols=2, rows=(
+        "<w:tr><w:tc><w:tcPr><w:tcW w:w=\"4500\" w:type=\"dxa\"/></w:tcPr>"
+        + para("外層 A：巢狀深度 3 起點") + mid + "</w:tc>"
+        + tc(["外層 B", "第二段", "第三段"], 4500) + "</w:tr>"))
+    body = (para("深巢狀表格（外→中→內三層）＋儲存格多段落", '<w:pStyle w:val="Heading1"/>')
+            + para("以下表格嵌套三層 w:tbl，驗證遞迴解析與無損回寫。") + outer
+            + para("巢狀表格之後的段落。"))
+    write_docx("patho_nested_table_3deep.docx", std_parts(body, sect()))
+
+    # P1b 深巢狀表格變體（3 層反方向：內層兩張並排）＋ cell 清單
+    innerA = tbl(cols=2, rows="".join(
+        "<w:tr>" + tc([f"α{r}"], 1200, numpr=True) + tc([f"β{r}"], 1200) + "</w:tr>"
+        for r in range(2)))
+    innerB = tbl(cols=1, rows="".join(
+        "<w:tr>" + tc([f"γ{r}", "第二段", "第三段"], 1800) + "</w:tr>" for r in range(2)))
+    mid2 = tbl(cols=2, rows=(
+        "<w:tr><w:tc><w:tcPr><w:tcW w:w=\"3000\" w:type=\"dxa\"/></w:tcPr>"
+        + para("中層左：並排 A") + innerA + "</w:tc>"
+        "<w:tc><w:tcPr><w:tcW w:w=\"3000\" w:type=\"dxa\"/></w:tcPr>"
+        + para("中層右：並排 B") + innerB + "</w:tc></w:tr>"))
+    outer2 = tbl(cols=1, rows=(
+        "<w:tr><w:tc><w:tcPr><w:tcW w:w=\"9000\" w:type=\"dxa\"/></w:tcPr>"
+        + para("外層單欄") + mid2 + "</w:tc></w:tr>"))
+    body = (para("深巢狀＋儲存格內清單", '<w:pStyle w:val="Heading1"/>')
+            + para("每格都掛 numPr 清單且巢狀三層。") + outer2)
+    write_docx("patho_nested_table_lists.docx", std_parts(body, sect(), numbering=NUMBERING_LIST))
+
+    # P1c 3 層巢狀（表格內表格內表格，深度計數器不同路徑）
+    deep3 = tbl(cols=3, rows="".join(
+        "<w:tr>" + "".join(tc([f"L3({r},{c})"], 900) for c in range(3)) + "</w:tr>"
+        for r in range(2)))
+    deep2 = tbl(cols=2, rows="".join(
+        "<w:tr>" + f"<w:tc><w:tcPr><w:tcW w:w=\"2400\" w:type=\"dxa\"/></w:tcPr>{deep3}</w:tc>"
+        + tc([f"L2 r{r}"], 2400) + "</w:tr>" for r in range(2)))
+    deep1 = tbl(cols=2, rows=(
+        f"<w:tr><w:tc><w:tcPr><w:tcW w:w=\"4500\" w:type=\"dxa\"/></w:tcPr>{deep2}</w:tc>"
+        + tc(["L1 對照格", "第二", "第三"], 4500) + "</w:tr>"))
+    body = (para("三層巢狀變體 C", '<w:pStyle w:val="Heading1"/>') + deep1)
+    write_docx("patho_nested_table_deep3c.docx", std_parts(body, sect()))
+
+    # P1d 4 層巢狀（超過 3 層門檻的保險樣本）
+    l4 = tbl(cols=1, rows="".join("<w:tr>" + tc([f"L4-{r}"], 700) + "</w:tr>" for r in range(2)))
+    l3 = tbl(cols=1, rows="".join(
+        f"<w:tr><w:tc><w:tcPr><w:tcW w:w=\"1400\" w:type=\"dxa\"/></w:tcPr>{l4}</w:tc></w:tr>"
+        for r in range(2)))
+    l2 = tbl(cols=1, rows=(
+        f"<w:tr><w:tc><w:tcPr><w:tcW w:w=\"2800\" w:type=\"dxa\"/></w:tcPr>{l3}</w:tc></w:tr>"))
+    l1 = tbl(cols=2, rows=(
+        f"<w:tr><w:tc><w:tcPr><w:tcW w:w=\"4500\" w:type=\"dxa\"/></w:tcPr>{l2}</w:tc>"
+        + tc(["四層測試對照", "段落2", "段落3"], 4500) + "</w:tr>"))
+    body = (para("四層巢狀表格", '<w:pStyle w:val="Heading1"/>') + l1)
+    write_docx("patho_nested_table_4deep.docx", std_parts(body, sect()))
+
+    # P2 跨頁長表：60 列 trHeight=340 → 估算 20400 twips > 一頁
+    rows = "<w:tr><w:trPr><w:tblHeader/></w:trPr>" + tc(["項目"], 3000, vmerge="restart") + tc(["數值"], 3000) + tc(["備註"], 3000) + "</w:tr>"
+    rows += "".join(
+        "<w:tr><w:trPr><w:trHeight w:val=\"340\"/></w:trPr>"
+        + tc([f"跨頁資料列 {r}"], 3000, vmerge="cont" if r % 5 == 0 else "")
+        + tc([str(r * 17 % 97)], 3000) + tc([f"備註 {r}"], 3000) + "</w:tr>"
+        for r in range(1, 61))
+    longtbl = tbl(cols=3, rows=rows,
+                  tblpr_extra='<w:tblLayout w:type="fixed"/><w:tblBorders><w:top w:val="single" w:sz="4"/></w:tblBorders>')
+    body = (para("跨頁長表（60 列）", '<w:pStyle w:val="Heading1"/>')
+            + para("本表總高度超過一頁，驗證跨頁續排與 tblHeader 重複列。")
+            + longtbl + para("長表之後的段落。"))
+    write_docx("patho_table_across_pages.docx", std_parts(body, sect()))
+
+    # P2b 跨頁長表變體（無 trHeight、50 列預設高 + 多段落格加高）
+    rows = "".join(
+        "<w:tr>" + tc([f"欄一 {r}", f"續行 {r}"], 3000) + tc([f"欄二 {r}"], 3000) + "</w:tr>"
+        for r in range(1, 51))
+    body = (para("跨頁長表變體（無列高宣告）", '<w:pStyle w:val="Heading1"/>')
+            + tbl(cols=2, rows=rows) + para("之後段落。"))
+    write_docx("patho_table_across_pages_b.docx", std_parts(body, sect()))
+
+    # P3 合併交錯：gridSpan×vMerge 同格重疊＋行內 span 總和≠grid 欄數（錯位病態）
+    rows = (
+        # 4 欄 grid；第一行 1+1+2（gridSpan 2）正常
+        "<w:tr>" + tc(["交錯表頭A"], 2250, vmerge="restart") + tc(["B"], 2250)
+        + tc(["C 跨兩欄", "第二", "第三"], 4500, gridspan=2) + "</w:tr>"
+        # 第二行：vMerge cont＋gridSpan 3
+        "<w:tr>" + tc([""], 2250, vmerge="cont") + tc(["續行", "多段一", "多段二"], 6750, gridspan=3) + "</w:tr>"
+        # 第三行：span 總和 2+1＝3 ≠ grid 4（錯位）
+        "<w:tr>" + tc(["錯位列", "第二"], 4500, gridspan=2) + tc(["單格"], 2250) + "</w:tr>"
+        # 第四行：正常補齊
+        "<w:tr>" + "".join(tc([f"D{c}"], 2250) for c in range(4)) + "</w:tr>")
+    body = (para("合併交錯：gridSpan×vMerge 重疊與欄位錯位", '<w:pStyle w:val="Heading1"/>')
+            + para("同一格同時帶 gridSpan 與 vMerge，且第三行 span 總和不等於 grid 欄數。")
+            + tbl(cols=4, rows=rows))
+    write_docx("patho_merged_interleave.docx", std_parts(body, sect()))
+
+    # P3b 合併交錯變體：棋盤式 vMerge restart/cont × gridSpan 交錯
+    rows = (
+        "<w:tr>" + tc(["棋盤1", "段落2"], 3000, vmerge="restart", gridspan=2) + tc(["棋盤2"], 3000) + "</w:tr>"
+        + "<w:tr>" + tc([""], 3000, vmerge="cont", gridspan=2) + tc(["棋盤3"], 3000, vmerge="restart") + "</w:tr>"
+        + "<w:tr>" + tc(["棋盤4"], 3000, gridspan=2) + tc([""], 3000, vmerge="cont") + "</w:tr>")
+    body = (para("棋盤式合併交錯", '<w:pStyle w:val="Heading1"/>') + tbl(cols=3, rows=rows))
+    write_docx("patho_merged_interleave_b.docx", std_parts(body, sect()))
+
+    # P4 autofit 極端欄寬：tblLayout=autofit＋單欄 9603 twips（超出 A4 正文寬）
+    rows = ("<w:tr>" + tc(["極寬欄"], 9603, wtype="auto") + tc(["極窄欄"], 96, wtype="auto") + "</w:tr>"
+            + "".join("<w:tr>" + tc([f"寬 {r}"], 9603, wtype="auto") + tc([f"{r}"], 96, wtype="auto") + "</w:tr>"
+                      for r in range(1, 9)))
+    body = (para("tblLayout=autofit 極端欄寬", '<w:pStyle w:val="Heading1"/>')
+            + para("autofit 且欄寬宣告跨越三個數量級（9603 vs 96 twips）。")
+            + tbl(cols=2, rows=rows, tblpr_extra='<w:tblLayout w:type="autofit"/>',
+                  grid_cols='<w:gridCol w:w="9603"/><w:gridCol w:w="96"/>'))
+    write_docx("patho_autofit_extreme_widths.docx", std_parts(body, sect()))
+
+    # P4b autofit 未宣告 layout（預設 autofit）＋ w:type=auto＋極端值
+    rows = ("<w:tr>" + tc(["auto 型寬欄"], 9026, wtype="auto") + tc(["auto 窄欄", "二", "三"], 113, wtype="auto") + "</w:tr>")
+    body = (para("未宣告 tblLayout 的 autofit 極端欄寬", '<w:pStyle w:val="Heading1"/>')
+            + tbl(cols=2, rows=rows, grid_cols='<w:gridCol w:w="9026"/><w:gridCol w:w="113"/>'))
+    write_docx("patho_autofit_implicit.docx", std_parts(body, sect()))
+
+    # P5 表格內多段落＋清單
+    rows = (
+        "<w:tr>" + tc(["欄位"], 3000) + tc(["說明"], 6000) + "</w:tr>"
+        + "<w:tr>" + tc(["清單格"], 3000)
+        + "<w:tc><w:tcPr><w:tcW w:w=\"6000\" w:type=\"dxa\"/></w:tcPr>"
+        + para("段落一", '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>')
+        + para("段落二", '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>')
+        + para("段落三（非清單）")
+        + para("段落四（非清單）") + "</w:tc></w:tr>"
+        + "<w:tr>" + tc(["多段無清單", "第二段", "第三段", "第四段", "第五段"], 3000)
+        + tc(["第二格", "第二段", "第三段"], 6000) + "</w:tr>")
+    body = (para("儲存格內多段落與清單", '<w:pStyle w:val="Heading1"/>')
+            + para("單格 5 段、清單與普通段落混排。") + tbl(cols=2, rows=rows))
+    write_docx("patho_table_cell_lists.docx", std_parts(body, sect(), numbering=NUMBERING_LIST))
+
+    # P6 欄（cols=2）內表格
+    inner_tbl = tbl(cols=2, rows=(
+        "<w:tr>" + tc(["欄內表頭A"], 2000) + tc(["欄內表頭B"], 2000) + "</w:tr>"
+        + "".join("<w:tr>" + tc([f"資料 {r}"], 2000) + tc([f"{r * 3}"], 2000) + "</w:tr>" for r in range(1, 6))))
+    body = (para("雙欄版面中的表格", '<w:pStyle w:val="Heading1"/>')
+            + para("第一段落在左欄。")
+            + inner_tbl
+            + para("表格之後繼續雙欄文字，驗證欄平衡與表內斷欄。")
+            + para("第三段。"))
+    sect_xml = ('<w:sectPr><w:cols w:num="2" w:space="720"/><w:pgSz w:w="11906" w:h="16838"/>'
+                '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708"/></w:sectPr>')
+    write_docx("patho_table_in_columns.docx", std_parts(body, sect_xml))
+
+    # P6b 欄（cols=3）內表格＋清單
+    body = (para("三欄版面中的表格", '<w:pStyle w:val="Heading1"/>')
+            + para("導言。")
+            + tbl(cols=1, rows="".join(
+                "<w:tr>" + tc([f"三欄內表格列 {r}", "第二段"], 1500, numpr=(r % 2 == 0)) + "</w:tr>"
+                for r in range(1, 8)))
+            + para("結語。"))
+    sect_xml = ('<w:sectPr><w:cols w:num="3" w:space="360"/><w:pgSz w:w="11906" w:h="16838"/>'
+                '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708"/></w:sectPr>')
+    write_docx("patho_table_in_columns_3col.docx", std_parts(body, sect_xml, numbering=NUMBERING_LIST))
+
+    # P7 綜合病態大雜燴：巢狀＋跨頁＋交錯＋autofit 同檔
+    nested_in_cell = tbl(cols=2, rows="".join(
+        "<w:tr>" + tc([f"內 {r}"], 1000) + tc([f"內 {r}B"], 1000) + "</w:tr>" for r in range(2)))
+    rows = "".join(
+        "<w:tr><w:trPr><w:trHeight w:val=\"300\"/></w:trPr>"
+        + (f"<w:tc><w:tcPr><w:tcW w:w=\"3000\" w:type=\"dxa\"/><w:vMerge w:val=\"restart\"/></w:tcPr>"
+           + para(f"合併錨列 {r}") + nested_in_cell + "</w:tc>" if r == 1 else
+           tc([""], 3000, vmerge="cont" if r in (2, 3) else ""))
+        + tc([f"欄二 {r}"], 3000)
+        + tc([f"欄三 {r}", "第二段"], 3000) + "</w:tr>" for r in range(1, 46))
+    body = (para("綜合病態表格", '<w:pStyle w:val="Heading1"/>')
+            + para("巢狀表格＋vMerge＋autofit＋跨頁 45 列。")
+            + tbl(cols=3, rows=rows, tblpr_extra='<w:tblLayout w:type="autofit"/>'))
+    write_docx("patho_table_kitchen_sink.docx", std_parts(body, sect()))
+
+
 if __name__ == "__main__":
     main()
+    gen_pathological_tables()

@@ -18,8 +18,13 @@ fn main() -> ExitCode {
                 （pagebreaks.json：每頁段落分佈/跨頁續排），供 render-lab 跨引擎比對。
       quire-cli roundtrip <file|dir> [--out <path>] [--check]
                                      [--allow part1,part2]
+                                     [--quarantine <quarantine.json>]
                 開檔→不動→存檔；--check 做 zip 結構級對照（dir＝corpus 全掃）。
-                非零離開碼＝有未觸碰部分失真。";
+                非零離開碼＝有未觸碰部分失真。
+                --quarantine：隔離清單 JSON 檔，頂層 files 物件對應
+                「相對掃描根路徑（或檔名）→ 隔離原因」；
+                清單內檔案跳過評測、不計紅，於彙報單列示。dir 掃描未指定時
+                自動找 <dir>/quarantine.json。";
     if args.len() < 3 {
         eprintln!("{usage}");
         return ExitCode::from(2);
@@ -166,11 +171,19 @@ fn render(rest: &[String], usage: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// quarantine.json 的 schema：{"files": {"<路徑或檔名>": "<隔離原因>"}}
+#[derive(serde::Deserialize)]
+struct QuarantineFile {
+    #[serde(default)]
+    files: std::collections::BTreeMap<String, String>,
+}
+
 /// roundtrip 子命令：單一檔案或 corpus 目錄（遞迴掃 *.docx）。
 fn roundtrip(rest: &[String], usage: &str) -> ExitCode {
     let mut check = false;
     let mut out: Option<PathBuf> = None;
     let mut allow: Vec<String> = Vec::new();
+    let mut quarantine_arg: Option<PathBuf> = None;
     let mut target: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
@@ -183,6 +196,14 @@ fn roundtrip(rest: &[String], usage: &str) -> ExitCode {
                     return ExitCode::from(2);
                 };
                 out = Some(PathBuf::from(p));
+            }
+            "--quarantine" => {
+                i += 1;
+                let Some(p) = rest.get(i) else {
+                    eprintln!("--quarantine 需要檔案路徑\n{usage}");
+                    return ExitCode::from(2);
+                };
+                quarantine_arg = Some(PathBuf::from(p));
             }
             "--allow" => {
                 i += 1;
@@ -218,6 +239,62 @@ fn roundtrip(rest: &[String], usage: &str) -> ExitCode {
     if files.is_empty() {
         eprintln!("在 {target} 找不到 .docx（corpus 是空的？）");
         return ExitCode::from(1);
+    }
+    // 隔離清單：鍵＝檔名或相對掃描根的相對路徑；命中者跳過評測、不計紅。
+    let target_dir = PathBuf::from(&target);
+    let qpath = quarantine_arg.or_else(|| {
+        target_dir
+            .is_dir()
+            .then(|| target_dir.join("quarantine.json"))
+            .filter(|p| p.exists())
+    });
+    let quarantine: std::collections::BTreeMap<String, String> = match &qpath {
+        Some(p) => match std::fs::read(p) {
+            Ok(b) => serde_json::from_slice::<QuarantineFile>(b.as_slice())
+                .map(|q| q.files)
+                .unwrap_or_else(|e| {
+                    eprintln!(
+                        "quarantine JSON 解析失敗 {}: {e}（視為空清單）",
+                        p.display()
+                    );
+                    Default::default()
+                }),
+            Err(_) => Default::default(),
+        },
+        None => Default::default(),
+    };
+    let mut quarantined: Vec<(String, String)> = Vec::new();
+    let files: Vec<PathBuf> = files
+        .into_iter()
+        .filter(|f| {
+            let rel = target_dir
+                .is_dir()
+                .then(|| f.strip_prefix(&target_dir).unwrap_or(f.as_path()))
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let fname = f
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let hit = quarantine
+                .get(&rel)
+                .or_else(|| quarantine.get(&fname))
+                .cloned();
+            match hit {
+                Some(reason) => {
+                    quarantined.push((if rel.is_empty() { fname } else { rel }, reason));
+                    false
+                }
+                None => true,
+            }
+        })
+        .collect();
+    if !quarantined.is_empty() {
+        println!("quarantine: {} 檔隔離（不計紅）：", quarantined.len());
+        for (f, reason) in &quarantined {
+            println!("  Q {f} — {reason}");
+        }
     }
 
     let mut failed = 0usize;
@@ -286,8 +363,9 @@ fn roundtrip(rest: &[String], usage: &str) -> ExitCode {
     }
     if check {
         println!(
-            "roundtrip --check: {} 檔，byte-identical {}，失敗 {}",
+            "roundtrip --check: {} 檔（另有 {} 檔隔離不計紅），byte-identical {}，失敗 {}",
             files.len(),
+            quarantined.len(),
             identical,
             failed
         );

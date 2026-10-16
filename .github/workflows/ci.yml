@@ -73,7 +73,8 @@ jobs:
       - name: ★ round-trip 閘門——開檔→不動→存檔，未觸碰部分必須零失真（全平台）
         run: |
           cargo run -q -p quire-cli -- roundtrip fixtures --check
-          # corpus/ 由 Phase0-1 落地（130 份真實世界 docx，追蹤於 git），三平台都要零失真。
+          # corpus/ 由 Phase0-1 落地＋擴充（400 份真實世界 docx，追蹤於 git；
+          # corpus/quarantine.json 內隔離檔不計紅），三平台都要零失真。
           cargo run -q -p quire-cli -- roundtrip corpus --check
           # benches/corpus（benchmark 語料，尚未進 git）：有檔就全部必須綠，暫空則警告留綠。
           mkdir -p benches/corpus

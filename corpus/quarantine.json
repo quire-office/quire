@@ -1,0 +1,7 @@
+{
+  "schema": "quire-corpus-quarantine/1",
+  "description": "roundtrip/parse 紅燈隔離清單：清單內檔案不計紅，但必須逐檔列出的原因，修復後移除。",
+  "files": {
+    "poi/test-data_document_clusterfuzz-testcase-minimized-POIXWPFFuzzer-6733884933668864.docx": "zip CRC-32 損壞（word/theme/theme1.xml，上游 fuzz 樣本即損毀）：PII 消毒與 round-trip 無法執行，隔離待上游修復"
+  }
+}

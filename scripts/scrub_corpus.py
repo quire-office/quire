@@ -66,24 +66,35 @@ def main() -> int:
     check = "--check" in sys.argv
     binp = ROOT / "target" / "debug" / "scrub"
     manifest = json.loads(MANIFEST.read_text())
+    qpath = CORPUS / "quarantine.json"
+    quarantine = {}
+    if qpath.exists():
+        quarantine = json.loads(qpath.read_text()).get("files", {})
     changed = []
+    unreadable = {}  # zip 損壞（CRC 錯等）：跳過消毒、記錄進 quarantine，不掩蓋
     for entry in manifest["files"]:
         p = CORPUS / entry["file"]
-        with zipfile.ZipFile(p) as z:
-            names = z.namelist()
-            core = z.read("docProps/core.xml") if "docProps/core.xml" in names else None
-            app = z.read("docProps/app.xml") if "docProps/app.xml" in names else None
-            xml_redacted = {}
-            for n in names:
-                if not XML_PART_RE.search(n):
-                    continue
-                raw = z.read(n)
-                new = redact_emails(raw)
-                if new != raw:  # 已是遮罩值者不重複計入，腳本可冪等重跑
-                    xml_redacted[n] = new
+        if entry["file"] in quarantine:
+            continue  # 已隔離檔不重複消毒
+        try:
+            with zipfile.ZipFile(p) as z:
+                names = z.namelist()
+                core = z.read("docProps/core.xml") if "docProps/core.xml" in names else None
+                app = z.read("docProps/app.xml") if "docProps/app.xml" in names else None
+                xml_redacted = {}
+                for n in names:
+                    if not XML_PART_RE.search(n):
+                        continue
+                    raw = z.read(n)
+                    new = redact_emails(raw)
+                    if new != raw:  # 已是遮罩值者不重複計入，腳本可冪等重跑
+                        xml_redacted[n] = new
+        except Exception as e:  # noqa: BLE001
+            unreadable[entry["file"]] = f"zip 損壞無法消毒: {e}"
+            continue
         dirty = (
-            bool(core and TAG_RE.search(core))
-            or bool(app and TAG_RE.search(app))
+            bool(core and scrub_xml(core) != core)
+            or bool(app and scrub_xml(app) != app)
             or bool(xml_redacted)
         )
         if not dirty:
@@ -116,6 +127,17 @@ def main() -> int:
         changed.append(entry["file"])
     if not check:
         MANIFEST.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+        # zip 損壞無法消毒者：記入 quarantine（不掩蓋），roundtrip/smoke 跳過但列示
+        if unreadable:
+            q = json.loads(qpath.read_text()) if qpath.exists() else {
+                "schema": "quire-corpus-quarantine/1",
+                "description": "roundtrip/parse 紅燈隔離清單",
+                "files": {},
+            }
+            q.setdefault("files", {}).update(unreadable)
+            qpath.write_text(json.dumps(q, ensure_ascii=False, indent=2) + "\n")
+            for f, why in unreadable.items():
+                print(f"隔離（無法消毒）: {f} — {why}")
     mode = "掃描" if check else "消毒"
     print(f"{mode}完成：{len(changed)} 檔處理（總 {len(manifest['files'])}）")
     return 0

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Fetch additional real-world docx corpora: POI, Open-Xml-PowerTools, PHPWord, python-docx."""
+"""Fetch additional real-world docx corpora: POI, Open-Xml-PowerTools, PHPWord,
+python-docx, Microsoft Open-XML-SDK (官方 test files), docx4j test resources."""
 import concurrent.futures as cf
 import json
 import pathlib
@@ -16,9 +17,34 @@ REPOS = [
     ("poi", "apache/poi", "trunk"),
     ("xopt", "EricWhiteDev/Open-Xml-PowerTools", "master"),
     ("phpword", "PHPOffice/PHPWord", "master"),
+    ("oxmlsdk", "dotnet/Open-XML-SDK", "main"),
+    ("docx4j", "plutext/docx4j", "VERSION_17_3_3"),
+    ("pydocx", "python-openxml/python-docx", "master"),
 ]
 # POI: only document/wordprocessing test-data paths
 POI_PREFIXES = ("test-data/document/", "test-data/xwpf/", "poi-examples/src/main/")
+# Open-XML-SDK: WordProcessing 相關 test assets（排除 spreadsheet/presentation 誤標）
+OXML_PREFIXES = ("test/DocumentFormat.OpenXml.Tests.Assets/assets/",)
+OXML_EXCLUDES = ("Spreadsheet", "Presentation", "V2FormatOpenXml", "validation")
+# docx4j：test/sample resources（排除 docs/ 文件用附件與 target 產物）
+DOCX4J_PREFIXES = ("docx4j-core-tests/src/test/", "docx4j-samples-docx4j/",
+                   "docx4j-samples-docx-export-fo/", "docx4j-opencl/")
+# python-docx：behave test files
+PYDOCX_PREFIXES = ("features/steps/test_files/", "tests/")
+
+
+def keep(src: str, path: str) -> bool:
+    low = path.lower()
+    if src == "poi":
+        return path.startswith(POI_PREFIXES)
+    if src == "oxmlsdk":
+        return path.startswith(OXML_PREFIXES) and not any(
+            x.lower() in low for x in OXML_EXCLUDES)
+    if src == "docx4j":
+        return path.startswith(DOCX4J_PREFIXES) and "/target/" not in path
+    if src == "pydocx":
+        return path.startswith(PYDOCX_PREFIXES)
+    return True
 
 
 def tree_jobs():
@@ -32,7 +58,7 @@ def tree_jobs():
             size, path = json.loads(line)
             if size > MAX_BYTES:
                 continue
-            if src == "poi" and not path.startswith(POI_PREFIXES):
+            if not keep(src, path):
                 continue
             jobs.append((src, repo, branch, path, size))
     return jobs

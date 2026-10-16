@@ -129,6 +129,8 @@ name = "quire-cli"
 version = "0.1.0"
 dependencies = [
  "quire-engine",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

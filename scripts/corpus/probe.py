@@ -58,9 +58,211 @@ FEATURE_TAGS = [
     ("glossary", "快速部件 glossary (dotx)"),
     ("fonts_embedded", "內嵌字型 fontTable+ftr*"),
     ("websettings", "webSettings part"),
+    # 病態表格特徵（PM 量化門檻 2026-10-16；探測邏輯見 probe_tables）
+    ("nested_table", "巢狀表格（表格內表格，≥2 層）"),
+    ("nested_table_3plus", "深層巢狀表格（≥3 層）"),
+    ("table_cell_multi_para", "儲存格內多段落（單格 ≥3 段）"),
+    ("table_cell_list", "儲存格內清單（cell 內 numPr）"),
+    ("table_across_pages", "跨頁長表（單表估算高度 > 1 頁）"),
+    ("tbl_layout_autofit", "tblLayout=autofit（含未宣告＝預設 autofit 且欄寬極端）"),
+    ("merged_interleave", "合併交錯（單格 gridSpan+vMerge 或行列與 grid 錯位）"),
+    ("table_in_columns", "欄（cols≥2）內表格"),
 ]
 
 CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿぀-ヿ가-힯]")
+
+# ---- 病態表格探測（PM 量化門檻）-------------------------------------------------
+# 單次 token 掃描 document.xml：表格巢狀深度、cell 內段落/清單、列高總和、
+# tblLayout/tcW 極端值、gridSpan×vMerge 交錯、欄(section cols≥2)內表格。
+TOKEN_RE = re.compile(
+    rb"<(/?)((?:w:tblGrid|w:gridCol|w:tblLayout|w:tbl|w:tc|w:tr|w:p|w:tcW|w:gridSpan|w:vMerge|w:numPr|w:cols|w:sectPr)(?=[ />]))([^>]*)>",
+)
+ATTR_RE = re.compile(rb'([\w:]+)="([^"]*)"')
+# A4 1 吋邊界可用高度 ≈13958 twips；取整 12000 作保守跨頁門檻。
+PAGE_USABLE_TWIPS = 12000
+DEFAULT_ROW_TWIPS = 280
+
+
+def _attrs(s: bytes) -> dict[bytes, bytes]:
+    return {m.group(1): m.group(2) for m in ATTR_RE.finditer(s)}
+
+
+def probe_tables(doc: bytes) -> tuple[set[str], list[int]]:
+    """回傳 (新增標籤集合, 每個表格的估算高度 twips 清單供 smoke 除錯)。"""
+    tags: set[str] = set()
+    tbl_heights: list[int] = []
+    # section 邊界：(sectPr 結束位置, cols num)。段內 sectPr 結束「之前」的節；
+    # 結尾 sectPr 適用於最後一節（無後續邊界的表格歸它）。
+    sect_bounds: list[tuple[int, int]] = []
+    sect_cols_open: int | None = None
+    tbl_depth = 0
+    max_depth = 0
+    tc_stack: list[dict] = []
+    tbl_stack: list[dict] = []  # 每層表格累積 {height, autofit, extreme}
+    row_open = False
+    row_height: int | None = None
+    in_sect = False
+    for m in TOKEN_RE.finditer(doc):
+        closing, tag, attrs_b = m.group(1), m.group(2), m.group(3)
+        self_close = attrs_b.rstrip().endswith(b"/")
+        attrs = _attrs(attrs_b)
+        if tag == b"w:tbl":
+            if self_close:
+                continue
+            if not closing:
+                tbl_depth += 1
+                max_depth = max(max_depth, tbl_depth)
+                tbl_stack.append({"height": 0, "autofit": False, "extreme": False,
+                                  "auto_w": False, "start": m.start()})
+            else:
+                if tbl_stack:
+                    t = tbl_stack.pop()
+                    tbl_heights.append(t["height"])
+                    if (t["autofit"] or t["auto_w"]) and t["extreme"]:
+                        tags.add("tbl_layout_autofit")
+                tbl_depth = max(0, tbl_depth - 1)
+        elif tag == b"w:tc":
+            if self_close:
+                continue
+            if not closing:
+                tc_stack.append({"paras": 0, "list": False, "gridspan": False,
+                                 "vmerge": False})
+            else:
+                if tc_stack:
+                    tc = tc_stack.pop()
+                    if tc["paras"] >= 3:
+                        tags.add("table_cell_multi_para")
+                    if tc["list"]:
+                        tags.add("table_cell_list")
+                    if tc["gridspan"] and tc["vmerge"]:
+                        tags.add("merged_interleave")
+        elif tag == b"w:tr":
+            if self_close:
+                continue
+            if not closing:
+                row_open = True
+                row_height = None
+            elif row_open:
+                h = row_height if row_height and row_height > 0 else DEFAULT_ROW_TWIPS
+                if tbl_stack:
+                    tbl_stack[-1]["height"] += h
+                row_open = False
+        elif tag == b"w:p":
+            if tc_stack and not closing and not self_close:
+                tc_stack[-1]["paras"] += 1
+        elif tag == b"w:trHeight" and not closing:
+            v = attrs.get(b"w:val")
+            if v:
+                try:
+                    row_height = int(v)
+                except ValueError:
+                    row_height = None
+        elif tag == b"w:tblLayout" and not closing:
+            if attrs.get(b"w:type") == b"autofit" and tbl_stack:
+                tbl_stack[-1]["autofit"] = True
+        elif tag == b"w:tcW" and not closing and tbl_stack:
+            t = tbl_stack[-1]
+            wtype = attrs.get(b"w:type", b"")
+            if wtype == b"auto":
+                t["auto_w"] = True
+            wv = attrs.get(b"w:w")
+            try:
+                w = int(wv)
+                if w >= 9000 or (0 < w <= 144):
+                    t["extreme"] = True
+            except (TypeError, ValueError):
+                pass
+        elif tag == b"w:gridSpan" and not closing and tc_stack:
+            tc_stack[-1]["gridspan"] = True
+        elif tag == b"w:vMerge" and not closing and tc_stack:
+            tc_stack[-1]["vmerge"] = True
+        elif tag == b"w:numPr" and not closing and tc_stack:
+            tc_stack[-1]["list"] = True
+        elif tag == b"w:sectPr":
+            if not closing and not self_close:
+                in_sect = True
+                sect_cols_open = 1
+            else:
+                # self-closing 或結束
+                if closing:
+                    in_sect = False
+                    sect_bounds.append((m.end(), sect_cols_open or 1))
+                    sect_cols_open = None
+                elif self_close:
+                    sect_bounds.append((m.end(), sect_cols_open or 1))
+                    in_sect = False
+                    sect_cols_open = None
+        elif tag == b"w:cols" and in_sect:
+            v = attrs.get(b"w:num", b"1")
+            try:
+                sect_cols_open = max(sect_cols_open or 1, int(v))
+            except ValueError:
+                pass
+    if max_depth >= 2:
+        tags.add("nested_table")
+    if max_depth >= 3:
+        tags.add("nested_table_3plus")
+    for h in tbl_heights:
+        if h > PAGE_USABLE_TWIPS:
+            tags.add("table_across_pages")
+            break
+    # 欄內表格：表格起點所屬 section 的 cols≥2（＋行內 span 總和 vs grid 欄數錯位）
+    if tbl_heights:
+        depth = 0
+        starts = []
+        # 第二遍：頂層表格的 grid 欄數 vs 每行 gridSpan 總和（錯位＝合併交錯病態）
+        in_grid = False
+        grid_stack: list[dict] = []
+        row_spans: list[int] = []
+        for m in TOKEN_RE.finditer(doc):
+            closing, tag, attrs_b = m.group(1), m.group(2), m.group(3)
+            self_close = attrs_b.rstrip().endswith(b"/")
+            if tag == b"w:tbl":
+                if self_close:
+                    continue
+                if not closing:
+                    depth += 1
+                    if depth == 1:
+                        starts.append(m.start())
+                        grid_stack.append({"cols": 0, "bad": False})
+                else:
+                    depth = max(0, depth - 1)
+                    if depth == 0 and grid_stack:
+                        g = grid_stack.pop()
+                        if g["bad"]:
+                            tags.add("merged_interleave")
+            elif tag == b"w:tblGrid" and depth == 1:
+                if self_close or closing:
+                    in_grid = False
+                else:
+                    in_grid = True
+                    if grid_stack:
+                        grid_stack[-1]["cols"] = 0
+            elif tag == b"w:gridCol" and in_grid and grid_stack and not closing:
+                grid_stack[-1]["cols"] += 1
+            elif tag == b"w:tr" and depth == 1 and grid_stack:
+                g = grid_stack[-1]
+                if not closing:
+                    row_spans.append(0)
+                elif row_spans:
+                    s = row_spans.pop()
+                    if s and s != g["cols"] and g["cols"]:
+                        g["bad"] = True
+            elif tag == b"w:gridSpan" and depth == 1 and row_spans and not closing:
+                try:
+                    row_spans[-1] += int(_attrs(attrs_b).get(b"w:val", b"1"))
+                except ValueError:
+                    pass
+        for st in starts:
+            cols = sect_bounds[-1][1] if sect_bounds else 1  # 尾節預設
+            for pos, c in sect_bounds:
+                if pos >= st:
+                    cols = c
+                    break
+            if cols >= 2:
+                tags.add("table_in_columns")
+                break
+    return tags, tbl_heights
 
 
 def probe(path: pathlib.Path) -> dict | None:
@@ -194,11 +396,14 @@ def probe(path: pathlib.Path) -> dict | None:
         tags.add("fonts_embedded")
     if "word/webSettings.xml" in name_set:
         tags.add("websettings")
+    tbl_tags, tbl_heights = probe_tables(doc)
+    tags |= tbl_tags
     return {
         "sha256": hashlib.sha256(data).hexdigest(),
         "size": len(data),
         "nparts": len(names),
         "tags": sorted(tags),
+        "tbl_heights": tbl_heights,
     }
 
 
