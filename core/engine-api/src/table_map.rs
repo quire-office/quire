@@ -19,7 +19,8 @@ use quire_ooxml::{Block, BodyTable, Borders, Margins, Table, TblWidth};
 
 /// twip → pt。非法／缺＝None（容錯鐵律：不猜、不虚構）。
 fn twip_pt(raw: Option<&str>) -> Option<f32> {
-    raw.and_then(|s| s.trim().parse::<f32>().ok()).map(|v| v / 20.0)
+    raw.and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| v / 20.0)
 }
 
 /// `w:tblW`/`w:tcW` → `WidthSpec`。dxa→Pt；pct→Pct（pct 單位是 1/50%，
@@ -106,7 +107,9 @@ pub fn table_style_borders(styles_xml: &[u8]) -> HashMap<String, EdgeSetInput> {
         if !seg.contains("w:type=\"table\"") {
             continue;
         }
-        let Some(id) = attr(seg, "w:styleId") else { continue };
+        let Some(id) = attr(seg, "w:styleId") else {
+            continue;
+        };
         let based_on = {
             let re_at = seg.find("<w:basedOn ");
             re_at.and_then(|i| attr(&seg[i..], "w:val"))
@@ -122,7 +125,9 @@ pub fn table_style_borders(styles_xml: &[u8]) -> HashMap<String, EdgeSetInput> {
         let mut cur: Option<&String> = Some(id);
         for _ in 0..16 {
             let Some(key) = cur else { break };
-            let Some((borders, based_on)) = own.get(key) else { break };
+            let Some((borders, based_on)) = own.get(key) else {
+                break;
+            };
             if seen.iter().any(|s| *s == key) {
                 break; // 鏈環：老實停在已合成結果
             }
@@ -130,7 +135,10 @@ pub fn table_style_borders(styles_xml: &[u8]) -> HashMap<String, EdgeSetInput> {
             if let Some(b) = borders {
                 fill_missing(&mut acc, b);
             }
-            cur = based_on.as_ref().and_then(|b| own.get_key_value(b)).map(|(k, _)| k);
+            cur = based_on
+                .as_ref()
+                .and_then(|b| own.get_key_value(b))
+                .map(|(k, _)| k);
         }
         if has_any_edges(&acc) {
             out.insert(id.clone(), acc);
@@ -175,7 +183,10 @@ fn find_tbl_borders(seg: &str) -> Option<Borders> {
     let pick = |tag: &str| -> Option<quire_ooxml::Border> {
         let pat = format!("<w:{tag} ");
         let k = region.find(&pat)?;
-        let e = region[k..].find("/>").map(|e| k + e).unwrap_or(region.len());
+        let e = region[k..]
+            .find("/>")
+            .map(|e| k + e)
+            .unwrap_or(region.len());
         let one = &region[k..e];
         let b = quire_ooxml::Border {
             val: attr(one, "w:val"),

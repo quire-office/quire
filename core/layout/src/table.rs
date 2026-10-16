@@ -531,9 +531,7 @@ pub fn layout_table(
                     _ => Valign::Top,
                 },
                 nested,
-                merge: cell
-                    .vmerge
-                    .map(|restart| (usize::MAX, restart)), // 序號 pass 2 填
+                merge: cell.vmerge.map(|restart| (usize::MAX, restart)), // 序號 pass 2 填
                 block_head_row: ri,
                 block_tail: false,
             });
@@ -629,16 +627,19 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
                     .iter()
                     .find(|g| g.col == c && g.col_span == 1)
                     .expect("參加格存在");
-                members.push((rr, g.pad_top_bands, g.pad_bottom_bands, g.text_bands, g.lines.clone()));
+                members.push((
+                    rr,
+                    g.pad_top_bands,
+                    g.pad_bottom_bands,
+                    g.text_bands,
+                    g.lines.clone(),
+                ));
             }
             let mut joined: Vec<Line> = Vec::new();
             let mut text_bands = 0u32;
             let mut extra_pad = 0u32;
             for (k, (rr, pt, pb, tb, ls)) in members.iter().enumerate() {
-                let blank = !rows[*rr]
-                    .cells
-                    .iter()
-                    .any(|g| g.col == c && g.has_text);
+                let blank = !rows[*rr].cells.iter().any(|g| g.col == c && g.has_text);
                 if !blank {
                     joined.extend(ls.iter().cloned());
                     text_bands += tb;
@@ -653,7 +654,11 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
                     .iter()
                     .find(|g| g.col == c)
                     .expect("head 存在");
-                (hg.pad_top_bands, hg.pad_bottom_bands, hg.nested.iter().map(|n| n.total_bands).max().unwrap_or(0))
+                (
+                    hg.pad_top_bands,
+                    hg.pad_bottom_bands,
+                    hg.nested.iter().map(|n| n.total_bands).max().unwrap_or(0),
+                )
             };
             {
                 let hg = rows[head]
@@ -867,7 +872,11 @@ fn resolve_margins(
             table.and_then(|t| t.left),
             DEFAULT_SIDE_MARGIN_PT,
         ),
-        bottom: side(cell.and_then(|c| c.bottom), table.and_then(|t| t.bottom), 0.0),
+        bottom: side(
+            cell.and_then(|c| c.bottom),
+            table.and_then(|t| t.bottom),
+            0.0,
+        ),
         right: side(
             cell.and_then(|c| c.right),
             table.and_then(|t| t.right),
@@ -949,11 +958,10 @@ pub fn solve_pen(p: &PenInput) -> Option<Pen> {
         None | Some("none") | Some("nil") | Some("hidden") => return None,
         Some(_) => {}
     }
-    let sz = p
-        .sz
-        .as_deref()
-        .and_then(|s| s.trim().parse::<f32>().ok())
-        .unwrap_or(4.0);
+    let sz =
+        p.sz.as_deref()
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .unwrap_or(4.0);
     let width_pt = (sz / 8.0).max(0.25);
     let dash = match p.val.as_deref()? {
         "dashed" | "dashSmallGap" | "dashedEmphasis" | "longDash" | "heavyDash" => {
@@ -974,7 +982,9 @@ pub fn solve_pen(p: &PenInput) -> Option<Pen> {
 fn parse_color(c: Option<&str>) -> u32 {
     match c {
         None | Some("auto") => 0xFF00_0000,
-        Some(s) => parse_hex6(s).map(|rgb| 0xFF00_0000 | rgb).unwrap_or(0xFF00_0000),
+        Some(s) => parse_hex6(s)
+            .map(|rgb| 0xFF00_0000 | rgb)
+            .unwrap_or(0xFF00_0000),
     }
 }
 
@@ -1128,9 +1138,15 @@ mod tests {
         assert_eq!(used, 2, "受容量限制只取 2 帶");
         assert_eq!(next, (0, 2), "游標停在列 0 帶 2");
         assert!(!f.rows[0].ends_row);
-        assert!(f.rows[0].cells[0].edges[EDGE_TOP].is_some(), "列頂切片保留頂邊");
+        assert!(
+            f.rows[0].cells[0].edges[EDGE_TOP].is_some(),
+            "列頂切片保留頂邊"
+        );
         let (f2, _, _) = t.fragment(0, 2, 5, false, 72.0);
-        assert!(f2.rows[0].cells[0].edges[EDGE_TOP].is_none(), "列中切片不畫頂邊");
+        assert!(
+            f2.rows[0].cells[0].edges[EDGE_TOP].is_none(),
+            "列中切片不畫頂邊"
+        );
     }
 
     #[test]
@@ -1178,7 +1194,10 @@ mod tests {
         });
         let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
         let (f, _, _) = t.fragment(0, 0, 99, true, 0.0);
-        assert!(f.rows[0].cells[0].edges[EDGE_TOP].is_none(), "tc none 覆寫成功");
+        assert!(
+            f.rows[0].cells[0].edges[EDGE_TOP].is_none(),
+            "tc none 覆寫成功"
+        );
         let top1 = f.rows[0].cells[1].edges[EDGE_TOP]
             .as_ref()
             .expect("第二格吃表格級單線");
@@ -1208,8 +1227,14 @@ mod tests {
         });
         let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
         let (f, _, _) = t.fragment(0, 0, 99, true, 0.0);
-        assert!(f.rows[0].cells[1].edges[EDGE_LEFT].is_some(), "樣式框線兜底");
-        assert!(f.rows[0].cells[0].edges[EDGE_TOP].is_none(), "無宣告→外框不畫");
+        assert!(
+            f.rows[0].cells[1].edges[EDGE_LEFT].is_some(),
+            "樣式框線兜底"
+        );
+        assert!(
+            f.rows[0].cells[0].edges[EDGE_TOP].is_none(),
+            "無宣告→外框不畫"
+        );
     }
 
     #[test]
@@ -1280,7 +1305,12 @@ mod tests {
         let all: Vec<(&str, f32)> = f
             .rows
             .iter()
-            .flat_map(|rf| rf.cells[0].texts.iter().map(|t| (t.text.as_str(), rf.height_pt)))
+            .flat_map(|rf| {
+                rf.cells[0]
+                    .texts
+                    .iter()
+                    .map(|t| (t.text.as_str(), rf.height_pt))
+            })
             .collect();
         let head_texts: Vec<&str> = all.iter().map(|(s, _)| *s).collect();
         assert!(head_texts.contains(&"合併甲"), "head 段在列0切片");
@@ -1322,7 +1352,10 @@ mod tests {
         };
         let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
         assert_eq!(t.row_units[0], 1.0, "restart 列保持宣告高");
-        assert_eq!(t.row_units[1], 2.0, "block 3 帶 > 參加列 2 帶→餘額補 continue");
+        assert_eq!(
+            t.row_units[1], 2.0,
+            "block 3 帶 > 參加列 2 帶→餘額補 continue"
+        );
     }
 
     #[test]
@@ -1360,7 +1393,10 @@ mod tests {
         };
         let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
         let (f, _, _) = t.fragment(0, 0, 99, true, 0.0);
-        assert!(f.rows[0].cells[0].edges[EDGE_BOTTOM].is_none(), "head 底邊清空");
+        assert!(
+            f.rows[0].cells[0].edges[EDGE_BOTTOM].is_none(),
+            "head 底邊清空"
+        );
         let bottom = f.rows[1].cells[0].edges[EDGE_BOTTOM]
             .as_ref()
             .expect("末格承接 block 底邊");
@@ -1376,7 +1412,10 @@ mod tests {
         let (f, _, _) = t.fragment(0, 0, 99, true, 0.0);
         let top_text = f.rows[0].cells[1].texts[0].y_pt;
         let mid_text = f.rows[0].cells[0].texts[0].y_pt;
-        assert!(mid_text > top_text, "center 應低於 top：{mid_text} vs {top_text}");
+        assert!(
+            mid_text > top_text,
+            "center 應低於 top：{mid_text} vs {top_text}"
+        );
     }
 
     #[test]
@@ -1398,7 +1437,10 @@ mod tests {
         let mut inp = simple_input();
         inp.justify = Some("center".into());
         let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
-        assert!((t.x_off - 100.0).abs() < 0.01, "200 寬置中於 400 可用寬 → x=100");
+        assert!(
+            (t.x_off - 100.0).abs() < 0.01,
+            "200 寬置中於 400 可用寬 → x=100"
+        );
     }
 
     #[test]

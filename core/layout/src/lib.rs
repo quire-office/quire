@@ -668,7 +668,11 @@ pub fn breaks_from_pages(pages: &[Page], p: &LayoutParams) -> Vec<PageBreak> {
         // 頁首/頁尾段落歸屬：文字行優先；純表格頁退回切片錨點段落
         // （首placement 錨點＝頁首、末 placement 錨點＝頁尾的近似口徑）。
         let para_of = |pg: &Page, first: bool| -> usize {
-            if let Some(l) = if first { pg.lines.first() } else { pg.lines.last() } {
+            if let Some(l) = if first {
+                pg.lines.first()
+            } else {
+                pg.lines.last()
+            } {
                 return l.para_index;
             }
             match (pg.tables.first(), pg.tables.last()) {
@@ -815,8 +819,13 @@ impl LayoutEngine {
             .map(|c| c.as_ref().expect("剛填滿"))
             .collect();
         self.flow = build_flow(self.texts.len(), &self.tables);
-        let (pages, starts) =
-            paginate_flow(&self.flow, &refs, &self.tables, &self.params, &self.sections);
+        let (pages, starts) = paginate_flow(
+            &self.flow,
+            &refs,
+            &self.tables,
+            &self.params,
+            &self.sections,
+        );
         self.pages = pages;
         self.starts = starts;
         self.pending = None;
@@ -1068,11 +1077,7 @@ impl LayoutEngine {
                 let line_cp = line.text.chars().count();
                 let x = self.caret_x_in_line(&line.text, cp.saturating_sub(seen_cp));
                 // y 走行網格帶索引（表格插進網格後 li ≠ 帶；缺欄位退回 li）。
-                let band = page
-                    .line_bands
-                    .get(li)
-                    .copied()
-                    .unwrap_or(li as u32) as f32;
+                let band = page.line_bands.get(li).copied().unwrap_or(li as u32) as f32;
                 let rect = CaretRect {
                     page: page.index,
                     x_pt: page.margin_left_pt + x,

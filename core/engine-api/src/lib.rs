@@ -197,7 +197,9 @@ impl Engine {
         // 再依 x 排列，讓「正文→表格→正文」的閱讀序與 PDF 抽取端一致。
         items.sort_by(|a, b| {
             let key = |it: &DrawItem| match it {
-                DrawItem::Text { x, y, .. } => (1i8, (*y * 4.0).round() as i64, (*x * 4.0).round() as i64),
+                DrawItem::Text { x, y, .. } => {
+                    (1i8, (*y * 4.0).round() as i64, (*x * 4.0).round() as i64)
+                }
                 _ => (0i8, 0, 0),
             };
             key(a).cmp(&key(b))
