@@ -1,0 +1,38 @@
+# shells/web
+
+wasm 殼（首包）＋ 協作延遲分塊（`../web-collab`）。
+
+## 構建
+
+    npm install
+    npm run build:wasm    # 首包 pkg/（不含 CRDT）
+    npm run build:collab  # 協作分塊 ../web-collab/pkg/（含 CRDT）
+    npm run build:demo    # vite 打包 demo/dist（驗證 code-splitting）
+    npm run size          # 包體積閘門（gzip 表＋假拆包符號檢查）
+    npm run demo          # dev server → http://localhost:5199
+    npm run test:ime      # IME 注入測試（Playwright+CDP；需 python3+playwright）
+
+Node 端免瀏覽器驗證：`node ../../scripts/wasm-smoke.mjs`
+
+## IME 編輯路徑（Web-1）
+
+真實 IME（注音/倉頌/emoji）只認可編輯元素：demo 頁以**隱形 contenteditable
+錨點**（`#ime`）承接 composition/beforeinput，經引擎 caret 契約
+（`caret_rect_json`/`caret_at_json`/`insert_text_at_caret`，碼點計）定位與落地。
+契約、驗證記錄與手動步驟：`demo/IME-ANCHOR-SPIKE.md`；
+CI 以 `scripts/ime-inject-test.py`（CDP `Input.imeSetComposition`）閘死。
+
+## 拆包契約（Web-2，CI 閘死）
+
+- 首包 `quire_web_bg.wasm`：解析/版面/顯示列表。**CRDT 物理上不在其中**
+  ——engine 的 `collab` feature 預設關閉，`scripts/check-layering.sh` 以
+  cargo tree 傳遞依賴守衛，`scripts/check-wasm-size.mjs` 以二進位符號雙向查。
+- 協作分塊 `quire_web_collab_bg.wasm`：只在使用者點「開啟協作」時由
+  `demo/main.js` 動態 import（vite 自動拆 chunk；CI 查 dist 內 CRDT 只准在
+  非預載 chunk）。
+- 首包 gzip 預算 3 MB（CI 記錄每檔 raw/gzip 到 log 與 `build/wasm-size.json` artifact）。
+- 載入路徑：main.js 用 `fetch` + `Response` 餵 glue → `instantiateStreaming`
+  邊下載邊編譯，並 tee 出下載進度。
+
+分層規則：本殼零業務邏輯；一切經 `quire-engine` 的 JSON 契約。
+協作分塊與主殼不共享 wasm 記憶體——操作經 JSON 由 JS 橋接落地。

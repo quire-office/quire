@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>Quire web demo（流式載入＋拆包）</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #303030; margin: 0; padding: 24px; color: #ddd; }
+  #toolbar { margin-bottom: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  canvas { background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.5); display: block; margin: 0 auto; }
+  #pagewrap { position: relative; width: 850px; margin: 0 auto; }
+  /* ★Web-1 隱形 contenteditable 錨點：真實 IME 只認識可編輯元素，canvas 收不到
+     composition。錨點放在 caret 處（opacity 0、零尺寸裁切），IME candidate window
+     即跟隨 caret；編輯事件由 JS 換算回引擎 caret。 */
+  #ime { position: absolute; left: 0; top: 0; width: 1px; height: 1px; z-index: 5;
+         opacity: 0; border: 0; padding: 0; outline: none; white-space: pre; overflow: hidden;
+         caret-color: transparent; }
+  #caret { position: absolute; width: 1px; background: #06c; pointer-events: none; z-index: 4; display: none; }
+  #composited { position: absolute; color: #06c; text-decoration: underline; pointer-events: none; z-index: 4; white-space: pre; display: none; }
+  #status { margin-top: 8px; font-size: 13px; color: #9a9; }
+  #peers { margin-top: 16px; border-top: 1px solid #555; padding-top: 12px; }
+  #peers .side { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  #peers input[type=text] { flex: 1; }
+  #peers input[type=number] { width: 48px; }
+  #peerlog { font-size: 12px; color: #99a; margin-top: 8px; }
+  button { padding: 4px 10px; }
+</style>
+</head>
+<body>
+  <div id="toolbar">
+    <input type="file" id="file" accept=".docx" />
+    <button id="prev">◀ 上一頁</button>
+    <button id="next">下一頁 ▶</button>
+    <button id="collab">開啟協作（載入延遲分塊）</button>
+    <span id="pageinfo"></span>
+  </div>
+  <div id="pagewrap">
+    <canvas id="page" width="850" height="1202"></canvas>
+    <div id="caret"></div>
+    <div id="composited"></div>
+    <div id="ime" contenteditable="true" spellcheck="false" aria-label="IME 隱形輸入錨點"></div>
+  </div>
+  <div id="status">載入 wasm 中…</div>
+
+  <div id="peers" hidden>
+    <div class="side">協作者 A：段落
+      <input type="number" id="paraA" value="0" min="0" />
+      <input type="text" id="inputA" value="A 端的編輯" />
+      <button id="sendA">提交</button>
+    </div>
+    <div class="side">協作者 B：段落
+      <input type="number" id="paraB" value="0" min="0" />
+      <input type="text" id="inputB" value="B 端的編輯" />
+      <button id="sendB">提交</button>
+    </div>
+    <div id="peerlog"></div>
+  </div>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

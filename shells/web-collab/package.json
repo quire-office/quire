@@ -1,0 +1,12 @@
+{
+  "name": "quire-web-collab",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:wasm": "wasm-pack build --target web --out-dir pkg --release"
+  },
+  "devDependencies": {
+    "wasm-pack": "^0.13"
+  },
+  "license": "Apache-2.0"
+}

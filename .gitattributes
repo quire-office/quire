@@ -1,0 +1,23 @@
+# 跨平台 CI 的地基：倉庫內容一律以 LF 為 canonical，checkout 時不做換行轉換。
+# Windows runner 的 git 預設 core.autocrlf=true，沒這檔的話 .rs 會被 checkout 成 CRLF，
+# 於是 `cargo fmt --all --check` 在 Windows 假性紅燈（diff 全行）。
+* text=auto eol=lf
+
+# zip/OOXML 是二進位：round-trip 號稱位元組級無損，絕對不能被 git 的換行正規化動到。
+*.docx binary
+*.zip binary
+*.doc binary
+*.wasm binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.ico binary
+*.pdf binary
+
+# shell 腳本必須 LF（Git Bash 與 bash 都吃 LF；CRLF 會讓 `#!/usr/bin/env bash` 失敗）。
+*.sh text eol=lf

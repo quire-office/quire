@@ -1,0 +1,9 @@
+[package]
+name = "quire-render-trait"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Platform-free display list + Renderer trait (native=wgpu, web=canvas/WebGPU implement this)"
+
+[dependencies]
+serde = { workspace = true }

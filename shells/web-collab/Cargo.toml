@@ -1,0 +1,14 @@
+[package]
+name = "quire-web-collab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "wasm 協作延遲分塊：只暴露 CollabSession 綁定，載入時機由 JS 決定"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# 唯一带 collab feature 的消费者——CRDT 程式碼只進這個產物，不進主 wasm。
+quire-engine = { workspace = true, features = ["collab"] }
+wasm-bindgen = { workspace = true }

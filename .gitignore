@@ -1,0 +1,8 @@
+/target
+/out
+shells/web/pkg
+shells/web-collab/pkg
+node_modules
+**/demo/dist/
+build/
+__pycache__/

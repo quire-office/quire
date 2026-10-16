@@ -1,0 +1,13 @@
+[package]
+name = "quire-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native headless shell (Phase 0 的 CLI 頭；Phase 2 換 winit+wgpu 殼)"
+
+[[bin]]
+name = "quire-cli"
+path = "src/main.rs"
+
+[dependencies]
+quire-engine = { workspace = true }

@@ -1,0 +1,22 @@
+[package]
+name = "quire-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The single contract between cores and shells: open/edit/query layout. wasm-safe."
+
+[dependencies]
+quire-ooxml = { workspace = true }
+quire-layout = { workspace = true }
+quire-render-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+quire-crdt = { workspace = true, optional = true }
+
+[features]
+default = []
+# 協作面（CRDT 會話）。主 wasm 預設**不帶**此 feature——拆包閘門
+# （scripts/check-wasm-size.mjs + CI cargo tree 守衛）保證首包不含 crdt 程式碼；
+# 協作程式碼只活在延遲載入的 shells/web-collab 產物裡。
+collab = ["dep:quire-crdt"]

@@ -1,0 +1,15 @@
+[package]
+name = "quire-ooxml"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DOCX(zip+OOXML) reader skeleton with lossless part preservation"
+
+[dependencies]
+quick-xml = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+# zip 讀寫由 zip_struct.rs 自己實作（byte-level 無損 round-trip 的代價與理由見該檔頭註解）：
+# 不再依賴 zip crate，wasm 體積與攻擊面都更小。
+flate2 = { workspace = true }
+crc32fast = { workspace = true }

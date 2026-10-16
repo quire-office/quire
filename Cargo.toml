@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "core/ooxml",
+    "core/layout",
+    "core/render-trait",
+    "core/crdt",
+    "core/engine-api",
+    "tools/scrub",
+    "shells/native",
+    "shells/web",
+    "shells/web-collab",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+quire-ooxml = { path = "core/ooxml" }
+quire-layout = { path = "core/layout" }
+quire-render-trait = { path = "core/render-trait" }
+quire-crdt = { path = "core/crdt" }
+quire-engine = { path = "core/engine-api" }
+
+# zip 讀寫在 core/ooxml/src/zip_struct.rs 自行實作（byte-level 無損 round-trip），
+# 只留 deflate/crc 兩個小依賴。
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+crc32fast = "1"
+quick-xml = "0.37"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+# 字型 shaping：不用 default-features（系統字型探索會破壞雙殼分頁一致性）。
+swash = { version = "0.2", default-features = false, features = ["scale", "std"] }
+# UAX#14 斷字機會（no_std、表由 LineBreak.txt 自動產生、零系統相依）。
+unicode-linebreak = "0.1.5"
+
+[profile.release]
+opt-level = "s"
+lto = true
