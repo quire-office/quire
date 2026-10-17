@@ -316,6 +316,16 @@ function scheduleIdleReflow() {
   });
 }
 
+// 將 0xAARRGGBB 無號 32 位元色值換算為 Canvas2D 的 rgba() 字串。
+function argbToCss(argb = 0xff000000) {
+  const u = argb >>> 0;
+  const a = ((u >>> 24) & 0xff) / 255;
+  const r = (u >>> 16) & 0xff;
+  const g = (u >>> 8) & 0xff;
+  const b = u & 0xff;
+  return `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
+}
+
 function render() {
   if (!engine) return;
   // Phase0-6 背景重排排程（shell 側）：預設全速模式 is_settled() 恆真，這行
@@ -329,12 +339,70 @@ function render() {
   canvas.height = Math.round(dl.height_pt * scale);
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#000";
   for (const item of dl.items) {
+    if (item.Rect) {
+      const r = item.Rect;
+      ctx.fillStyle = argbToCss(r.fill_argb ?? 0xff000000);
+      ctx.fillRect(r.x * scale, r.y * scale, r.w * scale, r.h * scale);
+      continue;
+    }
+    if (item.Rule) {
+      const ln = item.Rule;
+      ctx.save();
+      ctx.strokeStyle = argbToCss(ln.color_argb ?? 0xff000000);
+      ctx.lineWidth = Math.max(0.5, (ln.width_pt || 0.5) * scale);
+      if (ln.dash) {
+        const segs = String(ln.dash)
+          .trim()
+          .split(/[\s,]+/)
+          .map((v) => Number(v) * scale)
+          .filter((v) => Number.isFinite(v) && v > 0);
+        ctx.setLineDash(segs);
+      } else {
+        ctx.setLineDash([]);
+      }
+      ctx.beginPath();
+      ctx.moveTo(ln.x1 * scale, ln.y1 * scale);
+      ctx.lineTo(ln.x2 * scale, ln.y2 * scale);
+      ctx.stroke();
+      ctx.restore();
+      continue;
+    }
     if (!item.Text) continue;
     const t = item.Text;
-    ctx.font = `${t.size_pt * scale}px "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
-    ctx.fillText(t.text, t.x * scale, (t.y + t.size_pt) * scale);
+    const flags = t.flags || 0;
+    const italic = flags & 2 ? "italic " : "";
+    const bold = flags & 1 ? "bold " : "";
+    const px = t.size_pt * scale;
+    ctx.font = `${italic}${bold}${px}px "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
+    const colorCss = argbToCss(t.color_argb ?? 0xff000000);
+    ctx.fillStyle = colorCss;
+    const x = t.x * scale;
+    const baselineY = (t.y + t.size_pt) * scale;
+    ctx.fillText(t.text, x, baselineY);
+    // Canvas2D 無 text-decoration：底線（FLAG_UNDERLINE=4）與刪除線（FLAG_STRIKE=8）用 measureText 寬度手動畫線。
+    if (flags & (4 | 8)) {
+      const w = ctx.measureText(t.text).width;
+      ctx.save();
+      ctx.strokeStyle = colorCss;
+      ctx.lineWidth = Math.max(1, px * 0.07);
+      ctx.setLineDash([]);
+      if (flags & 4) {
+        const uy = baselineY + px * 0.12;
+        ctx.beginPath();
+        ctx.moveTo(x, uy);
+        ctx.lineTo(x + w, uy);
+        ctx.stroke();
+      }
+      if (flags & 8) {
+        const sy = baselineY - px * 0.3;
+        ctx.beginPath();
+        ctx.moveTo(x, sy);
+        ctx.lineTo(x + w, sy);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
   document.getElementById("pageinfo").textContent = `第 ${page + 1} / ${engine.page_count()} 頁（${engine.paragraph_count()} 段）`;
   placeAnchor(); // 重繪後 caret/錨點位置必須跟著重算（編輯→版面變動）
