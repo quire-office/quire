@@ -1100,7 +1100,16 @@ impl LayoutEngine {
     pub fn caret_at(&self, page: usize, x_pt: f32, y_pt: f32) -> Option<CaretPos> {
         let p = self.pages.get(page)?;
         let line_h = self.params.font_size_pt * self.params.line_spacing;
-        let li = (((y_pt - p.margin_top_pt) / line_h).floor().max(0.0)) as usize;
+        let band = (((y_pt - p.margin_top_pt) / line_h).floor().max(0.0)) as u32;
+        // y→帶→行陣列索引：有表格的頁 band ≠ 陣標（`line_bands` 才是映射，
+        // caret_rect 正向走同一映射）。點在表格帶／空帶上命中不到文字行 →
+        // None（表格內 caret 不在 v1 範圍）。無表格頁 line_bands＝0..n，
+        // position 命中恒等索引，舊行為逐位元組不變。
+        let li = if p.line_bands.is_empty() {
+            band as usize // 舊快照無 line_bands：退回陣標（與 caret_rect 同策）
+        } else {
+            p.line_bands.iter().position(|&b| b == band)?
+        };
         let line = p.lines.get(li)?;
         let rel = (x_pt - p.margin_left_pt).max(0.0);
         let cp_in_line = self.caret_cp_in_line(&line.text, rel);
@@ -1965,6 +1974,164 @@ mod tests {
             );
             assert_eq!(eng.page_starts(), fresh.page_starts());
         }
+    }
+
+    // ---------------- Phase3-1b：packer 跨頁表格（review r1 閘門 3 補測） ----------------
+    //
+    // tables.jsonl 的 cross_page 例只鎖 layout 層 `fragment()` 切片原語；
+    // 本節直接走公開管線 `paginate_tables`／`LayoutEngine::with_tables`，鎖
+    // pack_run 的 FlowItem::Table 分支：cur_tables 蓋章、切片 y 蓋章、跨頁
+    // 續排游標、切片後文字行帶（caret 正反向換算）。
+
+    /// 單欄 n 列表格輸入（每列恰 1 帶：一格一行字）。
+    fn tall_table_input(rows: usize) -> crate::table::TableInput {
+        use crate::table::{CellInput, RowInput, TableInput, WidthSpec};
+        TableInput {
+            grid_pt: vec![100.0],
+            width: Some(WidthSpec::Pt(100.0)),
+            rows: (0..rows)
+                .map(|i| RowInput {
+                    cells: vec![CellInput {
+                        text: vec![format!("列{i}")],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// 前段 1＋表格（10 列，佔 10 帶）＋後段 1；頁面只容 7 帶 ⇒ 必然跨頁。
+    fn cross_page_fixture() -> (
+        Vec<String>,
+        LayoutParams,
+        Vec<TableSlot>,
+    ) {
+        let p = LayoutParams {
+            page_w_pt: 400.0,
+            page_h_pt: 200.0,
+            margins_pt: [40.0; 4],
+            font_size_pt: 12.0,
+            line_spacing: 1.4,
+        };
+        let input = tall_table_input(10);
+        let mut texts = vec!["前段".to_string()];
+        texts.extend((0..10).map(|i| format!("列{i}")));
+        texts.push("後段".to_string());
+        let m = TextMeasurer::new(p.font_size_pt);
+        let tl = crate::table::layout_table(&input, p.content_w_pt(), p.line_h_pt(), &m, 0);
+        let slot = TableSlot {
+            para_start: 1,
+            para_end: 1 + 10,
+            layout: tl,
+        };
+        (texts, p, vec![slot])
+    }
+
+    #[test]
+    fn packer_cross_page_table_slices_and_band_handoff() {
+        let (texts, p, tables) = cross_page_fixture();
+        let pls = layout_paragraphs(&texts, &p);
+        let (pages, starts) = paginate_tables(&pls, &p, &[], &tables);
+        assert_eq!(pages.len(), 2, "10 帶表＋前段 1 帶＞7 帶容量，必跨頁");
+        assert_eq!(starts, vec![(0, 0, 0), (1, 6, 0)], "第二頁起於表格列 6");
+        let line_h = p.line_h_pt();
+
+        // (a) 兩頁各一切片、相鄰不重疊：列序連續，切片整高不越版心下緣。
+        assert_eq!(pages[0].tables.len(), 1);
+        assert_eq!(pages[1].tables.len(), 1);
+        let f0 = &pages[0].tables[0].frag;
+        let f1 = &pages[1].tables[0].frag;
+        assert_eq!((f0.rows.len(), f1.rows.len()), (6, 4));
+        let last0 = f0.rows.last().unwrap().row_index;
+        assert_eq!(f1.rows[0].row_index, last0 + 1, "切片列必須續排不重不跳");
+        // y 蓋章＝上邊界＋帶×行高：頁0 接在前段（帶 0）之後；頁1 從帶 0 起。
+        assert!(
+            (f0.y_pt - (40.0 + 1.0 * line_h)).abs() < 1e-3,
+            "頁0 切片 y 接在前段行後：{}",
+            f0.y_pt
+        );
+        assert!(
+            (f1.y_pt - 40.0).abs() < 1e-3,
+            "頁1 切片 y 從帶 0 起：{}",
+            f1.y_pt
+        );
+        let bottom0 = f0.y_pt + f0.rows.iter().map(|r| r.height_pt).sum::<f32>();
+        assert!(
+            bottom0 <= 200.0 - 40.0 + 1e-3,
+            "頁0 切片不越版心下緣：{bottom0}"
+        );
+        // 同頁內文字帶與表格帶互斥（不重疊的另一面）：頁0 只有前段帶 0。
+        assert_eq!(pages[0].line_bands, vec![0]);
+
+        // (b) 切片旗標：首片 starts_table+continues，末片兩者皆假。
+        assert!(f0.starts_table && f0.continues, "首片：起表且續排");
+        assert!(!f1.starts_table && !f1.continues, "末片：非起表且排完");
+        assert_eq!(pages[0].tables[0].band, 1);
+        assert_eq!(pages[0].tables[0].anchor_para, 1);
+        assert_eq!(pages[1].tables[0].anchor_para, 1);
+
+        // (c) 表格之後的文字行帶接在切片末帶之後（caret y 換算的依據）。
+        assert_eq!(pages[1].line_bands, vec![4], "後段行帶＝切片末帶 3＋1");
+        let eng = LayoutEngine::with_tables(&texts, p, Vec::new(), tables.clone());
+        let tail = eng
+            .caret_rect(CaretPos {
+                para: texts.len() - 1,
+                cp: 0,
+            })
+            .unwrap();
+        assert_eq!(tail.page, 1);
+        assert!(
+            (tail.y_pt - (40.0 + 4.0 * line_h)).abs() < 1e-3,
+            "caret y 依帶 4 換算：{}",
+            tail.y_pt
+        );
+        // 反查：點後段行的 caret rect 位置命中後段段首；點表格帶不回文字行。
+        let back = eng
+            .caret_at(tail.page, tail.x_pt, tail.y_pt + 6.0)
+            .expect("後段行可命中");
+        assert_eq!((back.para, back.cp), (texts.len() - 1, 0));
+        assert!(
+            eng.caret_at(0, 50.0, 40.0 + 1.0 * line_h + 6.0).is_none(),
+            "表格帶上無文字行，反查必 None（v1 表格內 caret 不支援）"
+        );
+    }
+
+    #[test]
+    fn incremental_with_tables_matches_full_rebuild() {
+        // 表格存在下打字：增量 packer（FlowItem::Table 分支＋收斂重用）與
+        // 整篇重建逐頁全等（含 TablePlacement 切片、line_bands、starts）。
+        let (texts, p, tables) = cross_page_fixture();
+        let mut eng = LayoutEngine::with_tables(&texts, p, Vec::new(), tables.clone());
+        assert_eq!(eng.page_count(), 2);
+
+        // 表格內部段落（流失權）：編輯必 noop——版面零變動。
+        let snapshot = eng.pages().to_vec();
+        let evs = eng.replace_paragraph_text(3, "表格內改字");
+        assert!(evs.is_empty(), "流失權段改了不動版面：{evs:?}");
+        assert_eq!(eng.pages(), snapshot.as_slice());
+
+        let edits: Vec<(usize, String)> = vec![
+            (texts.len() - 1, "後段變長：".to_string() + &"字".repeat(200)),
+            (0, "前段灌長：".to_string() + &"字".repeat(300)), // 表格整體被推頁
+            (0, "前段".to_string()),                            // 還原 → 版面回得去
+            (texts.len() - 1, "後段".to_string()),
+        ];
+        for (i, (para, text)) in edits.iter().enumerate() {
+            let mut want_texts = eng.texts.clone();
+            want_texts[*para] = text.clone();
+            let evs = eng.replace_paragraph_text(*para, text);
+            assert!(
+                evs.iter().any(|e| matches!(e, Invalidation::Page(_))),
+                "第 {i} 筆編輯必須回報髒頁：{evs:?}"
+            );
+            let fresh = LayoutEngine::with_tables(&want_texts, p, Vec::new(), tables.clone());
+            assert_eq!(eng.pages(), fresh.pages(), "表格增量第 {i} 筆版面與重建不符");
+            assert_eq!(eng.page_starts(), fresh.page_starts());
+        }
+        // 最終版面仍含跨頁切片（兩頁以上各一 TablePlacement）。
+        assert!(eng.pages().iter().filter(|pg| !pg.tables.is_empty()).count() >= 2);
     }
 
     #[test]
