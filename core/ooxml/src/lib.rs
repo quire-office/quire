@@ -47,6 +47,40 @@ pub struct Run {
     pub text: String,
     pub bold: bool,
     pub italic: bool,
+    /// 文字顏色（0xAARRGGBB）。`w:color/@w:val="auto"` 或缺省時為 `None`（發射時預設黑）。
+    #[serde(default)]
+    pub color: Option<u32>,
+    /// 底線（`w:u` 且 `val != "none"`，或 `w:hyperlink` 內無顯式樣式時預設開啟）。
+    #[serde(default)]
+    pub underline: bool,
+    /// 刪除線（`w:strike`）。
+    #[serde(default)]
+    pub strike: bool,
+}
+
+/// 超連結內 run 無顯式顏色時的預設藍色（Word Hyperlink 樣式標準色 #0563C1）。
+pub const HYPERLINK_DEFAULT_COLOR_ARGB: u32 = 0xFF05_63C1;
+
+/// 解析 OOXML `<w:color w:val="..."/>` 色值字串為 `0xAARRGGBB`。
+///
+/// - 6 位 hex（`RRGGBB`）→ 補齊不透明 alpha `0xFF00_0000 | rgb`；
+/// - 8 位 hex（`AARRGGBB`）→ 直接解析為 `u32`；
+/// - `"auto"`（不分大小寫）或非法字串 → `None`（發射至顯示列表時轉為黑 `0xFF00_0000`）。
+/// - 註：`w:themeColor` 佈景主題色暫不解析（誠實近似；若元素同時帶 6/8 位 `w:val`
+///   則直接採用該預計算色值）。
+pub fn parse_color_val(val: &str) -> Option<u32> {
+    let s = val.trim();
+    if s.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    match s.len() {
+        6 => u32::from_str_radix(s, 16).ok().map(|rgb| 0xFF00_0000 | rgb),
+        8 => u32::from_str_radix(s, 16).ok(),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -142,8 +176,71 @@ pub fn parse(bytes: &[u8]) -> Result<OoxmlDoc, OoxmlError> {
     })
 }
 
-/// 最小 word/document.xml 解析器：段落 / run / 文字 / 粗斜體 / 段落樣式。
-/// 骨架階段刻意不求全面（表格、欄位、圖形皆未處理），演進順序由 corpus 綠燈率驅動。
+/// 解析 OOXML 開關型或底線屬性（`w:b`、`w:i`、`w:strike`、`w:u`）：
+/// 無 `w:val` 時視為開啟（`true`）；有 `w:val` 時若為 `"none"`/`"false"`/`"0"`/`"off"`
+/// （不分大小寫）則為關閉（`false`），其餘（如 `"true"`/`"1"`/`"on"`/`"single"`）為開啟。
+fn toggle_attr_on(e: &quick_xml::events::BytesStart) -> bool {
+    match attr_val(e, "val") {
+        None => true,
+        Some(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "none" | "false" | "0" | "off"
+        ),
+    }
+}
+
+/// 套用段落或 run 內部的樣式標籤（Start 與 Empty 事件共用）。
+fn apply_style_tag(
+    name: &[u8],
+    e: &quick_xml::events::BytesStart,
+    cur_para: &mut Option<Paragraph>,
+    cur_run: &mut Option<Run>,
+    run_has_color: &mut bool,
+    run_has_underline: &mut bool,
+) {
+    match name {
+        b"b" => {
+            if let Some(r) = cur_run.as_mut() {
+                r.bold = toggle_attr_on(e);
+            }
+        }
+        b"i" => {
+            if let Some(r) = cur_run.as_mut() {
+                r.italic = toggle_attr_on(e);
+            }
+        }
+        b"u" => {
+            if let Some(r) = cur_run.as_mut() {
+                *run_has_underline = true;
+                r.underline = toggle_attr_on(e);
+            }
+        }
+        b"strike" => {
+            if let Some(r) = cur_run.as_mut() {
+                r.strike = toggle_attr_on(e);
+            }
+        }
+        b"color" => {
+            if let Some(r) = cur_run.as_mut() {
+                // themeColor 暫不解析（誠實近似）：僅解析 w:val 的 6/8 位 hex，auto→None。
+                let parsed = attr_val(e, "val").and_then(|v| parse_color_val(&v));
+                *run_has_color = parsed.is_some();
+                r.color = parsed;
+            }
+        }
+        b"pStyle" => {
+            if let Some(p) = cur_para.as_mut() {
+                if let Some(v) = attr_val(e, "val") {
+                    p.style = Some(v);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 最小 word/document.xml 解析器：段落 / run / 文字 / 粗斜體 / 顏色 / 底線 / 刪除線 / 超連結 / 段落樣式。
+/// 骨架階段刻意不求全面（欄位、圖形皆未處理），演進順序由 corpus 綠燈率驅動。
 fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
     use quick_xml::events::Event;
     let text = String::from_utf8_lossy(xml).into_owned();
@@ -151,6 +248,9 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
     let mut out: Vec<Paragraph> = Vec::new();
     let mut cur_para: Option<Paragraph> = None;
     let mut cur_run: Option<Run> = None;
+    let mut run_has_color = false;
+    let mut run_has_underline = false;
+    let mut hyperlink_depth = 0usize;
     let mut in_t = false;
 
     loop {
@@ -165,48 +265,56 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     b"p" => {
                         cur_para = Some(Paragraph::default());
                         cur_run = None;
+                        hyperlink_depth = 0;
                     }
-                    b"r" => cur_run = Some(Run::default()),
+                    b"hyperlink" => {
+                        hyperlink_depth += 1;
+                    }
+                    b"r" => {
+                        cur_run = Some(Run::default());
+                        run_has_color = false;
+                        run_has_underline = false;
+                    }
                     b"t" => in_t = true,
-                    b"pStyle" => {
-                        if let Some(p) = cur_para.as_mut() {
-                            if let Some(v) = attr_val(&e, "val") {
-                                p.style = Some(v);
-                            }
-                        }
-                    }
-                    _ => {}
+                    other => apply_style_tag(
+                        other,
+                        &e,
+                        &mut cur_para,
+                        &mut cur_run,
+                        &mut run_has_color,
+                        &mut run_has_underline,
+                    ),
                 }
             }
             Event::Empty(e) => {
                 let name = e.local_name().as_ref().to_vec();
-                match name.as_slice() {
-                    b"b" => {
-                        if let Some(r) = cur_run.as_mut() {
-                            r.bold = true;
-                        }
-                    }
-                    b"i" => {
-                        if let Some(r) = cur_run.as_mut() {
-                            r.italic = true;
-                        }
-                    }
-                    b"pStyle" => {
-                        if let Some(p) = cur_para.as_mut() {
-                            if let Some(v) = attr_val(&e, "val") {
-                                p.style = Some(v);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+                apply_style_tag(
+                    name.as_slice(),
+                    &e,
+                    &mut cur_para,
+                    &mut cur_run,
+                    &mut run_has_color,
+                    &mut run_has_underline,
+                );
             }
             Event::End(e) => {
                 let name = e.local_name().as_ref().to_vec();
                 match name.as_slice() {
                     b"t" => in_t = false,
+                    b"hyperlink" => {
+                        hyperlink_depth = hyperlink_depth.saturating_sub(1);
+                    }
                     b"r" => {
-                        if let (Some(run), Some(p)) = (cur_run.take(), cur_para.as_mut()) {
+                        if let (Some(mut run), Some(p)) = (cur_run.take(), cur_para.as_mut()) {
+                            // <w:hyperlink> 內 run 無顯式樣式時預設藍（0xFF0563C1）＋底線。
+                            if hyperlink_depth > 0 {
+                                if !run_has_color && run.color.is_none() {
+                                    run.color = Some(HYPERLINK_DEFAULT_COLOR_ARGB);
+                                }
+                                if !run_has_underline {
+                                    run.underline = true;
+                                }
+                            }
                             p.runs.push(run);
                         }
                     }
@@ -308,5 +416,86 @@ mod tests {
         let again = parse(&out).expect("re-open");
         assert!(!again.parts.contains_key("_rels/.rels"));
         assert!(again.parts.contains_key("word/document.xml"));
+    }
+
+    #[test]
+    fn color_val_parses_hex6_hex8_auto_and_rejects_invalid() {
+        // 6 位 hex → 補齊 0xFF 不透明 alpha
+        assert_eq!(parse_color_val("FF0000"), Some(0xFFFF_0000));
+        assert_eq!(parse_color_val("0563c1"), Some(0xFF05_63C1));
+        assert_eq!(parse_color_val("000000"), Some(0xFF00_0000));
+        // 8 位 ARGB → 原樣保留 alpha 與 RGB
+        assert_eq!(parse_color_val("80FF0000"), Some(0x80FF_0000));
+        assert_eq!(parse_color_val("00112233"), Some(0x0011_2233));
+        // auto → None（發射時黑）
+        assert_eq!(parse_color_val("auto"), None);
+        assert_eq!(parse_color_val("AUTO"), None);
+        // 非法值 → None
+        assert_eq!(parse_color_val(""), None);
+        assert_eq!(parse_color_val("12345"), None);
+        assert_eq!(parse_color_val("1234567"), None);
+        assert_eq!(parse_color_val("GGGGGG"), None);
+        assert_eq!(parse_color_val("#FF0000"), None);
+        assert_eq!(parse_color_val("+12345"), None);
+    }
+
+    #[test]
+    fn parses_run_styles_and_hyperlink_defaults() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body>
+            <w:p>
+              <w:r>
+                <w:rPr>
+                  <w:b w:val="true"/>
+                  <w:i w:val="1"/>
+                  <w:u w:val="single"/>
+                  <w:strike/>
+                  <w:color w:val="FF0000"/>
+                </w:rPr>
+                <w:t>紅粗斜底刪</w:t>
+              </w:r>
+              <w:r>
+                <w:rPr>
+                  <w:b w:val="0"/>
+                  <w:i w:val="false"/>
+                  <w:u w:val="none"/>
+                  <w:strike w:val="off"/>
+                  <w:color w:val="auto"/>
+                </w:rPr>
+                <w:t>全關與自動色</w:t>
+              </w:r>
+              <w:hyperlink>
+                <w:r>
+                  <w:t>預設超連結</w:t>
+                </w:r>
+                <w:r>
+                  <w:rPr>
+                    <w:color w:val="00FF00"/>
+                    <w:u w:val="none"/>
+                  </w:rPr>
+                  <w:t>覆寫超連結</w:t>
+                </w:r>
+              </w:hyperlink>
+            </w:p>
+          </w:body>
+        </w:document>"#
+            .as_bytes();
+        let paras = parse_document_xml(xml).expect("解析樣式 XML 失敗");
+        assert_eq!(paras.len(), 1);
+        let runs = &paras[0].runs;
+        assert_eq!(runs.len(), 4);
+
+        assert!(runs[0].bold && runs[0].italic && runs[0].underline && runs[0].strike);
+        assert_eq!(runs[0].color, Some(0xFFFF_0000));
+
+        assert!(!runs[1].bold && !runs[1].italic && !runs[1].underline && !runs[1].strike);
+        assert_eq!(runs[1].color, None);
+
+        assert_eq!(runs[2].color, Some(HYPERLINK_DEFAULT_COLOR_ARGB));
+        assert!(runs[2].underline);
+
+        assert_eq!(runs[3].color, Some(0xFF00_FF00));
+        assert!(!runs[3].underline);
     }
 }

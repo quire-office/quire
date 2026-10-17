@@ -3,7 +3,9 @@
 //! 注意：這是「幾何直譯」而非排版——座標全來自 layout，SVG 只負責把它畫出來。
 //! 目的：headless 環境下不需要任何字型 shaping 就能拿到位圖/向量輸出，供 LO 基線對照。
 
-use quire_engine::{DrawItem, PageDisplayList, FLAG_BOLD, FLAG_ITALIC};
+use quire_engine::{
+    DrawItem, PageDisplayList, FLAG_BOLD, FLAG_ITALIC, FLAG_STRIKE, FLAG_UNDERLINE,
+};
 use std::fmt::Write as _;
 
 fn esc(s: &str, out: &mut String) {
@@ -35,19 +37,33 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
                 y,
                 size_pt,
                 flags,
+                color_argb,
                 text,
             } => {
                 // baseline = y + 字級：讓 y 語義接近「行頂」，與 display list 座標系一致。
+                let a = (*color_argb >> 24) & 0xFF;
+                let r = (*color_argb >> 16) & 0xFF;
+                let g = (*color_argb >> 8) & 0xFF;
+                let b = *color_argb & 0xFF;
                 let _ = write!(
                     s,
-                    "<text x=\"{x:.1}\" y=\"{:.1}\" font-size=\"{size_pt:.1}\"",
+                    "<text x=\"{x:.1}\" y=\"{:.1}\" font-size=\"{size_pt:.1}\" fill=\"#{r:02x}{g:02x}{b:02x}\"",
                     y + size_pt
                 );
+                if a < 255 {
+                    let _ = write!(s, " fill-opacity=\"{:.3}\"", a as f64 / 255.0);
+                }
                 if flags & FLAG_BOLD != 0 {
                     s.push_str(" font-weight=\"bold\"");
                 }
                 if flags & FLAG_ITALIC != 0 {
                     s.push_str(" font-style=\"italic\"");
+                }
+                match (flags & FLAG_UNDERLINE != 0, flags & FLAG_STRIKE != 0) {
+                    (true, true) => s.push_str(" text-decoration=\"underline line-through\""),
+                    (true, false) => s.push_str(" text-decoration=\"underline\""),
+                    (false, true) => s.push_str(" text-decoration=\"line-through\""),
+                    (false, false) => {}
                 }
                 s.push_str(" xml:space=\"preserve\">");
                 esc(text, &mut s);
@@ -99,4 +115,69 @@ stroke=\"#{r:02x}{g:02x}{b:02x}\" stroke-opacity=\"{a:.3}\" stroke-width=\"{widt
     }
     s.push_str("</svg>\n");
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quire_engine::Engine;
+
+    const SAMPLE: &[u8] = include_bytes!("../../../fixtures/sample.docx");
+
+    #[test]
+    fn svg_outputs_red_fill_bold_and_text_decorations_from_fixture() {
+        let mut base = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx");
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:rPr>
+          <w:b/>
+          <w:color w:val="FF0000"/>
+        </w:rPr>
+        <w:t>紅字粗體標題</w:t>
+      </w:r>
+      <w:r>
+        <w:rPr>
+          <w:u w:val="single"/>
+        </w:rPr>
+        <w:t>底線段</w:t>
+      </w:r>
+      <w:r>
+        <w:rPr>
+          <w:strike/>
+        </w:rPr>
+        <w:t>刪除線段</w:t>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#
+            .as_bytes();
+        base.set_part("word/document.xml", xml.to_vec());
+        let docx = base.save_docx().unwrap();
+        let engine = Engine::from_docx_bytes(&docx).unwrap();
+        let dl = engine.page_display_list(0).unwrap();
+        let svg = page_to_svg(&dl);
+        assert!(
+            svg.contains("fill=\"#ff0000\""),
+            "SVG 應含紅色 fill：{}",
+            svg
+        );
+        assert!(
+            svg.contains("font-weight=\"bold\""),
+            "SVG 粗體段應含 font-weight=\"bold\"：{}",
+            svg
+        );
+        assert!(
+            svg.contains("text-decoration=\"underline\""),
+            "SVG 底線段應含 text-decoration=\"underline\"：{}",
+            svg
+        );
+        assert!(
+            svg.contains("text-decoration=\"line-through\""),
+            "SVG 刪除線段應含 text-decoration=\"line-through\"：{}",
+            svg
+        );
+    }
 }
