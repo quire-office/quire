@@ -268,6 +268,7 @@ pub(crate) fn kp_break_lines(text: &str, max_w: f32, m: &TextMeasurer) -> Vec<Li
                 text: String::new(),
                 width_pt: 0.0,
                 para_index: 0, // 由 layout_paragraphs_per_section 覆寫為真正段落索引
+                char_offset: 0,
             },
             range: (0, 0),
             hard_end: true,
@@ -325,20 +326,23 @@ pub(crate) fn kp_break_lines(text: &str, max_w: f32, m: &TextMeasurer) -> Vec<Li
     ranges
         .into_iter()
         .map(|(s, e)| {
-            let raw = &text[atoms[s].start..atoms[e].end];
+            let byte_start = atoms[s].start;
+            let raw = &text[byte_start..atoms[e].end];
             // 顯示文字：去掉行尾空白＋全部控制字元（控制字元是斷行標記）。
             let shown: String = raw
                 .trim_end_matches(is_ignorable)
                 .chars()
                 .filter(|c| !EOL_CONTROLS.contains(c))
                 .collect();
+            let char_offset = text[..byte_start].chars().count();
             LineSpan {
                 line: Line {
                     text: shown,
-                    width_pt: pw.prefix(atoms[e].end) - pw.prefix(atoms[s].start) - aw[e].tail,
+                    width_pt: pw.prefix(atoms[e].end) - pw.prefix(byte_start) - aw[e].tail,
                     para_index: 0, // 由 layout_paragraphs_per_section 覆寫為真正段落索引
+                    char_offset,
                 },
-                range: (atoms[s].start, atoms[e].end),
+                range: (byte_start, atoms[e].end),
                 hard_end: atoms[e].forced,
             }
         })

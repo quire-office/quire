@@ -144,6 +144,10 @@ pub struct Line {
     /// 游標要還原 (段落, 字元偏移) 就必須讓行帶著段落歸屬走遍分頁）。
     /// golden 快照只比對 text/width_pt，故此欄新增不動 golden。
     pub para_index: usize,
+    /// 本行起點在所屬段落內的字元（碼點）偏移（Card A：供 engine-api 將行與
+    /// 段落 run 邊界精確對位求交集；serde default 保持舊快照相容）。
+    #[serde(default)]
+    pub char_offset: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -596,6 +600,7 @@ fn paginate_flow(
                 text: String::new(),
                 width_pt: 0.0,
                 para_index: 0,
+                char_offset: 0,
             }],
             line_bands: vec![0],
             tables: Vec::new(),

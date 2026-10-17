@@ -7,6 +7,7 @@
 
 use quire_layout::{
     breaks_from_pages, CaretPos, LayoutEngine, LayoutParams, Page, SectionGeometry, SectionSpec,
+    TextMeasurer,
 };
 use quire_ooxml::{
     diff_untouched, diff_zip_structure, parse, read_sections_per_paragraph, OoxmlDoc, OoxmlError,
@@ -16,7 +17,9 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 // shells 需要顯示列表型別但只能 import 本 crate：在此 re-export（分層鐵律的唯一合法通道）。
-pub use quire_render_trait::{DrawItem, PageDisplayList, Renderer, FLAG_BOLD, FLAG_ITALIC};
+pub use quire_render_trait::{
+    DrawItem, PageDisplayList, Renderer, FLAG_BOLD, FLAG_ITALIC, FLAG_STRIKE, FLAG_UNDERLINE,
+};
 
 // 表格 canonical model（Phase3-1a）：型別定義在 quire-ooxml（PM 補正 5），
 // 本 crate 只做 pass-through re-export——3-1b 的 layout/render 以這裡
@@ -174,23 +177,28 @@ impl Engine {
         let p: &Page = self.layout.pages().get(page)?;
         let line_h = self.params.line_h_pt();
         let size = self.params.font_size_pt;
+        let measurer = TextMeasurer::new(size);
         let mut items: Vec<DrawItem> = Vec::new();
         // 底層先畫表格（填色＋框線＋格內文字），再疊正文行；最後對「文字項」
         // 依 (y, x) 幾何閱讀序重排——跨表格/正文統一由上而下、由左而右。
         // 填色與框線保持推入序（穩定排序 key 同鍵，不互相顛倒遮蓋次序）。
         for tp in &p.tables {
-            push_frag_items(&mut items, tp.frag.x_pt, tp.frag.y_pt, &tp.frag, size);
+            let canon_tbl = self.doc.tables.get(tp.slot).map(|bt| &bt.table);
+            push_frag_items(
+                &mut items,
+                tp.frag.x_pt,
+                tp.frag.y_pt,
+                &tp.frag,
+                size,
+                canon_tbl,
+                &self.doc.paragraphs,
+            );
         }
         for (i, l) in p.lines.iter().enumerate() {
             let band = p.line_bands.get(i).copied().unwrap_or(i as u32) as f32;
-            items.push(DrawItem::Text {
-                x: p.margin_left_pt,
-                y: p.margin_top_pt + band * line_h,
-                size_pt: size,
-                // 骨架：run 級粗斜體尚未穿透到顯示列表（演進點：run-aware display list）
-                flags: 0,
-                text: l.text.clone(),
-            });
+            let y = p.margin_top_pt + band * line_h;
+            let para = self.doc.paragraphs.get(l.para_index);
+            emit_line_run_items(&mut items, p.margin_left_pt, y, size, l, para, &measurer);
         }
         // 穩定排序：非文字項（填色/框線）同鍵保持原序且恆在前；文字項依基線 y
         // 再依 x 排列，讓「正文→表格→正文」的閱讀序與 PDF 抽取端一致。
@@ -366,19 +374,203 @@ mod collab_tests {
     }
 }
 
+/// 預設文字顏色：不透明黑（0xFF000000）。
+const DEFAULT_TEXT_COLOR_ARGB: u32 = 0xFF00_0000;
+
+/// 將 OOXML `Run` 樣式換算為 `(flags, color_argb)`。
+fn run_style(r: &quire_ooxml::Run) -> (u8, u32) {
+    let mut flags = 0u8;
+    if r.bold {
+        flags |= FLAG_BOLD;
+    }
+    if r.italic {
+        flags |= FLAG_ITALIC;
+    }
+    if r.underline {
+        flags |= FLAG_UNDERLINE;
+    }
+    if r.strike {
+        flags |= FLAG_STRIKE;
+    }
+    let color_argb = r.color.unwrap_or(DEFAULT_TEXT_COLOR_ARGB);
+    (flags, color_argb)
+}
+
+/// 將單行文字與所屬段落的 `Run` 邊界（依 char offset 累積）求交集，
+/// 每個樣式同質段發射一個 `DrawItem::Text`；段 x 偏移以同一 `TextMeasurer`
+/// 累加前段寬度，保證所有段寬總和與整行寬零漂移。
+fn emit_line_run_items(
+    items: &mut Vec<DrawItem>,
+    base_x: f32,
+    y: f32,
+    size_pt: f32,
+    line: &quire_layout::Line,
+    para: Option<&quire_ooxml::Paragraph>,
+    measurer: &TextMeasurer,
+) {
+    let char_indices: Vec<(usize, char)> = line.text.char_indices().collect();
+    let line_len_cp = char_indices.len();
+    if line_len_cp == 0 {
+        let (flags, color_argb) = para
+            .and_then(|p| p.runs.first())
+            .map(run_style)
+            .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB));
+        items.push(DrawItem::Text {
+            x: base_x,
+            y,
+            size_pt,
+            flags,
+            color_argb,
+            text: String::new(),
+        });
+        return;
+    }
+
+    let line_start = line.char_offset;
+    let line_end = line_start + line_len_cp;
+    // (行內起始碼點, 行內結束碼點, flags, color_argb)
+    let mut segments: Vec<(usize, usize, u8, u32)> = Vec::new();
+    let mut push_seg = |s: usize, e: usize, flags: u8, color: u32| {
+        if s >= e {
+            return;
+        }
+        if let Some(last) = segments.last_mut() {
+            // 相鄰且樣式相同時合併為單一可繪段。
+            if last.1 == s && last.2 == flags && last.3 == color {
+                last.1 = e;
+                return;
+            }
+        }
+        segments.push((s, e, flags, color));
+    };
+
+    let mut covered = 0usize;
+    if let Some(p) = para {
+        let mut run_cp = 0usize;
+        for r in &p.runs {
+            let r_len = r.text.chars().count();
+            let r_start = run_cp;
+            let r_end = run_cp + r_len;
+            run_cp = r_end;
+            let inter_s = r_start.max(line_start);
+            let inter_e = r_end.min(line_end);
+            if inter_s < inter_e {
+                let rel_s = inter_s - line_start;
+                let rel_e = inter_e - line_start;
+                if rel_s > covered {
+                    push_seg(covered, rel_s, 0, DEFAULT_TEXT_COLOR_ARGB);
+                }
+                let (f, c) = run_style(r);
+                push_seg(rel_s, rel_e, f, c);
+                covered = rel_e;
+            }
+        }
+    }
+    if covered < line_len_cp {
+        push_seg(covered, line_len_cp, 0, DEFAULT_TEXT_COLOR_ARGB);
+    }
+
+    let byte_of = |cp: usize| -> usize {
+        char_indices
+            .get(cp)
+            .map(|(b, _)| *b)
+            .unwrap_or(line.text.len())
+    };
+    let mut x_off = 0.0f32;
+    for (rel_s, rel_e, flags, color_argb) in segments {
+        let seg_text = &line.text[byte_of(rel_s)..byte_of(rel_e)];
+        items.push(DrawItem::Text {
+            x: base_x + x_off,
+            y,
+            size_pt,
+            flags,
+            color_argb,
+            text: seg_text.to_string(),
+        });
+        x_off += measurer.text_width(seg_text);
+    }
+}
+
+/// 表格格內文字的單樣式解析：由儲存格所屬段落之 Run 查詢樣式旗標與顏色。
+fn resolve_cell_line_style(
+    canon_cell: Option<&CanonicalTableCell>,
+    canon_tbl: Option<&CanonicalTable>,
+    paragraphs: &[quire_ooxml::Paragraph],
+    line_text: &str,
+) -> (u8, u32) {
+    if line_text.is_empty() {
+        return (0, DEFAULT_TEXT_COLOR_ARGB);
+    }
+    let match_in_para = |p: &quire_ooxml::Paragraph| -> Option<(u8, u32)> {
+        let full: String = p.runs.iter().map(|r| r.text.as_str()).collect();
+        let byte_pos = full.find(line_text)?;
+        let start_cp = full[..byte_pos].chars().count();
+        let end_cp = start_cp + line_text.chars().count();
+        let mut flags = 0u8;
+        let mut color = None;
+        let mut run_cp = 0usize;
+        for r in &p.runs {
+            let r_len = r.text.chars().count();
+            let r_start = run_cp;
+            let r_end = run_cp + r_len;
+            run_cp = r_end;
+            if r_start.max(start_cp) < r_end.min(end_cp) {
+                let (rf, rc) = run_style(r);
+                flags |= rf;
+                if color.is_none() && r.color.is_some() {
+                    color = Some(rc);
+                }
+            }
+        }
+        Some((flags, color.unwrap_or(DEFAULT_TEXT_COLOR_ARGB)))
+    };
+    if let Some(cc) = canon_cell {
+        for b in &cc.blocks {
+            if let CanonicalBlock::Paragraph { index } = b {
+                if let Some(p) = paragraphs.get(*index) {
+                    if let Some(st) = match_in_para(p) {
+                        return st;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(ct) = canon_tbl {
+        for r in &ct.rows {
+            for c in &r.cells {
+                for b in &c.blocks {
+                    if let CanonicalBlock::Paragraph { index } = b {
+                        if let Some(p) = paragraphs.get(*index) {
+                            if let Some(st) = match_in_para(p) {
+                                return st;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (0, DEFAULT_TEXT_COLOR_ARGB)
+}
+
 /// 表格切片 → 顯示列表項（遞迴巢狀表）。座標系：`base_*`＝本切片左上（頁絕對），
 /// CellFrag/RowFrag 內座標全為切片相對（layout 契約），此處一次性換算。
+#[allow(clippy::too_many_arguments)]
 fn push_frag_items(
     items: &mut Vec<DrawItem>,
     base_x: f32,
     base_y: f32,
     frag: &TableFrag,
     size: f32,
+    canon_tbl: Option<&CanonicalTable>,
+    paragraphs: &[quire_ooxml::Paragraph],
 ) {
     let mut ry = 0.0f32; // 切片內列游標（累加列切片高）
     for row in &frag.rows {
         let h = row.height_pt;
-        for cell in &row.cells {
+        let canon_row = canon_tbl.and_then(|ct| ct.rows.get(row.row_index));
+        for (ci, cell) in row.cells.iter().enumerate() {
+            let canon_cell = canon_row.and_then(|cr| cr.cells.get(ci));
             let x = base_x + cell.x_pt;
             let y = base_y + ry;
             if let Some(argb) = cell.fill_argb {
@@ -421,16 +613,40 @@ fn push_frag_items(
                 line(p, x + cell.w_pt, y, x + cell.w_pt, y + h, items);
             }
             for t in &cell.texts {
+                // TODO(CardA): 表格格內文字本輪維持整格單樣式發射（不拆分為多個 DrawItem::Text），
+                // 待後續表格卡在 CellText 攜帶段落與字元偏移後，再與正文行共用跨 run 樣式拆段。
+                let (flags, color_argb) =
+                    resolve_cell_line_style(canon_cell, canon_tbl, paragraphs, &t.text);
                 items.push(DrawItem::Text {
                     x: base_x + t.x_pt,
                     y: y + t.y_pt,
                     size_pt: size,
-                    flags: 0,
+                    flags,
+                    color_argb,
                     text: t.text.clone(),
                 });
             }
-            for (yoff, nf) in &cell.nested {
-                push_frag_items(items, base_x, base_y + ry + yoff, nf, size);
+            let nested_tbls: Vec<&CanonicalTable> = canon_cell
+                .map(|cc| {
+                    cc.blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            CanonicalBlock::Table(nt) => Some(nt.as_ref()),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (ni, (yoff, nf)) in cell.nested.iter().enumerate() {
+                push_frag_items(
+                    items,
+                    base_x,
+                    base_y + ry + yoff,
+                    nf,
+                    size,
+                    nested_tbls.get(ni).copied(),
+                    paragraphs,
+                );
             }
         }
         ry += h;
@@ -598,5 +814,108 @@ mod tests {
         // 重新開啟後編輯內容確實生效、其他 part 還在
         let again = Engine::from_docx_bytes(&engine.save_docx().unwrap()).unwrap();
         assert_eq!(again.preserved_part_count(), 3);
+    }
+
+    #[test]
+    fn multi_run_line_emits_styled_segments_with_zero_width_drift() {
+        // 以 sample.docx 為基底替換 document.xml，構造含紅粗體、斜底線、刪除線與超連結的多 run 段落。
+        let mut base = Engine::from_docx_bytes(SAMPLE).unwrap();
+        let custom_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:rPr><w:b/><w:color w:val="FF0000"/></w:rPr>
+        <w:t>紅粗體</w:t>
+      </w:r>
+      <w:r>
+        <w:rPr><w:i/><w:u w:val="single"/></w:rPr>
+        <w:t>斜底線</w:t>
+      </w:r>
+      <w:r>
+        <w:rPr><w:strike/></w:rPr>
+        <w:t>刪除線</w:t>
+      </w:r>
+      <w:hyperlink>
+        <w:r>
+          <w:t>連結</w:t>
+        </w:r>
+      </w:hyperlink>
+    </w:p>
+  </w:body>
+</w:document>"#
+            .as_bytes();
+        base.set_part("word/document.xml", custom_xml.to_vec());
+        let saved = base.save_docx().unwrap();
+        let engine = Engine::from_docx_bytes(&saved).unwrap();
+        let dl = engine.page_display_list(0).unwrap();
+        let texts: Vec<_> = dl
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                DrawItem::Text {
+                    x,
+                    flags,
+                    color_argb,
+                    text,
+                    ..
+                } => Some((*x, *flags, *color_argb, text.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 4, "四個不同樣式 run 應發射四個 DrawItem::Text");
+        assert_eq!(texts[0].1, FLAG_BOLD);
+        assert_eq!(texts[0].2, 0xFFFF_0000);
+        assert_eq!(texts[0].3, "紅粗體");
+
+        assert_eq!(texts[1].1, FLAG_ITALIC | FLAG_UNDERLINE);
+        assert_eq!(texts[1].2, 0xFF00_0000);
+        assert_eq!(texts[1].3, "斜底線");
+
+        assert_eq!(texts[2].1, FLAG_STRIKE);
+        assert_eq!(texts[2].2, 0xFF00_0000);
+        assert_eq!(texts[2].3, "刪除線");
+
+        assert_eq!(texts[3].1, FLAG_UNDERLINE);
+        assert_eq!(texts[3].2, 0xFF05_63C1);
+        assert_eq!(texts[3].3, "連結");
+
+        // 行寬零漂移：所有段寬總和必須等於原整行寬，且段 x 偏移嚴格等於前段累加寬。
+        let m = TextMeasurer::new(12.0);
+        let whole_line_w = m.text_width("紅粗體斜底線刪除線連結");
+        let sum_seg_w: f32 = texts.iter().map(|(_, _, _, s)| m.text_width(s)).sum();
+        assert!(
+            (sum_seg_w - whole_line_w).abs() < 1e-4,
+            "所有段寬總和 {sum_seg_w} 必須等於整行寬 {whole_line_w}"
+        );
+        let mut expected_x = texts[0].0;
+        for (x, _, _, s) in &texts {
+            assert!(
+                (*x - expected_x).abs() < 1e-4,
+                "段 x {x} 應等於累加位置 {expected_x}"
+            );
+            expected_x += m.text_width(s);
+        }
+    }
+
+    #[test]
+    fn fdo77887_bold_title_has_nonzero_flags_in_display_list() {
+        const FDO77887: &[u8] = include_bytes!("../../../corpus/ooxmlexport/fdo77887.docx");
+        let engine = Engine::from_docx_bytes(FDO77887).expect("開啟 fdo77887.docx 失敗");
+        let dl = engine
+            .page_display_list(0)
+            .expect("fdo77887 第 0 頁顯示列表");
+        let title_item = dl.items.iter().find_map(|it| match it {
+            DrawItem::Text { flags, text, .. } if text.contains("INFORME DE ASISTENCIA") => {
+                Some(*flags)
+            }
+            _ => None,
+        });
+        let flags = title_item.expect("顯示列表應包含 fdo77887 標題段 INFORME DE ASISTENCIA");
+        assert_ne!(
+            flags, 0,
+            "fdo77887 粗體標題段在 display list 中 flags 不可為 0"
+        );
+        assert_ne!(flags & FLAG_BOLD, 0, "fdo77887 粗體標題段應帶有 FLAG_BOLD");
     }
 }
