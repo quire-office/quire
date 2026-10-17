@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 pub const FLAG_BOLD: u8 = 1;
 pub const FLAG_ITALIC: u8 = 2;
+pub const FLAG_UNDERLINE: u8 = 4;
+pub const FLAG_STRIKE: u8 = 8;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DrawItem {
@@ -15,6 +17,9 @@ pub enum DrawItem {
         y: f32,
         size_pt: f32,
         flags: u8,
+        /// 文字顏色（0xAARRGGBB）；預設不透明黑（0xFF000000），保持舊顯示列表 JSON 向後相容。
+        #[serde(default = "default_opaque_black")]
+        color_argb: u32,
         text: String,
     },
     Rect {
@@ -59,4 +64,18 @@ pub trait Renderer {
     type Error;
     /// 渲染單頁顯示列表。實作者必須支援增量（只重繪失效區域）以達成 120fps 目標。
     fn render_page(&mut self, dl: &PageDisplayList) -> Result<(), Self::Error>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_color_defaults_to_opaque_black_and_flags_match_contract() {
+        assert_eq!(FLAG_BOLD, 1);
+        assert_eq!(FLAG_ITALIC, 2);
+        assert_eq!(FLAG_UNDERLINE, 4);
+        assert_eq!(FLAG_STRIKE, 8);
+        assert_eq!(default_opaque_black(), 0xFF00_0000);
+    }
 }
