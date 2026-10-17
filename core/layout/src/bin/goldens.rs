@@ -14,7 +14,8 @@
 use std::path::Path;
 
 use quire_layout::table::{
-    layout_table, CellInput, EdgeSetInput, PenInput, RowInput, TableInput, TableLayout, WidthSpec,
+    layout_table, CellBlock, CellInput, EdgeSetInput, PenInput, RowInput, TableInput, TableLayout,
+    WidthSpec,
 };
 use quire_layout::{break_lines, page_breaks, LayoutParams, Line, TextMeasurer};
 
@@ -61,10 +62,10 @@ fn tbl_borders() -> Option<EdgeSetInput> {
 
 fn tcell(text: &str, span: u32, vmerge: Option<bool>) -> CellInput {
     CellInput {
-        text: if text.is_empty() {
+        blocks: if text.is_empty() {
             vec![]
         } else {
-            vec![text.to_string()]
+            vec![CellBlock::Text(text.to_string())]
         },
         grid_span: span,
         vmerge,
@@ -116,7 +117,8 @@ fn table_cases() -> Vec<(&'static str, TableInput, f32, u32)> {
         ..Default::default()
     };
 
-    // 巢狀表格：第 2 格內掛一張 2×2 小表。
+    // 巢狀表格：第 2 格內「文字＋子表」交錯（防呆：格內**非空**文字，舊版填空
+    // 字串正好掩蓋了文字與子表 y=0 重疊的疊印 bug——快照必須能抓到）。
     let inner = TableInput {
         grid_pt: vec![40.0, 40.0],
         rows: vec![
@@ -136,14 +138,16 @@ fn table_cases() -> Vec<(&'static str, TableInput, f32, u32)> {
         width: Some(WidthSpec::Pt(300.0)),
         borders: tbl_borders(),
         rows: vec![RowInput {
-            cells: vec![tcell("外層", 1, None), tcell("", 1, None)],
+            cells: vec![tcell("外層", 1, None), tcell("外乙", 1, None)],
             ..Default::default()
         }],
         ..Default::default()
     };
     let mut nested = {
         let mut n = nested;
-        n.rows[0].cells[1].nested = vec![inner];
+        n.rows[0].cells[1]
+            .blocks
+            .push(CellBlock::Table(Box::new(inner)));
         n
     };
     // 巢狀例補一列湊足兩列，快照才看得到列間界。

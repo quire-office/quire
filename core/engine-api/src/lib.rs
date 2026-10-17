@@ -638,9 +638,13 @@ fn push_frag_items(
                 })
                 .unwrap_or_default();
             for (ni, (yoff, nf)) in cell.nested.iter().enumerate() {
+                // nf.x_pt 是「外層表本地」的子表左緣（含格左緣＋內邊距＋子表
+                // 自身 x_off）；換算頁絕對＝外層 base_x ＋ nf.x_pt，與頂層
+                // base_x＝frag.x_pt 同款約定（舊代碼直接傳 base_x，丟失子表
+                // 水準偏移）。
                 push_frag_items(
                     items,
-                    base_x,
+                    base_x + nf.x_pt,
                     base_y + ry + yoff,
                     nf,
                     size,

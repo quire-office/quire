@@ -1990,14 +1990,14 @@ mod tests {
 
     /// 單欄 n 列表格輸入（每列恰 1 帶：一格一行字）。
     fn tall_table_input(rows: usize) -> crate::table::TableInput {
-        use crate::table::{CellInput, RowInput, TableInput, WidthSpec};
+        use crate::table::{CellBlock, CellInput, RowInput, TableInput, WidthSpec};
         TableInput {
             grid_pt: vec![100.0],
             width: Some(WidthSpec::Pt(100.0)),
             rows: (0..rows)
                 .map(|i| RowInput {
                     cells: vec![CellInput {
-                        text: vec![format!("列{i}")],
+                        blocks: vec![CellBlock::Text(format!("列{i}"))],
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -2097,6 +2097,98 @@ mod tests {
             eng.caret_at(0, 50.0, 40.0 + 1.0 * line_h + 6.0).is_none(),
             "表格帶上無文字行，反查必 None（v1 表格內 caret 不支援）"
         );
+    }
+
+    #[test]
+    fn packer_cross_page_nested_container_emits_window_only() {
+        // t_f5d47469 根因 5 packer 級鎖：外層容器表（單格＝段前＋子表＋段後）
+        // 走 paginate_tables 真管線跨頁時，第二頁不得重畫子表頭列，子表切片
+        // 必須按頁視窗接排。頁面容 7 帶：段前1＋子表帶1..6＋子表帶6續頁。
+        use crate::table::{CellBlock, CellInput, RowInput, TableInput, WidthSpec};
+        let p = LayoutParams {
+            page_w_pt: 400.0,
+            page_h_pt: 200.0,
+            margins_pt: [40.0; 4],
+            font_size_pt: 12.0,
+            line_spacing: 1.4,
+        };
+        let inner = TableInput {
+            grid_pt: vec![80.0],
+            width: Some(WidthSpec::Pt(80.0)),
+            rows: (0..6)
+                .map(|i| RowInput {
+                    cells: vec![CellInput {
+                        blocks: vec![CellBlock::Text(format!("內{i}"))],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let input = TableInput {
+            grid_pt: vec![200.0],
+            width: Some(WidthSpec::Pt(200.0)),
+            rows: vec![RowInput {
+                cells: vec![CellInput {
+                    blocks: vec![
+                        CellBlock::Text("段前".into()),
+                        CellBlock::Table(Box::new(inner)),
+                        CellBlock::Text("段後".into()),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut texts = vec!["段前".to_string()];
+        texts.extend((0..6).map(|i| format!("內{i}")));
+        texts.push("段後".to_string());
+        let m = TextMeasurer::new(p.font_size_pt);
+        let tl = crate::table::layout_table(&input, p.content_w_pt(), p.line_h_pt(), &m, 0);
+        assert_eq!(tl.total_bands, 8, "1＋6＋1 流式累加");
+        let slot = TableSlot {
+            para_start: 0,
+            para_end: 8,
+            layout: tl,
+        };
+        let pls = layout_paragraphs(&texts, &p);
+        let (pages, _starts) = paginate_tables(&pls, &p, &[], &[slot]);
+        assert!(pages.len() >= 2, "8 帶＞7 帶容量，必跨頁");
+        let collect_inner = |pg: &Page| -> Vec<String> {
+            pg.tables
+                .iter()
+                .flat_map(|tp| {
+                    tp.frag.rows.iter().flat_map(|r| {
+                        r.cells.iter().flat_map(|c| {
+                            c.nested.iter().flat_map(|(_, nf)| {
+                                nf.rows.iter().flat_map(|nr| {
+                                    nr.cells[0]
+                                        .texts
+                                        .iter()
+                                        .map(|t| t.text.clone())
+                                        .collect::<Vec<_>>()
+                                })
+                            })
+                        })
+                    })
+                })
+                .collect()
+        };
+        let p0_inner = collect_inner(&pages[0]);
+        let p1_inner = collect_inner(&pages[1]);
+        assert!(p0_inner.contains(&"內0".to_string()), "第 1 頁必有子表頭列");
+        assert!(
+            !p1_inner.contains(&"內0".to_string()),
+            "第 2 頁重畫子表頭列＝根因 5 復發：{p1_inner:?}"
+        );
+        // 無縫接排：兩頁子表列合起來恰為 0..5 各一次。
+        let mut joined = p0_inner;
+        joined.extend(p1_inner);
+        joined.sort();
+        let want: Vec<String> = (0..6).map(|i| format!("內{i}")).collect();
+        assert_eq!(joined, want, "子表列跨頁不重不跳");
     }
 
     #[test]

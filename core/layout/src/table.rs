@@ -17,7 +17,8 @@
 //!   （切片器一律給至少一整列，單列高於一頁時老實溢出——卡片明示）。
 //! - `w:trHeight`：atLeast→與自然高取大；exact→以宣告為準（內容超高溢出繪製）。
 //! - vMerge：merged block＝restart 格持有內容；continue 格內容在渲染時被忽略
-//!   （ECMA-376＋LO ground truth），自身 lines／text_bands 清空。文字自 block
+//!   （ECMA-376＋LO ground truth），自身 block 序列清空。格內 block（段落／
+//!   巢狀表）按文件序**垂直累加**堆疊（流式，非並列 max）；文字自 block
 //!   頂（restart 列帶 0＋pad_top）逐帶繪製；block 高於參加列總和時餘額補到
 //!   continue 列。水平內邊界不畫框線，block 底邊由末參加格承擔（取 restart
 //!   格的底框——Word 語義）。
@@ -85,8 +86,21 @@ pub struct CellMarginInput {
     pub right: Option<f32>,
 }
 
-/// 儲存格輸入。`text` 為段落**原始字串**序列（run 級粗斜體尚未穿透——與正文
-/// 同款限制），斷行在本模組完成；`nested` 為巢狀表（遞迴）。
+/// 格內流式 block：文字段落或巢狀表，**保持文件序**（ECMA-376 §17.4.66：
+/// `w:tc` 是 block 序列；真實公文常「段落→子表→段落」交錯，拆成兩個獨立
+/// Vec 會丟失先後拓撲序——t_f5d47469 根因 1）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CellBlock {
+    /// 段落原始字串（run 級粗斜體尚未穿透——與正文同款限制），斷行在本模組完成。
+    Text(String),
+    /// 巢狀表（遞迴）。`Box` 間接化：`TableInput` 遠大於 `String`，
+    /// 直接嵌入會讓整個 enum 膨到 1KB（clippy large_enum_variant，
+    /// 與 canonical `Block::Table(Box<Table>)` 同款處置）。
+    Table(Box<TableInput>),
+}
+
+/// 儲存格輸入。`blocks` 為格內 block 交錯序列（段落／巢狀表，文件序）；
+/// 空 vec＝一個空段（Word：空格仍佔一行高）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CellInput {
     /// `w:tcW`（dxa→pt 已換算；auto/nil＝None）。
@@ -95,9 +109,8 @@ pub struct CellInput {
     pub grid_span: u32,
     /// `w:vMerge`：`Some(true)`＝restart、`Some(false)`＝continue、`None`＝非合併。
     pub vmerge: Option<bool>,
-    /// 段落文字（空 vec＝一個空段）。
-    pub text: Vec<String>,
-    pub nested: Vec<TableInput>,
+    /// 格內 block 序列（段落／子表交錯，保持文件序）。
+    pub blocks: Vec<CellBlock>,
     pub borders: Option<EdgeSetInput>,
     /// `w:shd/@w:fill` 原字串（RRGGBB／auto；theme 色名退回不填）。
     pub fill: Option<String>,
@@ -179,7 +192,8 @@ pub struct CellFrag {
     pub fill_argb: Option<u32>,
     /// 切片內文字（y 相對本列切片頂）。
     pub texts: Vec<CellText>,
-    /// 巢狀表切片（y 偏移相對本列切片頂；x 已含本格左緣＋表格偏移）。
+    /// 巢狀表切片（y 偏移相對本列切片頂；x 已含本格左緣＋左內邊距＋子表
+    /// 自身 x_off，繪製端＝外層 base_x ＋ 本值，見 engine-api push_frag_items）。
     pub nested: Vec<(f32, TableFrag)>,
 }
 
@@ -220,7 +234,25 @@ enum Valign {
     Bottom,
 }
 
-/// 一格的排版結果（欄位座標＋斷行＋幾何屬性）。
+/// 一格內單一 block 的排版結果（垂直流式堆疊的單位；根因 2/3：並列假設→累加）。
+#[derive(Debug, Clone, PartialEq)]
+enum CellBlockGeom {
+    /// 段落：斷行結果＋佔用帶數（空段規則見 pass 1 注）。
+    Text { lines: Vec<Line>, bands: u32 },
+    /// 巢狀子表：完整排版；帶高＝自身 total_bands（至少 1）。
+    Table { layout: TableLayout, bands: u32 },
+}
+
+impl CellBlockGeom {
+    fn bands(&self) -> u32 {
+        match self {
+            CellBlockGeom::Text { bands, .. } => *bands,
+            CellBlockGeom::Table { bands, .. } => *bands,
+        }
+    }
+}
+
+/// 一格的排版結果（欄位座標＋流式 block 序列＋幾何屬性）。
 #[derive(Debug, Clone, PartialEq)]
 struct CellGeom {
     /// 欄起點（grid 索引）。
@@ -235,20 +267,19 @@ struct CellGeom {
     pad_top_bands: u32,
     /// 下邊距佔用的帶數（量化）。
     pad_bottom_bands: u32,
-    /// 段落文字總帶高＝Σ max(1, 段帶數)。
-    text_bands: u32,
-    /// 斷行結果（全部段落串接；vMerge continue 格渲染時內容被忽略→清空）。
-    lines: Vec<Line>,
-    /// 內容總帶高＝pad_top ＋ max(text, nested) ＋ pad_bottom（vMerge 後重算）。
+    /// 格內 block 排版序列（文件序；vMerge continue 格渲染時內容被忽略→清空）。
+    blocks: Vec<CellBlockGeom>,
+    /// 內容總帶高＝pad_top ＋ Σ block 帶 ＋ pad_bottom（vMerge 後重算）。
     content_bands: u32,
     edges: [Option<Pen>; 4],
     fill_argb: Option<u32>,
     valign: Valign,
-    nested: Vec<TableLayout>,
     /// vMerge 歸屬：Some((block 序號, 是否 restart 格))；None＝非合併。
     merge: Option<(usize, bool)>,
     /// vMerge block 的 restart 列序（block 帶座標原點）。
     block_head_row: usize,
+    /// vMerge block 的**末**列序（非合併＝自身列；valign 錨定用）。
+    block_end_row: usize,
     /// vMerge block 的**末**參加格（底邊由它承擔）。
     block_tail: bool,
 }
@@ -284,10 +315,26 @@ impl TableLayout {
         self.rows.len()
     }
 
+    /// 全域帶序 → (row, band) 游標（跨列跳帶用；越界＝(rows.len(), 0)）。
+    /// `fragment(row, band, …)` 不代為跨列正規化 band，呼叫端先過此換算。
+    fn cursor_at_band(&self, band: u32) -> (usize, u32) {
+        let mut r = 0usize;
+        while r < self.rows.len() {
+            let base = self.row_base[r];
+            if band < base + self.rows[r].bands {
+                return (r, band - base);
+            }
+            r += 1;
+        }
+        (self.rows.len(), 0)
+    }
+
     /// 產出「自 (row, band) 起、至多 `max_bands` 帶」的切片。
     /// 回傳 (切片, 下一游標 (row, band), 本切片實際帶數)。
     ///
-    /// `whole_row_only=true`：列不拆（巢狀表用——巢狀列不拆頁，v1 簡化）。
+    /// `whole_row_only=true`：列不拆（外層 packer 之外尚有整列需求用）。
+    /// 巢狀表**不再**用此旗標——t_f5d47469 起子表按外層切片視窗換算的
+    /// (inner_start, inner_budget) 逐帶切片（根因 5：整張重畫修復）。
     /// `page_left_pt`：可用區左緣（頁座標系），換算 `TableFrag::x_pt`。
     pub fn fragment(
         &self,
@@ -333,7 +380,6 @@ impl TableLayout {
                             row: r,
                             band: b,
                             take,
-                            h,
                             starts_row,
                             ends_row,
                         },
@@ -379,16 +425,17 @@ struct SliceWin {
     row: usize,
     band: u32,
     take: u32,
-    h: f32,
     starts_row: bool,
     ends_row: bool,
 }
 
 /// 一格在切片 (r, b..b+take) 內的顯示形態。
 ///
-/// 文字定位統一模型：格的「內容原點帶」block0＝vMerge 時為 restart 列帶 0，
-/// 否則為本列帶 0；第 i 條文字佔帶 block0＋pad_top＋i，**只在其所屬列的切片
-/// 視窗內繪製**——merged block 文字因此天然跨列、且不重複。
+/// 流式堆疊模型（根因 4/5/6/7 修復）：格的 block 序列自「內容原點帶」
+/// block0＋pad_top 起**依序累加**排布（段落逐帶、子表整塊），每個 block 只在其
+/// 與切片視窗 `win0..win1` 相交的部分發射——文字逐帶裁、子表按剩餘帶預算切片
+/// （外層視窗換算成子表的 (inner_start, inner_budget)，杜絕整張子表重畫）。
+/// valign 以**整個 block 的列高**為基準且各切片一致，續頁不再重複疊加 pad。
 fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
     let win0 = tl.row_base[w.row] + w.band; // 切片視窗（全域帶）
     let win1 = win0 + w.take;
@@ -404,37 +451,65 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
     // 搬給末格、把 head/中間格的對應邊清空）。
     let block0 = tl.row_base[cg.block_head_row];
     let mut texts = Vec::new();
-    let shift = valign_shift(cg.valign, w.h, cg.content_bands, tl.line_h);
-    for (k, ln) in cg.lines.iter().enumerate() {
-        let cur = block0 + cg.pad_top_bands + k as u32;
-        if cur >= win1 {
-            break;
-        }
-        if cur >= win0 {
-            texts.push(CellText {
-                x_pt: cg.x + cg.text_x_off,
-                y_pt: (shift + (cur - win0) as f32 * tl.line_h).max(0.0),
-                text: ln.text.clone(),
-            });
+    let mut nested = Vec::new();
+    if !matches!(cg.merge, Some((_, false))) {
+        // 根因 6：valign 錨點＝整個 merge block 的列總高（非單頁切片高 w.h），
+        // 且所有切片共用同一 shift——續頁不再錯位、不再重複疊加 pad_top。
+        let block_bands = tl.row_base[cg.block_end_row] + tl.rows[cg.block_end_row].bands - block0;
+        let shift = valign_shift(
+            cg.valign,
+            block_bands as f32 * tl.line_h,
+            cg.content_bands,
+            tl.line_h,
+        );
+        // 流式掃描：內容原點＋逐 block 累加（根因 2/3/4：max 並列假設→累加）。
+        let mut cur = block0 + cg.pad_top_bands;
+        'blocks: for bg in &cg.blocks {
+            match bg {
+                CellBlockGeom::Text { lines, bands } => {
+                    let start = cur;
+                    for ln in lines {
+                        if cur >= win1 {
+                            break 'blocks;
+                        }
+                        if cur >= win0 {
+                            texts.push(CellText {
+                                x_pt: cg.x + cg.text_x_off,
+                                y_pt: (shift + (cur - win0) as f32 * tl.line_h).max(0.0),
+                                text: ln.text.clone(),
+                            });
+                        }
+                        cur += 1;
+                    }
+                    // bands 可多於 lines（空段佔帶）：游標補到 block 尾。
+                    cur = cur.max(start + *bands);
+                }
+                CellBlockGeom::Table { layout, bands } => {
+                    let nb0 = cur;
+                    let nb1 = cur + *bands;
+                    // 根因 5：子表只在與切片視窗相交的帶段發射——外層
+                    // win0..win1 換算成子表的 (inner_start, inner_budget)，
+                    // 完全在視窗外＝整塊不發射（第 2 頁不再從頭重畫子表）。
+                    if nb1 > win0 && nb0 < win1 {
+                        let vis0 = nb0.max(win0);
+                        let vis1 = nb1.min(win1);
+                        // 根因 7：子表左緣加本格左內邊距（cg.text_x_off，
+                        // 預設 5.4pt），不再貼死外層格左框線。
+                        let (sr, sb) = layout.cursor_at_band(vis0 - nb0);
+                        let (f, _, _) = layout.fragment(
+                            sr,
+                            sb,
+                            (vis1 - vis0).max(1),
+                            false,
+                            cg.x + cg.text_x_off,
+                        );
+                        nested.push((shift + (vis0 - win0) as f32 * tl.line_h, f));
+                    }
+                    cur = nb1;
+                }
+            }
         }
     }
-    let nested = if matches!(cg.merge, Some((_, false))) {
-        Vec::new()
-    } else {
-        cg.nested
-            .iter()
-            .map(|n| {
-                // 巢狀表的頁左緣基準＝**表格本地**格左緣（繪製端再疊 frag.x_pt，
-                // 外層 x_off 不在這裡加，避免雙重計入）。
-                let (f, _, _) = n.fragment(0, 0, u32::MAX, true, cg.x);
-                (
-                    valign_shift(cg.valign, w.h, cg.content_bands, tl.line_h)
-                        + cg.pad_top_bands as f32 * tl.line_h,
-                    f,
-                )
-            })
-            .collect()
-    };
     CellFrag {
         x_pt: cg.x,
         w_pt: cg.w,
@@ -507,20 +582,49 @@ pub fn layout_table(
             let pad_top_bands = (margins.top / line_h).ceil() as u32;
             let pad_bottom_bands = (margins.bottom / line_h).ceil() as u32;
 
-            let (lines, text_bands) = break_cell_paras(&cell.text, inner_w, m);
-
-            // 巢狀表：以儲存格內寬排版，帶高併入本格。
-            let mut nested = Vec::new();
-            let mut nested_bands = 0u32;
-            if depth < MAX_NEST_DEPTH {
-                for n in &cell.nested {
-                    let nl = layout_table(n, inner_w, line_h, m, depth + 1);
-                    nested_bands = nested_bands.max(nl.total_bands);
-                    nested.push(nl);
+            // 格內 block 流式堆疊（根因 1/2/3）：段落與子表按文件序逐塊排版，
+            // 帶高**累加**而非 max()。ECMA-376 §17.4.66 要求「以子表結尾的 tc
+            // 必須補一個空 w:p」——該尾部空段（最後一個 block、文字空、且前方
+            // 有子表）是協定填充，**不佔帶高**；填錯會把 7 份正常檔案與 golden
+            // 全多撐 1 帶（評審陷阱，測試鎖死）。
+            let mut blocks: Vec<CellBlockGeom> = Vec::new();
+            if cell.blocks.is_empty() {
+                blocks.push(CellBlockGeom::Text {
+                    lines: break_lines("", inner_w, m),
+                    bands: 1,
+                });
+            } else {
+                let has_table = cell.blocks.iter().any(|b| matches!(b, CellBlock::Table(_)));
+                let last_i = cell.blocks.len() - 1;
+                for (bi, b) in cell.blocks.iter().enumerate() {
+                    match b {
+                        CellBlock::Text(t) => {
+                            let filler = has_table && bi == last_i && t.trim().is_empty();
+                            if filler {
+                                blocks.push(CellBlockGeom::Text {
+                                    lines: Vec::new(),
+                                    bands: 0,
+                                });
+                            } else {
+                                let ls = break_lines(t, inner_w, m);
+                                let bands = ls.len().max(1) as u32;
+                                blocks.push(CellBlockGeom::Text { lines: ls, bands });
+                            }
+                        }
+                        CellBlock::Table(n) => {
+                            if depth < MAX_NEST_DEPTH {
+                                let nl = layout_table(n, inner_w, line_h, m, depth + 1);
+                                let bands = nl.total_bands.max(1);
+                                blocks.push(CellBlockGeom::Table { layout: nl, bands });
+                            }
+                            // 深度超限：老實略過子表（不虛構幾何）。
+                        }
+                    }
                 }
             }
             let content_bands =
-                pad_top_bands + text_bands.max(nested_bands).max(1) + pad_bottom_bands;
+                (pad_top_bands + blocks.iter().map(|b| b.bands()).sum::<u32>() + pad_bottom_bands)
+                    .max(1);
 
             let edges = resolve_cell_edges(cell, input, ri, ci, n_rows, n_cells);
             cells.push(CellGeom {
@@ -531,8 +635,7 @@ pub fn layout_table(
                 text_x_off: margins.left,
                 pad_top_bands,
                 pad_bottom_bands,
-                text_bands,
-                lines,
+                blocks,
                 content_bands,
                 edges,
                 fill_argb: parse_fill(cell.fill.as_deref()),
@@ -541,9 +644,9 @@ pub fn layout_table(
                     Some("bottom") => Valign::Bottom,
                     _ => Valign::Top,
                 },
-                nested,
                 merge: cell.vmerge.map(|restart| (usize::MAX, restart)), // 序號 pass 2 填
                 block_head_row: ri,
+                block_end_row: ri,
                 block_tail: false,
             });
         }
@@ -572,26 +675,10 @@ pub fn layout_table(
     tl
 }
 
-/// 段落逐條斷行；空段也占一帶（Word：空段落仍占一行高）。
-fn break_cell_paras(paras: &[String], inner_w: f32, m: &TextMeasurer) -> (Vec<Line>, u32) {
-    let mut all = Vec::new();
-    let mut bands = 0u32;
-    if paras.is_empty() {
-        all.extend(break_lines("", inner_w, m));
-        return (all, 1);
-    }
-    for t in paras {
-        let ls = break_lines(t, inner_w, m);
-        bands += ls.len().max(1) as u32;
-        all.extend(ls);
-    }
-    (all, bands)
-}
-
 /// 找 vMerge block（同欄 col==c 且 span==1 才參與——跨欄格 vMerge v1 不實作）：
-/// - head（restart）：保留自身 lines／text_bands；底框搬給末參加格（block 底邊），
+/// - head（restart）：保留自身 block 序列；底框搬給末參加格（block 底邊），
 ///   自身底邊清空。
-/// - continue：清空自身 lines／text_bands（ECMA-376＋LO ground truth：continue
+/// - continue：清空自身 blocks（ECMA-376＋LO ground truth：continue
 ///   格內容在渲染時被忽略——實測 LO 不顯現 continue 段落，串接顯示是錯的）；
 ///   頂邊清空；末參加格 block_tail=true 並承接 head 底框。
 fn assign_merge_blocks(rows: &mut [RowGeom]) {
@@ -632,7 +719,7 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
             next_block += 1;
 
             // continue 格內容在渲染時被忽略（ECMA-376）：不需串接參加格段落；
-            // head 保留自身 lines／text_bands，content_bands 維持 pass1 值。
+            // head 保留自身 block 序列，content_bands 維持 pass1 值。
             {
                 let hg = rows[head]
                     .cells
@@ -641,6 +728,7 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
                     .expect("head 存在");
                 hg.merge = Some((block, true));
                 hg.block_head_row = head;
+                hg.block_end_row = last;
                 hg.block_tail = last == head;
                 // block 底邊交給末格；head 自身底邊清空（內部橫線不畫）。
                 let bottom = hg.edges[EDGE_BOTTOM].clone();
@@ -660,9 +748,10 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
                     let rr = head + 1 + k;
                     g.merge = Some((block, false));
                     g.block_head_row = head;
+                    g.block_end_row = last;
                     g.block_tail = rr == last;
-                    g.lines.clear();
-                    g.text_bands = 0;
+                    g.blocks.clear();
+                    g.content_bands = (g.pad_top_bands + g.pad_bottom_bands).max(1);
                     g.edges[EDGE_TOP] = None; // block 內部橫線
                     if rr != last {
                         g.edges[EDGE_BOTTOM] = None;
@@ -984,7 +1073,7 @@ mod tests {
 
     fn cell(text: &str) -> CellInput {
         CellInput {
-            text: vec![text.to_string()],
+            blocks: vec![CellBlock::Text(text.to_string())],
             ..Default::default()
         }
     }
@@ -1229,7 +1318,9 @@ mod tests {
             ],
             ..Default::default()
         };
-        inp.rows[0].cells[0].nested.push(inner);
+        inp.rows[0].cells[0]
+            .blocks
+            .push(CellBlock::Table(Box::new(inner)));
         let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
         assert!(t.row_units[0] >= 2.0, "巢狀表把列撐高到 ≥2 帶");
         let (f, _, _) = t.fragment(0, 0, 99, true, 0.0);
@@ -1242,7 +1333,10 @@ mod tests {
         // ECMA-376＋LO ground truth：vMerge continue 格的段落在渲染時被忽略，
         // 只有 restart 格內容顯現（實測 LO PDF：continue 文字不出現）。
         let mk = |restart: bool, text: &[&str]| CellInput {
-            text: text.iter().map(|s| s.to_string()).collect(),
+            blocks: text
+                .iter()
+                .map(|s| CellBlock::Text(s.to_string()))
+                .collect(),
             vmerge: Some(restart),
             ..Default::default()
         };
@@ -1287,7 +1381,10 @@ mod tests {
     #[test]
     fn vmerge_extra_height_goes_to_continue_rows() {
         let mk = |restart: bool, text: &[&str]| CellInput {
-            text: text.iter().map(|s| s.to_string()).collect(),
+            blocks: text
+                .iter()
+                .map(|s| CellBlock::Text(s.to_string()))
+                .collect(),
             vmerge: Some(restart),
             ..Default::default()
         };
@@ -1320,7 +1417,7 @@ mod tests {
     #[test]
     fn vmerge_bottom_edge_moves_from_head_to_tail() {
         let mk = |restart: bool| CellInput {
-            text: vec!["x".into()],
+            blocks: vec![CellBlock::Text("x".into())],
             vmerge: Some(restart),
             borders: if restart {
                 Some(EdgeSetInput {
@@ -1380,7 +1477,7 @@ mod tests {
     #[test]
     fn empty_cell_still_occupies_one_band() {
         let mut inp = simple_input();
-        inp.rows[0].cells[0].text.clear();
+        inp.rows[0].cells[0].blocks.clear();
         let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
         assert!(t.row_units[0] >= 1.0);
     }
@@ -1415,8 +1512,9 @@ mod tests {
     #[test]
     fn long_cell_text_grows_row_bands() {
         let mut inp = simple_input();
-        inp.rows[0].cells[0].text =
-            vec!["這是一段很長很長需要斷行很多次才會排完的中文段落文字內容".repeat(4)];
+        inp.rows[0].cells[0].blocks = vec![CellBlock::Text(
+            "這是一段很長很長需要斷行很多次才會排完的中文段落文字內容".repeat(4),
+        )];
         let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
         assert!(t.row_units[0] > 1.0, "長文斷行撐高列帶");
         // 斷出的每一行都要落在切片裡
@@ -1424,5 +1522,272 @@ mod tests {
         let n_frag_lines = f.rows.iter().map(|r| r.cells[0].texts.len()).sum::<usize>();
         let n_geom_lines = t.total_bands as usize; // 此表只有列0 撐高
         assert!(n_frag_lines >= 2 && n_frag_lines <= n_geom_lines);
+    }
+
+    // ---------------- t_f5d47469：儲存格流式 block ＋ 表格疊印七點根因鎖 ----------------
+
+    /// 1×1 外殼表，單格內容自訂（跨頁/流式測試共用）。
+    fn shell_table(cell: CellInput) -> TableInput {
+        TableInput {
+            grid_pt: vec![300.0],
+            width: Some(WidthSpec::Pt(300.0)),
+            rows: vec![RowInput {
+                cells: vec![cell],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// 單欄 n 列子表（每列 1 帶；「內{off+i}」文字供跨頁/多表比對）。
+    fn inner_table(rows: usize) -> TableInput {
+        inner_table_at(0, rows)
+    }
+
+    fn inner_table_at(off: usize, rows: usize) -> TableInput {
+        TableInput {
+            grid_pt: vec![80.0],
+            width: Some(WidthSpec::Pt(80.0)),
+            rows: (0..rows)
+                .map(|i| RowInput {
+                    cells: vec![cell(&format!("內{}", off + i))],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cell_mixed_paragraphs_and_nested_table_do_not_overlap() {
+        // 根因 1/2/4：單格內 Text → Table → Text 三段，各 block y 嚴格遞增、
+        // 互不重疊（評審骨架 A-2；子表高 4 帶＝4×16.8＝67.2pt）。
+        let c = CellInput {
+            blocks: vec![
+                CellBlock::Text("Title Before Table".into()),
+                CellBlock::Table(Box::new(inner_table(4))),
+                CellBlock::Text("Footer After Table".into()),
+            ],
+            ..Default::default()
+        };
+        let t = layout_table(&shell_table(c), 400.0, 16.8, &measurer(), 0);
+        let (f, _, _) = t.fragment(0, 0, u32::MAX, true, 0.0);
+        let fc = &f.rows[0].cells[0];
+        assert_eq!(fc.texts.len(), 2, "兩段文字都要發射");
+        assert_eq!(fc.nested.len(), 1, "子表發射一次");
+        let text_before_y = fc.texts[0].y_pt;
+        let nested_y = fc.nested[0].0;
+        let text_after_y = fc.texts[1].y_pt;
+        let nested_h = fc.nested[0].1.rows.iter().map(|r| r.height_pt).sum::<f32>();
+        assert!(
+            nested_y >= text_before_y + 16.8 - 0.01,
+            "子表必須在 Title 之下：{nested_y} vs {text_before_y}"
+        );
+        assert!(
+            text_after_y >= nested_y + nested_h - 0.01,
+            "Footer 必須在整張子表之下：{text_after_y} vs {nested_y}+{nested_h}"
+        );
+        // 帶高＝累加：1(Title)＋4(子表)＋1(Footer)＝6 帶（無 pad 宣告）。
+        assert_eq!(t.row_units[0], 6.0, "垂直累加而非 max 並列");
+    }
+
+    #[test]
+    fn two_nested_tables_in_one_cell_stack_vertically() {
+        // 根因 3：同格兩張子表必須 `+=` 累加（max 假設會整張重疊）。
+        let c = CellInput {
+            blocks: vec![
+                CellBlock::Table(Box::new(inner_table_at(0, 3))),
+                CellBlock::Table(Box::new(inner_table_at(3, 2))),
+            ],
+            ..Default::default()
+        };
+        let t = layout_table(&shell_table(c), 400.0, 16.8, &measurer(), 0);
+        assert_eq!(t.row_units[0], 5.0, "3 帶＋2 帶＝5 帶（max 誤設會得 3）");
+        let (f, _, _) = t.fragment(0, 0, u32::MAX, true, 0.0);
+        let fc = &f.rows[0].cells[0];
+        assert_eq!(fc.nested.len(), 2);
+        let (y1, f1) = &fc.nested[0];
+        let (y2, f2) = &fc.nested[1];
+        let h1 = f1.rows.iter().map(|r| r.height_pt).sum::<f32>();
+        assert!(*y2 >= *y1 + h1 - 0.01, "第二張子表必須排在第一張之下");
+        // 第二張確實是「內3/內4」而非第一張的重畫。
+        let t2: Vec<&str> = f2
+            .rows
+            .iter()
+            .flat_map(|r| r.cells[0].texts.iter().map(|t| t.text.as_str()))
+            .collect();
+        assert_eq!(t2, vec!["內3", "內4"], "第二張子表內容不得是第一張重畫");
+    }
+
+    #[test]
+    fn cross_page_container_slices_nested_table_by_window() {
+        // 根因 5（最致命）：外層跨頁時，子表只在視窗內的列被發射，第 2 頁
+        // 不得出現子表第 0 列重複，第 1 頁子表不得衝破切片底。
+        // 構造：段前 1＋子表 6＋段後 1＝8 帶；切片預算 3 帶 → 3 頁。
+        let c = CellInput {
+            blocks: vec![
+                CellBlock::Text("段前".into()),
+                CellBlock::Table(Box::new(inner_table(6))),
+                CellBlock::Text("段後".into()),
+            ],
+            ..Default::default()
+        };
+        let t = layout_table(&shell_table(c), 400.0, 16.8, &measurer(), 0);
+        assert_eq!(t.total_bands, 8);
+        let mut cur = (0usize, 0u32);
+        let mut slices = Vec::new();
+        while cur.0 < t.row_count() {
+            let (f, next, used) = t.fragment(cur.0, cur.1, 3, false, 72.0);
+            if used == 0 {
+                break;
+            }
+            slices.push(f);
+            if next == cur {
+                break;
+            }
+            cur = next;
+        }
+        assert_eq!(slices.len(), 3, "8 帶÷3 → 3 片");
+        // 切片 0（帶 0..3）：段前＋子表帶 0..2（內0/內1）。
+        let s0c = &slices[0].rows[0].cells[0];
+        let s0_inner: Vec<&str> = s0c
+            .nested
+            .iter()
+            .flat_map(|(_, nf)| {
+                nf.rows
+                    .iter()
+                    .flat_map(|r| r.cells[0].texts.iter().map(|t| t.text.as_str()))
+            })
+            .collect();
+        assert_eq!(s0_inner, vec!["內0", "內1"], "第 1 片只發射視窗內的子表列");
+        let s0_nested_bottom = s0c.nested[0].0
+            + s0c.nested[0]
+                .1
+                .rows
+                .iter()
+                .map(|r| r.height_pt)
+                .sum::<f32>();
+        assert!(
+            s0_nested_bottom <= slices[0].rows[0].height_pt + 0.01,
+            "子表不得衝破切片底：{s0_nested_bottom} vs {}",
+            slices[0].rows[0].height_pt
+        );
+        // 切片 1（帶 3..6＝內2/內3/內4，段前佔帶 0）：無「內0/內1」重畫。
+        let s1c = &slices[1].rows[0].cells[0];
+        let s1_inner: Vec<&str> = s1c
+            .nested
+            .iter()
+            .flat_map(|(_, nf)| {
+                nf.rows
+                    .iter()
+                    .flat_map(|r| r.cells[0].texts.iter().map(|t| t.text.as_str()))
+            })
+            .collect();
+        assert_eq!(
+            s1_inner,
+            vec!["內2", "內3", "內4"],
+            "第 2 片只接排視窗內子表列"
+        );
+        assert!(
+            !s1_inner.contains(&"內0"),
+            "跨頁續片重複子表頭列＝根因 5 復發：{s1_inner:?}"
+        );
+        // 切片 2（帶 6..8）：子表帶 6..7（內6？不存在→內5）＋段後。
+        let s2c = &slices[2].rows[0].cells[0];
+        let s2_inner: Vec<&str> = s2c
+            .nested
+            .iter()
+            .flat_map(|(_, nf)| {
+                nf.rows
+                    .iter()
+                    .flat_map(|r| r.cells[0].texts.iter().map(|t| t.text.as_str()))
+            })
+            .collect();
+        assert_eq!(s2_inner, vec!["內5"]);
+        assert_eq!(s2c.texts.last().map(|t| t.text.as_str()), Some("段後"));
+    }
+
+    #[test]
+    fn trailing_empty_para_after_nested_table_occupies_no_band() {
+        // ECMA-376 §17.4.66 陷阱鎖死：以子表結尾的 tc 必補空 w:p——該協定填充
+        // 段落**不佔帶高**（若 +1 會把 7 份正常檔與 golden 全撐高 1 帶）。
+        let with_filler = CellInput {
+            blocks: vec![
+                CellBlock::Table(Box::new(inner_table(2))),
+                CellBlock::Text(String::new()), // §17.4.66 強制填充
+            ],
+            ..Default::default()
+        };
+        let t = layout_table(&shell_table(with_filler), 400.0, 16.8, &measurer(), 0);
+        assert_eq!(t.row_units[0], 2.0, "尾部空段不佔帶：只算子表 2 帶");
+        // 但「子表＋非空尾段」與「子表＋中間空段」都必須如實佔帶。
+        let real_tail = CellInput {
+            blocks: vec![
+                CellBlock::Table(Box::new(inner_table(2))),
+                CellBlock::Text("尾註".into()),
+            ],
+            ..Default::default()
+        };
+        let t2 = layout_table(&shell_table(real_tail), 400.0, 16.8, &measurer(), 0);
+        assert_eq!(t2.row_units[0], 3.0, "非空尾段照樣佔 1 帶");
+        let mid_empty = CellInput {
+            blocks: vec![
+                CellBlock::Text("上".into()),
+                CellBlock::Text(String::new()),
+                CellBlock::Table(Box::new(inner_table(2))),
+            ],
+            ..Default::default()
+        };
+        let t3 = layout_table(&shell_table(mid_empty), 400.0, 16.8, &measurer(), 0);
+        assert_eq!(t3.row_units[0], 4.0, "中間空段仍佔 1 帶（Word 空段佔行）");
+    }
+
+    #[test]
+    fn nested_table_left_inset_uses_cell_side_margin() {
+        // 根因 7：子表左緣＝cg.x＋text_x_off（5.4pt 預設），不再貼死外層框線。
+        let c = CellInput {
+            blocks: vec![CellBlock::Table(Box::new(inner_table(1)))],
+            ..Default::default()
+        };
+        let t = layout_table(&shell_table(c), 400.0, 16.8, &measurer(), 0);
+        let (f, _, _) = t.fragment(0, 0, u32::MAX, true, 0.0);
+        let fc = &f.rows[0].cells[0];
+        let nested_x = fc.nested[0].1.x_pt;
+        assert!(
+            (nested_x - 5.4).abs() < 0.01,
+            "子表左緣應含左內邊距 5.4pt，實得 {nested_x}"
+        );
+    }
+
+    #[test]
+    fn valign_shift_anchors_on_full_block_across_slices() {
+        // 根因 6：center 對齊跨頁時，各切片的 shift 以整個 block 高度為基準，
+        // 續片 y 從 (cur-win0) 換算——同一條帶在兩頁的頁內偏移差 = take×line_h。
+        let mut c = CellInput {
+            blocks: vec![
+                CellBlock::Text("甲".into()),
+                CellBlock::Text("乙".into()),
+                CellBlock::Text("丙".into()),
+                CellBlock::Text("丁".into()),
+            ],
+            valign: Some("center".into()),
+            ..Default::default()
+        };
+        c.margins = Some(CellMarginInput {
+            top: Some(0.0),
+            bottom: Some(0.0),
+            ..Default::default()
+        });
+        let t = layout_table(&shell_table(c), 400.0, 16.8, &measurer(), 0);
+        assert_eq!(t.total_bands, 4);
+        let (f1, _, _) = t.fragment(0, 0, 2, false, 0.0);
+        let (f2, _, _) = t.fragment(0, 2, 2, false, 0.0);
+        // content_bands=4 → 全高 67.2；block 高也 67.2 → shift=0（無偏移錯位）。
+        let y1 = f1.rows[0].cells[0].texts[0].y_pt;
+        let y2 = f2.rows[0].cells[0].texts[0].y_pt;
+        assert!(y1 < 1.0, "無剩餘空間時 center 不該憑空下移：{y1}");
+        assert!(y2 < 1.0, "續頁首條文字不疊加 pad：{y2}");
+        // 同帶（帶 2）在兩片中的換算一致：第二片的「丙」就在頂。
+        assert_eq!(f2.rows[0].cells[0].texts[0].text, "丙");
     }
 }
