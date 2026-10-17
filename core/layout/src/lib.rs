@@ -2003,11 +2003,7 @@ mod tests {
     }
 
     /// 前段 1＋表格（10 列，佔 10 帶）＋後段 1；頁面只容 7 帶 ⇒ 必然跨頁。
-    fn cross_page_fixture() -> (
-        Vec<String>,
-        LayoutParams,
-        Vec<TableSlot>,
-    ) {
+    fn cross_page_fixture() -> (Vec<String>, LayoutParams, Vec<TableSlot>) {
         let p = LayoutParams {
             page_w_pt: 400.0,
             page_h_pt: 200.0,
@@ -2113,9 +2109,12 @@ mod tests {
         assert_eq!(eng.pages(), snapshot.as_slice());
 
         let edits: Vec<(usize, String)> = vec![
-            (texts.len() - 1, "後段變長：".to_string() + &"字".repeat(200)),
+            (
+                texts.len() - 1,
+                "後段變長：".to_string() + &"字".repeat(200),
+            ),
             (0, "前段灌長：".to_string() + &"字".repeat(300)), // 表格整體被推頁
-            (0, "前段".to_string()),                            // 還原 → 版面回得去
+            (0, "前段".to_string()),                           // 還原 → 版面回得去
             (texts.len() - 1, "後段".to_string()),
         ];
         for (i, (para, text)) in edits.iter().enumerate() {
@@ -2127,11 +2126,21 @@ mod tests {
                 "第 {i} 筆編輯必須回報髒頁：{evs:?}"
             );
             let fresh = LayoutEngine::with_tables(&want_texts, p, Vec::new(), tables.clone());
-            assert_eq!(eng.pages(), fresh.pages(), "表格增量第 {i} 筆版面與重建不符");
+            assert_eq!(
+                eng.pages(),
+                fresh.pages(),
+                "表格增量第 {i} 筆版面與重建不符"
+            );
             assert_eq!(eng.page_starts(), fresh.page_starts());
         }
         // 最終版面仍含跨頁切片（兩頁以上各一 TablePlacement）。
-        assert!(eng.pages().iter().filter(|pg| !pg.tables.is_empty()).count() >= 2);
+        assert!(
+            eng.pages()
+                .iter()
+                .filter(|pg| !pg.tables.is_empty())
+                .count()
+                >= 2
+        );
     }
 
     #[test]

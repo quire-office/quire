@@ -9,7 +9,8 @@
 //! last_para,line_count,continues_paragraph],...]}——分頁斷點對段落歸屬的快照。
 //! tables.jsonl（Phase3-1b）：{"id":..., "slices":[{...TableFrag 幾何...}]}——
 //! 表格列高/欄寬/合併/vMerge/跨頁切片/巢狀表的幾何快照（合併儲存格、巢狀
-//! 表格、跨頁表格各 1 例）。
+//! 表格各 1 例；跨頁 2 例：fragment() 切片原語 1 例＋真正走 packer 放置路徑
+//! 的 paginate_tables 1 例，後者鎖 FlowItem::Table 分支的蓋章與帶交接）。
 use std::path::Path;
 
 use quire_layout::table::{
@@ -294,6 +295,88 @@ fn snap_table(id: &str, input: &TableInput, avail_w: f32, page_bands: u32) -> St
     s
 }
 
+/// 跨頁表格（packer 路徑）golden：真正走 `paginate_tables`——前段 1＋10 列
+/// 表（10 帶）＋後段 1，頁面只容 7 帶。鎖的是 `fragment()` 原語快照鎖不到
+/// 的 pack_run FlowItem::Table 分支：切片 y 蓋章（非零）、starts_table/
+/// continues 旗標、頁起頭 FlowPos、表後文字行帶交接。
+fn snap_packer_cross_page() -> String {
+    use quire_layout::{layout_paragraphs, paginate_tables, TableSlot};
+    let p = LayoutParams {
+        page_w_pt: 400.0,
+        page_h_pt: 200.0,
+        margins_pt: [40.0; 4],
+        font_size_pt: SIZE_PT,
+        line_spacing: 1.4,
+    };
+    let input = TableInput {
+        grid_pt: vec![100.0],
+        width: Some(WidthSpec::Pt(100.0)),
+        borders: tbl_borders(),
+        rows: (0..10)
+            .map(|i| RowInput {
+                cells: vec![tcell(&format!("列{i}"), 1, None)],
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let mut texts = vec!["前段".to_string()];
+    texts.extend((0..10).map(|i| format!("列{i}")));
+    texts.push("後段".to_string());
+    let m = TextMeasurer::new(SIZE_PT);
+    let tl = layout_table(&input, p.content_w_pt(), p.line_h_pt(), &m, 0);
+    let tables = vec![TableSlot {
+        para_start: 1,
+        para_end: 11,
+        layout: tl,
+    }];
+    let pls = layout_paragraphs(&texts, &p);
+    let (pages, starts) = paginate_tables(&pls, &p, &[], &tables);
+
+    let mut s = format!(
+        "{{\"id\":\"cross_page_packer\",\"page_bands\":{},\"starts\":[{}],\"pages\":[",
+        p.per_page_lines(),
+        starts
+            .iter()
+            .map(|(a, b, c)| format!("[{a},{b},{c}]"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    for (i, pg) in pages.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&format!(
+            "{{\"bands\":[{}],\"lines\":[{}],\"tables\":[",
+            pg.line_bands
+                .iter()
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            pg.lines
+                .iter()
+                .map(|l| format!("{{\"p\":{},\"t\":{}}}", l.para_index, json_str(&l.text)))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        for (j, tp) in pg.tables.iter().enumerate() {
+            if j > 0 {
+                s.push(',');
+            }
+            s.push_str(&format!(
+                "{{\"slot\":{},\"anchor\":{},\"band\":{},\"frag\":{}}}",
+                tp.slot,
+                tp.anchor_para,
+                tp.band,
+                snap_frag(&tp.frag, 0)
+            ));
+        }
+        s.push_str("]}");
+    }
+    s.push_str("]}");
+    s
+}
+
 fn pagination_cases() -> Vec<(&'static str, Vec<String>, LayoutParams)> {
     // 分頁斷點：段落跨頁歸屬（KP 斷行使行數/續排點敏感於斷行演算法）。
     let p = LayoutParams::default();
@@ -402,6 +485,7 @@ fn main() {
     let tables: Vec<String> = table_cases()
         .into_iter()
         .map(|(id, input, avail_w, page_bands)| snap_table(id, &input, avail_w, page_bands))
+        .chain(std::iter::once(snap_packer_cross_page()))
         .collect();
 
     let update = std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v != "0");
