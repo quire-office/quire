@@ -27,9 +27,11 @@
 //! infinite size（PM 補正 4）。
 //!
 //! 段落計數口徑：必須與 `lib.rs::parse_document_xml`、`sectpr.rs` 完全一致
-//! ——`w:p` 只算 Start 事件（不含自閉合 `w:p/>`），含表格內段落、含
-//! AlternateContent 內段落。canonical 樹以 [`Block::Paragraph { index }`]
-//! 引用扁平 `paragraphs` 序列索引：只讀引用、內容不複製、索引唯一真相。
+//! ——`w:p` 只算 Start 事件（不含自閉合 `w:p/>`），含表格內段落、含巢狀段落
+//! （文字框 `w:txbxContent` 內的 `w:p` 在主解析器各佔一槽），`mc:Fallback`
+//! 內不計（Choice/Fallback 雙份只取 Choice 一份）。canonical 樹以
+//! [`Block::Paragraph { index }`] 引用扁平 `paragraphs` 序列索引：只讀引用、
+//! 內容不複製、索引唯一真相。
 //!
 //! 已知骨架近似（皆屬 3-1b 演進點，round-trip 不受影響）：
 //! - `mc:AlternateContent` 子樹整體略過不展開（Choice/Fallback 是同一內容的
@@ -405,9 +407,15 @@ enum Frame {
     /// 透明包裝（`w:sdt`、`w:ins`、`w:del`、`w:customXml`…）：記名供 End
     /// 配對；子元素照常解析（其中的 w:tbl 仍進 canonical）。
     Opaque { name: Vec<u8> },
-    /// 吞沒子樹（僅 `mc:AlternateContent`）：內部任何東西都不進 canonical
-    /// （Choice/Fallback 雙份），只維護深度；段落計數照常（與主解析器同口徑）。
-    Skip { depth: usize },
+    /// 吞沒子樹（`mc:AlternateContent`／裸 `mc:Fallback`）：內部任何東西都
+    /// 不進 canonical（Choice/Fallback 是同一內容的雙份表示），只維護深度。
+    /// 段落計數由 `TableParser::fb`（Fallback 巢狀深度，parser 級）把關：
+    /// `fb == 0`（Choice 路徑）才計——與主解析器「只解析 Choice 一份」同口徑。
+    Skip {
+        depth: usize,
+        /// 完結此幀的 local name（`AlternateContent` 或 `Fallback`）。
+        close: &'static [u8],
+    },
 }
 
 impl Frame {
@@ -427,7 +435,7 @@ impl Frame {
             Frame::TcMar => name == b"tcMar",
             Frame::P => name == b"p",
             Frame::Opaque { name: n } => n.as_slice() == name,
-            Frame::Skip { .. } => name == b"AlternateContent",
+            Frame::Skip { close, .. } => name == *close,
         }
     }
 
@@ -450,6 +458,9 @@ struct TableParser {
     frames: Vec<Frame>,
     /// 全局 `w:p` Start 計數——與 parse_document_xml／sectpr 同口徑。
     p_count: usize,
+    /// `mc:Fallback` 巢狀深度（parser 級）：>0 時其內 `w:p` 不入扁平口徑
+    /// （主解析器整棵吞沒 Fallback，只解析 Choice 一份）。
+    fb: usize,
     /// 已完成的 body 級表格（含開始錨點）。
     roots: Vec<BodyTable>,
 }
@@ -469,6 +480,7 @@ impl TableParser {
         Self {
             frames: Vec::new(),
             p_count: 0,
+            fb: 0,
             roots: Vec::new(),
         }
     }
@@ -550,23 +562,36 @@ impl TableParser {
     }
 
     fn on_start(&mut self, name: &[u8], empty: bool, e: &quick_xml::events::BytesStart) {
-        // 段落計數：任何 `w:p` Start 都算（口徑＝主解析器）；自閉合不算。
-        // 於 Skip／P 早退之前執行——AlternateContent 內的段落照計（雙份），
-        // canonical 不掛 block，但扁平計數不受影響。
-        if name == b"p" && !empty {
-            self.p_count += 1;
-        }
-
-        // 頂端是吞沒幀：只維護深度，其餘一概不看（AlternateContent 全子樹）。
-        if let Some(Frame::Skip { depth }) = self.frames.last_mut() {
+        // 頂端是吞沒幀：只維護深度＋parser 級 Fallback 計數，其餘一概不看。
+        // 段落計數：Choice 路徑（fb == 0）照計，Fallback 內不計——主解析器
+        // 只解析 Choice 一份，扁平口徑三者必須一致（parse_document_xml／sectpr）。
+        if let Some(Frame::Skip { depth, close }) = self.frames.last_mut() {
             if !empty {
-                *depth += 1;
+                if name == b"Fallback" && close == b"AlternateContent" {
+                    // AC 幀內的 Fallback 子樹：parser 級計數把關段落口徑
+                    // （Choice 一份、Fallback 不計）。
+                    self.fb += 1;
+                } else {
+                    if name == b"p" && self.fb == 0 && close == b"AlternateContent" {
+                        self.p_count += 1;
+                    }
+                    *depth += 1;
+                }
             }
             return;
         }
+        // 段落計數：任何 `w:p` Start 都算（口徑＝主解析器：Start 佔槽、自閉合
+        // 不算、Fallback 內不計）；於 P 早退之前執行——巢狀段落（文字框
+        // `w:txbxContent` 內的 `w:p`）在主解析器各佔一槽，此處必須同步計入。
+        if name == b"p" && !empty && self.fb == 0 {
+            self.p_count += 1;
+        }
         // 頂端是段落幀：段落內容（runs/pPr…）非本模組職責，深度包圍之。
-        // （合法上 w:p 內不會再有 w:tbl／w:p；畸形由包圍幀兜住。）
-        if matches!(self.frames.last(), Some(Frame::P)) && name != b"p" {
+        // （合法上 w:p 內不會再有 w:tbl／w:p；畸形由包圍幀兜住。例外：
+        // AC／Fallback 要走到下方 match 拿 Skip 幀，否則其雙份口徑失守。）
+        if matches!(self.frames.last(), Some(Frame::P))
+            && !matches!(name, b"p" | b"AlternateContent" | b"Fallback")
+        {
             if !empty {
                 self.frames.push(Frame::Opaque {
                     name: name.to_vec(),
@@ -861,10 +886,23 @@ impl TableParser {
                     apply_margin(m, name, w);
                 }
             }
-            // ---- AlternateContent：吞沒雙份表示 ----
+            // ---- AlternateContent／裸 Fallback：吞沒雙份表示 ----
             b"AlternateContent" => {
                 if !empty {
-                    self.frames.push(Frame::Skip { depth: 0 });
+                    self.frames.push(Frame::Skip {
+                        depth: 0,
+                        close: b"AlternateContent",
+                    });
+                }
+            }
+            b"Fallback" => {
+                // 裸 Fallback（無 AlternateContent 包裝，畸形但容錯）：單獨入幀
+                // 吞沒；AC 內的 Fallback 由 parser 級 fb 計數處理，不另入幀。
+                if !empty {
+                    self.frames.push(Frame::Skip {
+                        depth: 0,
+                        close: b"Fallback",
+                    });
                 }
             }
             // 其餘 Start：透明包裝入棧（子樹繼續看）；Empty 不入棧。
@@ -879,21 +917,31 @@ impl TableParser {
     }
 
     fn on_end(&mut self, name: &[u8]) {
-        // Skip 頂端：深度優先；深度 0 時的同名 End 才弹出 Skip 幀。
-        if let Some(Frame::Skip { depth }) = self.frames.last() {
-            let last = *depth;
-            if last == 0 {
-                if name == b"AlternateContent" {
+        // Skip 頂端：parser 級 Fallback 計數優先（</mc:Fallback> 出棧）；
+        // 深度 0 時同名 End 才弹出 Skip 幀。
+        if let Some(Frame::Skip { depth, close }) = self.frames.last() {
+            let (d, close) = (*depth, *close);
+            if name == b"Fallback" && self.fb > 0 {
+                self.fb -= 1;
+                return;
+            }
+            if d == 0 {
+                if name == close {
                     self.frames.pop();
                 }
-                // 非同名 End 出现在 Skip 頂端＝標籤錯置（畸形）：忽略。
-            } else if let Some(Frame::Skip { depth }) = self.frames.last_mut() {
+                // 非同名 End 出現在 Skip 頂端＝標籤錯置（畸形）：忽略。
+            } else if let Some(Frame::Skip { depth, .. }) = self.frames.last_mut() {
                 *depth -= 1;
             }
             return;
         }
         // 常規：顶端配對→弹出完結；未配對則向下找同名幀（畸形容忍：
         // 彈掉其上所有幀——未閉合結構老實丟棄，明文仍在 parts）。
+        // Skip 幀已被錯置標籤提前彈出時，</mc:Fallback> 在此兜底降計，
+        // 避免 fb 卡死导致其後所有段落漏計（主解析器無幀、必然遞減）。
+        if name == b"Fallback" {
+            self.fb = self.fb.saturating_sub(1);
+        }
         let mut idx = None;
         if let Some(last) = self.frames.last() {
             if last.closed_by(name) {
@@ -1012,16 +1060,12 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     })
 }
 
-/// 由 `word/document.xml` 明文解析全部 body 級表格（含巢狀投影）。
-///
-/// 純函數、只讀；段落計數與主解析器同口徑（見模組頭）。XML 尾部截斷或
-/// 標籤錯置不 panic——未閉合結構老實丟棄（明文仍在 parts，零失真）。
-pub(crate) fn read_body_tables(xml: &[u8]) -> Vec<BodyTable> {
+/// 事件流單趟餵入（read_body_tables／count_flat_paras 共用，口徑必然一致）。
+fn run_parser(xml: &[u8]) -> TableParser {
     use quick_xml::events::Event;
     let text = String::from_utf8_lossy(xml);
     let mut re = quick_xml::Reader::from_str(&text);
     let mut tp = TableParser::new();
-
     // Err＝尾部截斷／畸形：容忍，回報已收集部分（sectpr 同款策略）。
     while let Ok(ev) = re.read_event() {
         match ev {
@@ -1038,8 +1082,23 @@ pub(crate) fn read_body_tables(xml: &[u8]) -> Vec<BodyTable> {
             _ => {}
         }
     }
+    tp
+}
 
-    tp.roots
+/// 扁平段落計數（與 [`crate::parse_document_xml`] 同口徑的獨立狀態機：
+/// 非自閉合 `w:p` Start 佔槽、`mc:Fallback` 內不計）。僅供交叉驗證柵欄
+/// ——兩實作分岔即測試紅燈（口徑契約的物理防呆）。
+#[cfg(test)]
+pub(crate) fn count_flat_paras(xml: &[u8]) -> usize {
+    run_parser(xml).p_count
+}
+
+/// 由 `word/document.xml` 明文解析全部 body 級表格（含巢狀投影）。
+///
+/// 純函數、只讀；段落計數與主解析器同口徑（見模組頭）。XML 尾部截斷或
+/// 標籤錯置不 panic——未閉合結構老實丟棄（明文仍在 parts，零失真）。
+pub(crate) fn read_body_tables(xml: &[u8]) -> Vec<BodyTable> {
+    run_parser(xml).roots
 }
 
 // ---------------------------------------------------------------------------
@@ -1268,20 +1327,53 @@ mod tests {
         let _ = read_body_tables(xml);
     }
 
-    /// 段落計數口徑：AlternateContent 內的 w:p 照計（與主解析器同口徑），
-    /// 但其內表格不進 canonical（Choice/Fallback 雙份只取非 MC 路徑）。
+    /// 段落計數口徑（t_580c37ac 統一後）：AlternateContent 內 Choice 路徑的
+    /// `w:p` 照計（主解析器解析 Choice 一份），`mc:Fallback` 內不計（雙份去重）；
+    /// 兩者的表格都不進 canonical（Skip 幀吞沒）。
     #[test]
     fn alternate_content_skipped_but_counted() {
-        let xml = "<w:document xmlns:w=\"x\" xmlns:mc=\"m\"><w:body>\n            <w:p><w:r><w:t>前</w:t></w:r></w:p>\n            <mc:AlternateContent><mc:Choice Requires=\"wps\">\n              <w:tbl><w:tblGrid><w:gridCol w:w=\"100\"/></w:tblGrid><w:tr><w:tc><w:p><w:t>MC</w:t></w:p></w:tc></w:tr></w:tbl>\n            </mc:Choice></mc:AlternateContent>\n            <w:tbl><w:tblGrid><w:gridCol w:w=\"200\"/></w:tblGrid></w:tbl>\n            </w:body></w:document>"
+        let xml = "<w:document xmlns:w=\"x\" xmlns:mc=\"m\"><w:body>\n            <w:p><w:r><w:t>前</w:t></w:r></w:p>\n            <mc:AlternateContent><mc:Choice Requires=\"wps\">\n              <w:tbl><w:tblGrid><w:gridCol w:w=\"100\"/></w:tblGrid><w:tr><w:tc><w:p><w:t>MC</w:t></w:p></w:tc></w:tr></w:tbl>\n            </mc:Choice><mc:Fallback>\n              <w:p><w:r><w:t>MC</w:t></w:r></w:p>\n            </mc:Fallback></mc:AlternateContent>\n            <w:tbl><w:tblGrid><w:gridCol w:w=\"200\"/></w:tblGrid></w:tbl>\n            </w:body></w:document>"
             .as_bytes();
         let tables = read_body_tables(xml);
         assert_eq!(tables.len(), 1, "MC 表略過，只見真表");
         assert_eq!(
             tables[0].para_start, 2,
-            "MC 內 w:p 計入扁平口徑（前1＋MC內1）"
+            "Choice 內 w:p 計入扁平口徑（前1＋Choice內1）；Fallback 內同文不重複計"
         );
         assert_eq!(tables[0].table.grid_col_count(), 1);
         assert_eq!(tables[0].table.grid[0].w_pt, Some(10.0));
+    }
+
+    /// 巢狀 `w:p`（文字框）錨點口徑：表格解析器的 `para_start`／
+    /// `Block::Paragraph{index}` 必須與主解析器扁平 Start 序一致——
+    /// 儲存格內段落先於其文字框段落佔位，計數器不得分岔
+    /// （engine-api table_map 因此不再需要「可見段落最小索引」重錨）。
+    #[test]
+    fn nested_txbx_para_start_matches_main_parser() {
+        let xml = "<w:document xmlns:w=\"x\" xmlns:mc=\"m\"><w:body>\n            <w:p><w:r><w:t>表前</w:t></w:r></w:p>\n            <w:tbl><w:tblGrid><w:gridCol w:w=\"100\"/></w:tblGrid><w:tr><w:tc>\n              <w:p><w:r><w:t>格內前</w:t></w:r>\n                <w:r><mc:AlternateContent><mc:Choice Requires=\"wps\">\n                  <w:txbxContent><w:p><w:r><w:t>框內</w:t></w:r></w:p></w:txbxContent>\n                </mc:Choice><mc:Fallback>\n                  <w:p><w:r><w:t>框內</w:t></w:r></w:p>\n                </mc:Fallback></mc:AlternateContent></w:r>\n              <w:r><w:t>格內後</w:t></w:r></w:p>\n            </w:tc></w:tr></w:tbl>\n            </w:body></w:document>"
+            .as_bytes();
+        // 主解析器同口徑交叉驗證（Start 佔槽＋Fallback 吞沒）：
+        // 表前段、格內段、框內段（Choice 一份）＝3。
+        assert_eq!(crate::parse_document_xml(xml).expect("主解析").len(), 3);
+        assert_eq!(
+            crate::table::count_flat_paras(xml),
+            3,
+            "表格計數器與主解析器分岔"
+        );
+        let tables = read_body_tables(xml);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].para_start, 1, "表前段 1 個 → 錨點＝1");
+        let blocks = &tables[0].table.rows[0].cells[0].blocks;
+        let idx: Vec<usize> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Paragraph { index } => Some(*index),
+                _ => None,
+            })
+            .collect();
+        // 格內段 index＝1（Start 序無漂移）；框內段在 Skip 幀內不掛
+        // canonical block（雙份表示整棵不展開），但已入扁平計數。
+        assert_eq!(idx, vec![1], "格內段 index 直指主解析器扁平段落 1");
     }
 
     /// corpus 閘門（PM 補正 2）：manifest 標 table 的全部檔案，解析不 panic，

@@ -113,8 +113,10 @@ pub fn read_sections_per_paragraph(xml: &[u8], n_paragraphs: usize) -> Vec<Secti
 
     use quick_xml::events::Event;
 
-    let mut p_count: usize = 0; // 與 parse_document_xml 同口徑：只算 w:p 的 Start
+    let mut p_count: usize = 0; // 與 parse_document_xml 同口徑：只算 w:p 的 Start（Fallback 內不計）
     let mut block_depth: i32 = 0; // w:p／w:tbl 巢狀深度（0＝body 級）
+    let mut fb: usize = 0; // mc:Fallback 巢狀深度：>0 時其內 w:p 不入扁平口徑
+    let mut ac_stack: Vec<usize> = Vec::new(); // AC 開標的 fb 快照（錯置標籤不致卡死）
     let mut in_sect = false;
     let mut accum: Option<Accum> = None;
     let mut pending: Option<SectionGeometry> = None; // 段落邊界收束、待所屬 w:p 結束時歸檔
@@ -132,12 +134,16 @@ pub fn read_sections_per_paragraph(xml: &[u8], n_paragraphs: usize) -> Vec<Secti
             Event::Start(e) | Event::Empty(e) => {
                 let name = e.local_name().as_ref().to_vec();
                 match name.as_slice() {
+                    b"Fallback" if ev_is_block_start => fb += 1,
+                    b"AlternateContent" if ev_is_block_start => ac_stack.push(fb),
                     b"p" if ev_is_block_start => {
-                        p_count += 1;
+                        if fb == 0 {
+                            p_count += 1;
+                        }
                         block_depth += 1;
                     }
                     b"tbl" if ev_is_block_start => block_depth += 1,
-                    b"sectPr" => {
+                    b"sectPr" if fb == 0 => {
                         if ev_is_block_start {
                             in_sect = true;
                             accum = Some(Accum::new());
@@ -183,6 +189,12 @@ pub fn read_sections_per_paragraph(xml: &[u8], n_paragraphs: usize) -> Vec<Secti
             Event::End(e) => {
                 let name = e.local_name().as_ref().to_vec();
                 match name.as_slice() {
+                    b"AlternateContent" => {
+                        fb = ac_stack.pop().unwrap_or(0);
+                    }
+                    b"Fallback" => {
+                        fb = fb.saturating_sub(1);
+                    }
                     b"sectPr" => {
                         if in_sect {
                             in_sect = false;
