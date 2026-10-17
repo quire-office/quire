@@ -6,8 +6,7 @@
 //! - 型別全 serde 化，跨 wasm 邊界走 JSON 字串。
 
 use quire_layout::{
-    page_breaks_per_section, CaretPos, LayoutEngine, LayoutParams, Page, SectionGeometry,
-    SectionSpec,
+    breaks_from_pages, CaretPos, LayoutEngine, LayoutParams, Page, SectionGeometry, SectionSpec,
 };
 use quire_ooxml::{
     diff_untouched, diff_zip_structure, parse, read_sections_per_paragraph, OoxmlDoc, OoxmlError,
@@ -31,6 +30,9 @@ pub use quire_ooxml::{
     TableRow as CanonicalTableRow, TblWidth as CanonicalTblWidth,
 };
 
+// 表格映射層（Phase3-1b）：canonical 樹 → layout `TableInput`/`TableSlot`。
+mod table_map;
+pub use quire_layout::table::{Pen, RowFrag, TableFrag};
 #[derive(Error, Debug)]
 pub enum EngineError {
     #[error(transparent)]
@@ -86,7 +88,10 @@ impl Engine {
             Some(s) => LayoutParams::from_section(&s.geo, params.font_size_pt, params.line_spacing),
             None => params,
         };
-        let layout = LayoutEngine::with_sections(&texts, params, sections);
+        // 表格槽（Phase3-1b）：canonical 樹＋styles.xml 框線查表 → layout 幾何。
+        let styles = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
+        let slots = table_map::build_slots(&doc.tables, &texts, styles, &params, &sections);
+        let layout = LayoutEngine::with_tables(&texts, params, sections, slots);
         Ok(Self {
             doc,
             layout,
@@ -167,20 +172,37 @@ impl Engine {
 
     pub fn page_display_list(&self, page: usize) -> Option<PageDisplayList> {
         let p: &Page = self.layout.pages().get(page)?;
-        let line_h = self.params.font_size_pt * self.params.line_spacing;
-        let items = p
-            .lines
-            .iter()
-            .enumerate()
-            .map(|(i, l)| DrawItem::Text {
+        let line_h = self.params.line_h_pt();
+        let size = self.params.font_size_pt;
+        let mut items: Vec<DrawItem> = Vec::new();
+        // 底層先畫表格（填色＋框線＋格內文字），再疊正文行；最後對「文字項」
+        // 依 (y, x) 幾何閱讀序重排——跨表格/正文統一由上而下、由左而右。
+        // 填色與框線保持推入序（穩定排序 key 同鍵，不互相顛倒遮蓋次序）。
+        for tp in &p.tables {
+            push_frag_items(&mut items, tp.frag.x_pt, tp.frag.y_pt, &tp.frag, size);
+        }
+        for (i, l) in p.lines.iter().enumerate() {
+            let band = p.line_bands.get(i).copied().unwrap_or(i as u32) as f32;
+            items.push(DrawItem::Text {
                 x: p.margin_left_pt,
-                y: p.margin_top_pt + (i as f32) * line_h,
-                size_pt: self.params.font_size_pt,
+                y: p.margin_top_pt + band * line_h,
+                size_pt: size,
                 // 骨架：run 級粗斜體尚未穿透到顯示列表（演進點：run-aware display list）
                 flags: 0,
                 text: l.text.clone(),
-            })
-            .collect();
+            });
+        }
+        // 穩定排序：非文字項（填色/框線）同鍵保持原序且恆在前；文字項依基線 y
+        // 再依 x 排列，讓「正文→表格→正文」的閱讀序與 PDF 抽取端一致。
+        items.sort_by(|a, b| {
+            let key = |it: &DrawItem| match it {
+                DrawItem::Text { x, y, .. } => {
+                    (1i8, (*y * 4.0).round() as i64, (*x * 4.0).round() as i64)
+                }
+                _ => (0i8, 0, 0),
+            };
+            key(a).cmp(&key(b))
+        });
         Some(PageDisplayList {
             page,
             width_pt: p.width_pt,
@@ -192,11 +214,9 @@ impl Engine {
     /// 分頁斷點清單（JSON）：每頁段落分佈＋跨頁續排標記＋逐頁實際尺寸，
     /// render-lab 基線比對用。
     pub fn page_breaks_json(&self) -> String {
-        let brks = page_breaks_per_section(
-            &self.doc.paragraph_texts(),
-            &self.params,
-            self.layout.sections(),
-        );
+        // 直接拿 LayoutEngine 的實際頁（含表格佔帶）——3-1b 起分頁斷點
+        // 必須反映表格擠壓後的位置，不再是「假裝只有文字流」。
+        let brks = breaks_from_pages(self.layout.pages(), &self.params);
         serde_json::to_string_pretty(&brks).unwrap_or_else(|_| "[]".to_string())
     }
 
@@ -343,6 +363,77 @@ mod collab_tests {
     fn garbage_message_lands_nothing() {
         let mut peer = CollabSession::new(2);
         assert!(peer.apply_remote("不是 JSON").is_empty());
+    }
+}
+
+/// 表格切片 → 顯示列表項（遞迴巢狀表）。座標系：`base_*`＝本切片左上（頁絕對），
+/// CellFrag/RowFrag 內座標全為切片相對（layout 契約），此處一次性換算。
+fn push_frag_items(
+    items: &mut Vec<DrawItem>,
+    base_x: f32,
+    base_y: f32,
+    frag: &TableFrag,
+    size: f32,
+) {
+    let mut ry = 0.0f32; // 切片內列游標（累加列切片高）
+    for row in &frag.rows {
+        let h = row.height_pt;
+        for cell in &row.cells {
+            let x = base_x + cell.x_pt;
+            let y = base_y + ry;
+            if let Some(argb) = cell.fill_argb {
+                items.push(DrawItem::Rect {
+                    x,
+                    y,
+                    w: cell.w_pt,
+                    h,
+                    fill_argb: argb,
+                });
+            }
+            // 框線：邊界線往內收半個線寬（Word 框線畫在格內，不外溢）。
+            let line = |pen: &Pen, x1, y1, x2, y2, items: &mut Vec<DrawItem>| {
+                let (x1, y1, x2, y2) = (
+                    x1 + pen.width_pt / 2.0,
+                    y1 + pen.width_pt / 2.0,
+                    x2 - pen.width_pt / 2.0,
+                    y2 - pen.width_pt / 2.0,
+                );
+                items.push(DrawItem::Rule {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    width_pt: pen.width_pt.max(0.25),
+                    color_argb: pen.color_argb,
+                    dash: pen.dash.clone(),
+                });
+            };
+            if let Some(p) = &cell.edges[quire_layout::table::EDGE_TOP] {
+                line(p, x, y, x + cell.w_pt, y, items);
+            }
+            if let Some(p) = &cell.edges[quire_layout::table::EDGE_BOTTOM] {
+                line(p, x, y + h, x + cell.w_pt, y + h, items);
+            }
+            if let Some(p) = &cell.edges[quire_layout::table::EDGE_LEFT] {
+                line(p, x, y, x, y + h, items);
+            }
+            if let Some(p) = &cell.edges[quire_layout::table::EDGE_RIGHT] {
+                line(p, x + cell.w_pt, y, x + cell.w_pt, y + h, items);
+            }
+            for t in &cell.texts {
+                items.push(DrawItem::Text {
+                    x: base_x + t.x_pt,
+                    y: y + t.y_pt,
+                    size_pt: size,
+                    flags: 0,
+                    text: t.text.clone(),
+                });
+            }
+            for (yoff, nf) in &cell.nested {
+                push_frag_items(items, base_x, base_y + ry + yoff, nf, size);
+            }
+        }
+        ry += h;
     }
 }
 

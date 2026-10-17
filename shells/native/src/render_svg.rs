@@ -70,12 +70,30 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
 fill=\"#{r:02x}{g:02x}{b:02x}\" fill-opacity=\"{a:.3}\"/>"
                 );
             }
-            DrawItem::Rule { x1, y1, x2, y2 } => {
-                let _ = writeln!(
+            DrawItem::Rule {
+                x1,
+                y1,
+                x2,
+                y2,
+                width_pt,
+                color_argb,
+                dash,
+            } => {
+                // argb → #rrggbb + fill-opacity（與 Rect 分支同一口徑）。
+                let a = ((*color_argb >> 24) & 0xFF) as f64 / 255.0;
+                let r = (color_argb >> 16) & 0xFF;
+                let g = (color_argb >> 8) & 0xFF;
+                let b = color_argb & 0xFF;
+                let _ = write!(
                     s,
                     "<line x1=\"{x1:.1}\" y1=\"{y1:.1}\" x2=\"{x2:.1}\" y2=\"{y2:.1}\" \
-stroke=\"#000000\" stroke-width=\"0.5\"/>"
+stroke=\"#{r:02x}{g:02x}{b:02x}\" stroke-opacity=\"{a:.3}\" stroke-width=\"{width_pt:.2}\""
                 );
+                if let Some(d) = dash {
+                    let _ = write!(s, " stroke-dasharray=\"{d}\"");
+                }
+                // 線段座標已由 layout 端做半線內收，這裡只 crisp 繪出。
+                s.push_str(" shape-rendering=\"crispEdges\"/>\n");
             }
         }
     }

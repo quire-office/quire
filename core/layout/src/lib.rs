@@ -18,6 +18,7 @@
 
 pub mod kp;
 pub mod shaping;
+pub mod table;
 pub mod uax14;
 
 pub use shaping::{
@@ -106,9 +107,15 @@ impl LayoutParams {
         (self.page_w_pt - self.margin(MARGIN_LEFT) - self.margin(MARGIN_RIGHT)).max(1.0)
     }
 
+    /// 行網格帶高（pt）＝字級×行距：段落行與表格行帶共用的量化單位
+    /// （Phase3-1b——分頁容量與表格高度都以「帶」計）。
+    pub fn line_h_pt(&self) -> f32 {
+        self.font_size_pt * self.line_spacing
+    }
+
     /// 以本參數（＝文件首 section／後備值）計算每頁行數容量。
     pub fn per_page_lines(&self) -> usize {
-        let line_h = self.font_size_pt * self.line_spacing;
+        let line_h = self.line_h_pt();
         let content_h =
             (self.page_h_pt - self.margin(MARGIN_TOP) - self.margin(MARGIN_BOTTOM)).max(line_h);
         ((content_h / line_h).floor() as usize).max(1)
@@ -149,6 +156,13 @@ pub struct ParagraphLayout {
 pub struct Page {
     pub index: usize,
     pub lines: Vec<Line>,
+    /// 每行的頁內行網格帶索引（無表格頁恆 0..＝舊行為；表格後的文字行帶
+    /// 索引不再等於陣標——y＝margin_top＋band×行高）。serde default 兼容。
+    #[serde(default)]
+    pub line_bands: Vec<u32>,
+    /// 排在此頁的表格切片（pack_run flush 時蓋章；無表格頁＝空）。
+    #[serde(default)]
+    pub tables: Vec<TablePlacement>,
     /// 此頁起頭所屬 section 的實際頁面幾何（老實回報，不假設全文件同一張紙）。
     pub width_pt: f32,
     pub height_pt: f32,
@@ -205,7 +219,8 @@ fn section_params(p: &LayoutParams, sections: &[SectionSpec], para: usize) -> La
     }
 }
 
-/// 段落 i 的有效 section（無 section 清單時由 `p` 合成——單幾何文件，id=0）。
+/// 錨點段落 para 的有效 section（無 section 清單時由 `p` 合成——單幾何文件，id=0）。
+/// sections 仍是**逐段落**表（sectPr 的權威投影）；流項以 `item_para` 錨到段落。
 fn effective_section(p: &LayoutParams, sections: &[SectionSpec], para: usize) -> SectionSpec {
     match sections.get(para) {
         Some(s) => *s,
@@ -225,25 +240,71 @@ fn effective_section(p: &LayoutParams, sections: &[SectionSpec], para: usize) ->
     }
 }
 
-/// 分頁掃描游標狀態：下一條待排放的行 (段落, 段內行偏移)、正在累積的頁、
-/// 上一行的 section、當前頁第一行的位置。Page 邊界處（flush 時）這是完整
+/// 排版游標／頁起頭位置：(流項, 流項內列, 列內帶)。詞典序嚴格單調——
+/// 增量收斂的對齊鍵。文字項的「列」即斷行行號、帶恆 0；表格項的列＝表格
+/// 列序、帶＝列內行網格偏移。**無表格文件的 FlowPos 與舊 (段落, 行) 模型
+/// 一一對應**（段落 i ↔ 流項 i），golden／增量語義逐位元組不變。
+pub type FlowPos = (usize, usize, u32);
+
+/// 排版器眼中的可流項（Phase3-1b）：段落行流或已排版表格的引用。
+/// 表格內部段落（`TableSlot.para_start..para_end`）不出現在流裡——其文字
+/// 由表格切片繪製，雙重流出會雙繪。
+#[derive(Debug, Clone, PartialEq)]
+pub enum FlowItem {
+    Text { para: usize },
+    Table { slot: usize },
+}
+
+/// 版面排定的表格來源（engine 由 canonical 映射餵入；slot＝陣列索引）。
+#[derive(Debug, Clone)]
+pub struct TableSlot {
+    /// 表格排在第 `para_start` 段之前；表格（含巢狀表）內部段落佔用
+    /// [para_start, para_end)，流失權。
+    pub para_start: usize,
+    pub para_end: usize,
+    pub layout: crate::table::TableLayout,
+}
+
+/// 頁面上的表格放置（pack_run flush 時蓋章）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TablePlacement {
+    pub slot: usize,
+    /// 錨點段落（＝表格 para_start）：純表格頁的分頁歸屬與 section 判定用。
+    pub anchor_para: usize,
+    /// 切片首帶在頁內行網格中的索引。
+    pub band: u32,
+    /// 切片（frag.y_pt 已蓋章＝margin_top＋band×行高，頁內絕對）。
+    pub frag: crate::table::TableFrag,
+}
+
+/// 分頁掃描游標狀態：下一條待排放的 (流項, 列, 帶)、正在累積的頁、
+/// 上一項的 section、當前頁第一項的位置。Page 邊界處（flush 時）這是完整
 /// 的「可中斷再續」快照——增量重排（Phase0-6）就靠它從受影響頁重新掃描，
 /// 而不是從頭重排整份文件。
 #[derive(Debug, Clone)]
 struct PackState {
-    cursor: (usize, usize),
+    cursor: FlowPos,
     cur: Vec<Line>,
+    /// `cur[i]` 的行網格帶索引（表格插進同一網格後不再等於陣標；
+    /// 無表格頁恆 0..n，與舊行為全等）。
+    cur_bands: Vec<u32>,
+    cur_tables: Vec<TablePlacement>,
+    /// 當前頁已佔行網格帶數（文字行＋表格帶）。
+    cur_used: u32,
     cur_spec: Option<SectionSpec>,
-    page_start: (usize, usize),
+    page_start: FlowPos,
 }
 
 impl PackState {
     fn fresh() -> Self {
         Self {
-            cursor: (0, 0),
+            cursor: (0, 0, 0),
             cur: Vec::new(),
+            cur_bands: Vec::new(),
+            cur_tables: Vec::new(),
+            cur_used: 0,
             cur_spec: None,
-            page_start: (0, 0),
+            page_start: (0, 0, 0),
         }
     }
 }
@@ -251,9 +312,9 @@ impl PackState {
 /// 可重用的舊版面尾段（增量收斂快速路）。合法性論證見 `PackOutcome::Converged`。
 struct ReuseTail {
     /// 舊版面頁起頭位置（逐頁，嚴格單調）。
-    starts: Vec<(usize, usize)>,
-    /// 尚未反映進版面的段落（本次編輯對象）：收斂點段落必須 **大於** 它，
-    /// 否則尾段可能還含該段的舊內容，重用會吞掉編輯（不正確）。
+    starts: Vec<FlowPos>,
+    /// 尚未反映進版面的流項（本次編輯對象所在項）：收斂點流項必須 **大於**
+    /// 它，否則尾段可能還含該項的舊內容，重用會吞掉編輯（不正確）。
     dirty: usize,
     /// 下一個候選收斂點的下標；`starts[head] < 游標` 的永遠錯失，往後推。
     head: usize,
@@ -261,18 +322,18 @@ struct ReuseTail {
 
 impl ReuseTail {
     /// 掃描越過的舊邊界永不命中，推進 head（邊界嚴格單調 ⇒ 丟掉是安全的）。
-    fn advance(&mut self, page_start: (usize, usize)) {
+    fn advance(&mut self, page_start: FlowPos) {
         while self.head < self.starts.len() && self.starts[self.head] < page_start {
             self.head += 1;
         }
     }
 
-    /// 當前頁邊界是否可收斂：與舊版面某頁起頭**同段同偏移**，且起頭段落
-    /// 已在髒段落之後。此刻兩條掃描的狀態完全相同——游標同位、cur 剛清空、
-    /// cur_spec 同（由起頭前一段的 section 決定，段落 index 永不移位），而
-    /// 其後的行流逐行相同（髒段之後的內容未動）。掃描是決定性的 ⇒ 自此
+    /// 當前頁邊界是否可收斂：與舊版面某頁起頭**同項同列同帶**，且起頭項
+    /// 已在髒項之後。此刻兩條掃描的狀態完全相同——游標同位、cur 剛清空、
+    /// cur_spec 同（由起頭項 index 經 item_sections 決定，index 永不移位），
+    /// 而其後的流逐項相同（髒項之後的內容未動）。掃描是決定性的 ⇒ 自此
     /// 必然重播舊頁序列，舊尾段可整段重用。
-    fn can_converge(&self, page_start: (usize, usize)) -> bool {
+    fn can_converge(&self, page_start: FlowPos) -> bool {
         self.starts.get(self.head) == Some(&page_start) && page_start.0 > self.dirty
     }
 }
@@ -290,77 +351,95 @@ enum PackOutcome {
     BudgetStopped,
 }
 
-/// `pack_run` 的掃描策略：舊版面對齊（收斂）、同步預算、編輯段覆蓋底線。
-/// 全速重建（`paginate_with_starts`）用 `default_run()`；增量路徑按需餵。
+/// `pack_run` 的掃描策略：舊版面對齊（收斂）、同步預算、編輯項覆蓋底線。
+/// 全速重建（`pack_full`）用 `default_run()`；增量路徑按需餵。
 struct PackPolicy<'a> {
     reuse: Option<&'a mut ReuseTail>,
     budget: Option<usize>,
-    /// 已定案區必須覆蓋到此段落（打字期編輯段永不落在未定案尾段）。
-    cover_para: usize,
+    /// 已定案區必須覆蓋到此流項（打字期編輯項永不落在未定案尾段）。
+    cover_item: usize,
 }
 
-impl<'a> PackPolicy<'a> {
+impl PackPolicy<'_> {
     fn default_run() -> Self {
         Self {
             reuse: None,
             budget: None,
-            cover_para: usize::MAX,
+            cover_item: usize::MAX,
         }
     }
 }
 
-/// 行排放主幹（`paginate_per_section` 與增量重排共用同一台狀態機——分頁
+/// 流項 fi 的 section 錨點段落：文字項＝該段；表格項＝其 para_start
+/// （表格排在此段之前，沿用該段所處 section 的頁面幾何）。
+fn item_para(flow: &[FlowItem], tables: &[TableSlot], fi: usize) -> usize {
+    match &flow[fi] {
+        FlowItem::Text { para } => *para,
+        FlowItem::Table { slot } => tables[*slot].para_start,
+    }
+}
+
+/// 流排放主幹（`paginate_per_section` 與增量重排共用同一台狀態機——分頁
 /// 語義只有一份實作，golden 與增量結果不可能分岔）。
 ///
-/// 每步對下一條行算 `start_new`（section 邊界非 continuous，或容量已滿），
-/// 成立則 flush 當前頁。`policy.reuse` 給定時：每次 flush 後比對「新頁起頭
-/// == 舊版面某頁起頭且起頭段落 > 髒段落」，命中即收斂
-/// （`PackOutcome::Converged`，收斂點下標見 `ReuseTail::head`）。
+/// 每步對下一個流項單位算 `start_new`（section 邊界非 continuous，或行網格
+/// 容量已滿），成立則 flush 當前頁。文字項一次放一條行（1 帶）；表格項放
+/// 「至多剩餘容量」的切片（`TableLayout::fragment`，切片可跨頁續排），並就地把
+/// 切片 y 蓋章成頁內絕對座標（行網格帶 × 行高＋上邊界）。無表格文件的
+/// FlowPos 序列與舊 (段落, 行) 模型一一對應——golden 逐位元組不變。
+/// `policy.reuse` 給定時：每次 flush 後比對「新頁起頭 == 舊版面某頁起頭且
+/// 起頭項 > 髒項」，命中即收斂（`PackOutcome::Converged`）。
 /// `policy.budget` 限制本次最多**新增**幾頁，且至少覆蓋完
-/// `policy.cover_para`（打字期編輯段永不落在未定案區）；用盡就在頁邊界
+/// `policy.cover_item`（打字期編輯項永不落在未定案區）；用盡就在頁邊界
 /// 停住（軟分頁：尾段留待 `reflow_step` 空檔續排）。
+#[allow(clippy::too_many_arguments)]
 fn pack_run(
+    flow: &[FlowItem],
     pls: &[&ParagraphLayout],
+    tables: &[TableSlot],
     p: &LayoutParams,
     sections: &[SectionSpec],
     st: &mut PackState,
     out: &mut Vec<Page>,
-    out_starts: &mut Vec<(usize, usize)>,
+    out_starts: &mut Vec<FlowPos>,
     mut policy: PackPolicy<'_>,
 ) -> PackOutcome {
     // 預算至少要能容納錨點頁本身（st 自錨點頁起算；base=已保留頁數）——
-    // 否則連編輯段所在頁都排不出來，打字期「編輯段永不在未定案區」破功。
+    // 否則連編輯項所在頁都排不出來，打字期「編輯項永不在未定案區」破功。
     let budget = policy.budget.map(|b| b.max(1));
-    let cover_para = policy.cover_para;
+    let cover_item = policy.cover_item;
     let base = out.len();
-    let fresh_page =
-        |out: &mut Vec<Page>, out_starts: &mut Vec<(usize, usize)>, st: &mut PackState| {
-            if st.cur.is_empty() {
-                return;
-            }
-            let s = st.cur_spec.unwrap();
-            out.push(Page {
-                index: out.len(),
-                lines: std::mem::take(&mut st.cur),
-                width_pt: s.geo.page_w_pt,
-                height_pt: s.geo.page_h_pt,
-                margin_left_pt: s.geo.margin_left_pt,
-                margin_top_pt: s.geo.margin_top_pt,
-                section_id: s.id,
-            });
-            out_starts.push(st.page_start);
-            st.page_start = st.cursor;
-        };
+    let fresh_page = |out: &mut Vec<Page>, out_starts: &mut Vec<FlowPos>, st: &mut PackState| {
+        if st.cur.is_empty() && st.cur_tables.is_empty() {
+            return;
+        }
+        let s = st.cur_spec.unwrap();
+        out.push(Page {
+            index: out.len(),
+            lines: std::mem::take(&mut st.cur),
+            line_bands: std::mem::take(&mut st.cur_bands),
+            tables: std::mem::take(&mut st.cur_tables),
+            width_pt: s.geo.page_w_pt,
+            height_pt: s.geo.page_h_pt,
+            margin_left_pt: s.geo.margin_left_pt,
+            margin_top_pt: s.geo.margin_top_pt,
+            section_id: s.id,
+        });
+        out_starts.push(st.page_start);
+        st.page_start = st.cursor;
+        st.cur_used = 0;
+    };
 
-    while st.cursor.0 < pls.len() {
-        let (pi, li) = st.cursor;
-        let spec = effective_section(p, sections, pi);
+    while st.cursor.0 < flow.len() {
+        let (fi, li, band) = st.cursor;
+        let anchor = item_para(flow, tables, fi);
+        let spec = effective_section(p, sections, anchor);
         let cap =
             LayoutParams::from_section(&spec.geo, p.font_size_pt, p.line_spacing).per_page_lines();
         let start_new = match st.cur_spec {
             // section 邊界（非 continuous）一律換頁；同尺寸也換。
             Some(prev) if prev.id != spec.id => !spec.geo.continuous,
-            Some(_) => st.cur.len() >= cap, // 容量已滿
+            Some(_) => st.cur_used >= cap as u32, // 行網格容量已滿
             None => false,
         };
         if start_new {
@@ -372,18 +451,54 @@ fn pack_run(
                     return PackOutcome::Converged;
                 }
             }
-            // 預算：只約束「新增頁」，且編輯段落尚未消化完時絕不停車。
-            if out.len() - base >= budget.unwrap_or(usize::MAX) && st.cursor.0 > cover_para {
+            // 預算：只約束「新增頁」，且編輯項尚未消化完時絕不停車。
+            if out.len() - base >= budget.unwrap_or(usize::MAX) && st.cursor.0 > cover_item {
                 return PackOutcome::BudgetStopped;
             }
         }
         st.cur_spec = Some(spec);
-        st.cur.push(pls[pi].lines[li].clone());
-        st.cursor = if li + 1 < pls[pi].lines.len() {
-            (pi, li + 1)
-        } else {
-            (pi + 1, 0)
-        };
+        let line_h = p.line_h_pt();
+        match &flow[fi] {
+            FlowItem::Text { para } => {
+                st.cur.push(pls[*para].lines[li].clone());
+                st.cur_bands.push(st.cur_used);
+                st.cur_used += 1;
+                st.cursor = if li + 1 < pls[*para].lines.len() {
+                    (fi, li + 1, 0)
+                } else {
+                    (fi + 1, 0, 0)
+                };
+            }
+            FlowItem::Table { slot } => {
+                let tl = &tables[*slot].layout;
+                if tl.is_empty() || li >= tl.row_count() {
+                    st.cursor = (fi + 1, 0, 0);
+                    continue;
+                }
+                let remain = cap.saturating_sub(st.cur_used as usize) as u32;
+                let page_left = spec.geo.margin_left_pt;
+                let (mut frag, next, used) = tl.fragment(li, band, remain, false, page_left);
+                if used == 0 {
+                    st.cursor = (fi + 1, 0, 0);
+                    continue; // 防呆：空切片直接過項（正常不可達）
+                }
+                // 切片 y 蓋章：頁內絕對＝上邊界＋已佔帶數×行高。列內偏移由
+                // 繪製端累加 RowFrag.height_pt（切片內列序決定，不另存欄位）。
+                frag.y_pt = spec.geo.margin_top_pt + st.cur_used as f32 * line_h;
+                st.cur_tables.push(TablePlacement {
+                    slot: *slot,
+                    anchor_para: tables[*slot].para_start,
+                    band: st.cur_used,
+                    frag,
+                });
+                st.cur_used += used;
+                st.cursor = if next.0 >= tl.row_count() {
+                    (fi + 1, 0, 0)
+                } else {
+                    (fi, next.0, next.1)
+                };
+            }
+        }
     }
     fresh_page(out, out_starts, st);
     PackOutcome::Exhausted
@@ -398,29 +513,73 @@ pub fn paginate(pls: &[ParagraphLayout], p: &LayoutParams) -> Vec<Page> {
 /// 每頁容量取**該頁所屬 section** 的版心高；section 邊界（`w:type` 非
 /// continuous）必開新頁——同尺寸的相鄰 section 靠 `id` 辨識，不是靠尺寸差異；
 /// continuous 邊界同頁續排。每頁帶著自己起頭 section 的實際尺寸
-/// （render_svg / pagebreaks 據此老實回報）。
+/// （render_svg / pagebreaks 據此老實回報）。無表格的舊呼叫端行為全等。
 pub fn paginate_per_section(
     pls: &[ParagraphLayout],
     p: &LayoutParams,
     sections: &[SectionSpec],
 ) -> Vec<Page> {
-    let refs: Vec<&ParagraphLayout> = pls.iter().collect();
-    paginate_with_starts(&refs, p, sections).0
+    paginate_tables(pls, p, sections, &[]).0
 }
 
-/// `paginate_per_section` 的快取版：同時回傳逐頁起頭位置（段落, 段內行偏移）。
-/// `starts.len() == pages.len()` 且嚴格單調（合成空頁起於流首 (0,0)）——
-/// 增量重排（`LayoutEngine`）的收斂對齊鍵。
-fn paginate_with_starts(
-    pls: &[&ParagraphLayout],
+/// 含表格的公開版（Phase3-1b）：段落流＋表格槽一起排。
+pub fn paginate_tables(
+    pls: &[ParagraphLayout],
     p: &LayoutParams,
     sections: &[SectionSpec],
-) -> (Vec<Page>, Vec<(usize, usize)>) {
+    tables: &[TableSlot],
+) -> (Vec<Page>, Vec<FlowPos>) {
+    let refs: Vec<&ParagraphLayout> = pls.iter().collect();
+    let flow = build_flow(pls.len(), tables);
+    paginate_flow(&flow, &refs, tables, p, sections)
+}
+
+/// 段落＋表格混排流（Phase3-1b）：依 para_start 把表格項插進段落序列，
+/// 表格內部段落（[para_start, para_end)）不進流（文字由表格切片繪製，
+/// 雙重流出會雙繪）。表格項排在 para_start 那一**段之前**。
+pub fn build_flow(n_paras: usize, tables: &[TableSlot]) -> Vec<FlowItem> {
+    let mut flow = Vec::with_capacity(n_paras + tables.len());
+    let mut ti = 0usize;
+    let mut skip_until = 0usize; // 表格內部段落上界（不含）：流失權
+    for para in 0..n_paras {
+        // para_start <= para 的表格都排在當前段之前（依序；同插入點保序）。
+        while ti < tables.len() && tables[ti].para_start <= para {
+            flow.push(FlowItem::Table { slot: ti });
+            skip_until = skip_until.max(tables[ti].para_end);
+            ti += 1;
+        }
+        if para < skip_until {
+            continue; // 表格內部段落：文字由表格切片繪製
+        }
+        flow.push(FlowItem::Text { para });
+    }
+    // para_start 超出末段（文件尾部表格）：續掛文末。
+    while ti < tables.len() {
+        flow.push(FlowItem::Table { slot: ti });
+        ti += 1;
+    }
+    // sanity：表格區間不得重疊、不得越界（engine 映射層的契約）。
+    debug_assert!(tables.iter().enumerate().all(|(i, t)| {
+        (i == 0 || tables[i - 1].para_end <= t.para_start) && t.para_end <= n_paras
+    }));
+    flow
+}
+
+/// 純函數分頁核心：流→頁。回傳（頁序列, 逐頁起頭 FlowPos）。
+fn paginate_flow(
+    flow: &[FlowItem],
+    pls: &[&ParagraphLayout],
+    tables: &[TableSlot],
+    p: &LayoutParams,
+    sections: &[SectionSpec],
+) -> (Vec<Page>, Vec<FlowPos>) {
     let mut pages: Vec<Page> = Vec::new();
-    let mut starts: Vec<(usize, usize)> = Vec::new();
-    // 全速掃描：無重用、無預算、不需覆蓋任何特定段落。
+    let mut starts: Vec<FlowPos> = Vec::new();
+    // 全速掃描：無重用、無預算、不需覆蓋任何特定流項。
     pack_run(
+        flow,
         pls,
+        tables,
         p,
         sections,
         &mut PackState::fresh(),
@@ -438,13 +597,15 @@ fn paginate_with_starts(
                 width_pt: 0.0,
                 para_index: 0,
             }],
+            line_bands: vec![0],
+            tables: Vec::new(),
             width_pt: geo.geo.page_w_pt,
             height_pt: geo.geo.page_h_pt,
             margin_left_pt: geo.geo.margin_left_pt,
             margin_top_pt: geo.geo.margin_top_pt,
             section_id: geo.id,
         });
-        starts.push((0, 0)); // 合成空頁＝流首（starts/pages 同步不變量）
+        starts.push((0, 0, 0)); // 合成空頁＝流首（starts/pages 同步不變量）
     }
     (pages, starts)
 }
@@ -496,14 +657,34 @@ pub fn page_breaks_per_section(
 ) -> Vec<PageBreak> {
     let pls = layout_paragraphs_per_section(texts, p, sections);
     let pages = paginate_per_section(&pls, p, sections);
+    breaks_from_pages(&pages, p)
+}
+
+/// 從已排好的頁序列導出分頁斷點（Phase3-1b：engine 直接拿 LayoutEngine
+/// 的實際頁——含表格佔帶——回報，不再假裝只有文字流）。
+pub fn breaks_from_pages(pages: &[Page], p: &LayoutParams) -> Vec<PageBreak> {
     let mut breaks = Vec::with_capacity(pages.len());
     for (i, pg) in pages.iter().enumerate() {
-        let first_para = pg.lines[0].para_index;
-        let last_para = pg.lines[pg.lines.len() - 1].para_index;
+        // 頁首/頁尾段落歸屬：文字行優先；純表格頁退回切片錨點段落
+        // （首placement 錨點＝頁首、末 placement 錨點＝頁尾的近似口徑）。
+        let para_of = |pg: &Page, first: bool| -> usize {
+            if let Some(l) = if first {
+                pg.lines.first()
+            } else {
+                pg.lines.last()
+            } {
+                return l.para_index;
+            }
+            match (pg.tables.first(), pg.tables.last()) {
+                (Some(t), _) if first => t.anchor_para,
+                (_, Some(t)) => t.anchor_para,
+                _ => 0,
+            }
+        };
+        let first_para = para_of(pg, true);
+        let last_para = para_of(pg, false);
         // 續排：此頁首行的段落在上一頁末行已出現過。
-        let continues = i > 0
-            && pg.lines[0].para_index
-                == pages[i - 1].lines[pages[i - 1].lines.len() - 1].para_index;
+        let continues = i > 0 && first_para == para_of(&pages[i - 1], false);
         // starts_section：此頁起頭 section 與上一頁不同（nextPage 邊界換頁）。
         let starts_section = i > 0 && pages[i - 1].section_id != pg.section_id;
         breaks.push(PageBreak {
@@ -570,10 +751,15 @@ pub struct LayoutEngine {
     pages: Vec<Page>,
     // ---------------- Phase0-6 增量狀態 ----------------
     /// 逐段落斷行結果快取（已蓋 para_index 章）；`None` = 待重斷（髒）。
+    /// 表格內部段落同樣入快取（編輯面可改；版面呈現由表格切片接管）。
     cache: Vec<Option<ParagraphLayout>>,
-    /// 每頁起頭位置（段落, 段內行偏移）。不變量：`starts.len() == pages.len()`，
+    /// 每頁起頭位置（流項, 列, 帶）。不變量：`starts.len() == pages.len()`，
     /// 且嚴格單調——增量收斂的對齊鍵與 shell 重繪錨點。
-    starts: Vec<(usize, usize)>,
+    starts: Vec<FlowPos>,
+    /// 段落＋表格混排流（`build_flow` 產物；表格變動時重建）。
+    flow: Vec<FlowItem>,
+    /// 已排版表格槽（engine 層由 canonical 映射餵入；排序＝para_start）。
+    tables: Vec<TableSlot>,
     /// 預算用盡時的待续掃描狀態＋已定案頁數（Some = 尾段是舊快照的軟分頁）。
     pending: Option<(PackState, usize)>,
     /// 同步路徑預算（頁）；`None`＝全速（預設：既有行為完全不變，只變快）。
@@ -591,6 +777,17 @@ impl LayoutEngine {
         params: LayoutParams,
         sections: Vec<SectionSpec>,
     ) -> Self {
+        Self::with_tables(texts, params, sections, Vec::new())
+    }
+
+    /// Phase3-1b：帶表格槽的建構。`tables` 須依 para_start 排序且不重疊
+    /// （engine 層映射時整理；违约由 build_flow 的 debug_assert 抓）。
+    pub fn with_tables(
+        texts: &[String],
+        params: LayoutParams,
+        sections: Vec<SectionSpec>,
+        tables: Vec<TableSlot>,
+    ) -> Self {
         let cache: Vec<Option<ParagraphLayout>> = vec![None; texts.len()];
         let mut eng = Self {
             texts: texts.to_vec(),
@@ -599,6 +796,8 @@ impl LayoutEngine {
             pages: Vec::new(),
             cache,
             starts: Vec::new(),
+            flow: Vec::new(),
+            tables,
             pending: None,
             sync_budget: None,
         };
@@ -619,7 +818,14 @@ impl LayoutEngine {
             .iter()
             .map(|c| c.as_ref().expect("剛填滿"))
             .collect();
-        let (pages, starts) = paginate_with_starts(&refs, &self.params, &self.sections);
+        self.flow = build_flow(self.texts.len(), &self.tables);
+        let (pages, starts) = paginate_flow(
+            &self.flow,
+            &refs,
+            &self.tables,
+            &self.params,
+            &self.sections,
+        );
         self.pages = pages;
         self.starts = starts;
         self.pending = None;
@@ -650,13 +856,18 @@ impl LayoutEngine {
         self.pending.is_none()
     }
 
-    /// 每頁起頭位置（段落, 段內行偏移）——除錯/基準/增量測試錨點。
-    pub fn page_starts(&self) -> &[(usize, usize)] {
+    /// 每頁起頭位置（流項, 列, 帶）——除錯/基準/增量測試錨點。
+    pub fn page_starts(&self) -> &[FlowPos] {
         &self.starts
     }
 
     pub fn pages(&self) -> &[Page] {
         &self.pages
+    }
+
+    /// 已排版表格槽（Phase3-1b；engine 層顯示列表換算用）。
+    pub fn table_slots(&self) -> &[TableSlot] {
+        &self.tables
     }
 
     /// 段落純文字（編輯面讀目前工作副本；JS 殼游標插入需要）。
@@ -701,25 +912,37 @@ impl LayoutEngine {
         let pl = self.break_para(para);
         self.cache[para] = Some(pl);
 
-        // 錨點 a＝包含編輯段首行的那頁：[0, a) 各頁的行全部來自更前面的
-        // 段落（未動），原樣保留；掃描從 (para,0) 所在頁起重新打包。
+        // 段落 → 流項：表格內部段落（流失權）改了也不動版面切片——老實 noop
+        // （顯示列表不經 Line 途徑，切片文字由 engine 重建槽時更新）。
+        let Some(fi) = self
+            .flow
+            .iter()
+            .position(|it| matches!(it, FlowItem::Text { para: p } if *p == para))
+        else {
+            return evs;
+        };
+        // 錨點 a＝包含編輯項首行的那頁：[0, a) 各頁全部來自更前面的流項
+        // （未動），原樣保留；掃描從 (fi,0,0) 所在頁起重新打包。
         let a = self
             .starts
-            .partition_point(|s| *s <= (para, 0))
+            .partition_point(|s| *s <= (fi, 0, 0))
             .saturating_sub(1);
         let mut st = PackState {
             cursor: self.starts[a],
             cur: Vec::new(),
+            cur_bands: Vec::new(),
+            cur_tables: Vec::new(),
+            cur_used: 0,
             // 空 cur ⇒ 首行必不 trigger 換頁（前頁已保留），None 安全。
             cur_spec: None,
             page_start: self.starts[a],
         };
         let mut out = self.pages[..a].to_vec();
         let mut out_starts = self.starts[..a].to_vec();
-        // 收斂候選：a+1 頁起的舊頁起頭（a 頁含髒段，永不收斂）。
+        // 收斂候選：a+1 頁起的舊頁起頭（a 頁含髒項，永不收斂）。
         let mut reuse = ReuseTail {
             starts: self.starts[a + 1..].to_vec(),
-            dirty: para,
+            dirty: fi,
             head: 0,
         };
         let refs: Vec<&ParagraphLayout> = self
@@ -729,7 +952,9 @@ impl LayoutEngine {
             .collect();
         let old_len = self.pages.len();
         let outcome = pack_run(
+            &self.flow,
             &refs,
+            &self.tables,
             &self.params,
             &self.sections,
             &mut st,
@@ -738,7 +963,7 @@ impl LayoutEngine {
             PackPolicy {
                 reuse: Some(&mut reuse),
                 budget: self.sync_budget,
-                cover_para: para,
+                cover_item: fi,
             },
         );
         let pending = match outcome {
@@ -796,7 +1021,9 @@ impl LayoutEngine {
         // 無舊尾段可收斂（軟分頁已把暫缺尾頁摘除），直接續排到收斂點不存在
         // 為止：要嘛排完（Exhausted），要嘛預算再停一檔（BudgetStopped）。
         let outcome = pack_run(
+            &self.flow,
             &refs,
+            &self.tables,
             &self.params,
             &self.sections,
             &mut st,
@@ -805,7 +1032,7 @@ impl LayoutEngine {
             PackPolicy {
                 reuse: None,
                 budget,
-                cover_para: 0,
+                cover_item: 0,
             },
         );
         let pending = match outcome {
@@ -849,10 +1076,12 @@ impl LayoutEngine {
                 }
                 let line_cp = line.text.chars().count();
                 let x = self.caret_x_in_line(&line.text, cp.saturating_sub(seen_cp));
+                // y 走行網格帶索引（表格插進網格後 li ≠ 帶；缺欄位退回 li）。
+                let band = page.line_bands.get(li).copied().unwrap_or(li as u32) as f32;
                 let rect = CaretRect {
                     page: page.index,
                     x_pt: page.margin_left_pt + x,
-                    y_pt: page.margin_top_pt + (li as f32) * line_h,
+                    y_pt: page.margin_top_pt + band * line_h,
                     height_pt: self.params.font_size_pt,
                 };
                 // cp 落在本行範圍內（含行尾）即命中；最後一行兜底（cp=段尾等）。
@@ -871,7 +1100,16 @@ impl LayoutEngine {
     pub fn caret_at(&self, page: usize, x_pt: f32, y_pt: f32) -> Option<CaretPos> {
         let p = self.pages.get(page)?;
         let line_h = self.params.font_size_pt * self.params.line_spacing;
-        let li = (((y_pt - p.margin_top_pt) / line_h).floor().max(0.0)) as usize;
+        let band = (((y_pt - p.margin_top_pt) / line_h).floor().max(0.0)) as u32;
+        // y→帶→行陣列索引：有表格的頁 band ≠ 陣標（`line_bands` 才是映射，
+        // caret_rect 正向走同一映射）。點在表格帶／空帶上命中不到文字行 →
+        // None（表格內 caret 不在 v1 範圍）。無表格頁 line_bands＝0..n，
+        // position 命中恒等索引，舊行為逐位元組不變。
+        let li = if p.line_bands.is_empty() {
+            band as usize // 舊快照無 line_bands：退回陣標（與 caret_rect 同策）
+        } else {
+            p.line_bands.iter().position(|&b| b == band)?
+        };
         let line = p.lines.get(li)?;
         let rel = (x_pt - p.margin_left_pt).max(0.0);
         let cp_in_line = self.caret_cp_in_line(&line.text, rel);
@@ -1620,7 +1858,7 @@ mod tests {
             .collect();
         let p = LayoutParams::default();
         let mut eng = LayoutEngine::new(&texts, p);
-        let page_of_edit = eng.page_starts().partition_point(|s| *s <= (40, 0)) - 1;
+        let page_of_edit = eng.page_starts().partition_point(|s| *s <= (40, 0, 0)) - 1;
         let evs = eng.replace_paragraph_text(40, &format!("插字：{}", texts[40]));
         let dirty: Vec<usize> = evs
             .iter()
@@ -1736,6 +1974,173 @@ mod tests {
             );
             assert_eq!(eng.page_starts(), fresh.page_starts());
         }
+    }
+
+    // ---------------- Phase3-1b：packer 跨頁表格（review r1 閘門 3 補測） ----------------
+    //
+    // tables.jsonl 的 cross_page 例只鎖 layout 層 `fragment()` 切片原語；
+    // 本節直接走公開管線 `paginate_tables`／`LayoutEngine::with_tables`，鎖
+    // pack_run 的 FlowItem::Table 分支：cur_tables 蓋章、切片 y 蓋章、跨頁
+    // 續排游標、切片後文字行帶（caret 正反向換算）。
+
+    /// 單欄 n 列表格輸入（每列恰 1 帶：一格一行字）。
+    fn tall_table_input(rows: usize) -> crate::table::TableInput {
+        use crate::table::{CellInput, RowInput, TableInput, WidthSpec};
+        TableInput {
+            grid_pt: vec![100.0],
+            width: Some(WidthSpec::Pt(100.0)),
+            rows: (0..rows)
+                .map(|i| RowInput {
+                    cells: vec![CellInput {
+                        text: vec![format!("列{i}")],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// 前段 1＋表格（10 列，佔 10 帶）＋後段 1；頁面只容 7 帶 ⇒ 必然跨頁。
+    fn cross_page_fixture() -> (Vec<String>, LayoutParams, Vec<TableSlot>) {
+        let p = LayoutParams {
+            page_w_pt: 400.0,
+            page_h_pt: 200.0,
+            margins_pt: [40.0; 4],
+            font_size_pt: 12.0,
+            line_spacing: 1.4,
+        };
+        let input = tall_table_input(10);
+        let mut texts = vec!["前段".to_string()];
+        texts.extend((0..10).map(|i| format!("列{i}")));
+        texts.push("後段".to_string());
+        let m = TextMeasurer::new(p.font_size_pt);
+        let tl = crate::table::layout_table(&input, p.content_w_pt(), p.line_h_pt(), &m, 0);
+        let slot = TableSlot {
+            para_start: 1,
+            para_end: 1 + 10,
+            layout: tl,
+        };
+        (texts, p, vec![slot])
+    }
+
+    #[test]
+    fn packer_cross_page_table_slices_and_band_handoff() {
+        let (texts, p, tables) = cross_page_fixture();
+        let pls = layout_paragraphs(&texts, &p);
+        let (pages, starts) = paginate_tables(&pls, &p, &[], &tables);
+        assert_eq!(pages.len(), 2, "10 帶表＋前段 1 帶＞7 帶容量，必跨頁");
+        assert_eq!(starts, vec![(0, 0, 0), (1, 6, 0)], "第二頁起於表格列 6");
+        let line_h = p.line_h_pt();
+
+        // (a) 兩頁各一切片、相鄰不重疊：列序連續，切片整高不越版心下緣。
+        assert_eq!(pages[0].tables.len(), 1);
+        assert_eq!(pages[1].tables.len(), 1);
+        let f0 = &pages[0].tables[0].frag;
+        let f1 = &pages[1].tables[0].frag;
+        assert_eq!((f0.rows.len(), f1.rows.len()), (6, 4));
+        let last0 = f0.rows.last().unwrap().row_index;
+        assert_eq!(f1.rows[0].row_index, last0 + 1, "切片列必須續排不重不跳");
+        // y 蓋章＝上邊界＋帶×行高：頁0 接在前段（帶 0）之後；頁1 從帶 0 起。
+        assert!(
+            (f0.y_pt - (40.0 + 1.0 * line_h)).abs() < 1e-3,
+            "頁0 切片 y 接在前段行後：{}",
+            f0.y_pt
+        );
+        assert!(
+            (f1.y_pt - 40.0).abs() < 1e-3,
+            "頁1 切片 y 從帶 0 起：{}",
+            f1.y_pt
+        );
+        let bottom0 = f0.y_pt + f0.rows.iter().map(|r| r.height_pt).sum::<f32>();
+        assert!(
+            bottom0 <= 200.0 - 40.0 + 1e-3,
+            "頁0 切片不越版心下緣：{bottom0}"
+        );
+        // 同頁內文字帶與表格帶互斥（不重疊的另一面）：頁0 只有前段帶 0。
+        assert_eq!(pages[0].line_bands, vec![0]);
+
+        // (b) 切片旗標：首片 starts_table+continues，末片兩者皆假。
+        assert!(f0.starts_table && f0.continues, "首片：起表且續排");
+        assert!(!f1.starts_table && !f1.continues, "末片：非起表且排完");
+        assert_eq!(pages[0].tables[0].band, 1);
+        assert_eq!(pages[0].tables[0].anchor_para, 1);
+        assert_eq!(pages[1].tables[0].anchor_para, 1);
+
+        // (c) 表格之後的文字行帶接在切片末帶之後（caret y 換算的依據）。
+        assert_eq!(pages[1].line_bands, vec![4], "後段行帶＝切片末帶 3＋1");
+        let eng = LayoutEngine::with_tables(&texts, p, Vec::new(), tables.clone());
+        let tail = eng
+            .caret_rect(CaretPos {
+                para: texts.len() - 1,
+                cp: 0,
+            })
+            .unwrap();
+        assert_eq!(tail.page, 1);
+        assert!(
+            (tail.y_pt - (40.0 + 4.0 * line_h)).abs() < 1e-3,
+            "caret y 依帶 4 換算：{}",
+            tail.y_pt
+        );
+        // 反查：點後段行的 caret rect 位置命中後段段首；點表格帶不回文字行。
+        let back = eng
+            .caret_at(tail.page, tail.x_pt, tail.y_pt + 6.0)
+            .expect("後段行可命中");
+        assert_eq!((back.para, back.cp), (texts.len() - 1, 0));
+        assert!(
+            eng.caret_at(0, 50.0, 40.0 + 1.0 * line_h + 6.0).is_none(),
+            "表格帶上無文字行，反查必 None（v1 表格內 caret 不支援）"
+        );
+    }
+
+    #[test]
+    fn incremental_with_tables_matches_full_rebuild() {
+        // 表格存在下打字：增量 packer（FlowItem::Table 分支＋收斂重用）與
+        // 整篇重建逐頁全等（含 TablePlacement 切片、line_bands、starts）。
+        let (texts, p, tables) = cross_page_fixture();
+        let mut eng = LayoutEngine::with_tables(&texts, p, Vec::new(), tables.clone());
+        assert_eq!(eng.page_count(), 2);
+
+        // 表格內部段落（流失權）：編輯必 noop——版面零變動。
+        let snapshot = eng.pages().to_vec();
+        let evs = eng.replace_paragraph_text(3, "表格內改字");
+        assert!(evs.is_empty(), "流失權段改了不動版面：{evs:?}");
+        assert_eq!(eng.pages(), snapshot.as_slice());
+
+        let edits: Vec<(usize, String)> = vec![
+            (
+                texts.len() - 1,
+                "後段變長：".to_string() + &"字".repeat(200),
+            ),
+            (0, "前段灌長：".to_string() + &"字".repeat(300)), // 表格整體被推頁
+            (0, "前段".to_string()),                           // 還原 → 版面回得去
+            (texts.len() - 1, "後段".to_string()),
+        ];
+        for (i, (para, text)) in edits.iter().enumerate() {
+            let mut want_texts = eng.texts.clone();
+            want_texts[*para] = text.clone();
+            let evs = eng.replace_paragraph_text(*para, text);
+            assert!(
+                evs.iter().any(|e| matches!(e, Invalidation::Page(_))),
+                "第 {i} 筆編輯必須回報髒頁：{evs:?}"
+            );
+            let fresh = LayoutEngine::with_tables(&want_texts, p, Vec::new(), tables.clone());
+            assert_eq!(
+                eng.pages(),
+                fresh.pages(),
+                "表格增量第 {i} 筆版面與重建不符"
+            );
+            assert_eq!(eng.page_starts(), fresh.page_starts());
+        }
+        // 最終版面仍含跨頁切片（兩頁以上各一 TablePlacement）。
+        assert!(
+            eng.pages()
+                .iter()
+                .filter(|pg| !pg.tables.is_empty())
+                .count()
+                >= 2
+        );
     }
 
     #[test]

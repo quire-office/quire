@@ -1,4 +1,4 @@
-//! shaping/pagination golden 快照產生器／驗證器（Phase0-4/0-5 閘門）。
+//! shaping/pagination/table golden 快照產生器／驗證器（Phase0-4/0-5/3-1b 閘門）。
 //!
 //!   cargo run -p quire-layout --bin goldens            # 比對，差異即非零退出
 //!   UPDATE_GOLDENS=1 cargo run -p quire-layout --bin goldens   # 重新生成
@@ -7,8 +7,15 @@
 //! 快照捕捉的就是 **shaped advances 斷點**：斷點位移、字寬改變都會咬golden。
 //! pagination.jsonl（Phase0-5）：{"id":..., "params":{...}, "breaks":[[page,first_para,
 //! last_para,line_count,continues_paragraph],...]}——分頁斷點對段落歸屬的快照。
+//! tables.jsonl（Phase3-1b）：{"id":..., "slices":[{...TableFrag 幾何...}]}——
+//! 表格列高/欄寬/合併/vMerge/跨頁切片/巢狀表的幾何快照（合併儲存格、巢狀
+//! 表格各 1 例；跨頁 2 例：fragment() 切片原語 1 例＋真正走 packer 放置路徑
+//! 的 paginate_tables 1 例，後者鎖 FlowItem::Table 分支的蓋章與帶交接）。
 use std::path::Path;
 
+use quire_layout::table::{
+    layout_table, CellInput, EdgeSetInput, PenInput, RowInput, TableInput, TableLayout, WidthSpec,
+};
 use quire_layout::{break_lines, page_breaks, LayoutParams, Line, TextMeasurer};
 
 const SIZE_PT: f32 = 12.0;
@@ -29,6 +36,345 @@ fn cases() -> Vec<(&'static str, &'static str, f32)> {
         ("empty", "", 200.0),
         ("single_char", "中", 200.0),
     ]
+}
+
+// ---- Phase3-1b：表格幾何黃金集（合併儲存格／巢狀表格／跨頁表格各 1 例）----
+
+fn pen(val: &str, sz: &str, color: &str) -> Option<PenInput> {
+    Some(PenInput {
+        val: Some(val.to_string()),
+        sz: Some(sz.to_string()),
+        color: Some(color.to_string()),
+    })
+}
+
+fn tbl_borders() -> Option<EdgeSetInput> {
+    Some(EdgeSetInput {
+        top: pen("single", "4", "auto"),
+        left: pen("single", "4", "auto"),
+        bottom: pen("single", "4", "auto"),
+        right: pen("single", "4", "auto"),
+        inside_h: pen("single", "4", "auto"),
+        inside_v: pen("single", "4", "auto"),
+    })
+}
+
+fn tcell(text: &str, span: u32, vmerge: Option<bool>) -> CellInput {
+    CellInput {
+        text: if text.is_empty() {
+            vec![]
+        } else {
+            vec![text.to_string()]
+        },
+        grid_span: span,
+        vmerge,
+        ..Default::default()
+    }
+}
+
+fn table_cases() -> Vec<(&'static str, TableInput, f32, u32)> {
+    // (id, 輸入, 可用寬 pt, 單頁預算帶數)——跨頁例用窄預算逼出第二切片。
+    let grid3 = vec![120.0, 100.0, 100.0];
+
+    // 合併儲存格：gridSpan（第 2 列右兩欄合一）＋ vMerge（第 1 欄跨末兩列）。
+    let merged = TableInput {
+        grid_pt: grid3.clone(),
+        width: Some(WidthSpec::Pt(320.0)),
+        borders: tbl_borders(),
+        rows: vec![
+            RowInput {
+                cells: vec![
+                    tcell("項目", 1, None),
+                    tcell("第一季", 1, None),
+                    tcell("第二季", 1, None),
+                ],
+                ..Default::default()
+            },
+            RowInput {
+                cells: vec![tcell("營收", 1, None), tcell("12,345", 2, None)],
+                ..Default::default()
+            },
+            RowInput {
+                cells: vec![
+                    tcell("備註", 1, Some(true)),
+                    tcell("資料甲", 1, Some(true)),
+                    tcell("資料乙", 1, None),
+                ],
+                ..Default::default()
+            },
+            RowInput {
+                cells: vec![
+                    // continue 格**帶非空文字**：快照須證明其內容被忽略
+                    // （ECMA-376 語義——渲染時不出現）。
+                    tcell("續欄甲", 1, Some(false)),
+                    tcell("續欄乙", 1, Some(false)),
+                    tcell("尾列", 1, None),
+                ],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    // 巢狀表格：第 2 格內掛一張 2×2 小表。
+    let inner = TableInput {
+        grid_pt: vec![40.0, 40.0],
+        rows: vec![
+            RowInput {
+                cells: vec![tcell("內甲", 1, None), tcell("內乙", 1, None)],
+                ..Default::default()
+            },
+            RowInput {
+                cells: vec![tcell("內丙", 1, None), tcell("內丁", 1, None)],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let nested = TableInput {
+        grid_pt: vec![150.0, 150.0],
+        width: Some(WidthSpec::Pt(300.0)),
+        borders: tbl_borders(),
+        rows: vec![RowInput {
+            cells: vec![tcell("外層", 1, None), tcell("", 1, None)],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut nested = {
+        let mut n = nested;
+        n.rows[0].cells[1].nested = vec![inner];
+        n
+    };
+    // 巢狀例補一列湊足兩列，快照才看得到列間界。
+    nested.rows.push(RowInput {
+        cells: vec![tcell("末列", 2, None)],
+        ..Default::default()
+    });
+
+    // 跨頁表格：5 列×每列 1 帶，單頁預算 2 帶 → 切成多片。
+    let cross = TableInput {
+        grid_pt: vec![90.0, 90.0],
+        width: Some(WidthSpec::Pt(180.0)),
+        borders: tbl_borders(),
+        rows: (0..5)
+            .map(|i| RowInput {
+                cells: vec![
+                    tcell(&format!("列{i}甲"), 1, None),
+                    tcell(&format!("列{i}乙"), 1, None),
+                ],
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+
+    vec![
+        ("merged_cells", merged, 340.0, 64),
+        ("nested_table", nested, 340.0, 64),
+        ("cross_page", cross, 200.0, 2),
+    ]
+}
+
+fn snap_pen(p: &Option<quire_layout::table::Pen>) -> String {
+    match p {
+        None => "null".to_string(),
+        Some(v) => format!(
+            "{{\"w\":{:.2},\"c\":\"{:08x}\",\"d\":{}}}",
+            v.width_pt,
+            v.color_argb,
+            match &v.dash {
+                None => "null".to_string(),
+                Some(d) => json_str(d),
+            }
+        ),
+    }
+}
+
+fn snap_frag(f: &quire_layout::table::TableFrag, depth: usize) -> String {
+    let mut s = format!(
+        "{{\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"st\":{},\"co\":{},\"rows\":[",
+        f.x_pt, f.y_pt, f.width_pt, f.starts_table, f.continues
+    );
+    for (i, r) in f.rows.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&format!(
+            "{{\"h\":{:.1},\"b0\":{},\"ri\":{},\"sr\":{},\"er\":{},\"cells\":[",
+            r.height_pt, r.band_start, r.row_index, r.starts_row, r.ends_row
+        ));
+        for (j, c) in r.cells.iter().enumerate() {
+            if j > 0 {
+                s.push(',');
+            }
+            let edges: Vec<String> = c.edges.iter().map(snap_pen).collect();
+            s.push_str(&format!(
+                "{{\"x\":{:.1},\"w\":{:.1},\"e\":[{},{},{},{}],\"fill\":{},\"t\":[{}],\"n\":[{}]}}",
+                c.x_pt,
+                c.w_pt,
+                edges[0],
+                edges[1],
+                edges[2],
+                edges[3],
+                match c.fill_argb {
+                    None => "null".to_string(),
+                    Some(v) => format!("\"{v:08x}\""),
+                },
+                c.texts
+                    .iter()
+                    .map(|t| format!(
+                        "{{\"x\":{:.1},\"y\":{:.1},\"s\":{}}}",
+                        t.x_pt,
+                        t.y_pt,
+                        json_str(&t.text)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                c.nested
+                    .iter()
+                    .map(|(dy, nf)| format!(
+                        "[{:.1},{}]",
+                        dy,
+                        // 巢狀深度護欄：快照只展開兩層（本黃金集最深巢狀一層）。
+                        if depth < 1 {
+                            snap_frag(nf, depth + 1)
+                        } else {
+                            "\"…\"".to_string()
+                        }
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
+        }
+        s.push_str("]}");
+    }
+    s.push_str("]}");
+    let _ = depth;
+    s
+}
+
+fn snap_table(id: &str, input: &TableInput, avail_w: f32, page_bands: u32) -> String {
+    let m = TextMeasurer::new(SIZE_PT);
+    let tl: TableLayout = layout_table(input, avail_w, 16.8, &m, 0);
+    let mut s = format!(
+        "{{\"id\":{},\"avail_w\":{:.1},\"page_bands\":{},\"x_off\":{:.1},\"width\":{:.1},\"row_units\":[{}],\"slices\":[",
+        json_str(id),
+        avail_w,
+        page_bands,
+        tl.x_off,
+        tl.width,
+        tl.row_units
+            .iter()
+            .map(|u| format!("{u:.2}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    // 沿 (row, band) 游標連續切片直到排完（跨頁表格→多片）。
+    let mut cur = (0usize, 0u32);
+    let mut first = true;
+    loop {
+        let (frag, next, _used) = tl.fragment(cur.0, cur.1, page_bands, false, 72.0);
+        if frag.rows.is_empty() {
+            break;
+        }
+        if !first {
+            s.push(',');
+        }
+        first = false;
+        s.push_str(&snap_frag(&frag, 0));
+        if next == cur {
+            break;
+        }
+        cur = next;
+        if cur.0 >= tl.row_count() {
+            break;
+        }
+    }
+    s.push_str("]}");
+    s
+}
+
+/// 跨頁表格（packer 路徑）golden：真正走 `paginate_tables`——前段 1＋10 列
+/// 表（10 帶）＋後段 1，頁面只容 7 帶。鎖的是 `fragment()` 原語快照鎖不到
+/// 的 pack_run FlowItem::Table 分支：切片 y 蓋章（非零）、starts_table/
+/// continues 旗標、頁起頭 FlowPos、表後文字行帶交接。
+fn snap_packer_cross_page() -> String {
+    use quire_layout::{layout_paragraphs, paginate_tables, TableSlot};
+    let p = LayoutParams {
+        page_w_pt: 400.0,
+        page_h_pt: 200.0,
+        margins_pt: [40.0; 4],
+        font_size_pt: SIZE_PT,
+        line_spacing: 1.4,
+    };
+    let input = TableInput {
+        grid_pt: vec![100.0],
+        width: Some(WidthSpec::Pt(100.0)),
+        borders: tbl_borders(),
+        rows: (0..10)
+            .map(|i| RowInput {
+                cells: vec![tcell(&format!("列{i}"), 1, None)],
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let mut texts = vec!["前段".to_string()];
+    texts.extend((0..10).map(|i| format!("列{i}")));
+    texts.push("後段".to_string());
+    let m = TextMeasurer::new(SIZE_PT);
+    let tl = layout_table(&input, p.content_w_pt(), p.line_h_pt(), &m, 0);
+    let tables = vec![TableSlot {
+        para_start: 1,
+        para_end: 11,
+        layout: tl,
+    }];
+    let pls = layout_paragraphs(&texts, &p);
+    let (pages, starts) = paginate_tables(&pls, &p, &[], &tables);
+
+    let mut s = format!(
+        "{{\"id\":\"cross_page_packer\",\"page_bands\":{},\"starts\":[{}],\"pages\":[",
+        p.per_page_lines(),
+        starts
+            .iter()
+            .map(|(a, b, c)| format!("[{a},{b},{c}]"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    for (i, pg) in pages.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&format!(
+            "{{\"bands\":[{}],\"lines\":[{}],\"tables\":[",
+            pg.line_bands
+                .iter()
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            pg.lines
+                .iter()
+                .map(|l| format!("{{\"p\":{},\"t\":{}}}", l.para_index, json_str(&l.text)))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        for (j, tp) in pg.tables.iter().enumerate() {
+            if j > 0 {
+                s.push(',');
+            }
+            s.push_str(&format!(
+                "{{\"slot\":{},\"anchor\":{},\"band\":{},\"frag\":{}}}",
+                tp.slot,
+                tp.anchor_para,
+                tp.band,
+                snap_frag(&tp.frag, 0)
+            ));
+        }
+        s.push_str("]}");
+    }
+    s.push_str("]}");
+    s
 }
 
 fn pagination_cases() -> Vec<(&'static str, Vec<String>, LayoutParams)> {
@@ -136,12 +482,18 @@ fn main() {
         .into_iter()
         .map(|(id, texts, p)| snap_break(id, &p, &page_breaks(&texts, &p)))
         .collect();
+    let tables: Vec<String> = table_cases()
+        .into_iter()
+        .map(|(id, input, avail_w, page_bands)| snap_table(id, &input, avail_w, page_bands))
+        .chain(std::iter::once(snap_packer_cross_page()))
+        .collect();
 
     let update = std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v != "0");
     let mut fails = 0usize;
-    let snaps: [(&str, &[String]); 2] = [
+    let snaps: [(&str, &[String]); 3] = [
         ("shaping.jsonl", &shaping),
         ("pagination.jsonl", &pagination),
+        ("tables.jsonl", &tables),
     ];
     for (name, snapshot) in snaps {
         let path = root.join(name);
