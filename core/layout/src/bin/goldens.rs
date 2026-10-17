@@ -103,8 +103,10 @@ fn table_cases() -> Vec<(&'static str, TableInput, f32, u32)> {
             },
             RowInput {
                 cells: vec![
-                    tcell("", 1, Some(false)),
-                    tcell("", 1, Some(false)),
+                    // continue 格**帶非空文字**：快照須證明其內容被忽略
+                    // （ECMA-376 語義——渲染時不出現）。
+                    tcell("續欄甲", 1, Some(false)),
+                    tcell("續欄乙", 1, Some(false)),
                     tcell("尾列", 1, None),
                 ],
                 ..Default::default()
