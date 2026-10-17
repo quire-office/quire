@@ -190,10 +190,10 @@ fn toggle_attr_on(e: &quick_xml::events::BytesStart) -> bool {
 }
 
 /// 套用段落或 run 內部的樣式標籤（Start 與 Empty 事件共用）。
+/// 注意：不含 `pStyle`——段落樣式改由呼叫端寫進段落棧頂（巢狀 `w:p` 口徑）。
 fn apply_style_tag(
     name: &[u8],
     e: &quick_xml::events::BytesStart,
-    cur_para: &mut Option<Paragraph>,
     cur_run: &mut Option<Run>,
     run_has_color: &mut bool,
     run_has_underline: &mut bool,
@@ -228,30 +228,41 @@ fn apply_style_tag(
                 r.color = parsed;
             }
         }
-        b"pStyle" => {
-            if let Some(p) = cur_para.as_mut() {
-                if let Some(v) = attr_val(e, "val") {
-                    p.style = Some(v);
-                }
-            }
-        }
         _ => {}
     }
 }
 
 /// 最小 word/document.xml 解析器：段落 / run / 文字 / 粗斜體 / 顏色 / 底線 / 刪除線 / 超連結 / 段落樣式。
-/// 骨架階段刻意不求全面（欄位、圖形皆未處理），演進順序由 corpus 綠燈率驅動。
+///
+/// 扁平段落序列的索引口徑（與 `table.rs`、`sectpr.rs` 三解析器對齊的唯一真相）：
+/// - 每個非自閉合 `w:p` 的 **Start** 佔一個槽位（Start 預位、End 回填完成品）
+///   ——扁平索引＝Start 序，巢狀 `w:p`（`w:txbxContent` 文字框段落）不改寫
+///   外層槽位，外層段落於文字框前後的文字完整保留；
+/// - `mc:Fallback` 子樹整體吞沒：`mc:AlternateContent` 的 Choice（DrawingML）
+///   與 Fallback（VML）是同一內容的雙份表示，只解析 Choice 一份，圖形文字框
+///   段落不再出現雙份（對照 `table.rs` `Frame::Skip` 同款做法；其內段落與
+///   table／sectpr 同口徑——不計）。
+///
+/// 骨架階段刻意不求全面（欄位、圖形幾何皆未處理），演進順序由 corpus 綠燈率驅動。
 fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
     use quick_xml::events::Event;
     let text = String::from_utf8_lossy(xml).into_owned();
     let mut reader = quick_xml::Reader::from_str(&text);
     let mut out: Vec<Paragraph> = Vec::new();
-    let mut cur_para: Option<Paragraph> = None;
+    // 段落棧：(out 槽位, 半成品)。Start push、End pop 回填——巢狀 w:p 各自
+    // 獨立，內層完結不影響外層（舊實作單一 cur_para 會被內層覆寫＋清空，
+    // 外層文字全吞；corpus 實測 25.5% 檔案受害）。
+    let mut stack: Vec<(usize, Paragraph)> = Vec::new();
     let mut cur_run: Option<Run> = None;
     let mut run_has_color = false;
     let mut run_has_underline = false;
     let mut hyperlink_depth = 0usize;
     let mut in_t = false;
+    // >0＝正在吞 mc:Fallback 子樹（巢狀 Fallback 以開閉計數自行平衡）。
+    let mut fb: usize = 0;
+    // mc:AlternateContent 巢狀棧：開標時快照 fb，閉標時還原——錯置標籤
+    // （AC 先於 Fallback 閉合／Fallback 漏閉）不致 fb 卡死而吞掉檔尾。
+    let mut ac_stack: Vec<usize> = Vec::new();
 
     loop {
         match reader
@@ -261,9 +272,20 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
             Event::Eof => break,
             Event::Start(e) => {
                 let name = e.local_name().as_ref().to_vec();
+                if fb > 0 {
+                    // Fallback 子樹內：只維護巢狀深度與 AC 快照，其餘一概不看。
+                    if name == b"Fallback" {
+                        fb += 1;
+                    } else if name == b"AlternateContent" {
+                        ac_stack.push(fb);
+                    }
+                    continue;
+                }
                 match name.as_slice() {
                     b"p" => {
-                        cur_para = Some(Paragraph::default());
+                        // Start 即預位：扁平索引＝Start 序（口徑鐵律，見函式頭注）。
+                        stack.push((out.len(), Paragraph::default()));
+                        out.push(Paragraph::default());
                         cur_run = None;
                         hyperlink_depth = 0;
                     }
@@ -276,10 +298,18 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                         run_has_underline = false;
                     }
                     b"t" => in_t = true,
+                    b"pStyle" => {
+                        if let Some((_, p)) = stack.last_mut() {
+                            if let Some(v) = attr_val(&e, "val") {
+                                p.style = Some(v);
+                            }
+                        }
+                    }
+                    b"Fallback" => fb += 1,
+                    b"AlternateContent" => ac_stack.push(fb),
                     other => apply_style_tag(
                         other,
                         &e,
-                        &mut cur_para,
                         &mut cur_run,
                         &mut run_has_color,
                         &mut run_has_underline,
@@ -287,25 +317,48 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                 }
             }
             Event::Empty(e) => {
+                if fb > 0 {
+                    continue;
+                }
                 let name = e.local_name().as_ref().to_vec();
-                apply_style_tag(
-                    name.as_slice(),
-                    &e,
-                    &mut cur_para,
-                    &mut cur_run,
-                    &mut run_has_color,
-                    &mut run_has_underline,
-                );
+                if name == b"pStyle" {
+                    // pStyle 幾乎總是自閉合標籤：寫進段落棧頂（巢狀 w:p 口徑）。
+                    if let Some((_, p)) = stack.last_mut() {
+                        if let Some(v) = attr_val(&e, "val") {
+                            p.style = Some(v);
+                        }
+                    }
+                } else {
+                    apply_style_tag(
+                        name.as_slice(),
+                        &e,
+                        &mut cur_run,
+                        &mut run_has_color,
+                        &mut run_has_underline,
+                    );
+                }
             }
             Event::End(e) => {
                 let name = e.local_name().as_ref().to_vec();
+                // MC 標籤完結先行處理（即便在 Fallback 內）：錯置標籤
+                // （AC 先於 Fallback 閉合）不致 fb 卡死而吞掉檔尾。
+                if name == b"AlternateContent" {
+                    fb = ac_stack.pop().unwrap_or(0);
+                    continue;
+                }
+                if fb > 0 {
+                    if name == b"Fallback" {
+                        fb = fb.saturating_sub(1);
+                    }
+                    continue;
+                }
                 match name.as_slice() {
                     b"t" => in_t = false,
                     b"hyperlink" => {
                         hyperlink_depth = hyperlink_depth.saturating_sub(1);
                     }
                     b"r" => {
-                        if let (Some(mut run), Some(p)) = (cur_run.take(), cur_para.as_mut()) {
+                        if let (Some(mut run), Some((_, p))) = (cur_run.take(), stack.last_mut()) {
                             // <w:hyperlink> 內 run 無顯式樣式時預設藍（0xFF0563C1）＋底線。
                             if hyperlink_depth > 0 {
                                 if !run_has_color && run.color.is_none() {
@@ -319,14 +372,19 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                         }
                     }
                     b"p" => {
-                        if let Some(p) = cur_para.take() {
-                            out.push(p);
+                        // 完結回填 Start 時預留的槽位；無配對 Start（錯置標籤）＝忽略。
+                        // 未閉合到 EOF 的段落保持預位的空段落——Start 口徑不因此漂移。
+                        if let Some((slot, p)) = stack.pop() {
+                            out[slot] = p;
                         }
                     }
                     _ => {}
                 }
             }
             Event::Text(t) => {
+                if fb > 0 {
+                    continue;
+                }
                 if let Some(r) = cur_run.as_mut().filter(|_| in_t) {
                     let s = t.unescape().map_err(|e| OoxmlError::Xml(e.to_string()))?;
                     r.text.push_str(&s);
@@ -378,6 +436,181 @@ mod tests {
     #[test]
     fn rejects_non_docx() {
         assert!(parse(b"not a zip at all").is_err());
+    }
+
+    // ---------------- 解析器缺陷回歸（t_580c37ac） ----------------
+
+    /// 缺陷 1 回歸：`mc:AlternateContent` 的 Choice（DrawingML）與 Fallback
+    /// （VML）是同一內容的雙份表示——只解析 Choice 一份，段落不得雙份。
+    #[test]
+    fn alternate_content_fallback_parsed_once() {
+        let xml = r#"<w:document xmlns:w="x" xmlns:mc="m" xmlns:wps="w">
+            <w:body>
+            <w:p><w:r><w:t>前</w:t></w:r></w:p>
+            <mc:AlternateContent>
+              <mc:Choice Requires="wps"><w:p><w:r><w:t>框內文</w:t></w:r></w:p></mc:Choice>
+              <mc:Fallback><w:p><w:r><w:t>框內文</w:t></w:r></w:p></mc:Fallback>
+            </mc:AlternateContent>
+            <w:p><w:r><w:t>後</w:t></w:r></w:p>
+            </w:body></w:document>"#
+            .as_bytes();
+        let paras = parse_document_xml(xml).expect("解析");
+        let texts: Vec<String> = paras
+            .iter()
+            .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["前", "框內文", "後"],
+            "Choice/Fallback 同文只出一份段落"
+        );
+    }
+
+    /// 缺陷 1 邊界：Fallback 內有樣板段落與 pStyle 也不得洩漏到扁平序列；
+    /// 裸 Fallback（無 AC 包裝，畸形但存在）同樣整棵吞沒。
+    #[test]
+    fn fallback_content_never_leaks() {
+        let xml = r#"<w:document xmlns:w="x" xmlns:mc="m">
+            <w:body>
+            <mc:Fallback>
+              <w:p><w:pPr><w:pStyle w:val="BodyText"/></w:pPr><w:r><w:t>VML雙份</w:t></w:r></w:p>
+            </mc:Fallback>
+            <w:p><w:r><w:t>正文</w:t></w:r></w:p>
+            </w:body></w:document>"#
+            .as_bytes();
+        let paras = parse_document_xml(xml).expect("解析");
+        assert_eq!(paras.len(), 1, "裸 Fallback 內段落不進扁平序列");
+        assert_eq!(paras[0].runs[0].text, "正文");
+        assert!(paras[0].style.is_none());
+    }
+
+    /// 缺陷 2 回歸：巢狀 `w:p`（`w:txbxContent` 文字框段落）不改寫外層槽位
+    /// ——外層段落在文字框前後的文字完整保留，內層段落各自佔位。
+    #[test]
+    fn nested_txbx_paragraph_keeps_outer_text() {
+        let xml = r#"<w:document xmlns:w="x" xmlns:mc="m" xmlns:wps="w" xmlns:wp="wp">
+            <w:body>
+            <w:p>
+              <w:r><w:t>框前文</w:t></w:r>
+              <w:r><mc:AlternateContent>
+                <mc:Choice Requires="wps"><w:drawing><wp:anchor><wps:txbx>
+                  <w:txbxContent><w:p><w:r><w:t>框內文</w:t></w:r></w:p></w:txbxContent>
+                </wps:txbx></wp:anchor></w:drawing></mc:Choice>
+                <mc:Fallback><w:pict><v:shape xmlns:v="v"><w:txbxContent>
+                  <w:p><w:r><w:t>框內文</w:t></w:r></w:p></w:txbxContent></v:shape></w:pict></mc:Fallback>
+              </mc:AlternateContent></w:r>
+              <w:r><w:t>框後文</w:t></w:r>
+            </w:p>
+            </w:body></w:document>"#
+            .as_bytes();
+        let paras = parse_document_xml(xml).expect("解析");
+        let texts: Vec<String> = paras
+            .iter()
+            .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["框前文框後文", "框內文"],
+            "Start 序：外層先佔位且前後文完整；內層文字框段落另佔一槽（Choice 一份）"
+        );
+    }
+
+    /// 缺陷 2 的段落索引口徑：巢狀段落以 Start 預位——索引＝Start 序，
+    /// 外層 End 回填不位移任何既有槽位（table.rs／sectpr.rs 引用同一口徑）。
+    #[test]
+    fn nested_paragraph_uses_start_slot_order() {
+        let xml = br#"<w:body>
+            <w:p><w:r><w:t>A</w:t></w:r>
+              <w:p><w:r><w:t>B</w:t></w:r></w:p>
+              <w:p><w:r><w:t>C</w:t></w:r></w:p>
+            <w:r><w:t>D</w:t></w:r></w:p>
+            <w:p><w:r><w:t>E</w:t></w:r></w:p>
+            </w:body>"#;
+        let paras = parse_document_xml(xml).expect("解析");
+        let texts: Vec<String> = paras
+            .iter()
+            .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+            .collect();
+        assert_eq!(texts, vec!["AD", "B", "C", "E"], "扁平索引＝w:p Start 序");
+    }
+
+    /// corpus 段落數回歸（缺陷 1＋2 實據檔）：修前 Choice/Fallback 雙份解析
+    /// ＋巢狀 w:p 覆寫吞字（舊口徑 LINKED 57 段雙份）；修後與獨立口徑
+    /// （start 佔槽＋Fallback 吞沒）逐檔一致的 30 段。
+    #[test]
+    fn corpus_txbx_paragraph_counts_regression() {
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
+        let cases: [(&str, usize, &[&str]); 4] = [
+            // (檔案, 修後段落數, 修前被吞／雙份、修後必須完整保留的文字)
+            (
+                "xopt/OpenXmlPowerToolsExamples_TextReplacer02_Test01.docx",
+                4,
+                &["the on the Insert tab"],
+            ),
+            // WC049：修前段數同為 8 但外層段「You can also type…」整段被內層
+            // 覆寫吞字（缺陷 2 吞字指紋）；修後必須完整保留。
+            (
+                "xopt/TestFiles_WC_WC049-Text-Box-in-Cell.docx",
+                8,
+                &["You can also type a keyword"],
+            ),
+            (
+                "ooxmlexport/LinkedTextBoxes.docx",
+                30,
+                &["Congratulations", "IA Scholarship Program Nominations"],
+            ),
+            // shapes-with-text：修前 10 段（VML 雙份），修後 6 段。
+            (
+                "poi/test-data_document_shapes-with-text.docx",
+                6,
+                &["Floating text box"],
+            ),
+        ];
+        for (rel, want_n, must_keep) in cases {
+            let bytes = std::fs::read(corpus.join(rel)).unwrap_or_else(|e| panic!("讀 {rel}: {e}"));
+            let doc = parse(&bytes).expect("parse");
+            let texts = doc.paragraph_texts();
+            assert_eq!(texts.len(), want_n, "{rel}：段落數偏離修後基準");
+            let joined = texts.join("\n");
+            for frag in must_keep {
+                assert!(
+                    joined.contains(frag),
+                    "{rel}：文字「{frag}」被吞（缺陷 2 復發？）"
+                );
+            }
+        }
+    }
+
+    /// corpus 全檔柵欄：含 txbxContent／Fallback 的檔案，主解析器扁平段落數
+    /// 必須等於表格解析器（獨立狀態機）的 Start 計數器——兩個實作共用以
+    /// 上注「同口徑」為契約，此柵欄讓契約在 corpus 上逐檔可驗證。
+    #[test]
+    fn corpus_txbx_files_start_count_agrees() {
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
+        let manifest = std::fs::read_to_string(corpus.join("manifest.json")).expect("manifest");
+        let mut checked = 0usize;
+        for chunk in manifest.split("\"file\": \"").skip(1) {
+            let rel = chunk.split('"').next().unwrap_or_default();
+            if rel.is_empty() {
+                continue;
+            }
+            let path = corpus.join(rel);
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(doc) = parse(&bytes) else { continue };
+            let Some(xml) = doc.parts.get("word/document.xml") else {
+                continue;
+            };
+            if !String::from_utf8_lossy(xml).contains("txbxContent") {
+                continue;
+            }
+            let got = parse_document_xml(xml).expect("主解析").len();
+            let want = crate::table::count_flat_paras(xml);
+            assert_eq!(got, want, "{rel}：主解析器與表格計數器口徑分岔");
+            checked += 1;
+        }
+        assert!(checked >= 50, "txbx 檔案數異常：{checked}");
     }
 
     #[test]

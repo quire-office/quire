@@ -315,7 +315,7 @@ fn avail_w_for(sections: &[SectionSpec], params: &LayoutParams, para: usize) -> 
 }
 
 /// 由 canonical 樹＋扁平文字建出排版完成的表格槽序列（engine 開啟文件時呼叫）。
-/// 回傳依 para_start 排序（parser 保證 body 序單調），`build_flow` 契约直接成立。
+/// 回傳依 para_start 排序（parser 保證 body 序單調），`build_flow` 契約直接成立。
 pub fn build_slots(
     tables: &[BodyTable],
     texts: &[String],
@@ -335,14 +335,15 @@ pub fn build_slots(
             let avail_w = avail_w_for(sections, params, bt.para_start);
             let layout = quire_layout::table::layout_table(&input, avail_w, line_h, &m, 0);
             let raw_end = table_para_end(&bt.table, bt.para_start);
-            // 索引空間對齊（corpus 實測）：`para_start` 出自表格解析器自己的
-            // 段落計數器，遇 `w:pict/txbxContent` 壁壘會**少計**文字框段落，
-            // 而 `Block::Paragraph{index}` 引用的是主解析器扁平序號——兩個計數
-            // 器在有文字框的文件會分岔（WC048 實證）。因此：
-            // 1. 表格有可見段落時，錨點以「可見段落最小索引」為準（真話空間）；
-            // 2. 無可見段落退回解析器值，再統一 clamp 進 [prev_end, n_paras]。
-            let visible = min_visible_para(&bt.table);
-            let start = visible.unwrap_or(bt.para_start).max(prev_end).min(n_paras);
+            // 索引空間對齊（t_580c37ac 後）：三個解析器（parse_document_xml／
+            // table／sectpr）共用單一計數口徑——非自閉合 `w:p` 的 Start 佔槽
+            // （主解析器 Start 預位、End 回填），`mc:Fallback` 整棵不計。
+            // `para_start` 與 `Block::Paragraph{index}` 出自同一計數器，錨點
+            // 天然落在扁平索引空間，不再需要「可見段落最小索引」重錨（舊
+            // workaround：txbxContent 使兩計數器分岔，WC048 實證；已隨口徑
+            // 統一移除）。clamp 保留——純防衛，守 `build_flow` 的「槽區間
+            // 不重疊且 ≤ n_paras」契約不被畸形輸入擊穿。
+            let start = bt.para_start.max(prev_end).min(n_paras);
             let end = raw_end.max(start).min(n_paras).max(start);
             prev_end = end;
             TableSlot {
@@ -354,19 +355,78 @@ pub fn build_slots(
         .collect()
 }
 
-/// 表格（含巢狀）可見段落的最小扁平索引；全無＝None（錨點只能退回解析器計數）。
-fn min_visible_para(t: &Table) -> Option<usize> {
-    let mut best: Option<usize> = None;
-    t.walk(&mut |sub| {
-        for row in &sub.rows {
-            for cell in &row.cells {
-                for b in &cell.blocks {
-                    if let Block::Paragraph { index } = b {
-                        best = Some(best.map_or(*index, |v: usize| v.min(*index)));
+// ---------------------------------------------------------------------------
+// 測試
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quire_ooxml::parse;
+
+    fn corpus_bytes(rel: &str) -> Vec<u8> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
+        std::fs::read(root.join(rel)).unwrap_or_else(|e| panic!("讀 {rel}: {e}"))
+    }
+
+    /// 口徑統一回歸（t_580c37ac）：含巢狀 `w:p`（txbxContent）的 corpus 檔，
+    /// `build_slots` 的槽區間必須直接合法（不重疊、≤ 段落數）——舊
+    /// 「可見段落最小索引」重錨 workaround 已隨三解析器口徑統一移除，
+    /// 錨點不再漂移。WC048／WC049／shape-in-floattable 為 txbx-in-cell
+    /// 實據檔（舊註 WC048 實證）。
+    #[test]
+    fn txbx_corpus_slots_anchor_without_rework() {
+        for rel in [
+            "xopt/TestFiles_WC_WC048-Text-Box-in-Cell.docx",
+            "xopt/TestFiles_WC_WC049-Text-Box-in-Cell.docx",
+            "ooxmlexport/shape-in-floattable.docx",
+            "xopt/TestFiles_HC031-Complicated-Document.docx",
+        ] {
+            let doc = parse(&corpus_bytes(rel)).expect("parse");
+            let texts = doc.paragraph_texts();
+            let params = quire_layout::LayoutParams::default();
+            let styles = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
+            let slots = build_slots(&doc.tables, &texts, styles, &params, &[]);
+            assert!(!slots.is_empty(), "{rel}：標為 txbx-in-cell 檔應有表格槽");
+            let mut prev_end = 0usize;
+            for s in &slots {
+                assert!(
+                    s.para_start >= prev_end
+                        && s.para_end <= texts.len()
+                        && s.para_end >= s.para_start,
+                    "{rel}：槽區間 [{}，{}) 違反 build_flow 契約（prev_end={prev_end}, n={})",
+                    s.para_start,
+                    s.para_end,
+                    texts.len()
+                );
+                prev_end = s.para_end;
+            }
+            // 錨點即解析器計數（無重錨）：每個槽的 para_start 必須與首個
+            // 可見段落索引一致或由空表段前錨點自然給出——以不重疊＋不越界
+            // 為硬契約（上面已驗），此處再鎖「槽起點不晚於首可見段落＋1」
+            // 防錨點向後漂移吞正文段。
+            for (slot, bt) in slots.iter().zip(&doc.tables) {
+                let mut min_vis: Option<usize> = None;
+                bt.walk(&mut |sub| {
+                    for row in &sub.rows {
+                        for cell in &row.cells {
+                            for b in &cell.blocks {
+                                if let Block::Paragraph { index } = b {
+                                    min_vis = Some(min_vis.map_or(*index, |v| v.min(*index)));
+                                }
+                            }
+                        }
                     }
+                });
+                if let Some(v) = min_vis {
+                    assert!(
+                        slot.para_start <= v && v < slot.para_end.max(slot.para_start + 1),
+                        "{rel}：槽 [{}, {}) 未涵蓋首可見段落 {v}（錨點漂移？）",
+                        slot.para_start,
+                        slot.para_end
+                    );
                 }
             }
         }
-    });
-    best
+    }
 }
