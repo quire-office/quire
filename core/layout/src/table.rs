@@ -16,10 +16,11 @@
 //! - `cantSplit=false` 的列可在**行帶**邊界拆頁；`cantSplit=true` 整列搬下頁
 //!   （切片器一律給至少一整列，單列高於一頁時老實溢出——卡片明示）。
 //! - `w:trHeight`：atLeast→與自然高取大；exact→以宣告為準（內容超高溢出繪製）。
-//! - vMerge：merged block＝restart＋全部 continue 格段落**串接**（Word 語義），
-//!   文字自 block 頂逐帶繪製、天然跨過參加列（每條文字只落在其所屬列的切片）；
-//!   block 高於參加列總和時餘額補到 continue 列。水平內邊界不畫框線，
-//!   block 底邊由末參加格承擔（取 restart 格的底框——Word 語義）。
+//! - vMerge：merged block＝restart 格持有內容；continue 格內容在渲染時被忽略
+//!   （ECMA-376＋LO ground truth），自身 lines／text_bands 清空。文字自 block
+//!   頂（restart 列帶 0＋pad_top）逐帶繪製；block 高於參加列總和時餘額補到
+//!   continue 列。水平內邊界不畫框線，block 底邊由末參加格承擔（取 restart
+//!   格的底框——Word 語義）。
 //! - `w:tblHeader` 跨頁重複、`w:noWrap`、對角線框線、tblStylePr 條件底紋：
 //!   v1 不實作（`header` 欄僅記錄）。
 //! - 框線繼承：tcBorders ＞ tblBorders ＞ 表格樣式框線（engine 查表餵入）；
@@ -236,10 +237,7 @@ struct CellGeom {
     pad_bottom_bands: u32,
     /// 段落文字總帶高＝Σ max(1, 段帶數)。
     text_bands: u32,
-    /// 是否宣告過段落（text 非空）：vMerge block 串接時，完全空白的
-    /// continue 格**不**貢獻帶高（Word：合併格內的空段落不顯現）。
-    has_text: bool,
-    /// 斷行結果（全部段落串接；vMerge block 時含參加格串接後的全文字）。
+    /// 斷行結果（全部段落串接；vMerge continue 格渲染時內容被忽略→清空）。
     lines: Vec<Line>,
     /// 內容總帶高＝pad_top ＋ max(text, nested) ＋ pad_bottom（vMerge 後重算）。
     content_bands: u32,
@@ -534,7 +532,6 @@ pub fn layout_table(
                 pad_top_bands,
                 pad_bottom_bands,
                 text_bands,
-                has_text: cell.text.iter().any(|t| !t.trim().is_empty()),
                 lines,
                 content_bands,
                 edges,
@@ -592,10 +589,11 @@ fn break_cell_paras(paras: &[String], inner_w: f32, m: &TextMeasurer) -> (Vec<Li
 }
 
 /// 找 vMerge block（同欄 col==c 且 span==1 才參與——跨欄格 vMerge v1 不實作）：
-/// - head（restart）：lines＝head＋各 continue 段落串接；content_bands 重算
-///   （含參加格的上下邊距）；底框搬給末參加格（block 底邊），自身底邊清空。
-/// - continue：清空自身 lines（文字已由 head 持有）；頂邊清空；
-///   末參加格 block_tail=true 並承接 head 底框。
+/// - head（restart）：保留自身 lines／text_bands；底框搬給末參加格（block 底邊），
+///   自身底邊清空。
+/// - continue：清空自身 lines／text_bands（ECMA-376＋LO ground truth：continue
+///   格內容在渲染時被忽略——實測 LO 不顯現 continue 段落，串接顯示是錯的）；
+///   頂邊清空；末參加格 block_tail=true 並承接 head 底框。
 fn assign_merge_blocks(rows: &mut [RowGeom]) {
     let n_rows = rows.len();
     let max_col = rows
@@ -633,47 +631,8 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
             let block = next_block;
             next_block += 1;
 
-            // 收集參加格資料（一次讀完，避免多輪 borrow）。
-            let mut members: Vec<(usize, u32, u32, u32, Vec<Line>)> = Vec::new();
-            for (k, row) in rows[head..=last].iter().enumerate() {
-                let g = row
-                    .cells
-                    .iter()
-                    .find(|g| g.col == c && g.col_span == 1)
-                    .expect("參加格存在");
-                members.push((
-                    head + k,
-                    g.pad_top_bands,
-                    g.pad_bottom_bands,
-                    g.text_bands,
-                    g.lines.clone(),
-                ));
-            }
-            let mut joined: Vec<Line> = Vec::new();
-            let mut text_bands = 0u32;
-            let mut extra_pad = 0u32;
-            for (k, (rr, pt, pb, tb, ls)) in members.iter().enumerate() {
-                let blank = !rows[*rr].cells.iter().any(|g| g.col == c && g.has_text);
-                if !blank {
-                    joined.extend(ls.iter().cloned());
-                    text_bands += tb;
-                }
-                if k > 0 && !blank {
-                    extra_pad += pt + pb;
-                }
-            }
-            let (head_pad_top, head_pad_bot, nested_keep) = {
-                let hg = rows[head]
-                    .cells
-                    .iter()
-                    .find(|g| g.col == c)
-                    .expect("head 存在");
-                (
-                    hg.pad_top_bands,
-                    hg.pad_bottom_bands,
-                    hg.nested.iter().map(|n| n.total_bands).max().unwrap_or(0),
-                )
-            };
+            // continue 格內容在渲染時被忽略（ECMA-376）：不需串接參加格段落；
+            // head 保留自身 lines／text_bands，content_bands 維持 pass1 值。
             {
                 let hg = rows[head]
                     .cells
@@ -683,10 +642,6 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
                 hg.merge = Some((block, true));
                 hg.block_head_row = head;
                 hg.block_tail = last == head;
-                hg.lines = joined;
-                hg.text_bands = text_bands;
-                hg.content_bands =
-                    head_pad_top + text_bands.max(nested_keep).max(1) + head_pad_bot + extra_pad;
                 // block 底邊交給末格；head 自身底邊清空（內部橫線不畫）。
                 let bottom = hg.edges[EDGE_BOTTOM].clone();
                 if last > head {
@@ -1283,7 +1238,9 @@ mod tests {
     }
 
     #[test]
-    fn vmerge_block_text_spans_rows_without_duplicate() {
+    fn vmerge_continue_cell_content_is_ignored() {
+        // ECMA-376＋LO ground truth：vMerge continue 格的段落在渲染時被忽略，
+        // 只有 restart 格內容顯現（實測 LO PDF：continue 文字不出現）。
         let mk = |restart: bool, text: &[&str]| CellInput {
             text: text.iter().map(|s| s.to_string()).collect(),
             vmerge: Some(restart),
@@ -1307,29 +1264,20 @@ mod tests {
             ],
             ..Default::default()
         };
-        // 讓 block 需要 2 帶、兩列各 1 帶→餘額補 0，文字跨列。
         inp.rows[0].height_exact = false;
         inp.rows[1].height_exact = false;
         let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
-        let (f, _, _) = t.fragment(0, 0, 99, true, 0.0);
+        let (f, _, _) = t.fragment(0, 0, 99, true, 72.0);
         assert_eq!(f.rows.len(), 2);
-        let all: Vec<(&str, f32)> = f
+        let all: Vec<&str> = f
             .rows
             .iter()
-            .flat_map(|rf| {
-                rf.cells[0]
-                    .texts
-                    .iter()
-                    .map(|t| (t.text.as_str(), rf.height_pt))
-            })
+            .flat_map(|rf| rf.cells[0].texts.iter().map(|t| t.text.as_str()))
             .collect();
-        let head_texts: Vec<&str> = all.iter().map(|(s, _)| *s).collect();
-        assert!(head_texts.contains(&"合併甲"), "head 段在列0切片");
-        // 合併乙屬 block 帶 1，落在哪列切片取決於列高；總之必須出現且只出現一次。
-        assert_eq!(
-            head_texts.iter().filter(|s| **s == "合併乙").count(),
-            1,
-            "block 文字不遺失、不重複"
+        assert!(all.contains(&"合併甲"), "restart 格內容顯現");
+        assert!(
+            !all.contains(&"合併乙"),
+            "continue 格內容被忽略（ECMA-376），不得出現：{all:?}"
         );
         // continue 格不畫水平內邊。
         let last_row = &f.rows[f.rows.len() - 1];
