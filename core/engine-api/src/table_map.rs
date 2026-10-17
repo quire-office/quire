@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use quire_layout::table::{
-    CellInput, CellMarginInput, EdgeSetInput, PenInput, RowInput, TableInput, WidthSpec,
+    CellBlock, CellInput, CellMarginInput, EdgeSetInput, PenInput, RowInput, TableInput, WidthSpec,
 };
 use quire_layout::{LayoutParams, SectionSpec, TableSlot, TextMeasurer};
 use quire_ooxml::{Block, BodyTable, Borders, Margins, Table, TblWidth};
@@ -248,18 +248,22 @@ pub fn table_input(
                     .cells
                     .iter()
                     .map(|c| {
-                        let mut text = Vec::new();
-                        let mut nested = Vec::new();
+                        // 格內 block **保持文件序**交錯映射（根因 1）：段落與
+                        // 子表各自入獨立 Vec 會丟失拓撲序，子表後的尾部段落
+                        // 會被拉回頂部——流式堆疊的前提就在這裡。
+                        let mut blocks = Vec::new();
                         for b in &c.blocks {
                             match b {
                                 // 段落索引引用扁平序列：越界＝畸形檔，跳過（容錯）。
                                 Block::Paragraph { index } => {
                                     if let Some(s) = texts.get(*index) {
-                                        text.push(s.clone());
+                                        blocks.push(CellBlock::Text(s.clone()));
                                     }
                                 }
                                 Block::Table(inner) => {
-                                    nested.push(table_input(inner, texts, styles))
+                                    blocks.push(CellBlock::Table(Box::new(table_input(
+                                        inner, texts, styles,
+                                    ))));
                                 }
                             }
                         }
@@ -267,8 +271,7 @@ pub fn table_input(
                             width: c.props.width.as_ref().and_then(width_spec),
                             grid_span: c.props.grid_span(),
                             vmerge: c.props.vmerge_restart(),
-                            text,
-                            nested,
+                            blocks,
                             borders: c.props.borders.as_ref().map(edge_set),
                             fill: c
                                 .props
