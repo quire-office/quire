@@ -262,6 +262,69 @@ pub(crate) struct LineSpan {
 
 /// 文字 → 行（含區間）。性質見 lib.rs 的 property test。
 pub(crate) fn kp_break_lines(text: &str, max_w: f32, m: &TextMeasurer) -> Vec<LineSpan> {
+    kp_break_lines_at(text, max_w, m, &[])
+}
+
+/// 在排序去重的位元組偏移集 `fb`（恆為字元邊界、嚴格介於段首/段尾之間）
+/// 處劈開 atom 並把左半標 `forced`（其後必收行）。切點若恰在 atom 邊界，
+/// 只給左邻 atom 補 forced 旗標、不產生零寬 atom。切點所在 atom 的
+/// `trim_from` 收進切點左側（左半主體完整保留、不計寬區不吞字）。
+fn split_atoms_forced(atoms: Vec<Atom>, fb: &[usize]) -> Vec<Atom> {
+    let mut out: Vec<Atom> = Vec::with_capacity(atoms.len() + fb.len());
+    let mut fi = 0usize;
+    'atoms: for a in atoms {
+        // 切點落在本 atom 內部（start < b < end）的所有位置依序劈段。
+        while fi < fb.len() && fb[fi] <= a.start {
+            fi += 1; // 已越過：切點恰在 atom 左界＝前一 atom 已處理
+        }
+        let mut cur = a;
+        while fi < fb.len() && fb[fi] < cur.end {
+            let b = fb[fi];
+            let left = Atom {
+                start: cur.start,
+                end: b,
+                trim_from: cur.trim_from.min(b),
+                forced: true,
+                hyphen: false, // 硬斷點非連字號斷行（計價只屬軟斷）
+            };
+            out.push(left);
+            cur = Atom {
+                start: b,
+                end: cur.end,
+                trim_from: cur.trim_from.max(b),
+                forced: false,
+                hyphen: cur.hyphen,
+            };
+            fi += 1;
+        }
+        // 切點恰在 atom 右界：本 atom 標 forced（其後即斷點），零寬續段不产生。
+        if fi < fb.len() && fb[fi] == cur.end {
+            out.push(Atom {
+                forced: true,
+                ..cur
+            });
+            fi += 1;
+            while fi < fb.len() && fb[fi] == cur.end {
+                fi += 1; // 同位重複（上游已 dedup，防禦性跳過）
+            }
+            continue 'atoms;
+        }
+        out.push(cur);
+    }
+    out
+}
+
+/// 帶**強制斷點**的 KP 斷行（`w:br w:type="page"` 的斷行層承載）：
+/// `forced_cp` 為碼點偏移，折成位元組後把所在 atom 劈開、左半標 `forced`
+/// ——`optimal_ranges` 對 forced atom 必收行（硬邊界），其後文字必然另起一行。
+/// `0`／段尾偏移由呼叫端（para_breaks→pack_run 的段落級硬斷）處理，此處只
+/// 影響斷行形狀。空清單與 `kp_break_lines` 同路徑（golden 逐位元組不動）。
+pub(crate) fn kp_break_lines_at(
+    text: &str,
+    max_w: f32,
+    m: &TextMeasurer,
+    forced_cp: &[usize],
+) -> Vec<LineSpan> {
     if text.is_empty() {
         return vec![LineSpan {
             line: Line {
@@ -311,6 +374,26 @@ pub(crate) fn kp_break_lines(text: &str, max_w: f32, m: &TextMeasurer) -> Vec<Li
                 forced: j != last || a.forced,
                 hyphen: j == last && a.hyphen,
             });
+        }
+    }
+
+    // 強制斷點：碼點 → 位元組，折到字元邊界、排序去重、剔掉段首/段尾
+    // （那兩個位置不是「行內」斷點，由段落級硬斷處理），然後劈 atom。
+    if !forced_cp.is_empty() {
+        let mut fb: Vec<usize> = Vec::with_capacity(forced_cp.len());
+        for &cp in forced_cp {
+            let total = text.chars().count();
+            if cp == 0 || cp >= total {
+                continue;
+            }
+            if let Some((b, _)) = text.char_indices().nth(cp) {
+                fb.push(b);
+            }
+        }
+        fb.sort_unstable();
+        fb.dedup();
+        if !fb.is_empty() {
+            atoms = split_atoms_forced(atoms, &fb);
         }
     }
 

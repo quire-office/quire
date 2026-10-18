@@ -126,6 +126,20 @@ pub fn parse_color_val(val: &str) -> Option<u32> {
 pub struct Paragraph {
     pub style: Option<String>,
     pub runs: Vec<Run>,
+    /// 強制分頁斷點（`w:r/w:br w:type="page"`，ECMA-376 §17.4.3）：本段純文字
+    /// 序列中的**碼點偏移**，語義＝斷點落在「第 o 個碼點之前」：
+    /// - `o = 0`：斷點前無文字（br 是 run 開頭）→ 本段之前硬斷頁；
+    /// - `o = 段長`：br 後無文字 → 本段之後硬斷頁；
+    /// - `0 < o < 段長`：段中硬斷，斷點前的文字留在原頁。
+    ///
+    /// 一個段落可有多處（逐 br 記錄，允許重複——分頁層自行去重）。
+    ///
+    /// 鐵律：`w:lastRenderedPageBreak` 是 Word 存檔當下的**渲染提示**，依
+    /// ECMA-376 不具強制斷頁語義，**不得**記入此欄（對齊 LO 卻錯 Word 的
+    /// 教訓，見 t_01fa57ac 背景）；`w:type="column"`／`textWrapping`（預設）
+    /// 亦非頁斷點。round-trip 與此欄無關：寫回來源仍是 parts 明文。
+    #[serde(default)]
+    pub page_breaks: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,10 +317,10 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
     let text = String::from_utf8_lossy(xml).into_owned();
     let mut reader = quick_xml::Reader::from_str(&text);
     let mut out: Vec<Paragraph> = Vec::new();
-    // 段落棧：(out 槽位, 半成品)。Start push、End pop 回填——巢狀 w:p 各自
-    // 獨立，內層完結不影響外層（舊實作單一 cur_para 會被內層覆寫＋清空，
-    // 外層文字全吞；corpus 實測 25.5% 檔案受害）。
-    let mut stack: Vec<(usize, Paragraph)> = Vec::new();
+    // 段落棧：(out 槽位, 半成品, 已入文碼點數)。Start push、End pop 回填——
+    // 巢狀 w:p 各自獨立，內層完結不影響外層（舊實作單一 cur_para 會被內層
+    // 覆寫＋清空，外層文字全吞；corpus 實測 25.5% 檔案受害）。
+    let mut stack: Vec<(usize, Paragraph, usize)> = Vec::new();
     let mut cur_run: Option<Run> = None;
     let mut run_has_color = false;
     let mut run_has_underline = false;
@@ -347,13 +361,18 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                 match name.as_slice() {
                     b"p" => {
                         // Start 即預位：扁平索引＝Start 序（口徑鐵律，見函式頭注）。
-                        stack.push((out.len(), Paragraph::default()));
+                        stack.push((out.len(), Paragraph::default(), 0));
                         out.push(Paragraph::default());
                         cur_run = None;
                         hyperlink_depth = 0;
                     }
                     b"hyperlink" => {
                         hyperlink_depth += 1;
+                    }
+                    b"br" => {
+                        // 成對標籤寫法 `<w:br w:type="page"></w:br>`（合法但罕見）
+                        // 的入口：Start/Empty 互斥，自閉合不會重入此臂、零雙計。
+                        record_page_break(&mut stack, &e);
                     }
                     b"fldSimple" => {
                         // 簡單欄：w:instr 指令立即分類，其子樹 run 全標記。
@@ -383,7 +402,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     }
                     b"t" => in_t = true,
                     b"pStyle" => {
-                        if let Some((_, p)) = stack.last_mut() {
+                        if let Some((_, p, _)) = stack.last_mut() {
                             if let Some(v) = attr_val(&e, "val") {
                                 p.style = Some(v);
                             }
@@ -405,7 +424,12 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     continue;
                 }
                 let name = e.local_name().as_ref().to_vec();
-                if name == b"fldChar" {
+                if name == b"br" {
+                    // 強制分頁（§17.4.3）：只認 w:type="page"；column／缺省
+                    // （textWrapping）不是頁斷點。`w:lastRenderedPageBreak`
+                    // 是另一元素，永不進此臂（渲染提示≠斷點，見 Paragraph 欄注）。
+                    record_page_break(&mut stack, &e);
+                } else if name == b"fldChar" {
                     // 複雜欄三態（Word 產出恒為自閉合標籤）：begin 開層、
                     // separate 翻結果標記、end 出層。未配對（漏 begin）老實無效。
                     match attr_val(&e, "fldCharType").as_deref() {
@@ -428,7 +452,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     }
                 } else if name == b"pStyle" {
                     // pStyle 幾乎總是自閉合標籤：寫進段落棧頂（巢狀 w:p 口徑）。
-                    if let Some((_, p)) = stack.last_mut() {
+                    if let Some((_, p, _)) = stack.last_mut() {
                         if let Some(v) = attr_val(&e, "val") {
                             p.style = Some(v);
                         }
@@ -469,7 +493,8 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                         hyperlink_depth = hyperlink_depth.saturating_sub(1);
                     }
                     b"r" => {
-                        if let (Some(mut run), Some((_, p))) = (cur_run.take(), stack.last_mut()) {
+                        if let (Some(mut run), Some((_, p, _))) = (cur_run.take(), stack.last_mut())
+                        {
                             // 欄位標記只給「有文字」的結果 run：fldChar 標記 run
                             //（begin/separate/end）同處欄位子樹但無文字，若保留
                             // 標記，發射層代換會把頁碼注入空 run（虛增字）。
@@ -491,7 +516,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     b"p" => {
                         // 完結回填 Start 時預留的槽位；無配對 Start（錯置標籤）＝忽略。
                         // 未閉合到 EOF 的段落保持預位的空段落——Start 口徑不因此漂移。
-                        if let Some((slot, p)) = stack.pop() {
+                        if let Some((slot, p, _)) = stack.pop() {
                             out[slot] = p;
                         }
                     }
@@ -511,6 +536,10 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                 }
                 if let Some(r) = cur_run.as_mut().filter(|_| in_t) {
                     let s = t.unescape().map_err(|e| OoxmlError::Xml(e.to_string()))?;
+                    // 已入文碼點計數隨文字增長——br-page 記錄偏移的標尺。
+                    if let Some((_, _, cp_done)) = stack.last_mut() {
+                        *cp_done += s.chars().count();
+                    }
                     r.text.push_str(&s);
                 }
             }
@@ -528,6 +557,20 @@ fn attr_val(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
             None
         }
     })
+}
+
+/// `w:br` 自閉合標籤 → 段級斷點記錄（僅 `w:type="page"`，ECMA-376 §17.4.3）。
+/// 偏移＝段落棧頂「已入文碼點數」：文字一律經 Text 臂先行累計，故 br 前後
+/// 的文字各歸斷點兩側（`o=0` 段前、`o=段長` 段後、中間段中）。無配對段落
+/// （body 級游离 br，畸形）＝老實忽略。`w:type="column"`／缺省（textWrapping）
+/// 不記；`w:lastRenderedPageBreak` 是另一元素名，呼叫端標籤比對就擋掉。
+fn record_page_break(stack: &mut [(usize, Paragraph, usize)], e: &quick_xml::events::BytesStart) {
+    if attr_val(e, "type").as_deref() != Some("page") {
+        return;
+    }
+    if let Some((_, p, cp_done)) = stack.last_mut() {
+        p.page_breaks.push(*cp_done);
+    }
 }
 
 #[cfg(test)]
@@ -997,5 +1040,77 @@ mod tests {
 
         assert_eq!(runs[3].color, Some(0xFF00_FF00));
         assert!(!runs[3].underline);
+    }
+
+    // ---------------- 強制分頁 br-page（t_01fa57af） ----------------
+
+    /// br-page 記錄：段首（o=0）／段中（o=碼點偏移）／段尾（o=段長）三口徑，
+    /// 一併驗證文字不被 br 吞、多 br 依序記錄。
+    #[test]
+    fn br_page_records_codepoint_offsets() {
+        let xml = r#"<w:document xmlns:w="x">
+            <w:body>
+            <w:p>
+              <w:r><w:br w:type="page"/></w:r>
+              <w:r><w:t>ab</w:t></w:r>
+              <w:r><w:br w:type="page"/></w:r>
+              <w:r><w:t>cd</w:t></w:r>
+              <w:r><w:br w:type="page"/></w:r>
+            </w:p>
+            </w:body></w:document>"#
+            .as_bytes();
+        let paras = parse_document_xml(xml).expect("解析");
+        assert_eq!(paras.len(), 1);
+        let text: String = paras[0].runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(text, "abcd", "br 不得吞文字");
+        assert_eq!(
+            paras[0].page_breaks,
+            vec![0, 2, 4],
+            "段首/段中/段尾三口徑偏移"
+        );
+    }
+
+    /// 非頁斷點一律不記：column、缺省（textWrapping）、換行；渲染提示
+    /// `w:lastRenderedPageBreak`（t_01fa57ac 教訓）與欄內斷點同理無效。
+    #[test]
+    fn only_page_type_counts_as_break() {
+        let xml = r#"<w:document xmlns:w="x">
+            <w:body>
+            <w:p>
+              <w:r><w:t>x</w:t><w:br w:type="column"/><w:br/><w:br w:type="line"/></w:r>
+              <w:r><w:lastRenderedPageBreak/><w:t>y</w:t></w:r>
+            </w:p>
+            </w:body></w:document>"#
+            .as_bytes();
+        let paras = parse_document_xml(xml).expect("解析");
+        assert!(paras[0].page_breaks.is_empty(), "非 page 型別/渲染提示不記");
+        let text: String = paras[0].runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(text, "xy");
+    }
+
+    /// 成對標籤 `<w:br></w:br>`（合法罕見寫法）同樣記錄且**不雙計**；
+    /// 無配對段落的游离 br（畸形）老實忽略、不炸。
+    #[test]
+    fn paired_br_tag_recorded_once() {
+        let xml = r#"<w:document xmlns:w="x">
+            <w:body>
+            <w:p><w:r><w:t>ab</w:t><w:br w:type="page"></w:br></w:r></w:p>
+            <w:br w:type="page"/>
+            </w:body></w:document>"#
+            .as_bytes();
+        let paras = parse_document_xml(xml).expect("解析");
+        assert_eq!(paras[0].page_breaks, vec![2], "成對標籤記錄一次");
+    }
+
+    /// 碼點標尺：中文與 emoji（surrogate pair）以**碼點**計，非 UTF-8 位元組。
+    #[test]
+    fn break_offset_counts_codepoints_not_bytes() {
+        let xml = r#"<w:document xmlns:w="x">
+            <w:body>
+            <w:p><w:r><w:t>中文🎉</w:t><w:br w:type="page"/><w:t>後</w:t></w:r></w:p>
+            </w:body></w:document>"#
+            .as_bytes();
+        let paras = parse_document_xml(xml).expect("解析");
+        assert_eq!(paras[0].page_breaks, vec![3], "中文字 2＋emoji 碼點 1＝3");
     }
 }
