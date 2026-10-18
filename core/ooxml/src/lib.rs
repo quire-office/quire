@@ -10,11 +10,13 @@
 //!    才重新壓縮，其餘逐位元組沿用。開啟→不動→存檔 = byte-identical。
 
 mod diff;
+mod drawing;
 mod sectpr;
 mod table;
 mod zip_struct;
 
 pub use diff::{diff_untouched, diff_zip_structure, EntryDiff, ZipDiff, ZipStructureError};
+pub use drawing::{count_paras, origin_of, read_images, InlineImage};
 pub use sectpr::{read_sections_per_paragraph, SectionGeometry, SectionSpec};
 pub use table::{
     Block, BodyTable, Border, Borders, CellProps, GridCol, Margins, RowProps, Shading, Table,
@@ -611,6 +613,84 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 50, "txbx 檔案數異常：{checked}");
+    }
+
+    /// corpus 全檔柵欄（t_a1397522）：**四解析器同口徑**——主解析器扁平段落
+    /// 數＝表格計數器＝圖片計數器（drawing 狀態機走完整份文件，含圖／Fallback
+    /// ／巢狀文字框檔案也必須逐檔一致）。柵欄只挑「有圖或有 txbx」的檔案：
+    /// 那才是口徑會分岔的形態。
+    #[test]
+    fn corpus_drawing_files_start_count_agrees() {
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
+        let manifest = std::fs::read_to_string(corpus.join("manifest.json")).expect("manifest");
+        let mut checked = 0usize;
+        for chunk in manifest.split("\"file\": \"").skip(1) {
+            let rel = chunk.split('"').next().unwrap_or_default();
+            if rel.is_empty() {
+                continue;
+            }
+            let path = corpus.join(rel);
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(doc) = parse(&bytes) else { continue };
+            let Some(xml) = doc.parts.get("word/document.xml") else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(xml).into_owned();
+            let has_pic = text.contains("<w:drawing") || text.contains("<w:pict");
+            if !has_pic && !text.contains("txbxContent") {
+                continue;
+            }
+            let got = parse_document_xml(xml).expect("主解析").len();
+            assert_eq!(
+                got,
+                crate::table::count_flat_paras(xml),
+                "{rel}：主解析器與表格計數器口徑分岔"
+            );
+            assert_eq!(
+                got,
+                crate::drawing::count_paras(xml),
+                "{rel}：主解析器與圖片計數器口徑分岔"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 30, "含圖檔案數異常：{checked}");
+    }
+
+    /// 基線 corpus 圖片投影實據（t_a1397522）：兩份基準檔必須真的掃出圖，
+    /// 且每張圖的幾何合法（尺寸正、錨點段落存在）。老實數字寫死在斷言裡：
+    /// 投影器退化成「掃不到圖」時此柵欄立即紅。
+    #[test]
+    fn corpus_baseline_image_projection_is_sane() {
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
+        for (rel, min_imgs) in [
+            ("ooxmlexport/fdo77887.docx", 1usize),
+            ("xopt/TestFiles_HC031-Complicated-Document.docx", 1),
+        ] {
+            let bytes = std::fs::read(corpus.join(rel)).expect("baseline corpus file");
+            let doc = parse(&bytes).expect("parse");
+            let xml = doc.parts.get("word/document.xml").expect("document.xml");
+            let n_paras = parse_document_xml(xml).expect("主解析").len();
+            let imgs = crate::drawing::read_images(xml);
+            assert!(
+                imgs.len() >= min_imgs,
+                "{rel}：圖片投影只掃到 {} 張（下限 {min_imgs}）",
+                imgs.len()
+            );
+            for im in &imgs {
+                assert!(
+                    im.w_pt > 0.0 && im.h_pt > 0.0,
+                    "{rel}：非法尺寸 {:?}",
+                    (im.w_pt, im.h_pt)
+                );
+                assert!(
+                    im.para_index < n_paras,
+                    "{rel}：錨點段落越界 {} >= {n_paras}",
+                    im.para_index
+                );
+            }
+        }
     }
 
     #[test]

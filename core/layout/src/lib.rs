@@ -167,6 +167,14 @@ pub struct Page {
     /// 排在此頁的表格切片（pack_run flush 時蓋章；無表格頁＝空）。
     #[serde(default)]
     pub tables: Vec<TablePlacement>,
+    /// 排在此頁的圖片佔位（t_a1397522；座標口徑同 line_bands 行網格）。
+    #[serde(default)]
+    pub images: Vec<PageImage>,
+    /// 錨定段落落在本頁的浮動圖片（t_a1397522；不佔行網格，座標＝頁內
+    /// 絕對。分頁完成後由 `attach_floating_images` 附掛——浮動圖不參與
+    /// pack_run 掃描，只在錨定段落所在頁發射佔位 Rect）。
+    #[serde(default)]
+    pub floating_images: Vec<PageFloatingImage>,
     /// 此頁起頭所屬 section 的實際頁面幾何（老實回報，不假設全文件同一張紙）。
     pub width_pt: f32,
     pub height_pt: f32,
@@ -253,10 +261,14 @@ pub type FlowPos = (usize, usize, u32);
 /// 排版器眼中的可流項（Phase3-1b）：段落行流或已排版表格的引用。
 /// 表格內部段落（`TableSlot.para_start..para_end`）不出現在流裡——其文字
 /// 由表格切片繪製，雙重流出會雙繪。
+/// `Image`（t_a1397522）：錨定段落之後的圖片佔位塊（atomic，整塊排放）；
+/// `img` ＝ engine 餵入之 `images` 陣列索引（build_flow 只為 inline／退化
+/// anchor 開項；浮動帶鎖點者不進流——只在錨定段落所在頁發射鎖點 Rect）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowItem {
     Text { para: usize },
     Table { slot: usize },
+    Image { img: usize },
 }
 
 /// 版面排定的表格來源（engine 由 canonical 映射餵入；slot＝陣列索引）。
@@ -267,6 +279,75 @@ pub struct TableSlot {
     pub para_start: usize,
     pub para_end: usize,
     pub layout: crate::table::TableLayout,
+}
+
+/// 正文流圖片佔位錨點（t_a1397522）：engine 由 `w:drawing` 投影餵入（僅
+/// inline／退化 anchor；浮動帶鎖點者另走 `floating`，格內圖走 CellBlock）。
+/// 圖片是 atomic block：不參與斷行，隨錨定段落末行之後整塊排放，佔
+/// `bands` 個行網格帶（ceil(h/line_h)，至少 1）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageBand {
+    /// 錨定段落（＝圖形所在的扁平段落索引）。
+    pub para: usize,
+    /// 寬（pt，繪製用）。
+    pub w_pt: f32,
+    /// 高（pt，繪製用；＝min(extent 高, bands×line_h) 由呼叫端定，此處原值）。
+    pub h_pt: f32,
+    /// 佔用帶數。
+    pub bands: u32,
+    /// 浮動鎖點（Some＝不佔帶、不查容量，只記鎖點座標＋原點系；
+    /// None＝inline 排帶）。
+    pub anchor: Option<FloatingAnchor>,
+}
+
+/// 鎖點原點系（ECMA-376 `wp:positionX/@relativeFrom` 的三檔近似分類）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OriginFrame {
+    /// (x,y) 以頁左上為原點（page／pageMargin）。
+    Page,
+    /// (x,y) 以版心左上為原點（column／margin；單欄近似）。
+    Margin,
+    /// (x,y) 以錨定段落帶左上為原點（paragraph／line／character／未知）。
+    Paragraph,
+}
+
+/// `quire_ooxml::origin_of` 的穩定字串 → 本 crate 原點系（分層：字串是
+/// 兩 crate 間唯一契約，engine 層只做搬運）。
+pub fn origin_frame(kind: &str) -> OriginFrame {
+    match kind {
+        "page" => OriginFrame::Page,
+        "margin" => OriginFrame::Margin,
+        _ => OriginFrame::Paragraph,
+    }
+}
+
+/// 浮動圖片鎖點（座標 pt；x/y 各自帶原點系——兩軸 relativeFrom 可不同）。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FloatingAnchor {
+    pub x_pt: f32,
+    pub y_pt: f32,
+    pub x_frame: OriginFrame,
+    pub y_frame: OriginFrame,
+}
+
+/// 頁面上的圖片佔位放置（pack_run flush 時蓋章；座標＝版內相对，
+/// y 已是行網格帶索引，繪製端 y_pt＝margin_top＋band×line_h）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PageImage {
+    pub para: usize,
+    pub band: u32,
+    pub w_pt: f32,
+    pub h_pt: f32,
+}
+
+/// 頁面上的浮動圖片鎖點（不佔行網格；座標＝頁絕對 pt，發射前已按各軸
+/// `relativeFrom` 原點系換算完成）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PageFloatingImage {
+    pub x_pt: f32,
+    pub y_pt: f32,
+    pub w_pt: f32,
+    pub h_pt: f32,
 }
 
 /// 頁面上的表格放置（pack_run flush 時蓋章）。
@@ -293,6 +374,8 @@ struct PackState {
     /// 無表格頁恆 0..n，與舊行為全等）。
     cur_bands: Vec<u32>,
     cur_tables: Vec<TablePlacement>,
+    /// 當前頁累積的圖片佔位（t_a1397522；flush 時移交 Page.images）。
+    cur_images: Vec<PageImage>,
     /// 當前頁已佔行網格帶數（文字行＋表格帶）。
     cur_used: u32,
     cur_spec: Option<SectionSpec>,
@@ -306,6 +389,7 @@ impl PackState {
             cur: Vec::new(),
             cur_bands: Vec::new(),
             cur_tables: Vec::new(),
+            cur_images: Vec::new(),
             cur_used: 0,
             cur_spec: None,
             page_start: (0, 0, 0),
@@ -375,11 +459,13 @@ impl PackPolicy<'_> {
 }
 
 /// 流項 fi 的 section 錨點段落：文字項＝該段；表格項＝其 para_start
-/// （表格排在此段之前，沿用該段所處 section 的頁面幾何）。
-fn item_para(flow: &[FlowItem], tables: &[TableSlot], fi: usize) -> usize {
+/// （表格排在此段之前，沿用該段所處 section 的頁面幾何）；圖片項＝其
+/// 錨定段落（沿用該段 section 幾何）。
+fn item_para(flow: &[FlowItem], tables: &[TableSlot], images: &[ImageBand], fi: usize) -> usize {
     match &flow[fi] {
         FlowItem::Text { para } => *para,
         FlowItem::Table { slot } => tables[*slot].para_start,
+        FlowItem::Image { img } => images[*img].para,
     }
 }
 
@@ -401,6 +487,7 @@ fn pack_run(
     flow: &[FlowItem],
     pls: &[&ParagraphLayout],
     tables: &[TableSlot],
+    images: &[ImageBand],
     p: &LayoutParams,
     sections: &[SectionSpec],
     st: &mut PackState,
@@ -414,7 +501,7 @@ fn pack_run(
     let cover_item = policy.cover_item;
     let base = out.len();
     let fresh_page = |out: &mut Vec<Page>, out_starts: &mut Vec<FlowPos>, st: &mut PackState| {
-        if st.cur.is_empty() && st.cur_tables.is_empty() {
+        if st.cur.is_empty() && st.cur_tables.is_empty() && st.cur_images.is_empty() {
             return;
         }
         let s = st.cur_spec.unwrap();
@@ -423,6 +510,8 @@ fn pack_run(
             lines: std::mem::take(&mut st.cur),
             line_bands: std::mem::take(&mut st.cur_bands),
             tables: std::mem::take(&mut st.cur_tables),
+            images: std::mem::take(&mut st.cur_images),
+            floating_images: Vec::new(),
             width_pt: s.geo.page_w_pt,
             height_pt: s.geo.page_h_pt,
             margin_left_pt: s.geo.margin_left_pt,
@@ -436,14 +525,73 @@ fn pack_run(
 
     while st.cursor.0 < flow.len() {
         let (fi, li, band) = st.cursor;
-        let anchor = item_para(flow, tables, fi);
+        let anchor = item_para(flow, tables, images, fi);
         let spec = effective_section(p, sections, anchor);
         let cap =
             LayoutParams::from_section(&spec.geo, p.font_size_pt, p.line_spacing).per_page_lines();
+        // 圖片項（t_a1397522）：atomic block——本頁放不下整塊就整塊推到下一頁
+        // （Word 同款）。bands>cap 的巨型圖只能頂格放（cur_used==0 時不換頁，
+        // 容許溢出——否則無限換頁）。
+        // 純圖段落吸收（卡片帶數公式：段落總佔位＝ceil(h/line_h)）：錨定段落
+        // 只有空行＋圖時，空行不另佔帶——Text 項以整段 bands 原子檢查（段落
+        // ＋圖一起推頁，Word 同款），Image 項扣除共用的空行帶，否則二次換頁
+        // 會把空行孤留在前一頁。判定全走靜態輸入（flow 前項＋pls 現況），增量重排從任意游標復入都
+        // 同樣成立。游標頁尾行先拷出（避免與 st.cur 的可變借用打架）。
+        let last_line_para = st.cur.last().map(|l| l.para_index);
+        let absorb_slot = |img: usize, fi: usize| -> bool {
+            let im = &images[img];
+            im.anchor.is_none()
+                && fi > 0
+                && matches!(&flow[fi - 1], FlowItem::Text { para } if *para == im.para)
+                && last_line_para == Some(im.para)
+                && pls
+                    .get(im.para)
+                    .is_some_and(|pl| pl.lines.len() == 1 && pl.lines[0].text.trim().is_empty())
+        };
+        let para_img_bands = |fi: usize| -> u32 {
+            // Text 項前視：純圖段落（唯一空行＋下一流項即其流內圖）→ 整段帶數。
+            let FlowItem::Text { para } = &flow[fi] else {
+                return 0;
+            };
+            let Some(pl) = pls.get(*para) else {
+                return 0;
+            };
+            if pl.lines.len() != 1 || !pl.lines[0].text.trim().is_empty() {
+                return 0;
+            }
+            let Some(FlowItem::Image { img }) = flow.get(fi + 1) else {
+                return 0;
+            };
+            if images[*img].anchor.is_some() {
+                return 0; // 浮動鎖點項不在流裡，不構成吸收
+            }
+            images[*img].bands.max(1)
+        };
+        let item_bands = match &flow[fi] {
+            FlowItem::Image { img } => {
+                let b = images[*img].bands.max(1);
+                if absorb_slot(*img, fi) {
+                    b.saturating_sub(1)
+                } else {
+                    b
+                }
+            }
+            FlowItem::Text { .. } => para_img_bands(fi),
+            _ => 0,
+        };
+        // 吸收態下那頁「唯一內容」就是共用的空行（cur_used==1）：容量不足
+        // 也不得換頁（巨型圖頂格放規則對空行同样豁免），否則空行會孤留在
+        // 前一頁、圖獨排下頁。
+        let absorb_here = matches!(&flow[fi], FlowItem::Image { img } if absorb_slot(*img, fi));
         let start_new = match st.cur_spec {
             // section 邊界（非 continuous）一律換頁；同尺寸也換。
             Some(prev) if prev.id != spec.id => !spec.geo.continuous,
-            Some(_) => st.cur_used >= cap as u32, // 行網格容量已滿
+            Some(_) => {
+                st.cur_used >= cap as u32
+                    || (item_bands > 0
+                        && st.cur_used > u32::from(absorb_here)
+                        && st.cur_used + item_bands > cap as u32)
+            }
             None => false,
         };
         if start_new {
@@ -502,6 +650,28 @@ fn pack_run(
                     (fi, next.0, next.1)
                 };
             }
+            FlowItem::Image { img } => {
+                // 圖片佔位（t_a1397522）：atomic 整塊排放。普通情形接在錨定
+                // 段落末行的下一帶；純圖段落（吸收）圖頂＝段落起始帶（Word
+                // 實態：圖就在那一行上，行高由圖撐起）。容量檢查在 start_new
+                // （放不下整塊已先換頁）。
+                let im = &images[*img];
+                let b = im.bands.max(1);
+                let absorb = absorb_slot(*img, fi);
+                let top = if absorb {
+                    st.cur_used.saturating_sub(1)
+                } else {
+                    st.cur_used
+                };
+                st.cur_images.push(PageImage {
+                    para: im.para,
+                    band: top,
+                    w_pt: im.w_pt,
+                    h_pt: im.h_pt.min(b as f32 * line_h),
+                });
+                st.cur_used += if absorb { b.saturating_sub(1) } else { b };
+                st.cursor = (fi + 1, 0, 0);
+            }
         }
     }
     fresh_page(out, out_starts, st);
@@ -533,18 +703,44 @@ pub fn paginate_tables(
     sections: &[SectionSpec],
     tables: &[TableSlot],
 ) -> (Vec<Page>, Vec<FlowPos>) {
-    let refs: Vec<&ParagraphLayout> = pls.iter().collect();
-    let flow = build_flow(pls.len(), tables);
-    paginate_flow(&flow, &refs, tables, p, sections)
+    paginate_tables_images(pls, p, sections, tables, &[])
 }
 
-/// 段落＋表格混排流（Phase3-1b）：依 para_start 把表格項插進段落序列，
-/// 表格內部段落（[para_start, para_end)）不進流（文字由表格切片繪製，
-/// 雙重流出會雙繪）。表格項排在 para_start 那一**段之前**。
-pub fn build_flow(n_paras: usize, tables: &[TableSlot]) -> Vec<FlowItem> {
-    let mut flow = Vec::with_capacity(n_paras + tables.len());
+/// 含表格＋圖片佔位的公開版（t_a1397522）。`images` 為正文流錨點（函式
+/// 自行忽略浮動鎖點項——那些不進流，只附掛到錨定段落所在頁）。
+pub fn paginate_tables_images(
+    pls: &[ParagraphLayout],
+    p: &LayoutParams,
+    sections: &[SectionSpec],
+    tables: &[TableSlot],
+    images: &[ImageBand],
+) -> (Vec<Page>, Vec<FlowPos>) {
+    let refs: Vec<&ParagraphLayout> = pls.iter().collect();
+    let flow = build_flow_images(pls.len(), tables, images);
+    paginate_flow(&flow, &refs, tables, images, p, sections)
+}
+
+/// 段落＋表格＋圖片混排流（Phase3-1b＋t_a1397522）：依 para_start 把表格
+/// 項插進段落序列，表格內部段落（[para_start, para_end)）不進流（文字由
+/// 表格切片繪製，雙重流出會雙繪）。表格項排在 para_start 那一**段之前**；
+/// 圖片項排在錨定段落**之後**（段落文字在上、圖在下，Word 同款）。
+/// 浮動鎖點項（`anchor == Some`）不進流——ECMA-376：浮動圖形不排進文字流。
+pub fn build_flow_images(
+    n_paras: usize,
+    tables: &[TableSlot],
+    images: &[ImageBand],
+) -> Vec<FlowItem> {
+    let mut flow = Vec::with_capacity(n_paras + tables.len() + images.len());
     let mut ti = 0usize;
+    let mut gi = 0usize;
     let mut skip_until = 0usize; // 表格內部段落上界（不含）：流失權
+                                 // 錨定段落落在表格區間內的流項（若 engine 未先行攔下）不進流：表格切片
+                                 // 自己負責格內容量，正文流再加帶＝雙重計帳。
+    let in_table_span = |para: usize| {
+        tables
+            .iter()
+            .any(|t| t.para_start <= para && para < t.para_end)
+    };
     for para in 0..n_paras {
         // para_start <= para 的表格都排在當前段之前（依序；同插入點保序）。
         while ti < tables.len() && tables[ti].para_start <= para {
@@ -552,15 +748,33 @@ pub fn build_flow(n_paras: usize, tables: &[TableSlot]) -> Vec<FlowItem> {
             skip_until = skip_until.max(tables[ti].para_end);
             ti += 1;
         }
+        // 錨定段落已過的浮動項：跳過（不進流；附掛在 paginate_flow 收尾）。
+        while gi < images.len() && images[gi].para < para {
+            gi += 1;
+        }
         if para < skip_until {
             continue; // 表格內部段落：文字由表格切片繪製
         }
         flow.push(FlowItem::Text { para });
+        // 錨定在該段的圖片（文档序）；越界/表格區間內項老實略過。
+        while gi < images.len() && images[gi].para == para {
+            if images[gi].anchor.is_none() && !in_table_span(para) {
+                flow.push(FlowItem::Image { img: gi });
+            }
+            gi += 1;
+        }
     }
     // para_start 超出末段（文件尾部表格）：續掛文末。
     while ti < tables.len() {
         flow.push(FlowItem::Table { slot: ti });
         ti += 1;
+    }
+    // 錨定段落越界（末段之後的圖，畸形檔容錯）：續掛文末。
+    while gi < images.len() {
+        if images[gi].anchor.is_none() && !in_table_span(images[gi].para) {
+            flow.push(FlowItem::Image { img: gi });
+        }
+        gi += 1;
     }
     // sanity：表格區間不得重疊、不得越界（engine 映射層的契約）。
     debug_assert!(tables.iter().enumerate().all(|(i, t)| {
@@ -569,11 +783,17 @@ pub fn build_flow(n_paras: usize, tables: &[TableSlot]) -> Vec<FlowItem> {
     flow
 }
 
+/// `build_flow` 舊簽名相容（無圖片）。
+pub fn build_flow(n_paras: usize, tables: &[TableSlot]) -> Vec<FlowItem> {
+    build_flow_images(n_paras, tables, &[])
+}
+
 /// 純函數分頁核心：流→頁。回傳（頁序列, 逐頁起頭 FlowPos）。
 fn paginate_flow(
     flow: &[FlowItem],
     pls: &[&ParagraphLayout],
     tables: &[TableSlot],
+    images: &[ImageBand],
     p: &LayoutParams,
     sections: &[SectionSpec],
 ) -> (Vec<Page>, Vec<FlowPos>) {
@@ -584,6 +804,7 @@ fn paginate_flow(
         flow,
         pls,
         tables,
+        images,
         p,
         sections,
         &mut PackState::fresh(),
@@ -604,6 +825,8 @@ fn paginate_flow(
             }],
             line_bands: vec![0],
             tables: Vec::new(),
+            images: Vec::new(),
+            floating_images: Vec::new(),
             width_pt: geo.geo.page_w_pt,
             height_pt: geo.geo.page_h_pt,
             margin_left_pt: geo.geo.margin_left_pt,
@@ -612,7 +835,88 @@ fn paginate_flow(
         });
         starts.push((0, 0, 0)); // 合成空頁＝流首（starts/pages 同步不變量）
     }
+    attach_floating_images(&mut pages, &starts, flow, tables, images, p.line_h_pt());
     (pages, starts)
+}
+
+/// 浮動圖片附掛（t_a1397522）：鎖點項不進流，分頁完成後按錨定段落所在頁
+/// 掛到該頁的 `floating_images`。段落 → 流項 → 頁：起頭 FlowPos 嚴格單調，
+/// partition_point 一步到位。錨定段落查無所在頁（未排/畸形）＝老實丟棄。
+/// **冪等全量重算**：先清空再附掛——增量重排（含重用尾段）後呼叫同一函數
+/// 即可讓鎖點跟隨新頁界，永不出現雙掛。
+fn attach_floating_images(
+    pages: &mut [Page],
+    starts: &[FlowPos],
+    flow: &[FlowItem],
+    tables: &[TableSlot],
+    images: &[ImageBand],
+    line_h: f32,
+) {
+    for pg in pages.iter_mut() {
+        pg.floating_images.clear();
+    }
+    if images.is_empty() || pages.is_empty() {
+        return;
+    }
+    // 段落 → 流項下標（文字項＝其本身；表格內部段落＝該表格項）。
+    let mut para_fi: Vec<usize> =
+        vec![usize::MAX; images.iter().map(|i| i.para).max().map_or(0, |m| m + 1)];
+    for (fi, item) in flow.iter().enumerate() {
+        match item {
+            FlowItem::Text { para } => {
+                if *para < para_fi.len() {
+                    para_fi[*para] = fi;
+                }
+            }
+            FlowItem::Table { slot } => {
+                let t = &tables[*slot];
+                for p in t.para_start..t.para_end.min(para_fi.len()) {
+                    para_fi[p] = fi;
+                }
+            }
+            FlowItem::Image { .. } => {}
+        }
+    }
+    for im in images.iter().filter(|i| i.anchor.is_some()) {
+        let Some(a) = im.anchor else {
+            continue;
+        };
+        let fi = *para_fi.get(im.para).unwrap_or(&usize::MAX);
+        if fi == usize::MAX {
+            continue; // 錨定段落不在流（畸形）：不虛構放置
+        }
+        let page = starts.partition_point(|s| s.0 <= fi).saturating_sub(1);
+        let Some(pg) = pages.get_mut(page) else {
+            continue;
+        };
+        // 各軸按 relativeFrom 原點系換算成頁絕對座標：
+        //   Page      → (0,0)＋offset
+        //   Margin    → 版心左上＋offset
+        //   Paragraph → 錨定段落首行帶左上＋offset（查無首行＝版心左上近似）
+        let para_band = pg
+            .lines
+            .iter()
+            .position(|l| l.para_index == im.para)
+            .and_then(|i| pg.line_bands.get(i))
+            .map(|b| *b as f32);
+        let x = a.x_pt
+            + match a.x_frame {
+                OriginFrame::Page => 0.0,
+                OriginFrame::Margin | OriginFrame::Paragraph => pg.margin_left_pt,
+            };
+        let y = a.y_pt
+            + match a.y_frame {
+                OriginFrame::Page => 0.0,
+                OriginFrame::Margin => pg.margin_top_pt,
+                OriginFrame::Paragraph => pg.margin_top_pt + para_band.unwrap_or(0.0) * line_h,
+            };
+        pg.floating_images.push(PageFloatingImage {
+            x_pt: x,
+            y_pt: y,
+            w_pt: im.w_pt,
+            h_pt: im.h_pt,
+        });
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -765,6 +1069,9 @@ pub struct LayoutEngine {
     flow: Vec<FlowItem>,
     /// 已排版表格槽（engine 層由 canonical 映射餵入；排序＝para_start）。
     tables: Vec<TableSlot>,
+    /// 正文流圖片佔位錨點（t_a1397522；engine 由 `w:drawing` 投影餵入，
+    /// 生命期內不變——圖片不隨打字編輯變動）。
+    images: Vec<ImageBand>,
     /// 預算用盡時的待续掃描狀態＋已定案頁數（Some = 尾段是舊快照的軟分頁）。
     pending: Option<(PackState, usize)>,
     /// 同步路徑預算（頁）；`None`＝全速（預設：既有行為完全不變，只變快）。
@@ -793,6 +1100,18 @@ impl LayoutEngine {
         sections: Vec<SectionSpec>,
         tables: Vec<TableSlot>,
     ) -> Self {
+        Self::with_tables_images(texts, params, sections, tables, Vec::new())
+    }
+
+    /// 帶表格槽＋圖片佔位的建構（t_a1397522）。`images` 依 para 排序
+    /// （engine 映射層保證；越界錨點由 build_flow_images 容錯掛文末）。
+    pub fn with_tables_images(
+        texts: &[String],
+        params: LayoutParams,
+        sections: Vec<SectionSpec>,
+        tables: Vec<TableSlot>,
+        images: Vec<ImageBand>,
+    ) -> Self {
         let cache: Vec<Option<ParagraphLayout>> = vec![None; texts.len()];
         let mut eng = Self {
             texts: texts.to_vec(),
@@ -803,6 +1122,7 @@ impl LayoutEngine {
             starts: Vec::new(),
             flow: Vec::new(),
             tables,
+            images,
             pending: None,
             sync_budget: None,
         };
@@ -823,11 +1143,12 @@ impl LayoutEngine {
             .iter()
             .map(|c| c.as_ref().expect("剛填滿"))
             .collect();
-        self.flow = build_flow(self.texts.len(), &self.tables);
+        self.flow = build_flow_images(self.texts.len(), &self.tables, &self.images);
         let (pages, starts) = paginate_flow(
             &self.flow,
             &refs,
             &self.tables,
+            &self.images,
             &self.params,
             &self.sections,
         );
@@ -937,6 +1258,7 @@ impl LayoutEngine {
             cur: Vec::new(),
             cur_bands: Vec::new(),
             cur_tables: Vec::new(),
+            cur_images: Vec::new(),
             cur_used: 0,
             // 空 cur ⇒ 首行必不 trigger 換頁（前頁已保留），None 安全。
             cur_spec: None,
@@ -960,6 +1282,7 @@ impl LayoutEngine {
             &self.flow,
             &refs,
             &self.tables,
+            &self.images,
             &self.params,
             &self.sections,
             &mut st,
@@ -1002,6 +1325,15 @@ impl LayoutEngine {
         self.pages = out;
         self.starts = out_starts;
         self.pending = pending;
+        // 浮動鎖點跟隨新頁界（冪等全量重算，見函式注）。
+        attach_floating_images(
+            &mut self.pages,
+            &self.starts,
+            &self.flow,
+            &self.tables,
+            &self.images,
+            self.params.line_h_pt(),
+        );
         evs
     }
 
@@ -1029,6 +1361,7 @@ impl LayoutEngine {
             &self.flow,
             &refs,
             &self.tables,
+            &self.images,
             &self.params,
             &self.sections,
             &mut st,
@@ -1058,6 +1391,15 @@ impl LayoutEngine {
         self.pages = out;
         self.starts = out_starts;
         self.pending = pending;
+        // 浮動鎖點跟隨新頁界（冪等全量重算，見函式注）。
+        attach_floating_images(
+            &mut self.pages,
+            &self.starts,
+            &self.flow,
+            &self.tables,
+            &self.images,
+            self.params.line_h_pt(),
+        );
         (evs, self.pending.is_none())
     }
 
@@ -2189,6 +2531,172 @@ mod tests {
         joined.sort();
         let want: Vec<String> = (0..6).map(|i| format!("內{i}")).collect();
         assert_eq!(joined, want, "子表列跨頁不重不跳");
+    }
+
+    // ---------------- t_a1397522：圖片佔位帶（inline 撐帶／anchor 不佔帶） ----------------
+
+    /// 帶數公式的尺：line_h＝12pt×1.4＝16.8pt；每頁容量＝(200-80)/16.8 → 7 帶。
+    fn img_params() -> LayoutParams {
+        LayoutParams {
+            page_w_pt: 400.0,
+            page_h_pt: 200.0,
+            margins_pt: [40.0; 4],
+            font_size_pt: 12.0,
+            line_spacing: 1.4,
+        }
+    }
+
+    fn band(para: usize, h_pt: f32, line_h: f32) -> ImageBand {
+        ImageBand {
+            para,
+            w_pt: 200.0,
+            h_pt,
+            bands: (h_pt / line_h).ceil().max(1.0) as u32,
+            anchor: None,
+        }
+    }
+
+    #[test]
+    fn inline_image_band_math_and_page_push() {
+        let p = img_params();
+        let line_h = p.line_h_pt();
+        assert!((line_h - 16.8).abs() < 1e-3);
+        let texts = vec!["前段".to_string(), String::new(), "後段".to_string()];
+        let imgs = vec![band(1, 100.0, line_h)];
+        let pls = layout_paragraphs(&texts, &p);
+        let (pages, _starts) = paginate_tables_images(&pls, &p, &[], &[], &imgs);
+        assert_eq!(
+            pages.len(),
+            2,
+            "前段1＋圖段6＋後段1＝8 帶＞7 帶容，後段推頁"
+        );
+        let pg0 = &pages[0];
+        assert_eq!(pg0.line_bands, vec![0, 1], "頁0＝前段帶 0＋圖段空行帶 1");
+        assert_eq!(pg0.images.len(), 1);
+        let im = &pg0.images[0];
+        assert_eq!((im.para, im.band), (1, 1), "純圖段：圖頂＝段落起始帶");
+        assert!((im.w_pt - 200.0).abs() < 1e-3);
+        assert!(
+            (im.h_pt - (100.0f32).min(6.0 * line_h)).abs() < 1e-3,
+            "發射高＝min(extent, bands×line_h)：{}",
+            im.h_pt
+        );
+        // 段落總佔位恰 6 帶：下一段的帶＝1＋6＝7（頁 1 起算 0）。
+        assert_eq!(pages[1].line_bands, vec![0], "後段整段推到第 2 頁帶 0");
+    }
+
+    #[test]
+    fn inline_image_after_text_line_starts_next_band() {
+        // 圖掛在有文字的段落末行之後：圖頂＝文字行帶＋1（不吸收）。
+        let p = img_params();
+        let line_h = p.line_h_pt();
+        let texts = vec!["這段有文字，圖跟在後面。".to_string(), "尾段".to_string()];
+        let imgs = vec![band(0, 50.0, line_h)]; // ceil(50/16.8)=3 帶
+        let pls = layout_paragraphs(&texts, &p);
+        let (pages, _starts) = paginate_tables_images(&pls, &p, &[], &[], &imgs);
+        assert_eq!(pages.len(), 1, "1＋3＋1＝5 帶 ≤ 7 帶容：同頁排完");
+        assert_eq!(pages[0].images[0].band, 1, "文字行帶 0 → 圖帶 1");
+        assert_eq!(
+            pages[0].line_bands,
+            vec![0, 4],
+            "尾段接在圖末帶 3 之後＝帶 4"
+        );
+    }
+
+    #[test]
+    fn anchored_image_does_not_consume_bands_but_emits_rect() {
+        // 卡片斷言：anchor（帶可用鎖點）不佔正文流——正文行帶數與無圖時
+        // 全等，但該頁 floating_images 有一筆。
+        let p = img_params();
+        let line_h = p.line_h_pt();
+        let texts = vec!["前段".to_string(), "後段".to_string()];
+        let pls = layout_paragraphs(&texts, &p);
+        let (bare, _s0) = paginate_tables_images(&pls, &p, &[], &[], &[]);
+        let mut floats = vec![band(1, 100.0, line_h)];
+        floats[0].anchor = Some(FloatingAnchor {
+            x_pt: 36.0,
+            y_pt: 72.0,
+            x_frame: OriginFrame::Page,
+            y_frame: OriginFrame::Margin,
+        });
+        floats[0].bands = 0;
+        let (pages, _s1) = paginate_tables_images(&pls, &p, &[], &[], &floats);
+        assert_eq!(
+            pages[0].line_bands, bare[0].line_bands,
+            "浮動圖不得撐動正文行帶"
+        );
+        assert_eq!(pages.len(), bare.len(), "浮動圖不得多擠一頁");
+        assert_eq!(
+            pages[0].floating_images.len(),
+            1,
+            "錨定段落在第 1 頁→鎖點掛該頁"
+        );
+        assert!(pages[0].images.is_empty(), "鎖點項不得進正文流佔位");
+        let fm = &pages[0].floating_images[0];
+        assert!((fm.x_pt - 36.0).abs() < 1e-3, "page 系 x 原值：{}", fm.x_pt);
+        assert!(
+            (fm.y_pt - (40.0 + 72.0)).abs() < 1e-3,
+            "margin 系 y：{}",
+            fm.y_pt
+        );
+    }
+
+    #[test]
+    fn anchored_floating_image_attaches_to_anchor_page() {
+        // 鎖點圖掛在段 0（Paragraph 系 y）：附掛第 1 頁，y＝段落帶頂＋offset。
+        let p = img_params();
+        let line_h = p.line_h_pt();
+        let texts = vec!["錨段有文字。".to_string()];
+        let mut floats = vec![band(0, 60.0, line_h)];
+        floats[0].anchor = Some(FloatingAnchor {
+            x_pt: 12.5,
+            y_pt: 30.0,
+            x_frame: OriginFrame::Margin,
+            y_frame: OriginFrame::Paragraph,
+        });
+        floats[0].bands = 0;
+        let pls = layout_paragraphs(&texts, &p);
+        let (pages, _starts) = paginate_tables_images(&pls, &p, &[], &[], &floats);
+        assert_eq!(pages[0].images.len(), 0, "鎖點項不進正文流");
+        assert_eq!(pages[0].floating_images.len(), 1);
+        let fm = &pages[0].floating_images[0];
+        assert!(
+            (fm.x_pt - (40.0 + 12.5)).abs() < 1e-3,
+            "margin x：{}",
+            fm.x_pt
+        );
+        assert!(
+            (fm.y_pt - (40.0 + 30.0)).abs() < 1e-3,
+            "paragraph 系 y（段 0 帶 0）：{}",
+            fm.y_pt
+        );
+        assert_eq!(pages[0].line_bands, vec![0], "正文仍只佔 1 帶");
+    }
+
+    #[test]
+    fn oversized_image_packs_top_of_page_without_infinite_loop() {
+        // bands(10)＞cap(7)：頂格放、容許溢出，不得無限換頁。
+        let p = img_params();
+        let line_h = p.line_h_pt();
+        let texts = vec![String::new()];
+        let imgs = vec![band(0, 160.0, line_h)]; // ceil(160/16.8)=10 帶
+        let pls = layout_paragraphs(&texts, &p);
+        let (pages, _starts) = paginate_tables_images(&pls, &p, &[], &[], &imgs);
+        assert_eq!(pages.len(), 1, "巨型圖只能頂格溢出單頁");
+        assert_eq!(pages[0].images[0].band, 0);
+    }
+
+    #[test]
+    fn degraded_anchor_bands_like_inline() {
+        // 鎖點不可信（anchor=None 但 floating 投影已退化）＝inline 佔帶。
+        let p = img_params();
+        let line_h = p.line_h_pt();
+        let texts = vec![String::new()];
+        let imgs = vec![band(0, 33.6, line_h)]; // 恰 2 帶
+        let pls = layout_paragraphs(&texts, &p);
+        let (pages, _starts) = paginate_tables_images(&pls, &p, &[], &[], &imgs);
+        assert_eq!(pages[0].images.len(), 1);
+        assert_eq!(pages[0].images[0].band, 0, "吸收：圖頂＝段落帶 0");
     }
 
     #[test]

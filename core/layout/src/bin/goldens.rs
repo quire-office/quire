@@ -173,10 +173,46 @@ fn table_cases() -> Vec<(&'static str, TableInput, f32, u32)> {
         ..Default::default()
     };
 
+    // 格內圖片（t_a1397522）：單格「文字＋圖」堆疊＋第二列純圖格——鎖
+    // CellBlock::Image 的帶高累加與跨頁切片可見高度換算（單頁預算 3 帶
+    // 逼出跨片續排；快照 "i" 欄捕捉 y/h）。
+    let cell_img = TableInput {
+        grid_pt: vec![200.0],
+        width: Some(WidthSpec::Pt(200.0)),
+        borders: tbl_borders(),
+        rows: vec![
+            RowInput {
+                cells: vec![CellInput {
+                    blocks: vec![
+                        CellBlock::Text("圖上文字".to_string()),
+                        CellBlock::Image {
+                            w_pt: 120.0,
+                            h_pt: 50.0,
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            RowInput {
+                cells: vec![CellInput {
+                    blocks: vec![CellBlock::Image {
+                        w_pt: 900.0, // 超寬：鉗進格內寬
+                        h_pt: 100.0,
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
     vec![
         ("merged_cells", merged, 340.0, 64),
         ("nested_table", nested, 340.0, 64),
         ("cross_page", cross, 200.0, 2),
+        ("cell_image", cell_img, 240.0, 3),
     ]
 }
 
@@ -213,8 +249,25 @@ fn snap_frag(f: &quire_layout::table::TableFrag, depth: usize) -> String {
                 s.push(',');
             }
             let edges: Vec<String> = c.edges.iter().map(snap_pen).collect();
+            // t_a1397522 起：格內圖片切片進快照（空＝不輸出欄位，舊行位元組
+            // 不變；新行帶 "i" 鎖死圖片 y/h 切片幾何）。
+            let imgs_json = if c.images.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ",\"i\":[{}]",
+                    c.images
+                        .iter()
+                        .map(|im| format!(
+                            "{{\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1}}}",
+                            im.x_pt, im.y_pt, im.w_pt, im.h_pt
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            };
             s.push_str(&format!(
-                "{{\"x\":{:.1},\"w\":{:.1},\"e\":[{},{},{},{}],\"fill\":{},\"t\":[{}],\"n\":[{}]}}",
+                "{{\"x\":{:.1},\"w\":{:.1},\"e\":[{},{},{},{}],\"fill\":{},\"t\":[{}],\"n\":[{}]{}}}",
                 c.x_pt,
                 c.w_pt,
                 edges[0],
@@ -249,6 +302,7 @@ fn snap_frag(f: &quire_layout::table::TableFrag, depth: usize) -> String {
                     ))
                     .collect::<Vec<_>>()
                     .join(","),
+                imgs_json,
             ));
         }
         s.push_str("]}");

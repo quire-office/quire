@@ -123,6 +123,28 @@ mod tests {
     use quire_engine::Engine;
 
     const SAMPLE: &[u8] = include_bytes!("../../../fixtures/sample.docx");
+    const INLINE_IMG: &[u8] = include_bytes!("../../../fixtures/inline_image.docx");
+
+    /// t_a1397522：inline 圖佔位框落地 SVG——灰底 Rect（#f0f0f0）＋四邊
+    /// 淺灰 Rule（#cccccc），尺寸＝extent（200×100pt）。
+    #[test]
+    fn svg_emits_image_placeholder_rect_and_rules() {
+        let engine = Engine::from_docx_bytes(INLINE_IMG).unwrap();
+        let svg = page_to_svg(&engine.page_display_list(0).unwrap());
+        assert!(
+            svg.contains("fill=\"#f0f0f0\""),
+            "SVG 應含灰底佔位 Rect：{svg}"
+        );
+        assert!(
+            svg.contains("width=\"200.0\" height=\"100.0\""),
+            "Rect 尺寸＝extent 200×100：{svg}"
+        );
+        assert_eq!(
+            svg.split("stroke=\"#cccccc\"").count() - 1,
+            4,
+            "四邊各一條 #cccccc Rule：{svg}"
+        );
+    }
 
     #[test]
     fn svg_outputs_red_fill_bold_and_text_decorations_from_fixture() {
