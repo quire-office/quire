@@ -13,6 +13,7 @@ mod diff;
 mod drawing;
 mod rels;
 mod sectpr;
+mod styles;
 mod table;
 mod zip_struct;
 
@@ -23,6 +24,7 @@ pub use sectpr::{
     read_even_and_odd_headers, read_sections_header_footer, read_sections_per_paragraph,
     SectionGeometry, SectionHeaderFooter, SectionSpec, SlotRefs,
 };
+pub use styles::{Align, LineSpacing, ParaStyle, RunStyle, StyleTable};
 pub use table::{
     Block, BodyTable, Border, Borders, CellProps, GridCol, Margins, RowProps, Shading, Table,
     TableCell, TableProps, TableRow, TblWidth,
@@ -68,6 +70,15 @@ pub struct Run {
     /// 快取值只在存檔那一刻正確，渲染當下即時換算）。
     #[serde(default)]
     pub field: Option<FieldKind>,
+    /// 字元樣式引用（`w:rPr/w:rStyle/@w:val`＝styleId；t_5dfc8ac7）。級聯層
+    /// 以它查 `StyleTable::effective_char` 作 run 直接格式之下的基底；缺＝None。
+    #[serde(default)]
+    pub rstyle: Option<String>,
+    /// run 直接格式 `w:rPr` 的三態快照（sz/b/i/u/strike/color；t_5dfc8ac7）。
+    /// 既有 bool 欄位是它的有損投影（無「未宣告」態）；級聯層只讀本欄。
+    /// 未見任何 rPr 宣告＝None（整段繼承樣式）。存檔不經此欄位。
+    #[serde(default)]
+    pub direct: Option<RunStyle>,
 }
 
 /// 本卡支援的頁碼欄位型別（其余欄位名如 SECTIONPAGES／DATE 老實保留快取文字）。
@@ -126,6 +137,17 @@ pub fn parse_color_val(val: &str) -> Option<u32> {
 pub struct Paragraph {
     pub style: Option<String>,
     pub runs: Vec<Run>,
+    /// 段落直接格式 `w:pPr/w:rPr`（run 級三態宣告；t_5dfc8ac7）。段落級級聯
+    /// （`styles::StyleTable::effective_para`）的 inline 輸入；無宣告＝None
+    /// （serde default：舊序列化相容）。存檔不經此欄位（parts passthrough）。
+    #[serde(default)]
+    pub prun: Option<RunStyle>,
+    /// 段落直接行距宣告（`w:pPr/w:spacing/@w:line`＋`@w:lineRule`）。
+    #[serde(default)]
+    pub line: Option<LineSpacing>,
+    /// 段落直接對齊宣告（`w:pPr/w:jc/@w:val`；本卡解析保留，發射不消費）。
+    #[serde(default)]
+    pub jc: Option<Align>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,7 +255,7 @@ pub fn parse_header_footer_part(
 /// 解析 OOXML 開關型或底線屬性（`w:b`、`w:i`、`w:strike`、`w:u`）：
 /// 無 `w:val` 時視為開啟（`true`）；有 `w:val` 時若為 `"none"`/`"false"`/`"0"`/`"off"`
 /// （不分大小寫）則為關閉（`false`），其餘（如 `"true"`/`"1"`/`"on"`/`"single"`）為開啟。
-fn toggle_attr_on(e: &quick_xml::events::BytesStart) -> bool {
+pub(crate) fn toggle_attr_on(e: &quick_xml::events::BytesStart) -> bool {
     match attr_val(e, "val") {
         None => true,
         Some(v) => !matches!(
@@ -252,7 +274,24 @@ fn apply_style_tag(
     run_has_color: &mut bool,
     run_has_underline: &mut bool,
 ) {
+    // ---- run 直接格式三態快照（t_5dfc8ac7）：語義唯一來源＝styles::apply_run_tag。
+    // bool 欄位照舊寫（既有消費者不動），三態快照並行記錄給級聯層。只認
+    // run 屬性標籤本身——catch-all 送來的無關標籤（noProof/lang…）不得把
+    // direct 材料化成 Some（None＝「未見任何 rPr 宣告」的語義必須守住）。
+    if matches!(name, b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz") {
+        if let Some(r) = cur_run.as_mut() {
+            styles::apply_run_tag(name, e, r.direct.get_or_insert_with(RunStyle::default));
+        }
+    }
     match name {
+        b"rStyle" => {
+            // 字元樣式引用（styleId）：級聯層在 run 直接格式之下作基底查表。
+            if let Some(r) = cur_run.as_mut() {
+                if let Some(v) = attr_val(e, "val") {
+                    r.rstyle = Some(v);
+                }
+            }
+        }
         b"b" => {
             if let Some(r) = cur_run.as_mut() {
                 r.bold = toggle_attr_on(e);
@@ -310,6 +349,10 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
     let mut cur_run: Option<Run> = None;
     let mut run_has_color = false;
     let mut run_has_underline = false;
+    // 段落直接格式（t_5dfc8ac7）：w:pPr 巢狀深度（只認 depth==1；深一層＝
+    // w:pPrChange 修訂殘影不收）＋其內 w:rPr 深度（spacing/jc 只收 rPr 外的）。
+    let mut ppr_depth = 0usize;
+    let mut ppr_rpr_depth = 0usize;
     let mut hyperlink_depth = 0usize;
     let mut in_t = false;
     // >0＝正在吞 mc:Fallback 子樹（巢狀 Fallback 以開閉計數自行平衡）。
@@ -351,9 +394,50 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                         out.push(Paragraph::default());
                         cur_run = None;
                         hyperlink_depth = 0;
+                        // 防呆：上游若有未閉合的 pPr/rPr（畸形檔），新段落起點
+                        // 一律歸零（同 hyperlink_depth 的防禦策略）。
+                        ppr_depth = 0;
+                        ppr_rpr_depth = 0;
                     }
                     b"hyperlink" => {
                         hyperlink_depth += 1;
+                    }
+                    // 段落直接格式（t_5dfc8ac7）：w:pPr 欄位＋其內 w:rPr 收進
+                    // 段落棧頂（三態級聯輸入）。只認 depth==1 的 pPr——深一層
+                    // 的 pPr 只可能是 w:pPrChange（修訂歷史殘影），Word 正常
+                    // 顯示不套它，我們也不收（收了會用過期值污染級聯）。
+                    b"pPr" if fb == 0 => {
+                        ppr_depth += 1;
+                    }
+                    b"rPr" if ppr_depth == 1 => {
+                        ppr_rpr_depth += 1;
+                    }
+                    b"spacing" if ppr_depth == 1 && ppr_rpr_depth == 0 => {
+                        if let Some((_, p)) = stack.last_mut() {
+                            p.line = styles::line_spacing(
+                                attr_val(&e, "line").as_deref(),
+                                attr_val(&e, "lineRule").as_deref(),
+                            );
+                        }
+                    }
+                    b"jc" if ppr_depth == 1 && ppr_rpr_depth == 0 => {
+                        if let Some((_, p)) = stack.last_mut() {
+                            p.jc = styles::align_of(attr_val(&e, "val").as_deref());
+                        }
+                    }
+                    // pPr 直下的 w:rPr 內容：收進段落棧頂的三態快照（段落級
+                    // 級聯輸入）。ppr_rpr_depth>0 時 run 標籤**不得**走下方
+                    // apply_style_tag（會把段落標記屬性誤灌給進行中的 run）。
+                    b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz" | b"rStyle"
+                        if ppr_rpr_depth > 0 =>
+                    {
+                        if let Some((_, p)) = stack.last_mut() {
+                            styles::apply_run_tag(
+                                name.as_slice(),
+                                &e,
+                                p.prun.get_or_insert_with(RunStyle::default),
+                            );
+                        }
                     }
                     b"fldSimple" => {
                         // 簡單欄：w:instr 指令立即分類，其子樹 run 全標記。
@@ -433,6 +517,21 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                             p.style = Some(v);
                         }
                     }
+                } else if name == b"rPr" && ppr_depth == 1 {
+                    // 自閉合 pPr/rPr（`<w:rPr/>`）：不進 run 區（其後的
+                    // spacing/jc 仍是段落欄位）。
+                } else if name == b"spacing" && ppr_depth == 1 && ppr_rpr_depth == 0 {
+                    // 自閉合直接行距（Word 產出恒為自閉合）。
+                    if let Some((_, p)) = stack.last_mut() {
+                        p.line = styles::line_spacing(
+                            attr_val(&e, "line").as_deref(),
+                            attr_val(&e, "lineRule").as_deref(),
+                        );
+                    }
+                } else if name == b"jc" && ppr_depth == 1 && ppr_rpr_depth == 0 {
+                    if let Some((_, p)) = stack.last_mut() {
+                        p.jc = styles::align_of(attr_val(&e, "val").as_deref());
+                    }
                 } else {
                     apply_style_tag(
                         name.as_slice(),
@@ -459,6 +558,8 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                 }
                 match name.as_slice() {
                     b"t" => in_t = false,
+                    b"pPr" => ppr_depth = ppr_depth.saturating_sub(1),
+                    b"rPr" => ppr_rpr_depth = ppr_rpr_depth.saturating_sub(1),
                     b"instrText" => {
                         instr_active = false;
                     }
