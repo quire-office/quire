@@ -134,7 +134,14 @@ impl Engine {
         // 表格槽（Phase3-1b）：canonical 樹＋styles.xml 框線查表 → layout 幾何。
         let styles = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
         let slots = table_map::build_slots(&doc.tables, &texts, styles, &params, &sections);
-        let layout = LayoutEngine::with_tables(&texts, params, sections.clone(), slots);
+        // br-page 硬斷點（ECMA-376 §17.4.3）：canonical 段落的 w:br w:type="page"
+        // 偏移直傳版面層（與 texts 逐段同標）。無 br 檔案＝全空清單＝舊行為。
+        let breaks: Vec<Vec<usize>> = doc
+            .paragraphs
+            .iter()
+            .map(|p| p.page_breaks.clone())
+            .collect();
+        let layout = LayoutEngine::with_breaks(&texts, params, sections.clone(), slots, breaks);
         // 頁首頁尾層（t_b39f108b）：sectPr 宣告＋rels 查表＋part 解析。
         // 全鏈純讀取派生——parts／bundle 一個位元組都不碰（round-trip 零影響）。
         let (hf, hf_parts, even_odd, sec_geo) = build_hf_layer(&doc, &sections, &params);
@@ -1412,5 +1419,94 @@ mod tests {
             "fdo77887 粗體標題段在 display list 中 flags 不可為 0"
         );
         assert_ne!(flags & FLAG_BOLD, 0, "fdo77887 粗體標題段應帶有 FLAG_BOLD");
+    }
+
+    // ---------------- 強制分頁 br-page（t_01fa57af） ----------------
+
+    /// corpus 回歸：style-inheritance.docx（14 處 br-page）頁數收斂到 LO 的
+    /// 15 頁（±1）；斷點前段留原頁、斷點後段落從第 2 頁起頭（Word 語義）。
+    #[test]
+    fn br_page_corpus_style_inheritance_hits_lo_page_count() {
+        const SI: &[u8] = include_bytes!("../../../corpus/ooxmlexport/style-inheritance.docx");
+        let engine = Engine::from_docx_bytes(SI).expect("開啟 style-inheritance.docx");
+        assert!(
+            (14..=16).contains(&engine.page_count()),
+            "14 處 br-page 後頁數應收斂 LO 15±1，實得 {}",
+            engine.page_count()
+        );
+        // round-trip 鐵律不受影響：canonical 加欄位，寫回來源仍是 parts 明文。
+        assert_eq!(engine.save_docx().unwrap().as_slice(), SI);
+    }
+
+    /// corpus 回歸：reader-styles.docx（2 處 br-page＋3 sectPr）2 頁→3 頁，
+    /// 第 3 頁以 br 後的「Images」段起頭（LO 3 頁對齊）。
+    #[test]
+    fn br_page_corpus_reader_styles_reaches_three_pages() {
+        const RS: &[u8] = include_bytes!(
+            "../../../corpus/phpword/tests_PhpWordTests__files_documents_reader-styles.docx"
+        );
+        let engine = Engine::from_docx_bytes(RS).expect("開啟 reader-styles.docx");
+        assert_eq!(engine.page_count(), 3, "br-page 後應與 LO 同為 3 頁");
+        let last: Vec<String> = engine.page_lines(2).expect("第 2 頁存在");
+        assert!(
+            last.iter().any(|l| l.contains("Images")),
+            "br-page 後的 Images 段應從末頁起頭，實得 {last:?}"
+        );
+        assert_eq!(engine.save_docx().unwrap().as_slice(), RS);
+    }
+
+    /// Uranus（無 br-page，僅 lastRenderedPageBreak 渲染提示）：頁數不受本卡
+    /// 影響＝印證「渲染提示不計斷點」。Uranus/Saturn 縮水成因是圖片高度 0
+    /// （Card C 範圍），非 br-page 缺失。
+    #[test]
+    fn last_rendered_page_break_hint_never_changes_page_count() {
+        const U: &[u8] = include_bytes!(
+            "../../../corpus/xopt/OpenXmlPowerToolsExamples_DocumentBuilder04_Uranus.docx"
+        );
+        let engine = Engine::from_docx_bytes(U).expect("開啟 Uranus.docx");
+        let before = engine.page_count();
+        // 同檔重複開啟＋編輯再排：lastRenderedPageBreak 恆零影響，頁數回穩。
+        let mut eng2 = Engine::from_docx_bytes(U).expect("重開 Uranus.docx");
+        eng2.replace_paragraph_text(
+            0,
+            &format!("{}x", eng2.paragraph_text(0).unwrap_or_default()),
+        );
+        while !eng2.is_settled() {
+            eng2.reflow_step_json();
+        }
+        assert_eq!(
+            eng2.page_count(),
+            before,
+            "僅含渲染提示的檔案頁數不可因 br-page 功能變動"
+        );
+    }
+
+    /// 增量互動（軟分頁預算）：帶 br-page 的檔案編輯後，髒區間＋預算制背景
+    /// 重排照走既有失效路徑，排完頁數與全速重建一致（斷點不繞過預算制）。
+    #[test]
+    fn br_page_edit_respects_sync_budget_and_settles() {
+        const SI: &[u8] = include_bytes!("../../../corpus/ooxmlexport/style-inheritance.docx");
+        let full = Engine::from_docx_bytes(SI).unwrap();
+        let target = full.page_count();
+
+        let mut eng = Engine::from_docx_bytes(SI).unwrap();
+        eng.set_sync_budget(Some(2));
+        let long_text = "本段被編輯：插入大量文字以擠壓版面行數。".repeat(30);
+        eng.replace_paragraph_text(3, &long_text);
+        // 未定案時也必須是合法版面（頁存在、可取顯示列表）。
+        let mut guard = 0usize;
+        while !eng.is_settled() {
+            eng.reflow_step_json();
+            guard += 1;
+            assert!(guard < 1000, "背景重排必須有限步內定案");
+        }
+        assert!(eng.page_count() >= target, "編輯灌長後頁數只增不減");
+        // 顯示列表全頁可取＝分頁結構自洽。
+        for p in 0..eng.page_count() {
+            assert!(
+                eng.page_display_list_json(p).is_some(),
+                "第 {p} 頁顯示列表缺失"
+            );
+        }
     }
 }

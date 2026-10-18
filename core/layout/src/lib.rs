@@ -154,6 +154,14 @@ pub struct Line {
 pub struct ParagraphLayout {
     pub para_index: usize,
     pub lines: Vec<Line>,
+    /// 段內強制分頁斷點（`w:br w:type="page"`）：值＝**斷行之後**的軟斷行
+    /// 行號（斷點前的文字留在 `lines[o-1]`；`o=0` 斷在段落之前）。由
+    /// `break_para` 依 br 的字元偏移對齊既有 `Line::char_offset` 求得；
+    /// 偏移落在行內時向上取整到該行之後（誠實近似：斷行層不插硬斷，
+    /// 硬語義——斷點前文字留原頁、其後開新頁——由分頁層執行）。
+    /// serde default 保持舊快照相容；無 br 段落恆空＝舊行為逐位元組不變。
+    #[serde(default)]
+    pub para_breaks: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -185,8 +193,21 @@ pub fn break_lines(text: &str, max_w: f32, m: &TextMeasurer) -> Vec<Line> {
         .collect()
 }
 
+/// 帶**強制斷點**的斷行：`forced_cp` 為段落文字中的碼點偏移（同
+/// `Line::char_offset` 標尺），每個偏移處必斷行——這是 `w:br w:type="page"`
+/// 段中硬斷的承載點（KP 在此收行＝硬邊界，其後文字必然另起一行；分頁層
+/// 再把該行邊界升格為頁邊界）。偏移會先折到最近的字元邊界，重複自動去重；
+/// `0` 與段尾偏移由呼叫端（ParagraphLayout::para_breaks→pack_run）處理，
+/// 此處只影響斷行形狀。空清單與 `break_lines` 逐位元組等價（golden 鐵律）。
+pub fn break_lines_at(text: &str, max_w: f32, m: &TextMeasurer, forced_cp: &[usize]) -> Vec<Line> {
+    kp::kp_break_lines_at(text, max_w, m, forced_cp)
+        .into_iter()
+        .map(|s| s.line)
+        .collect()
+}
+
 pub fn layout_paragraphs(texts: &[String], p: &LayoutParams) -> Vec<ParagraphLayout> {
-    layout_paragraphs_per_section(texts, p, &[])
+    layout_paragraphs_with_breaks(texts, p, &[], &[])
 }
 
 /// 逐段落斷行；每段按其**所屬 section**（與 `texts` 等長，engine 層餵入）的
@@ -196,15 +217,34 @@ pub fn layout_paragraphs_per_section(
     p: &LayoutParams,
     sections: &[SectionSpec],
 ) -> Vec<ParagraphLayout> {
+    layout_paragraphs_with_breaks(texts, p, sections, &[])
+}
+
+/// 逐段落斷行＋**強制斷點**（`w:br w:type="page"`，碼點偏移逐段清單，短＝無
+/// 斷點段落；與 `texts` 同位）。段中斷點走 `break_lines_at`（KP 硬收行），
+/// 段首/段尾斷點由 `para_breaks` 承載給分頁層。偏移越界＝鉗到段尾（誠實）。
+pub fn layout_paragraphs_with_breaks(
+    texts: &[String],
+    p: &LayoutParams,
+    sections: &[SectionSpec],
+    breaks: &[Vec<usize>],
+) -> Vec<ParagraphLayout> {
     let m = TextMeasurer::new(p.font_size_pt);
     texts
         .iter()
         .enumerate()
         .map(|(i, t)| {
             let content_w = section_params(p, sections, i).content_w_pt();
+            let (lines, para_breaks) = break_para_lines(
+                t,
+                content_w,
+                &m,
+                breaks.get(i).map(Vec::as_slice).unwrap_or(&[]),
+            );
             let mut pl = ParagraphLayout {
                 para_index: i,
-                lines: break_lines(t, content_w, &m),
+                lines,
+                para_breaks,
             };
             // break_lines 不認識段落索引；在此蓋章，讓分頁搬運行時段落歸屬不丟。
             for l in pl.lines.iter_mut() {
@@ -213,6 +253,45 @@ pub fn layout_paragraphs_per_section(
             pl
         })
         .collect()
+}
+
+/// 段落文字 → (斷行行序列, para_breaks 行號)。`brs` 為 br-page 碼點偏移：
+/// 段中偏移折入 `break_lines_at`（斷行必在該處收行），再把每個偏移折算成
+/// 「斷行之後的行號 k」（斷點＝`lines[..k]` 收尾、`lines[k..]` 續排）：
+/// `o=0`→k=0（段前斷）、`o≥段長`→k=行數（段後斷）、段中取 `char_offset ≥ o`
+/// 的首行下標（硬收行使之一對齊；未對齊時向上取整，斷點前文字留在原行）。
+pub(crate) fn break_para_lines(
+    text: &str,
+    content_w: f32,
+    m: &TextMeasurer,
+    brs: &[usize],
+) -> (Vec<Line>, Vec<usize>) {
+    let total = text.chars().count();
+    let inner: Vec<usize> = brs
+        .iter()
+        .copied()
+        .filter(|&o| o > 0 && o < total)
+        .collect();
+    let lines = if inner.is_empty() {
+        break_lines(text, content_w, m)
+    } else {
+        break_lines_at(text, content_w, m, &inner)
+    };
+    let mut para_breaks: Vec<usize> = brs
+        .iter()
+        .map(|&o| {
+            if o == 0 {
+                0
+            } else if o >= total {
+                lines.len()
+            } else {
+                lines.partition_point(|l| l.char_offset < o)
+            }
+        })
+        .collect();
+    para_breaks.sort_unstable();
+    para_breaks.dedup();
+    (lines, para_breaks)
 }
 
 /// 段落 i 所屬 section 的版面參數（字級/行距維持 `p`，頁面幾何來自 section）。
@@ -383,14 +462,69 @@ fn item_para(flow: &[FlowItem], tables: &[TableSlot], fi: usize) -> usize {
     }
 }
 
+/// br-page 偏移隨段落改文平移（碼點標尺，undo 快照同鐵律）：新舊文取公共
+/// 前後綴定出舊改區 `[lo, hi_old)`——斷點 `b ≤ lo`（改區前）原樣、`b ≥ hi_old`
+/// （改區後）平移 `hi_new − hi_old`、`lo < b < hi_old`（改區內，文字被蓋掉）
+/// 折到 `lo`。越界鉗到段長，排序去重。改文永不無腦丟使用者的手插硬斷點。
+fn shift_breaks(old: &str, new: &str, brs: &[usize]) -> Vec<usize> {
+    let o: Vec<char> = old.chars().collect();
+    let n: Vec<char> = new.chars().collect();
+    let lo = o.iter().zip(n.iter()).take_while(|(a, b)| a == b).count();
+    let max_suf = (o.len() - lo).min(n.len() - lo);
+    let mut suf = 0usize;
+    while suf < max_suf && o[o.len() - 1 - suf] == n[n.len() - 1 - suf] {
+        suf += 1;
+    }
+    let hi_old = o.len() - suf;
+    let delta = (n.len() - suf) as isize - hi_old as isize;
+    let mut out: Vec<usize> = brs
+        .iter()
+        .map(|&b| {
+            if b <= lo {
+                // 改區前（含恰在插入點）：斷點緊貼其前文字 → 原樣。
+                b
+            } else if b >= hi_old {
+                // 改區後（嚴格越過插入點）：隨插入/刪除量平移。
+                (b as isize + delta).max(lo as isize) as usize
+            } else {
+                // 改區內（文字被蓋掉）：折到改區首，絕不無腦丟斷點。
+                lo
+            }
+        })
+        .map(|b| b.min(n.len()))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// 前一個流項是否以「段尾 br-page」收尾（k＝行數：最後一行已放置，硬斷點
+/// 落在該段之後 → 下一個流項必須開新頁）。游標位於流項起頭 (fi, 0, 0) 時
+/// 查此項；斷點行號 k 的語義＝「在 lines[k-1] 之後、lines[k] 之前」。
+fn prev_item_breaks_after(flow: &[FlowItem], pls: &[&ParagraphLayout], fi_prev: usize) -> bool {
+    match flow.get(fi_prev) {
+        Some(FlowItem::Text { para }) => {
+            let pl = pls[*para];
+            pl.para_breaks.last().copied() == Some(pl.lines.len())
+        }
+        _ => false,
+    }
+}
+
 /// 流排放主幹（`paginate_per_section` 與增量重排共用同一台狀態機——分頁
 /// 語義只有一份實作，golden 與增量結果不可能分岔）。
 ///
-/// 每步對下一個流項單位算 `start_new`（section 邊界非 continuous，或行網格
-/// 容量已滿），成立則 flush 當前頁。文字項一次放一條行（1 帶）；表格項放
-/// 「至多剩餘容量」的切片（`TableLayout::fragment`，切片可跨頁續排），並就地把
-/// 切片 y 蓋章成頁內絕對座標（行網格帶 × 行高＋上邊界）。無表格文件的
-/// FlowPos 序列與舊 (段落, 行) 模型一一對應——golden 逐位元組不變。
+/// 每步對下一個流項單位算 `start_new`（section 邊界非 continuous、行網格
+/// 容量已滿、或游標恰落在 br-page 硬斷點上），成立則 flush 當前頁。文字項
+/// 一次放一條行（1 帶）；表格項放「至多剩餘容量」的切片（`TableLayout::fragment`，
+/// 切片可跨頁續排），並就地把切片 y 蓋章成頁內絕對座標（行網格帶 × 行高＋
+/// 上邊界）。無表格文件的 FlowPos 序列與舊 (段落, 行) 模型一一對應——golden
+/// 逐位元組不變。
+///
+/// 硬斷點判定是游標位置的純函數（不另存游標態）：斷點 k 只在游標
+/// `(fi, k, 0)` 處命中（段前 k=0、段中 0<k<nli），段尾 k=nli 折疊為「游標在
+/// 下一流項起頭且前一文字項以 k=nli 收尾」。增量重排從舊頁邊界復位時會
+/// 重遇同一斷點位置，此刻 cur 恆空 ⇒ flush 為 no-op，冪等不破。
 /// `policy.reuse` 給定時：每次 flush 後比對「新頁起頭 == 舊版面某頁起頭且
 /// 起頭項 > 髒項」，命中即收斂（`PackOutcome::Converged`）。
 /// `policy.budget` 限制本次最多**新增**幾頁，且至少覆蓋完
@@ -440,10 +574,23 @@ fn pack_run(
         let spec = effective_section(p, sections, anchor);
         let cap =
             LayoutParams::from_section(&spec.geo, p.font_size_pt, p.line_spacing).per_page_lines();
+        // br-page 硬斷點（游標位置的純函數，語義見 pack_run doc）：段前
+        // (k=0) 與段中 (0<k<nli) 斷點在游標恰落 (fi,k,0) 時命中；段尾斷點
+        // (k=nli) 折疊為「游標在下一流項起頭且前一文字項以 k=nli 收尾」。
+        // 斷點前的行已在 cur＝留在原頁，其後一切開新頁（Word 硬斷語義）。
+        let hard = match &flow[fi] {
+            FlowItem::Text { para } => {
+                let pl = pls[*para];
+                li < pl.lines.len() && pl.para_breaks.binary_search(&li).is_ok()
+            }
+            FlowItem::Table { .. } => false,
+        };
+        let hard_after =
+            li == 0 && band == 0 && fi > 0 && prev_item_breaks_after(flow, pls, fi - 1);
         let start_new = match st.cur_spec {
             // section 邊界（非 continuous）一律換頁；同尺寸也換。
             Some(prev) if prev.id != spec.id => !spec.geo.continuous,
-            Some(_) => st.cur_used >= cap as u32, // 行網格容量已滿
+            Some(_) => st.cur_used >= cap as u32 || hard || hard_after, // 行網格已滿或 br-page 硬斷
             None => false,
         };
         if start_new {
@@ -753,6 +900,11 @@ pub struct LayoutEngine {
     params: LayoutParams,
     /// 逐段落所屬 section 的識別與頁面幾何（engine 層由 sectPr 解析餵入；空＝單幾何）。
     sections: Vec<SectionSpec>,
+    /// 逐段落的 br-page 強制分頁斷點（碼點偏移，`Paragraph::page_breaks` 直傳；
+    /// 短＝無斷點段落）。斷行（`break_para`）與分頁（pack_run 讀快取的
+    /// `para_breaks`）都由此取數；編輯改文時偏移依 changed_bytes 平移（同
+    /// undo 快照的標尺鐵律：改文不丟使用者手插的硬斷點）。
+    breaks: Vec<Vec<usize>>,
     pages: Vec<Page>,
     // ---------------- Phase0-6 增量狀態 ----------------
     /// 逐段落斷行結果快取（已蓋 para_index 章）；`None` = 待重斷（髒）。
@@ -793,11 +945,25 @@ impl LayoutEngine {
         sections: Vec<SectionSpec>,
         tables: Vec<TableSlot>,
     ) -> Self {
+        Self::with_breaks(texts, params, sections, tables, Vec::new())
+    }
+
+    /// 帶 br-page 硬斷點的建構（`w:br w:type="page"`，ECMA-376 §17.4.3）：
+    /// `breaks` 與 `texts` 逐段同標（碼點偏移；短＝無斷點段落）。既有呼叫端
+    /// 傳空＝行為逐位元組不變。
+    pub fn with_breaks(
+        texts: &[String],
+        params: LayoutParams,
+        sections: Vec<SectionSpec>,
+        tables: Vec<TableSlot>,
+        breaks: Vec<Vec<usize>>,
+    ) -> Self {
         let cache: Vec<Option<ParagraphLayout>> = vec![None; texts.len()];
         let mut eng = Self {
             texts: texts.to_vec(),
             params,
             sections,
+            breaks,
             pages: Vec::new(),
             cache,
             starts: Vec::new(),
@@ -837,12 +1003,21 @@ impl LayoutEngine {
     }
 
     /// 單段 KP 斷行（蓋 para_index 章）。只給髒段落呼叫——快取命中零成本。
+    /// br-page 段中斷點折入斷行（KP 硬收行）、段首/段尾斷點進 `para_breaks`
+    /// 給 pack_run 升格為頁邊界。
     fn break_para(&self, i: usize) -> ParagraphLayout {
         let content_w = section_params(&self.params, &self.sections, i).content_w_pt();
         let m = TextMeasurer::new(self.params.font_size_pt);
+        let (lines, para_breaks) = break_para_lines(
+            &self.texts[i],
+            content_w,
+            &m,
+            self.breaks.get(i).map(Vec::as_slice).unwrap_or(&[]),
+        );
         let mut pl = ParagraphLayout {
             para_index: i,
-            lines: break_lines(&self.texts[i], content_w, &m),
+            lines,
+            para_breaks,
         };
         for l in pl.lines.iter_mut() {
             l.para_index = i;
@@ -912,7 +1087,15 @@ impl LayoutEngine {
         if cur == new_text {
             return evs;
         }
-        self.texts[para] = new_text.to_string();
+        let old_text = std::mem::replace(&mut self.texts[para], new_text.to_string());
+        // br-page 偏移隨編輯平移（碼點標尺，與 undo 快照同一鐵律）：斷點在
+        // 改區之前原樣保留；在改區之後按增減量平移；落在改區內（文字被蓋掉）
+        // → 折到改區末（寧可保守留在原位附近，絕不無腦丟斷點）。
+        if let Some(bks) = self.breaks.get_mut(para) {
+            if !bks.is_empty() {
+                *bks = shift_breaks(&old_text, new_text, bks);
+            }
+        }
         self.cache[para] = None;
         let pl = self.break_para(para);
         self.cache[para] = Some(pl);
@@ -1789,7 +1972,10 @@ mod tests {
         );
         let mut last_para = 0usize;
         for pg in eng.pages() {
-            assert!(!pg.lines.is_empty(), "{ctx}: 頁內不可空（空段以單行表達）");
+            assert!(
+                !pg.lines.is_empty() || !pg.tables.is_empty(),
+                "{ctx}: 頁不可全空（空段以單行表達；br-page 後接表格允許純表格頁）"
+            );
             for l in &pg.lines {
                 assert!(l.para_index >= last_para, "{ctx}: 段落歸屬不可倒退");
                 last_para = l.para_index;
@@ -2265,5 +2451,238 @@ mod tests {
             (r1.y_pt - pg1.margin_top_pt).abs() < f32::EPSILON,
             "段首 caret y 起於此頁上緣邊界"
         );
+    }
+
+    // ---------------- br-page 強制分頁（t_01fa57af） ----------------
+
+    /// br-page 三條硬性測試之一：斷點前文字留在原頁、其後開新頁。段首斷
+    /// （k=0）→ 本段落整段換頁；斷點恰在頁尾（既有分頁已斷）→ 冪等不炸、
+    /// 頁數不重複疊加。
+    #[test]
+    fn br_page_forces_new_page_and_collapses_at_page_end() {
+        let p = LayoutParams {
+            page_w_pt: 400.0,
+            page_h_pt: 40.0,
+            margins_pt: [0.0; 4],
+            font_size_pt: 10.0,
+            line_spacing: 1.0,
+        };
+        // 容量＝4 行/頁；三段各 80 碼點＝2 行。無 br：6 行→2 頁（4＋2）。
+        let texts: Vec<String> = (0..3).map(|_| "字".repeat(80)).collect();
+        let plain = LayoutEngine::new(&texts, p);
+        let base_pages = plain.page_count();
+        assert_eq!(base_pages, 2, "無 br：6 行→2 頁");
+
+        let breaks = vec![
+            vec![texts[0].chars().count()],
+            vec![texts[1].chars().count()],
+            vec![],
+        ];
+        let eng = LayoutEngine::with_breaks(&texts, p, Vec::new(), Vec::new(), breaks);
+        assert_layout_invariants(&eng, "br-page");
+        // 段 0 尾斷→段 1 開新頁；段 1 尾斷→段 2 開新頁：每段各自成頁。
+        assert_eq!(eng.page_count(), 3, "斷點把後續段落推到新頁");
+        assert!(eng.page_starts().windows(2).all(|w| w[0] < w[1]));
+        // 每頁恰一節段（斷點前文字留原頁、斷點後全部另起）。
+        for (i, pg) in eng.pages().iter().enumerate() {
+            assert!(
+                pg.lines.iter().all(|l| l.para_index == i),
+                "頁 {i} 只屬段 {i}"
+            );
+        }
+
+        // 冪等：斷點恰落在既有頁尾（段 0 末行恰填滿頁）時不得疊加空白頁。
+        // 段 1 首行 (1,0,0) 原本就因容量已滿換頁——br 與既有斷點重合＝零新增。
+        let coincide = LayoutEngine::with_breaks(
+            &texts,
+            p,
+            Vec::new(),
+            Vec::new(),
+            vec![vec![], vec![0], vec![]],
+        );
+        assert_eq!(
+            coincide.page_count(),
+            base_pages,
+            "斷點恰落在頁尾（與既有分頁重合）→ 冪等不疊頁"
+        );
+        // 文件首斷點（游標起頭、cur 恆空）＝flush no-op，同樣零新增。
+        let lead = LayoutEngine::with_breaks(
+            &texts,
+            p,
+            Vec::new(),
+            Vec::new(),
+            vec![vec![0], vec![], vec![]],
+        );
+        assert_eq!(
+            lead.page_count(),
+            base_pages,
+            "文件首 br 無前置內容＝不產空頁"
+        );
+    }
+
+    /// br-page 硬性測試之二：段中斷點——斷點前的行留在原頁，其後行開新頁；
+    /// 斷點處必是斷行邊界（KP 硬收行），其後文字不回填原行。
+    #[test]
+    fn mid_paragraph_break_hard_ends_line_and_page() {
+        let p = LayoutParams {
+            page_w_pt: 400.0,
+            page_h_pt: 100.0,
+            margins_pt: [0.0; 4],
+            font_size_pt: 10.0,
+            line_spacing: 1.0,
+        };
+        // 段內 20 碼點，行寬 400pt/字寬 10pt＝40 字/行 → 全段一行；br 放碼點
+        // 8 → 斷行硬收：前 8 字一行、後 12 字另起一行，且該行落新頁。
+        let text = "字".repeat(20);
+        let eng = LayoutEngine::with_breaks(
+            &text_only(&text),
+            p,
+            Vec::new(),
+            Vec::new(),
+            vec![vec![8usize]],
+        );
+        assert_layout_invariants(&eng, "段中 br");
+        assert_eq!(eng.page_count(), 2, "段中 br＝其後行換頁");
+        let pg0 = &eng.pages()[0];
+        let pg1 = &eng.pages()[1];
+        assert_eq!(pg0.lines.len(), 1);
+        assert_eq!(pg0.lines[0].text.chars().count(), 8, "斷點前文字留原頁");
+        assert_eq!(pg1.lines[0].text.chars().count(), 12, "斷點後文字開新頁");
+        assert_eq!(pg1.lines[0].para_index, pg0.lines[0].para_index, "同段跨頁");
+    }
+
+    /// br-page 硬性測試之三：br-page 上線後任何檔案頁數只增不減——用合成的
+    /// 混合文件（長短段＋跨頁）逐段加斷點驗證單調性。
+    #[test]
+    fn adding_breaks_never_reduces_page_count() {
+        let texts: Vec<String> = (0..40)
+            .map(|i| match i % 4 {
+                0 => format!("長段{i}：{}", "字".repeat(700)),
+                1 => format!("短段{i}"),
+                2 => format!("中英 mix content 混排。{}{}", "文".repeat(200), i),
+                _ => String::new(),
+            })
+            .collect();
+        let p = LayoutParams::default();
+        let base = LayoutEngine::new(&texts, p).page_count();
+        for (i, t) in texts.iter().enumerate() {
+            let len = t.chars().count();
+            let brs: Vec<Vec<usize>> = texts
+                .iter()
+                .enumerate()
+                .map(|(j, _)| if j == i { vec![len / 2] } else { vec![] })
+                .collect();
+            let eng = LayoutEngine::with_breaks(&texts, p, Vec::new(), Vec::new(), brs);
+            assert!(
+                eng.page_count() >= base,
+                "段 {i} 加 br-page 後頁數 {n} < 基準 {base}",
+                n = eng.page_count()
+            );
+            assert_layout_invariants(&eng, &format!("段 {i} 斷點"));
+        }
+    }
+
+    /// 改文平移（undo 快照同標尺）：改區前斷點原樣、改區後斷點位移、改區內
+    /// 斷點折到改區首——且增量重排結果與整篇重建逐頁全等。
+    #[test]
+    fn edit_shifts_breaks_and_incremental_matches_full_rebuild() {
+        assert_eq!(
+            shift_breaks("hello world", "hello big world", &[5, 8]),
+            vec![5, 12],
+            "改區後斷點按增量平移"
+        );
+        assert_eq!(
+            // 插入點恰在斷點處（b=6）：斷點緊貼其前文字 → 原樣不動。
+            shift_breaks("hello world", "hello big world", &[2, 6, 8]),
+            vec![2, 6, 12],
+            "插入點上的斷點留在原地"
+        );
+        assert_eq!(
+            // 改區重疊斷點（world→earth 覆蓋碼點 7）：斷點折到改區首 lo=6。
+            shift_breaks("hello world", "hello earth", &[7]),
+            vec![6],
+            "改區內斷點折到改區首"
+        );
+        assert_eq!(
+            shift_breaks("abcd", "ab", &[1, 4]),
+            vec![1, 2],
+            "刪除：改區後斷點回退並鉗到段長"
+        );
+
+        let p = LayoutParams::default();
+        let texts: Vec<String> = (0..30)
+            .map(|i| format!("段落 {i}：{}", "混排 content 字。".repeat(40)))
+            .collect();
+        let mut breaks: Vec<Vec<usize>> = vec![vec![]; texts.len()];
+        breaks[3] = vec![texts[3].chars().count()]; // 段尾 br
+        breaks[7] = vec![5]; // 段中 br
+        breaks[9] = vec![texts[9].chars().count() / 2];
+        let mut eng = LayoutEngine::with_breaks(&texts, p, Vec::new(), Vec::new(), breaks.clone());
+        assert_layout_invariants(&eng, "br 初始");
+
+        // 編輯斷點段落之前/之後/之內各一筆，每筆後增量 ≡ 重建。
+        let mut live = texts.clone();
+        let mut live_breaks = breaks.clone();
+        let edits: Vec<(usize, &str)> = vec![
+            (0, "段首前綴插入 0123456789"),
+            (9, "在 br 之後追加一大段文字文字文字。"),
+            (7, "x在 br 之前插入"),
+            (12, "無斷點段落隨意編輯內容。"),
+        ];
+        for (para, new) in edits {
+            eng.replace_paragraph_text(para, new);
+            live[para] = new.to_string();
+            live_breaks[para] = shift_breaks(&texts[para], new, &breaks[para]);
+            let fresh =
+                LayoutEngine::with_breaks(&live, p, Vec::new(), Vec::new(), live_breaks.clone());
+            assert_eq!(
+                eng.page_starts(),
+                fresh.page_starts(),
+                "段 {para} 編輯後頁起頭與重建不符"
+            );
+            assert_eq!(eng.pages(), fresh.pages(), "段 {para} 編輯後版面與重建不符");
+            assert_layout_invariants(&eng, "編輯後");
+        }
+    }
+
+    /// 段尾 br-page 的「下一個流項換頁」對表格同樣成立：斷點段之後是表格時，
+    /// 表格切片必從新頁起排（無斷點時表格首片接在段後同頁續排）。
+    #[test]
+    fn br_page_after_para_pushes_table_to_new_page() {
+        let p = LayoutParams {
+            page_w_pt: 400.0,
+            page_h_pt: 200.0,
+            margins_pt: [40.0; 4],
+            font_size_pt: 12.0,
+            line_spacing: 1.4,
+        };
+        let texts = vec!["前段一行".to_string()];
+        // 容量＝(200−80)/16.8＝7 帶：前段 1＋表 6 恰好同頁；段尾 br 後表格
+        // （6 帶）整體被推到新頁。
+        let input = tall_table_input(6);
+        let m = TextMeasurer::new(p.font_size_pt);
+        let tl = crate::table::layout_table(&input, p.content_w_pt(), p.line_h_pt(), &m, 0);
+        let mk_slot = || TableSlot {
+            para_start: 1,
+            para_end: 1,
+            layout: tl.clone(),
+        };
+        let without = LayoutEngine::with_tables(&texts, p, Vec::new(), vec![mk_slot()]);
+        let with = LayoutEngine::with_breaks(
+            &texts,
+            p,
+            Vec::new(),
+            vec![mk_slot()],
+            vec![vec![texts[0].chars().count()]],
+        );
+        assert_eq!(without.page_count(), 1, "無斷點：前段＋表格首片同頁");
+        assert_eq!(with.page_count(), 2, "段尾 br：表格整片推到新頁");
+        assert_eq!(with.pages()[1].tables.len(), 1);
+        assert!(with.pages()[0].tables.is_empty(), "表格不得回填斷點前的頁");
+        assert_layout_invariants(&with, "br＋表格");
+    }
+
+    fn text_only(t: &str) -> Vec<String> {
+        vec![t.to_string()]
     }
 }
