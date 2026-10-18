@@ -7,13 +7,14 @@
 
 use quire_layout::{
     breaks_from_pages, CaretPos, LayoutEngine, LayoutParams, Page, SectionGeometry, SectionSpec,
-    TextMeasurer,
+    TableSlot, TextMeasurer, MARGIN_LEFT,
 };
 use quire_ooxml::{
-    diff_untouched, diff_zip_structure, parse, read_sections_per_paragraph, OoxmlDoc, OoxmlError,
-    ZipDiff,
+    diff_untouched, diff_zip_structure, parse, parse_header_footer_part, read_even_and_odd_headers,
+    read_rels, read_sections_header_footer, read_sections_per_paragraph, resolve_relationship,
+    OoxmlDoc, OoxmlError, SlotRefs, ZipDiff,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
 
 // shells 需要顯示列表型別但只能 import 本 crate：在此 re-export（分層鐵律的唯一合法通道）。
@@ -52,6 +53,45 @@ pub struct Engine {
     original: Vec<u8>,
     /// 被編輯器動過的 part key（round-trip 白名單：這些 entry 允許內容變動）。
     touched: BTreeMap<String, ()>,
+    /// 頁首頁尾發射層（t_b39f108b）：section id → 宣告（rId 已換算成 part
+    /// 路徑，跨節繼承已套用）；`hf_parts` 為 part 路徑 → 已解析投影。
+    /// 純讀取派生資料——存檔路徑完全不經此層（round-trip 零影響）。
+    hf: HashMap<u32, SectionHf>,
+    hf_parts: HashMap<String, HfPart>,
+    /// `settings.xml` 的 `evenAndOddHeaders`（文件級奇偶頁開關）。
+    even_odd: bool,
+    /// section id → 頁面幾何（取首見值；頁首頁尾排版寬度與欄位換算用）。
+    sec_geo: HashMap<u32, SectionGeometry>,
+}
+
+/// 頁首／頁尾 part 的已解析投影（開啟文件時一次性解析；純讀取）。
+/// 段落與表格走與 document.xml 同一組解析器（同 w:p Start 口徑、同
+/// mc:Fallback 吞沒）；索引只在 part 內自洽。
+#[derive(Debug)]
+struct HfPart {
+    paragraphs: Vec<quire_ooxml::Paragraph>,
+    tables: Vec<quire_ooxml::BodyTable>,
+}
+
+/// 一節的頁首頁尾發射資料：宣告（已繼承、rId 已換算為「確實在 parts 裡」
+/// 的 part 路徑，缺件＝None 容錯跳過）＋發射距離＋titlePg 開關。
+#[derive(Debug, Default)]
+struct SectionHf {
+    /// 頁首發射 y＝本值（pt，自頁頂；ECMA-376 pgMar/@w:header）。
+    header_dist_pt: f32,
+    /// 頁尾發射 y＝頁高−本值（pt；ECMA-376 pgMar/@w:footer）。
+    footer_dist_pt: f32,
+    title_pg: bool,
+    header: SlotPaths,
+    footer: SlotPaths,
+}
+
+/// 已解析的三 slot part 路徑（None＝未宣告或指向不存在 part）。
+#[derive(Debug, Default)]
+struct SlotPaths {
+    default: Option<String>,
+    first: Option<String>,
+    even: Option<String>,
 }
 
 impl Engine {
@@ -94,13 +134,20 @@ impl Engine {
         // 表格槽（Phase3-1b）：canonical 樹＋styles.xml 框線查表 → layout 幾何。
         let styles = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
         let slots = table_map::build_slots(&doc.tables, &texts, styles, &params, &sections);
-        let layout = LayoutEngine::with_tables(&texts, params, sections, slots);
+        let layout = LayoutEngine::with_tables(&texts, params, sections.clone(), slots);
+        // 頁首頁尾層（t_b39f108b）：sectPr 宣告＋rels 查表＋part 解析。
+        // 全鏈純讀取派生——parts／bundle 一個位元組都不碰（round-trip 零影響）。
+        let (hf, hf_parts, even_odd, sec_geo) = build_hf_layer(&doc, &sections, &params);
         Ok(Self {
             doc,
             layout,
             params,
             original: bytes.to_vec(),
             touched: BTreeMap::new(),
+            hf,
+            hf_parts,
+            even_odd,
+            sec_geo,
         })
     }
 
@@ -179,6 +226,9 @@ impl Engine {
         let size = self.params.font_size_pt;
         let measurer = TextMeasurer::new(size);
         let mut items: Vec<DrawItem> = Vec::new();
+        // 頁首頁尾先發射（填色/框線在文字之前，與表格同一約定）——其文字項
+        // 由下方統一幾何排序落到閱讀序應有位置（頁首 y 小排最前、頁尾最後）。
+        self.push_header_footer_items(&mut items, p, &measurer);
         // 底層先畫表格（填色＋框線＋格內文字），再疊正文行；最後對「文字項」
         // 依 (y, x) 幾何閱讀序重排——跨表格/正文統一由上而下、由左而右。
         // 填色與框線保持推入序（穩定排序 key 同鍵，不互相顛倒遮蓋次序）。
@@ -665,11 +715,452 @@ pub fn dump_display_lists_json(engine: &Engine) -> String {
     serde_json::to_string_pretty(&all).unwrap_or_else(|_| "[]".to_string())
 }
 
+// ---------------- 頁首頁尾發射層（t_b39f108b） ----------------
+//
+// 純讀取投影：sectPr 宣告 → rels 查表 → part 解析 → 依
+// (section_id, is_first_page, page % 2) 選 slot 發射顯示列表項。
+// 存檔路徑（save_docx／roundtrip）完全不經本層——round-trip 零影響。
+//
+// 座標系：頁首文字頂端 y＝pgMar/@w:header（pt，自頁頂）；頁尾頂端
+// y＝頁高−pgMar/@w:footer。本輪**不縮正文容量**：頁首內容高度若超過
+// top margin 減 header 距離，會與正文重疊（誠實近似，溢出處理屬後續卡）。
+//
+// slot 選用（ECMA-376 語義優先）：titlePg 首頁有 first 用 first、無 first
+// 則**空白**（不虛構頁首）；evenAndOddHeaders 偶數頁缺 even 時退回 default
+// （生成器常只宣告 default，退回可讓既有頁首在全部頁碼如實出現）；
+// 缺件（rId 不存在／指向無 part）容錯跳過。
+
+impl Engine {
+    /// 本頁是否為其所屬 section 的首頁（文件首頁或 section 邊界頁）。
+    fn is_section_first_page(&self, page: usize) -> bool {
+        let cur = self.layout.pages().get(page).map(|p| p.section_id);
+        match page.checked_sub(1).and_then(|i| self.layout.pages().get(i)) {
+            Some(prev) => match cur {
+                Some(id) => prev.section_id != id,
+                None => false,
+            },
+            None => true,
+        }
+    }
+
+    /// 頁首頁尾 → 顯示列表項。找不到宣告/投影時靜默略過（容錯）。
+    fn push_header_footer_items(
+        &self,
+        items: &mut Vec<DrawItem>,
+        p: &Page,
+        measurer: &TextMeasurer,
+    ) {
+        if self.hf.is_empty() {
+            return;
+        }
+        let Some(sec) = self.hf.get(&p.section_id) else {
+            return;
+        };
+        let is_first = self.is_section_first_page(p.index);
+        let is_even = (p.index + 1).is_multiple_of(2); // 1-based 物理頁碼的偶數頁
+                                                       // PAGE／NUMPAGES 代換值（欄位快取值過舊問題由代換解決）。
+        let page_no = (p.index + 1).to_string();
+        let total_no = self.page_count().to_string();
+        let styles = self.doc.parts.get("word/styles.xml").map(|s| s.as_slice());
+        let geo = self
+            .sec_geo
+            .get(&p.section_id)
+            .copied()
+            .unwrap_or_else(|| self.params_to_geo(p));
+        let hf_params =
+            LayoutParams::from_section(&geo, self.params.font_size_pt, self.params.line_spacing);
+        // (slot 選擇, 發射 y)：頁首 y=header 距離；頁尾 y=頁高−footer 距離。
+        self.push_hf_slot(
+            items,
+            &sec.header,
+            sec.title_pg && is_first,
+            self.even_odd && is_even,
+            sec.header_dist_pt,
+            &geo,
+            &hf_params,
+            styles,
+            &page_no,
+            &total_no,
+            measurer,
+        );
+        self.push_hf_slot(
+            items,
+            &sec.footer,
+            sec.title_pg && is_first,
+            self.even_odd && is_even,
+            (p.height_pt - sec.footer_dist_pt).max(0.0),
+            &geo,
+            &hf_params,
+            styles,
+            &page_no,
+            &total_no,
+            measurer,
+        );
+    }
+
+    /// 頁內 section 幾何後備（正常路徑 sec_geo 必命中；此處只兜底）。
+    fn params_to_geo(&self, p: &Page) -> SectionGeometry {
+        SectionGeometry {
+            page_w_pt: p.width_pt,
+            page_h_pt: p.height_pt,
+            margin_top_pt: p.margin_top_pt,
+            margin_bottom_pt: p.margin_top_pt,
+            margin_left_pt: p.margin_left_pt,
+            margin_right_pt: p.margin_left_pt,
+            landscape: false,
+            continuous: false,
+        }
+    }
+
+    /// 單一 slot（頁首或頁尾）的發射：段落行＋表格切片＋欄位代換。
+    #[allow(clippy::too_many_arguments)]
+    fn push_hf_slot(
+        &self,
+        items: &mut Vec<DrawItem>,
+        slots: &SlotPaths,
+        use_first: bool,
+        use_even: bool,
+        emit_y: f32,
+        geo: &SectionGeometry,
+        hf_params: &LayoutParams,
+        styles: Option<&[u8]>,
+        page_no: &str,
+        total_no: &str,
+        measurer: &TextMeasurer,
+    ) {
+        let path = pick_slot(slots, use_first, use_even);
+        let Some(path) = path else { return };
+        let Some(part) = self.hf_parts.get(path) else {
+            return;
+        };
+        // 欄位代換：帶 field 標記**且有實際文字**的 run，以當頁頁碼/總頁數
+        // 覆寫（end 標記 run 只帶 fldChar、無文字——空文字注入會虛増頁碼）。
+        let paragraphs: Vec<quire_ooxml::Paragraph> = part
+            .paragraphs
+            .iter()
+            .map(|pp| {
+                let mut pp = pp.clone();
+                for r in pp.runs.iter_mut() {
+                    if r.text.is_empty() {
+                        continue;
+                    }
+                    match r.field {
+                        Some(quire_ooxml::FieldKind::Page) => r.text = page_no.to_string(),
+                        Some(quire_ooxml::FieldKind::NumPages) => r.text = total_no.to_string(),
+                        None => {}
+                    }
+                }
+                pp
+            })
+            .collect();
+        let texts: Vec<String> = paragraphs
+            .iter()
+            .map(|pp| pp.runs.iter().map(|r| r.text.as_str()).collect())
+            .collect();
+        let line_h = hf_params.line_h_pt();
+        // 表格槽：與正文同一映射層（styles 框線查表）；單 section 合成表。
+        let sec_one = [SectionSpec { id: 0, geo: *geo }];
+        let slots_tbl = table_map::build_slots(&part.tables, &texts, styles, hf_params, &sec_one);
+        // 流項＝段落行＋表格依序排列（簡化 packer：頁首本就一小節，不跨頁，
+        // 表格整張放進自身帶高，超出部分由頁首自然向下延伸——重疊風險見模組注）。
+        let pls = quire_layout::layout_paragraphs(&texts, hf_params);
+        let mut cursor_bands: u32 = 0;
+        let mut ti = 0usize;
+        let mut skip_until = 0usize;
+        for (pi, pl) in pls.iter().enumerate() {
+            while ti < slots_tbl.len() && slots_tbl[ti].para_start <= pi {
+                self.emit_hf_table(
+                    items,
+                    &slots_tbl[ti],
+                    emit_y,
+                    cursor_bands,
+                    line_h,
+                    hf_params,
+                    &paragraphs,
+                );
+                cursor_bands += slots_tbl[ti].layout.total_bands.max(1);
+                skip_until = skip_until.max(slots_tbl[ti].para_end);
+                ti += 1;
+            }
+            if pi < skip_until {
+                continue; // 表格內部段落：文字由切片繪製
+            }
+            for (li, l) in pl.lines.iter().enumerate() {
+                if l.text.is_empty() {
+                    continue; // 空行不發射：空 Text 項不繪製，卻會佔據
+                              // render-lab 前 8 行比對視窗、稀釋相似度。
+                }
+                let y = emit_y + (cursor_bands + li as u32) as f32 * line_h;
+                emit_line_run_items(
+                    items,
+                    hf_params.margin(MARGIN_LEFT),
+                    y,
+                    hf_params.font_size_pt,
+                    l,
+                    paragraphs.get(l.para_index),
+                    measurer,
+                );
+            }
+            cursor_bands += pl.lines.len().max(1) as u32;
+        }
+        while ti < slots_tbl.len() {
+            self.emit_hf_table(
+                items,
+                &slots_tbl[ti],
+                emit_y,
+                cursor_bands,
+                line_h,
+                hf_params,
+                &paragraphs,
+            );
+            cursor_bands += slots_tbl[ti].layout.total_bands.max(1);
+            ti += 1;
+        }
+    }
+
+    /// 頁首表格：整張切片（不跨頁）＋既有 push_frag_items 渲染路徑。
+    // 發射層內部函數：參數即 emission 上下文，拆群反而模糊資料流。
+    #[allow(clippy::too_many_arguments)]
+    fn emit_hf_table(
+        &self,
+        items: &mut Vec<DrawItem>,
+        slot: &TableSlot,
+        emit_y: f32,
+        cursor_bands: u32,
+        line_h: f32,
+        hf_params: &LayoutParams,
+        paragraphs: &[quire_ooxml::Paragraph],
+    ) {
+        let (frag, _next, _used) = slot.layout.fragment(
+            0,
+            0,
+            slot.layout.total_bands.max(1),
+            false,
+            hf_params.margin(MARGIN_LEFT),
+        );
+        let y = emit_y + cursor_bands as f32 * line_h;
+        // canonical 對照：頁首表格的格內樣式解析暫以 None 進行（樣式查表屬
+        // Card A 表格樣式深化範圍；文字/框線/底紋不受影響——push_frag_items
+        // 對 canon_tbl=None 走「整格單樣式」既有路徑）。
+        push_frag_items(
+            items,
+            frag.x_pt,
+            y,
+            &frag,
+            hf_params.font_size_pt,
+            None,
+            paragraphs,
+        );
+    }
+}
+
+/// slot 選用（ECMA-376 語義優先）：
+/// - titlePg 首頁：有 first 用 first；**無 first 則空白**（Word 即如此，
+///   不退回 default——生成器宣告 titlePg 卻未給 first 時，退回會虛構頁首，
+///   FDO76312 render-lab 實測 LO/Word 首頁皆無頁首）。
+/// - evenAndOddHeaders 偶數頁：有 even 用 even；無 even 退回 default
+///   （生成器常只宣告 default，退回可讓頁首在全部頁碼如實出現，
+///   PageSpecificHeadFoot 實測此近似與 LO 一致）。
+fn pick_slot(slots: &SlotPaths, use_first: bool, use_even: bool) -> Option<&String> {
+    if use_first {
+        return slots.first.as_ref();
+    }
+    if use_even {
+        if let Some(p) = slots.even.as_ref() {
+            return Some(p);
+        }
+    }
+    slots.default.as_ref()
+}
+
+/// 頁首頁尾發射層四元組：(section id → 發射資料, part 路徑 → 投影,
+/// evenAndOddHeaders, section id → 幾何)。
+type HfLayer = (
+    HashMap<u32, SectionHf>,
+    HashMap<String, HfPart>,
+    bool,
+    HashMap<u32, SectionGeometry>,
+);
+
+/// 構建頁首頁尾發射層：宣告解析→rels 換算→存在性過濾→part 解析（去重）。
+fn build_hf_layer(doc: &OoxmlDoc, sections: &[SectionSpec], _params: &LayoutParams) -> HfLayer {
+    let mut sec_geo: HashMap<u32, SectionGeometry> = HashMap::new();
+    for s in sections {
+        sec_geo.entry(s.id).or_insert(s.geo);
+    }
+    let Some(doc_xml) = doc.parts.get("word/document.xml") else {
+        return Default::default();
+    };
+    let decls = read_sections_header_footer(doc_xml);
+    if decls.is_empty() {
+        return Default::default();
+    }
+    let even_odd = doc
+        .parts
+        .get("word/settings.xml")
+        .map(|s| read_even_and_odd_headers(s))
+        .unwrap_or(false);
+    let rels = doc
+        .parts
+        .get("word/_rels/document.xml.rels")
+        .map(|r| read_rels(r))
+        .unwrap_or_default();
+
+    let resolve = |rid: &Option<String>| -> Option<String> {
+        let rid = rid.as_ref()?;
+        let path = resolve_relationship(&rels, rid)?;
+        // 指向不存在 part 的懸空 rId → None（容錯跳過，不虛構）。
+        doc.parts.contains_key(&path).then_some(path)
+    };
+    let paths_of = |sr: &SlotRefs| SlotPaths {
+        default: resolve(&sr.default),
+        first: resolve(&sr.first),
+        even: resolve(&sr.even),
+    };
+
+    let mut hf: HashMap<u32, SectionHf> = HashMap::new();
+    let mut want: Vec<String> = Vec::new();
+    let push_want = |v: &Option<String>, want: &mut Vec<String>| {
+        if let Some(p) = v {
+            if !want.contains(p) {
+                want.push(p.clone());
+            }
+        }
+    };
+    for d in decls {
+        let header = paths_of(&d.header);
+        let footer = paths_of(&d.footer);
+        push_want(&header.default, &mut want);
+        push_want(&header.first, &mut want);
+        push_want(&header.even, &mut want);
+        push_want(&footer.default, &mut want);
+        push_want(&footer.first, &mut want);
+        push_want(&footer.even, &mut want);
+        hf.insert(
+            d.id,
+            SectionHf {
+                header_dist_pt: d.header_dist_pt,
+                footer_dist_pt: d.footer_dist_pt,
+                title_pg: d.title_pg,
+                header,
+                footer,
+            },
+        );
+    }
+    let mut hf_parts: HashMap<String, HfPart> = HashMap::new();
+    for path in want {
+        if let Some(xml) = doc.parts.get(&path) {
+            if let Ok((paragraphs, tables)) = parse_header_footer_part(xml) {
+                hf_parts.insert(path, HfPart { paragraphs, tables });
+            }
+        }
+    }
+    (hf, hf_parts, even_odd, sec_geo)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SAMPLE: &[u8] = include_bytes!("../../../fixtures/sample.docx");
+
+    // ---------------- 頁首頁尾（t_b39f108b） ----------------
+
+    /// 自製 fixture：titlePg＋first 頁首、default 表格頁首、PAGE/NUMPAGES
+    /// 頁尾——發射的 y 座標取自 pgMar/@w:header｜頁高−footer，slot 依
+    /// 「首頁→first／其餘→default」選用，欄位快取值被當頁數覆寫。
+    #[test]
+    fn header_footer_emits_with_geometry_and_fields() {
+        const HF: &[u8] = include_bytes!("../../../fixtures/hf_table_header.docx");
+        let engine = Engine::from_docx_bytes(HF).expect("開啟 hf_table_header.docx 失敗");
+        assert!(
+            engine.page_count() >= 2,
+            "fixture 必須至少兩頁才有 default 頁首"
+        );
+        // 第一頁：first slot 文字在 header 距離處（432twip=21.6pt）；無表格框線。
+        let p0 = engine.page_display_list(0).unwrap();
+        let first_hdr = p0
+            .items
+            .iter()
+            .find_map(|it| match it {
+                DrawItem::Text { text, y, .. } if text == "首頁專用頁首" => Some(*y),
+                _ => None,
+            })
+            .expect("首頁應發射 first 頁首文字");
+        assert!(
+            (first_hdr - 21.6).abs() < 0.6,
+            "first 頁首 y 應≈header 距離 21.6pt，實際 {first_hdr}"
+        );
+        assert!(
+            p0.items
+                .iter()
+                .all(|it| !matches!(it, DrawItem::Rule { .. })),
+            "first 頁首是純文字段，不該有表格框線"
+        );
+        // 第二頁起：default 表格頁首——公文表頭文字＋四條框線 Rule。
+        let p1 = engine.page_display_list(1).unwrap();
+        let tbl_hdr = p1
+            .items
+            .iter()
+            .find_map(|it| match it {
+                DrawItem::Text { text, y, .. } if text == "機關名義：奎爾文書局" => {
+                    Some(*y)
+                }
+                _ => None,
+            })
+            .expect("第二頁應發射 default 表格頁首格內文字");
+        assert!(
+            tbl_hdr < 72.0,
+            "頁首表格文字必須落在 top margin 上方：{tbl_hdr}"
+        );
+        let rules = p1
+            .items
+            .iter()
+            .filter(|it| matches!(it, DrawItem::Rule { .. }))
+            .count();
+        assert!(rules >= 4, "單格表格至少四邊框線，實際 {rules} 條");
+        // 頁尾欄位：PAGE 與 NUMPAGES 以當頁數代換，過期快取值絕不露出。
+        // 注意 fixture 只宣告 default 頁尾（無 first 頁尾）——titlePg strict
+        // 語義下首頁頁尾為空白，第一頁的頁碼要從第二頁驗證。
+        let foot0 = page_footer_text(&p0);
+        assert!(
+            foot0.is_empty(),
+            "titlePg 且無 first 頁尾時首頁頁尾應空白：{foot0:?}"
+        );
+        let foot1 = page_footer_text(&p1);
+        assert_eq!(foot1, format!("2 / {}", engine.page_count()));
+        assert!(
+            !foot1.contains("過期"),
+            "欄位快取髒值不得出現在發射結果：{foot1}"
+        );
+    }
+
+    /// 取頁面下部（y>780pt，正文底 769.9 與頁尾 805.9 之間）的頁尾文字串接。
+    fn page_footer_text(dl: &PageDisplayList) -> String {
+        dl.items
+            .iter()
+            .filter_map(|it| match it {
+                DrawItem::Text { text, y, .. } if *y > 780.0 => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    /// 純讀取鐵律：頁首頁尾層完全不觸碰 parts——開檔不動存檔必須
+    /// byte-identical（頁首 part 亦是 untouched 條目，必須原樣回填）。
+    #[test]
+    fn header_footer_round_trip_untouched() {
+        const HF: &[u8] = include_bytes!("../../../fixtures/hf_table_header.docx");
+        let engine = Engine::from_docx_bytes(HF).unwrap();
+        let saved = engine.save_docx().unwrap();
+        assert_eq!(saved.as_slice(), HF, "含頁首頁尾的文件存檔必須位元組級相同");
+        // header/footer part 確實是 untouched 條目（並非被改後碰巧還原）。
+        assert!(
+            engine.preserved_part_count() >= 7,
+            "七個 part 全部應為 untouched"
+        );
+    }
 
     #[test]
     fn end_to_end_open_and_layout() {

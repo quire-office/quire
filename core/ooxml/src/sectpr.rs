@@ -1,4 +1,4 @@
-//! sectPr（section properties）頁面幾何解析 —— Phase0-2b。
+//! sectPr（section properties）頁面幾何與頁首頁尾宣告解析 —— Phase0-2b＋頁首頁尾全鏈。
 //!
 //! 分頁必須跟著檔案實際的頁面幾何走：`LayoutParams::default()` 只是**檔案沒有
 //! 任何 sectPr 資訊時**的後備值，不是硬編碼。本模組由 `word/document.xml`
@@ -19,6 +19,15 @@
 //! （同頁續排，不強制換頁）；oddPage/evenPage 以 nextPage 近似（頁碼奇偶補白
 //! 屬後續卡）。
 //!
+//! 頁首頁尾宣告（本卡新增）：每個 section 另讀 `pgMar @w:header/@w:footer`
+//! 距離（預設 720 twip＝0.5 吋，ECMA-376 §17.4.48 表列預設）、`w:titlePg`
+//! （首頁獨立頁尾開關），以及 `w:headerReference`／`w:footerReference` 的
+//! `w:type`（default／first／even）＋`r:id`。r:id→part 路徑的 OPC rels 解析
+//! 在呼叫端（`OoxmlDoc::resolve_rel`），本模組只保留 rId 原字串。
+//! **跨節繼承**依 ECMA-376 §17.10.5：第 k 節未宣告的 slot（型別）沿用第
+//! k−1 節（逐 slot 遞移，繼承鏈沿 id 序往前追）。`settings.xml` 的
+//! `evenAndOddHeaders` 為文件級旗標，另由 [`read_even_and_odd_headers`] 讀取。
+//!
 //! 已知骨架近似：表格 Cell 內段落自帶 sectPr（畸形但存在）時，section 邊界
 //! 推到該 Cell 所屬表格段落為止；section 起點的欄數（`w:cols`）未實作，
 //! 多欄 section 走單欄。
@@ -33,6 +42,8 @@ const DEF_MARGIN_TOP: i64 = 1440;
 const DEF_MARGIN_BOTTOM: i64 = 1440;
 const DEF_MARGIN_LEFT: i64 = 1800;
 const DEF_MARGIN_RIGHT: i64 = 1800;
+/// `pgMar @w:header/@w:footer` 缺值（twip）：0.5 吋（ECMA-376 §17.4.48 預設）。
+const DEF_HF_DIST: i64 = 720;
 
 /// 一個 section 的頁面幾何（pt）。`landscape` 僅供老實回報，
 /// 尺寸一律以 `page_w_pt`／`page_h_pt` 為準（Word/LO 皆直接信任 pgSz 的 w/h）。
@@ -59,8 +70,35 @@ pub struct SectionSpec {
     pub geo: SectionGeometry,
 }
 
-/// 一節的 pgSz/pgMar/type 累積值（twip）。
-#[derive(Debug, Clone, Copy)]
+/// 一個 section 的頁首（或頁尾）三 slot 引用：rId 原字串，缺＝None。
+/// 解析 rId→part 與跨節繼承后的最終選用由 engine 層依
+/// `(section_id, is_first_page, page % 2)` 決定。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotRefs {
+    /// `w:headerReference`／`w:footerReference` 之 `w:type="default"`（缺 w:type 同）。
+    pub default: Option<String>,
+    /// `w:type="first"`（僅在 `titlePg` 開啟的首頁生效）。
+    pub first: Option<String>,
+    /// `w:type="even"`（僅在 `evenAndOddHeaders` 開啟的偶數頁生效）。
+    pub even: Option<String>,
+}
+
+/// 一個 section 的頁首頁尾宣告（已套用 ECMA-376 §17.10.5 跨節繼承）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SectionHeaderFooter {
+    pub id: u32,
+    /// `pgMar @w:header`：頁首內容頂端 y（pt，自頁頂）。
+    pub header_dist_pt: f32,
+    /// `pgMar @w:footer`：頁尾內容頂端錨點距頁底（pt）——發射 y＝頁高−本值。
+    pub footer_dist_pt: f32,
+    /// `w:titlePg`：本節首頁使用 first slot。
+    pub title_pg: bool,
+    pub header: SlotRefs,
+    pub footer: SlotRefs,
+}
+
+/// 一節的 pgSz/pgMar/type/頁首頁尾宣告累積值（距離以 twip 原單位存）。
+#[derive(Debug, Clone)]
 struct Accum {
     w: i64,
     h: i64,
@@ -70,6 +108,11 @@ struct Accum {
     right: i64,
     landscape: bool,
     continuous: bool,
+    header_d: i64,
+    footer_d: i64,
+    title_pg: bool,
+    header: SlotRefs,
+    footer: SlotRefs,
 }
 
 impl Accum {
@@ -83,6 +126,11 @@ impl Accum {
             right: DEF_MARGIN_RIGHT,
             landscape: false,
             continuous: false,
+            header_d: DEF_HF_DIST,
+            footer_d: DEF_HF_DIST,
+            title_pg: false,
+            header: SlotRefs::default(),
+            footer: SlotRefs::default(),
         }
     }
     fn into_geom(self) -> SectionGeometry {
@@ -98,6 +146,22 @@ impl Accum {
             continuous: self.continuous,
         }
     }
+    fn into_hf(self, id: u32) -> SectionHeaderFooter {
+        SectionHeaderFooter {
+            id,
+            header_dist_pt: self.header_d as f32 / 20.0,
+            footer_dist_pt: self.footer_d as f32 / 20.0,
+            title_pg: self.title_pg,
+            header: self.header,
+            footer: self.footer,
+        }
+    }
+}
+
+/// 單趟掃描結果：邊界（涵蓋至第幾段, id, 累積值）＋檔尾 section。
+struct Scan {
+    boundaries: Vec<(usize, u32, Accum)>,
+    body_sect: Option<(u32, Accum)>,
 }
 
 /// 由 `word/document.xml` 明文解析「逐段落」的 section（識別＋頁面幾何）。
@@ -108,6 +172,118 @@ pub fn read_sections_per_paragraph(xml: &[u8], n_paragraphs: usize) -> Vec<Secti
     if n_paragraphs == 0 {
         return Vec::new();
     }
+    let scan = scan_sections(xml);
+    if scan.boundaries.is_empty() && scan.body_sect.is_none() {
+        return Vec::new(); // 無任何 section 資訊 → 呼叫端後備
+    }
+
+    // 展開成逐段落清單：邊界 section 各涵蓋到其邊界段為止，檔尾 section 吃其餘。
+    let mut out = Vec::with_capacity(n_paragraphs);
+    for (through, id, a) in &scan.boundaries {
+        let g = clone_accum(a).into_geom();
+        while out.len() < (*through).min(n_paragraphs) {
+            out.push(SectionSpec { id: *id, geo: g });
+        }
+    }
+    let tail = scan
+        .body_sect
+        .as_ref()
+        .map(|(id, a)| (*id, clone_accum(a)))
+        .or_else(|| {
+            scan.boundaries
+                .last()
+                .map(|(_, id, a)| (*id, clone_accum(a)))
+        });
+    if let Some((id, a)) = tail {
+        let g = a.into_geom();
+        while out.len() < n_paragraphs {
+            out.push(SectionSpec { id, geo: g });
+        }
+    }
+    out
+}
+
+/// 由 `word/document.xml` 明文解析逐 section 的頁首頁尾宣告。
+///
+/// 回傳依 section `id` 升序（＝文件序），且已對六個 slot（頁首/頁尾 ×
+/// default/first/even）套用 ECMA-376 §17.10.5 跨節繼承：第 k 節未宣告的
+/// slot 沿用第 k−1 節繼承後的值。無任何 section 時回傳空清單。
+/// `distance`／`titlePg` 不繼承（pgMar、titlePg 為本節自決屬性，缺值走預設）。
+///
+/// 檔尾無 body 級 sectPr 時**不**合成新節：`read_sections_per_paragraph`
+/// 已把檔尾段落歸給最後一個邊界節（同款回退），頁面的 section id 查找
+/// 自然命中該節的宣告——id 空間由逐段落清單單方定義，此處對齊。
+pub fn read_sections_header_footer(xml: &[u8]) -> Vec<SectionHeaderFooter> {
+    let scan = scan_sections(xml);
+    let mut out: Vec<SectionHeaderFooter> = Vec::new();
+    for (_, id, a) in &scan.boundaries {
+        out.push(clone_accum(a).into_hf(*id));
+    }
+    if let Some((id, a)) = &scan.body_sect {
+        out.push(clone_accum(a).into_hf(*id));
+    }
+    // 跨節繼承（§17.10.5）：id 升序逐節把缺位 slot 往前補（遞移——k−1 已被
+    // 更早節填過時，補的就是更早節的值，語義即「沿文件序找最近的宣告」）。
+    for k in 1..out.len() {
+        let prev_header = out[k - 1].header.clone();
+        let prev_footer = out[k - 1].footer.clone();
+        let cur = &mut out[k];
+        inherit(&mut cur.header, &prev_header);
+        inherit(&mut cur.footer, &prev_footer);
+    }
+    out
+}
+
+fn inherit(dst: &mut SlotRefs, src: &SlotRefs) {
+    if dst.default.is_none() {
+        dst.default = src.default.clone();
+    }
+    if dst.first.is_none() {
+        dst.first = src.first.clone();
+    }
+    if dst.even.is_none() {
+        dst.even = src.even.clone();
+    }
+}
+
+fn clone_accum(a: &Accum) -> Accum {
+    a.clone()
+}
+
+/// `word/settings.xml` → `evenAndOddHeaders`（文件級奇偶頁開關）。
+/// 元素存在且 `w:val` 非 falsy（0/false/off/none）＝true。
+pub fn read_even_and_odd_headers(settings_xml: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(settings_xml);
+    let mut re = quick_xml::Reader::from_str(&text);
+    use quick_xml::events::Event;
+    while let Ok(ev) = re.read_event() {
+        match ev {
+            Event::Eof => break,
+            Event::Start(e) | Event::Empty(e)
+                if e.local_name().as_ref() == b"evenAndOddHeaders" =>
+            {
+                return toggle_on(&e);
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// 開關屬性（同 `lib.rs::toggle_attr_on` 語義，本模組自持免反向依賴）：
+/// 無 `w:val` ＝開啟；`0`/`false`/`off`/`none`（不分大小寫）＝關閉。
+fn toggle_on(e: &quick_xml::events::BytesStart) -> bool {
+    match attr_str(e, b"val") {
+        None => true,
+        Some(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "none" | "false" | "0" | "off"
+        ),
+    }
+}
+
+/// 單趟掃描 document.xml，收集 section 邊界（幾何＋頁首頁尾宣告）。
+fn scan_sections(xml: &[u8]) -> Scan {
     let text = String::from_utf8_lossy(xml);
     let mut re = quick_xml::Reader::from_str(&text);
 
@@ -119,14 +295,14 @@ pub fn read_sections_per_paragraph(xml: &[u8], n_paragraphs: usize) -> Vec<Secti
     let mut ac_stack: Vec<usize> = Vec::new(); // AC 開標的 fb 快照（錯置標籤不致卡死）
     let mut in_sect = false;
     let mut accum: Option<Accum> = None;
-    let mut pending: Option<SectionGeometry> = None; // 段落邊界收束、待所屬 w:p 結束時歸檔
-                                                     // (涵蓋至第幾段, section 序號, 幾何)
-    let mut boundaries: Vec<(usize, u32, SectionGeometry)> = Vec::new();
-    let mut body_sect: Option<(u32, SectionGeometry)> = None;
+    let mut pending: Option<Accum> = None; // 段落邊界收束、待所屬 w:p 結束時歸檔
+                                           // (涵蓋至第幾段, section 序號, 累積值)
+    let mut boundaries: Vec<(usize, u32, Accum)> = Vec::new();
+    let mut body_sect: Option<(u32, Accum)> = None;
     let mut next_id: u32 = 0; // section 文件序號：依收束出現順序編號
 
-    // pgSz／pgMar／type 在真實文件一律自閉合（Event::Empty），必須與 Start
-    // 同臂處理；Err＝尾部截斷，容忍並照常回報已解析的 section。
+    // pgSz／pgMar／type／headerReference… 在真實文件一律自閉合（Event::Empty），
+    // 必須與 Start 同臂處理；Err＝尾部截斷，容忍並照常回報已解析的 section。
     while let Ok(ev) = re.read_event() {
         let ev_is_block_start = matches!(ev, Event::Start(_));
         match ev {
@@ -149,11 +325,11 @@ pub fn read_sections_per_paragraph(xml: &[u8], n_paragraphs: usize) -> Vec<Secti
                             accum = Some(Accum::new());
                         } else {
                             // <w:sectPr/> 無子元素：以預設值收束一個 section。
-                            let g = Accum::new().into_geom();
+                            let a = Accum::new();
                             if block_depth > 0 {
-                                pending = Some(g);
+                                pending = Some(a);
                             } else {
-                                body_sect = Some((next_id, g));
+                                body_sect = Some((next_id, a));
                                 next_id += 1;
                             }
                         }
@@ -176,11 +352,29 @@ pub fn read_sections_per_paragraph(xml: &[u8], n_paragraphs: usize) -> Vec<Secti
                             a.bottom = bottom;
                             a.left = left + gutter;
                             a.right = right;
+                            // header/footer 距離缺值＝720 twip（§17.4.48 預設）。
+                            a.header_d = attr_i64(&e, b"header", DEF_HF_DIST).max(0);
+                            a.footer_d = attr_i64(&e, b"footer", DEF_HF_DIST).max(0);
                         }
                     }
                     b"type" if in_sect => {
                         if let Some(a) = accum.as_mut() {
                             a.continuous = attr_str(&e, b"val").as_deref() == Some("continuous");
+                        }
+                    }
+                    b"titlePg" if in_sect => {
+                        if let Some(a) = accum.as_mut() {
+                            a.title_pg = toggle_on(&e);
+                        }
+                    }
+                    b"headerReference" if in_sect => {
+                        if let Some(a) = accum.as_mut() {
+                            set_slot(&mut a.header, &e);
+                        }
+                    }
+                    b"footerReference" if in_sect => {
+                        if let Some(a) = accum.as_mut() {
+                            set_slot(&mut a.footer, &e);
                         }
                     }
                     _ => {}
@@ -199,11 +393,10 @@ pub fn read_sections_per_paragraph(xml: &[u8], n_paragraphs: usize) -> Vec<Secti
                         if in_sect {
                             in_sect = false;
                             if let Some(a) = accum.take() {
-                                let g = a.into_geom();
                                 if block_depth > 0 {
-                                    pending = Some(g);
+                                    pending = Some(a);
                                 } else {
-                                    body_sect = Some((next_id, g));
+                                    body_sect = Some((next_id, a));
                                     next_id += 1;
                                 }
                             }
@@ -212,9 +405,9 @@ pub fn read_sections_per_paragraph(xml: &[u8], n_paragraphs: usize) -> Vec<Secti
                     b"p" | b"tbl" => {
                         block_depth -= 1;
                         if block_depth == 0 {
-                            if let Some(g) = pending.take() {
+                            if let Some(a) = pending.take() {
                                 // 此 body 級 block 收束一個 section：涵蓋到目前計入的所有段落。
-                                boundaries.push((p_count, next_id, g));
+                                boundaries.push((p_count, next_id, a));
                                 next_id += 1;
                             }
                         }
@@ -226,24 +419,24 @@ pub fn read_sections_per_paragraph(xml: &[u8], n_paragraphs: usize) -> Vec<Secti
         }
     }
 
-    if boundaries.is_empty() && body_sect.is_none() {
-        return Vec::new(); // 無任何 section 資訊 → 呼叫端後備
+    Scan {
+        boundaries,
+        body_sect,
     }
+}
 
-    // 展開成逐段落清單：邊界 section 各涵蓋到其邊界段為止，檔尾 section 吃其餘。
-    let mut out = Vec::with_capacity(n_paragraphs);
-    for (through, id, g) in &boundaries {
-        while out.len() < (*through).min(n_paragraphs) {
-            out.push(SectionSpec { id: *id, geo: *g });
-        }
-    }
-    let tail = body_sect.or_else(|| boundaries.last().map(|(_, id, g)| (*id, *g)));
-    if let Some((id, g)) = tail {
-        while out.len() < n_paragraphs {
-            out.push(SectionSpec { id, geo: g });
-        }
-    }
-    out
+/// `headerReference`／`footerReference`：`w:type`（缺＝default）選 slot、
+/// `r:id` 存 rId 原字串。無 r:id（畸形）＝不記。
+fn set_slot(slot: &mut SlotRefs, e: &quick_xml::events::BytesStart) {
+    let Some(rid) = attr_str(e, b"id") else {
+        return;
+    };
+    let target = match attr_str(e, b"type").as_deref() {
+        Some("first") => &mut slot.first,
+        Some("even") => &mut slot.even,
+        _ => &mut slot.default, // default 與缺 w:type（ECMA-376 §17.18.43 預設 default）
+    };
+    *target = Some(rid);
 }
 
 fn attr_i64(e: &quick_xml::events::BytesStart, key: &[u8], def: i64) -> i64 {
@@ -384,5 +577,122 @@ mod tests {
         let g = read_sections_per_paragraph(&x, 3);
         assert_eq!(g.len(), 3);
         assert_eq!(g[1].geo.page_w_pt, 595.3, "11906 twip = A4 寬 595.3 pt");
+    }
+
+    // ---------------- 頁首頁尾宣告（t_b39f108b） ----------------
+
+    /// pgMar header/footer 距離與 titlePg、headerReference/footerReference 讀取。
+    #[test]
+    fn hf_announcements_read() {
+        let x = xml(r#"<w:document xmlns:w="x" xmlns:r="r"><w:body>
+               <w:p><w:r><w:t>A</w:t></w:r></w:p>
+               <w:sectPr>
+                 <w:headerReference w:type="default" r:id="rId7"/>
+                 <w:headerReference w:type="first" r:id="rId8"/>
+                 <w:footerReference w:type="even" r:id="rId9"/>
+                 <w:pgSz w:w="11906" w:h="16838"/>
+                 <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="851" w:footer="992" w:gutter="0"/>
+                 <w:titlePg/>
+               </w:sectPr>
+             </w:body></w:document>"#);
+        let hf = read_sections_header_footer(&x);
+        assert_eq!(hf.len(), 1);
+        let s = &hf[0];
+        assert_eq!(s.header_dist_pt, 42.55, "851 twip ÷ 20 = 42.55 pt");
+        assert_eq!(s.footer_dist_pt, 49.6, "992 twip ÷ 20 = 49.6 pt");
+        assert!(s.title_pg, "w:titlePg 存在＝開啟");
+        assert_eq!(s.header.default.as_deref(), Some("rId7"));
+        assert_eq!(s.header.first.as_deref(), Some("rId8"));
+        assert_eq!(s.header.even, None);
+        assert_eq!(s.footer.even.as_deref(), Some("rId9"));
+    }
+
+    /// pgMar 缺 header/footer 屬性 → 預設 720 twip＝36 pt（ECMA-376 預設）。
+    #[test]
+    fn hf_distance_defaults_to_720_twips() {
+        let x = xml(r#"<w:document xmlns:w="x"><w:body>
+               <w:p><w:r><w:t>A</w:t></w:r></w:p>
+               <w:sectPr><w:pgSz w:w="11906" w:h="16838"/>
+                 <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>
+               </w:sectPr>
+             </w:body></w:document>"#);
+        let hf = read_sections_header_footer(&x);
+        assert_eq!(hf[0].header_dist_pt, 36.0);
+        assert_eq!(hf[0].footer_dist_pt, 36.0);
+        assert!(!hf[0].title_pg);
+        assert_eq!(hf[0].header, SlotRefs::default());
+    }
+
+    /// `w:titlePg w:val="0"`＝關閉（開關語義，與 b/i 等同款）。
+    #[test]
+    fn title_pg_val_off_is_false() {
+        let x = xml(r#"<w:document xmlns:w="x"><w:body>
+               <w:p><w:r><w:t>A</w:t></w:r></w:p>
+               <w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:titlePg w:val="0"/></w:sectPr>
+             </w:body></w:document>"#);
+        assert!(!read_sections_header_footer(&x)[0].title_pg);
+    }
+
+    /// 跨節繼承（ECMA-376 §17.10.5）：第二節未宣告 header default → 沿用第一節；
+    /// 已宣告的 slot 覆寫；第三節兩者皆缺 → 沿鏈吃到第一節的 even。
+    #[test]
+    fn hf_inherits_across_sections() {
+        let x = xml(r#"<w:document xmlns:w="x" xmlns:r="r"><w:body>
+               <w:p><w:r><w:t>S1</w:t></w:r></w:p>
+               <w:p><w:pPr><w:sectPr>
+                 <w:headerReference r:id="rIdH1"/>
+                 <w:footerReference w:type="even" r:id="rIdF1"/>
+                 <w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:pPr><w:r><w:t>S1b</w:t></w:r></w:p>
+               <w:p><w:r><w:t>S2</w:t></w:r></w:p>
+               <w:p><w:pPr><w:sectPr>
+                 <w:headerReference w:type="first" r:id="rIdH2"/>
+                 <w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:pPr><w:r><w:t>S2b</w:t></w:r></w:p>
+               <w:p><w:r><w:t>S3</w:t></w:r></w:p>
+               <w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr>
+             </w:body></w:document>"#);
+        let hf = read_sections_header_footer(&x);
+        assert_eq!(hf.len(), 3);
+        // 第一節：自宣告。
+        assert_eq!(hf[0].header.default.as_deref(), Some("rIdH1"));
+        assert_eq!(hf[0].footer.even.as_deref(), Some("rIdF1"));
+        // 第二節：header.default 繼承第一節；first 自宣告；footer 全slot繼承。
+        assert_eq!(
+            hf[1].header.default.as_deref(),
+            Some("rIdH1"),
+            "未宣告 → 沿用第一節"
+        );
+        assert_eq!(hf[1].header.first.as_deref(), Some("rIdH2"), "自宣告覆寫");
+        assert_eq!(hf[1].footer.even.as_deref(), Some("rIdF1"));
+        // 第三節：沿鏈吃到第一節（經第二節遞移）。
+        assert_eq!(hf[2].header.default.as_deref(), Some("rIdH1"));
+        assert_eq!(
+            hf[2].header.first.as_deref(),
+            Some("rIdH2"),
+            "沿鏈吃到第二節 first"
+        );
+        assert_eq!(hf[2].footer.even.as_deref(), Some("rIdF1"));
+        // 逐段落清單口徑不受影響。
+        let g = read_sections_per_paragraph(&x, 6);
+        assert_eq!(
+            g.iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![0, 0, 1, 1, 2, 2]
+        );
+    }
+
+    /// `evenAndOddHeaders`：存在＝true；w:val falsy／缺 part 內容＝false。
+    #[test]
+    fn even_odd_headers_toggle() {
+        assert!(read_even_and_odd_headers(
+            br#"<w:settings xmlns:w="x"><w:evenAndOddHeaders/></w:settings>"#
+        ));
+        assert!(read_even_and_odd_headers(
+            br#"<w:settings xmlns:w="x"><w:evenAndOddHeaders w:val="1"/></w:settings>"#
+        ));
+        assert!(!read_even_and_odd_headers(
+            br#"<w:settings xmlns:w="x"><w:evenAndOddHeaders w:val="0"/></w:settings>"#
+        ));
+        assert!(!read_even_and_odd_headers(
+            br#"<w:settings xmlns:w="x"><w:zoom w:val="100"/></w:settings>"#
+        ));
     }
 }

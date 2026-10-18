@@ -10,12 +10,17 @@
 //!    才重新壓縮，其餘逐位元組沿用。開啟→不動→存檔 = byte-identical。
 
 mod diff;
+mod rels;
 mod sectpr;
 mod table;
 mod zip_struct;
 
 pub use diff::{diff_untouched, diff_zip_structure, EntryDiff, ZipDiff, ZipStructureError};
-pub use sectpr::{read_sections_per_paragraph, SectionGeometry, SectionSpec};
+pub use rels::{read_rels, resolve_relationship, Relationship};
+pub use sectpr::{
+    read_even_and_odd_headers, read_sections_header_footer, read_sections_per_paragraph,
+    SectionGeometry, SectionHeaderFooter, SectionSpec, SlotRefs,
+};
 pub use table::{
     Block, BodyTable, Border, Borders, CellProps, GridCol, Margins, RowProps, Shading, Table,
     TableCell, TableProps, TableRow, TblWidth,
@@ -56,6 +61,38 @@ pub struct Run {
     /// 刪除線（`w:strike`）。
     #[serde(default)]
     pub strike: bool,
+    /// 欄位結果標記（`PAGE`／`NUMPAGES`）：此 run 的文字是欄位的**過期快取值**，
+    /// 發射顯示列表時必須以當頁頁碼／總頁數覆寫（ECMA-376 §17.5 欄位語義；
+    /// 快取值只在存檔那一刻正確，渲染當下即時換算）。
+    #[serde(default)]
+    pub field: Option<FieldKind>,
+}
+
+/// 本卡支援的頁碼欄位型別（其余欄位名如 SECTIONPAGES／DATE 老實保留快取文字）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FieldKind {
+    /// `PAGE`：當前頁碼（1-based）。
+    Page,
+    /// `NUMPAGES`：總頁數。
+    NumPages,
+}
+
+/// 欄位指令字串 → `FieldKind`（只認 `PAGE`／`NUMPAGES` 兩個**完整 token**，
+/// 先比 NUMPAGES——"PAGE" 是 "NUMPAGES" 的子串）。指令可帶開關（如
+/// ` PAGE  \* MERGEFORMAT `），以非英数字元切 token 後逐字比對。
+pub fn classify_field_instr(instr: &str) -> Option<FieldKind> {
+    let mut hit: Option<FieldKind> = None;
+    for token in instr
+        .to_ascii_uppercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+    {
+        match token {
+            "NUMPAGES" => return Some(FieldKind::NumPages),
+            "PAGE" => hit = Some(FieldKind::Page),
+            _ => {}
+        }
+    }
+    hit
 }
 
 /// 超連結內 run 無顯式顏色時的預設藍色（Word Hyperlink 樣式標準色 #0563C1）。
@@ -176,6 +213,21 @@ pub fn parse(bytes: &[u8]) -> Result<OoxmlDoc, OoxmlError> {
     })
 }
 
+/// 解析頁首／頁尾 part（`w:hdr`／`w:ftr` 根）的投影：段落＋body 級表格。
+///
+/// 與 `word/document.xml` 走**完全同一組解析器**（`parse_document_xml`＋
+/// `read_body_tables`）：同一套 w:p Start 佔槽口徑、同一套 mc:Fallback 吞沒
+/// ——段落索引只在 part 內自洽（engine 層按 part 各自持有 texts 序列），
+/// 不與正文索引共享計數空間。18.9% 的頁首用 `w:tbl` 排版（公文表頭），
+/// 表格投影這一條路必須與段落同時可解析。純讀取：parts 明文不動。
+pub fn parse_header_footer_part(
+    xml: &[u8],
+) -> Result<(Vec<Paragraph>, Vec<BodyTable>), OoxmlError> {
+    let paragraphs = parse_document_xml(xml)?;
+    let tables = table::read_body_tables(xml);
+    Ok((paragraphs, tables))
+}
+
 /// 解析 OOXML 開關型或底線屬性（`w:b`、`w:i`、`w:strike`、`w:u`）：
 /// 無 `w:val` 時視為開啟（`true`）；有 `w:val` 時若為 `"none"`/`"false"`/`"0"`/`"off"`
 /// （不分大小寫）則為關閉（`false`），其餘（如 `"true"`/`"1"`/`"on"`/`"single"`）為開啟。
@@ -263,6 +315,15 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
     // mc:AlternateContent 巢狀棧：開標時快照 fb，閉標時還原——錯置標籤
     // （AC 先於 Fallback 閉合／Fallback 漏閉）不致 fb 卡死而吞掉檔尾。
     let mut ac_stack: Vec<usize> = Vec::new();
+    // ---- 欄位（ECMA-376 §17.5）：只標記 PAGE／NUMPAGES 結果 run ----
+    // 簡單欄 `<w:fldSimple w:instr="…">` 巢狀棧（棧頂 None＝非頁碼欄位）。
+    let mut fld_simple_stack: Vec<Option<FieldKind>> = Vec::new();
+    // 複雜欄 `fldChar begin→instrText→separate→結果 run→end`：每層記
+    // （已辨識型別, 是否已過 separate）。separate 之後的 run 才是欄位結果
+    // （begin..separate 區間只有指令 run，不標記）。
+    let mut complex_stack: Vec<(Option<FieldKind>, bool)> = Vec::new();
+    let mut instr_active = false;
+    let mut instr_buf = String::new();
 
     loop {
         match reader
@@ -292,10 +353,31 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     b"hyperlink" => {
                         hyperlink_depth += 1;
                     }
+                    b"fldSimple" => {
+                        // 簡單欄：w:instr 指令立即分類，其子樹 run 全標記。
+                        let kind = attr_val(&e, "instr")
+                            .as_deref()
+                            .and_then(classify_field_instr);
+                        fld_simple_stack.push(kind);
+                    }
                     b"r" => {
                         cur_run = Some(Run::default());
                         run_has_color = false;
                         run_has_underline = false;
+                        // 欄位結果 run 標記：簡單欄子樹，或複雜欄 separate 之後。
+                        let kind = match fld_simple_stack.last() {
+                            Some(k) => *k,
+                            None => match complex_stack.last() {
+                                Some((k, true)) => *k,
+                                _ => None,
+                            },
+                        };
+                        if kind.is_some() {
+                            cur_run.as_mut().expect("剛建 run").field = kind;
+                        }
+                    }
+                    b"instrText" => {
+                        instr_active = true;
                     }
                     b"t" => in_t = true,
                     b"pStyle" => {
@@ -321,7 +403,28 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     continue;
                 }
                 let name = e.local_name().as_ref().to_vec();
-                if name == b"pStyle" {
+                if name == b"fldChar" {
+                    // 複雜欄三態（Word 產出恒為自閉合標籤）：begin 開層、
+                    // separate 翻結果標記、end 出層。未配對（漏 begin）老實無效。
+                    match attr_val(&e, "fldCharType").as_deref() {
+                        Some("begin") => {
+                            complex_stack.push((None, false));
+                            instr_buf.clear();
+                        }
+                        Some("separate") => {
+                            if let Some(top) = complex_stack.last_mut() {
+                                if top.0.is_none() {
+                                    top.0 = classify_field_instr(&instr_buf);
+                                }
+                                top.1 = true;
+                            }
+                        }
+                        Some("end") => {
+                            complex_stack.pop();
+                        }
+                        _ => {}
+                    }
+                } else if name == b"pStyle" {
                     // pStyle 幾乎總是自閉合標籤：寫進段落棧頂（巢狀 w:p 口徑）。
                     if let Some((_, p)) = stack.last_mut() {
                         if let Some(v) = attr_val(&e, "val") {
@@ -354,11 +457,23 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                 }
                 match name.as_slice() {
                     b"t" => in_t = false,
+                    b"instrText" => {
+                        instr_active = false;
+                    }
+                    b"fldSimple" => {
+                        fld_simple_stack.pop();
+                    }
                     b"hyperlink" => {
                         hyperlink_depth = hyperlink_depth.saturating_sub(1);
                     }
                     b"r" => {
                         if let (Some(mut run), Some((_, p))) = (cur_run.take(), stack.last_mut()) {
+                            // 欄位標記只給「有文字」的結果 run：fldChar 標記 run
+                            //（begin/separate/end）同處欄位子樹但無文字，若保留
+                            // 標記，發射層代換會把頁碼注入空 run（虛增字）。
+                            if run.text.is_empty() {
+                                run.field = None;
+                            }
                             // <w:hyperlink> 內 run 無顯式樣式時預設藍（0xFF0563C1）＋底線。
                             if hyperlink_depth > 0 {
                                 if !run_has_color && run.color.is_none() {
@@ -383,6 +498,13 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
             }
             Event::Text(t) => {
                 if fb > 0 {
+                    continue;
+                }
+                if instr_active {
+                    // 欄位指令文字（可能跨多個 Text 事件）：累積供分類。
+                    if let Ok(s) = t.unescape() {
+                        instr_buf.push_str(&s);
+                    }
                     continue;
                 }
                 if let Some(r) = cur_run.as_mut().filter(|_| in_t) {
@@ -436,6 +558,71 @@ mod tests {
     #[test]
     fn rejects_non_docx() {
         assert!(parse(b"not a zip at all").is_err());
+    }
+
+    // ---------------- 頁首頁尾（t_b39f108b） ----------------
+
+    /// 欄位指令歸類：完整 token 比對、NUMPAGES 先於 PAGE（子串陷阱）、
+    /// 大小寫與開關旗標（\* MERGEFORMAT）皆不誤傷。
+    #[test]
+    fn field_instr_classification() {
+        use FieldKind::{NumPages, Page};
+        assert_eq!(classify_field_instr(" PAGE "), Some(Page));
+        assert_eq!(classify_field_instr("page"), Some(Page));
+        assert_eq!(classify_field_instr(" PAGE  \\* MERGEFORMAT "), Some(Page));
+        assert_eq!(classify_field_instr("NUMPAGES"), Some(NumPages));
+        assert_eq!(
+            classify_field_instr(" NUMPAGES \\* MERGEFORMAT "),
+            Some(NumPages)
+        );
+        // "PAGE" 是 "NUMPAGES" 的子串：混合指令以 NUMPAGES 為準。
+        assert_eq!(classify_field_instr(" PAGE NUMPAGES "), Some(NumPages));
+        // 不支援的欄位老實回 None（發射層保留快取文字，不虛構）。
+        assert_eq!(classify_field_instr(" SECTIONPAGES "), None);
+        assert_eq!(classify_field_instr(" DATE \\@ M "), None);
+        assert_eq!(classify_field_instr(""), None);
+    }
+
+    /// 頁首頁尾 part 解析：與正文同一 w:p 佔槽口徑；表格（w:tbl 公文表頭）
+    /// 與欄位（fldChar 複雜欄＋fldSimple 簡單欄）皆可解析，欄位結果 run
+    /// 帶 FieldKind 標記、指令文字與instrText 不入正文序列。
+    #[test]
+    fn hf_part_parses_paragraphs_tables_and_fields() {
+        let xml = r#"<w:ftr xmlns:w="x" xmlns:r="y">
+            <w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>
+                 <w:r><w:instrText>PAGE</w:instrText></w:r>
+                 <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+                 <w:r><w:t>7</w:t></w:r>
+                 <w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
+            <w:p><w:r><w:t>頁首</w:t></w:r></w:p>
+            <w:tbl><w:tblGrid><w:gridCol w:w="100"/></w:tblGrid>
+              <w:tr><w:tc><w:p><w:r><w:t>表頭</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+            </w:ftr>"#;
+        let (paras, tables) = parse_header_footer_part(xml.as_bytes()).expect("解析頁尾 part");
+        assert_eq!(
+            paras.len(),
+            3,
+            "兩段＋表格格內一段（同 document.xml 佔槽口徑）"
+        );
+        assert_eq!(tables.len(), 1, "w:tbl 表格投影必須可解析");
+        assert_eq!(tables[0].table.rows.len(), 1);
+        let runs = &paras[0].runs;
+        let marked: Vec<_> = runs.iter().filter(|r| r.field.is_some()).collect();
+        assert_eq!(marked.len(), 1, "只有 separate 之後的結果 run 帶欄位標記");
+        assert_eq!(marked[0].field, Some(FieldKind::Page));
+        assert_eq!(
+            marked[0].text, "7",
+            "快取結果文字保留於 run（發射層才代換）"
+        );
+        // instrText 是指令不是文字：不得混入 runs。
+        assert!(!runs.iter().any(|r| r.text.contains("PAGE")));
+        // 簡單欄：fldSimple 內 run 亦帶標記（Word 一律以 w:p 包 fldSimple）。
+        let (sp, _) = parse_header_footer_part(
+            r#"<w:hdr xmlns:w="x"><w:p><w:fldSimple w:instr=" NUMPAGES "><w:r><w:t>3</w:t></w:r></w:fldSimple></w:p></w:hdr>"#
+                .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(sp[0].runs[0].field, Some(FieldKind::NumPages));
     }
 
     // ---------------- 解析器缺陷回歸（t_580c37ac） ----------------
