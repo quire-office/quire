@@ -97,6 +97,12 @@ pub enum CellBlock {
     /// 直接嵌入會讓整個 enum 膨到 1KB（clippy large_enum_variant，
     /// 與 canonical `Block::Table(Box<Table>)` 同款處置）。
     Table(Box<TableInput>),
+    /// 儲存格內圖片（t_a1397522）：尺寸已由 ooxml 層完成 EMU／VML style
+    /// 換算（pt）。參與格內垂直堆疊與帶高累加（`ceil(h / line_h)` 帶，
+    /// 至少 1 帶）；繪製＝灰底 Rect＋四邊 Rule（尺寸＝extent，寬超出格寬
+    /// 時由繪製端鉗到格內寬，不虛構重排）。行內圖（不屬於任何儲存格）
+    /// 不經此路徑——engine 以段落錨點另建佔位 Rect。
+    Image { w_pt: f32, h_pt: f32 },
 }
 
 /// 儲存格輸入。`blocks` 為格內 block 交錯序列（段落／巢狀表，文件序）；
@@ -182,6 +188,18 @@ pub struct CellText {
     pub text: String,
 }
 
+/// 切片中的一格圖片佔位（t_a1397522）：x/y 為表格本地／切片相對（與
+/// CellText 同款座標系），繪製端發射灰底 Rect＋四邊 Rule。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CellImage {
+    pub x_pt: f32,
+    /// 切片內相對 y（列切片頂起算）。
+    pub y_pt: f32,
+    pub w_pt: f32,
+    /// 本切片可見高度（跨頁續排時只含落在切片視窗內的帶段）。
+    pub h_pt: f32,
+}
+
 /// 切片中的一格：x/w 為**表格本地**座標（繪製時加 frag 的 x_pt）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CellFrag {
@@ -195,6 +213,9 @@ pub struct CellFrag {
     /// 巢狀表切片（y 偏移相對本列切片頂；x 已含本格左緣＋左內邊距＋子表
     /// 自身 x_off，繪製端＝外層 base_x ＋ 本值，見 engine-api push_frag_items）。
     pub nested: Vec<(f32, TableFrag)>,
+    /// 圖片佔位切片（t_a1397522；y 相對本列切片頂，座標口徑同 texts）。
+    #[serde(default)]
+    pub images: Vec<CellImage>,
 }
 
 /// 切片中的一列（列被跨頁拆開時一列可產出多個列切片）。
@@ -241,6 +262,16 @@ enum CellBlockGeom {
     Text { lines: Vec<Line>, bands: u32 },
     /// 巢狀子表：完整排版；帶高＝自身 total_bands（至少 1）。
     Table { layout: TableLayout, bands: u32 },
+    /// 圖片佔位（t_a1397522）：extent 尺寸（pt）＋量化帶高 ceil(h/line_h)，
+    /// 繪製寬超出可用寬時只縮不放大（Word 原樣溢出，我們鉗進格寬老實近似）。
+    Image {
+        /// 發射寬（pt，已鉗到可用寬）。
+        w_pt: f32,
+        /// extent 高（pt；發射Rect 高＝min(h, bands×line_h) 由繪製端自 y 差推得，
+        /// 此處只保帶數供跨頁切片裁切）。
+        h_pt: f32,
+        bands: u32,
+    },
 }
 
 impl CellBlockGeom {
@@ -248,6 +279,7 @@ impl CellBlockGeom {
         match self {
             CellBlockGeom::Text { bands, .. } => *bands,
             CellBlockGeom::Table { bands, .. } => *bands,
+            CellBlockGeom::Image { bands, .. } => *bands,
         }
     }
 }
@@ -452,6 +484,7 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
     let block0 = tl.row_base[cg.block_head_row];
     let mut texts = Vec::new();
     let mut nested = Vec::new();
+    let mut images = Vec::new();
     if !matches!(cg.merge, Some((_, false))) {
         // 根因 6：valign 錨點＝整個 merge block 的列總高（非單頁切片高 w.h），
         // 且所有切片共用同一 shift——續頁不再錯位、不再重複疊加 pad_top。
@@ -507,6 +540,26 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                     }
                     cur = nb1;
                 }
+                CellBlockGeom::Image { w_pt, h_pt, bands } => {
+                    // 跨頁切片（同子表根因 5 策略）：只在與切片視窗相交的
+                    // 帶段發射，Rect 高＝可見帶段（續頁不重複整張）。
+                    let ib0 = cur;
+                    let ib1 = cur + *bands;
+                    if ib1 > win0 && ib0 < win1 {
+                        let vis0 = ib0.max(win0);
+                        let vis1 = ib1.min(win1);
+                        // extent 高與帶量化取小者（帶向上取整的餘量不虛構成圖）。
+                        let full_h = h_pt.min(*bands as f32 * tl.line_h);
+                        let frac = (vis1 - vis0) as f32 / *bands as f32;
+                        images.push(CellImage {
+                            x_pt: cg.x + cg.text_x_off,
+                            y_pt: (shift + (vis0 - win0) as f32 * tl.line_h).max(0.0),
+                            w_pt: *w_pt,
+                            h_pt: full_h * frac,
+                        });
+                    }
+                    cur = ib1;
+                }
             }
         }
     }
@@ -517,6 +570,7 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
         fill_argb: cg.fill_argb,
         texts,
         nested,
+        images,
     }
 }
 
@@ -618,6 +672,16 @@ pub fn layout_table(
                                 blocks.push(CellBlockGeom::Table { layout: nl, bands });
                             }
                             // 深度超限：老實略過子表（不虛構幾何）。
+                        }
+                        CellBlock::Image { w_pt, h_pt } => {
+                            // 圖片＝atomic block：帶高 ceil(h/line_h)（至少 1）；
+                            // 寬只縮不放大（超出可用寬＝老實鉗進格寬，不虚構溢出）。
+                            let bands = (h_pt / line_h).ceil().max(1.0) as u32;
+                            blocks.push(CellBlockGeom::Image {
+                                w_pt: w_pt.min(inner_w).max(1.0),
+                                h_pt: *h_pt,
+                                bands,
+                            });
                         }
                     }
                 }
@@ -1789,5 +1853,96 @@ mod tests {
         assert!(y2 < 1.0, "續頁首條文字不疊加 pad：{y2}");
         // 同帶（帶 2）在兩片中的換算一致：第二片的「丙」就在頂。
         assert_eq!(f2.rows[0].cells[0].texts[0].text, "丙");
+    }
+
+    // ---------------- t_a1397522：CellBlock::Image（格內圖片佔位） ----------------
+
+    #[test]
+    fn cell_image_adds_ceil_bands_and_stacks_after_text() {
+        // 文字 1 帶＋圖 ceil(50/16.8)=3 帶＝4 帶；圖 y 接在文字帶之後。
+        let c = CellInput {
+            blocks: vec![
+                CellBlock::Text("圖上文字".into()),
+                CellBlock::Image {
+                    w_pt: 120.0,
+                    h_pt: 50.0,
+                },
+            ],
+            ..Default::default()
+        };
+        let t = layout_table(&shell_table(c), 400.0, 16.8, &measurer(), 0);
+        assert_eq!(t.total_bands, 4, "1＋ceil(50/16.8)=4 帶");
+        let (f, _, _) = t.fragment(0, 0, t.total_bands, false, 0.0);
+        let cf = &f.rows[0].cells[0];
+        assert_eq!(cf.texts.len(), 1);
+        assert_eq!(cf.images.len(), 1);
+        let im = &cf.images[0];
+        assert!(
+            (im.y_pt - (cf.texts[0].y_pt + 16.8)).abs() < 0.01,
+            "圖 y 接在文字行帶之後：{} vs {}",
+            im.y_pt,
+            cf.texts[0].y_pt
+        );
+        assert!((im.w_pt - 120.0).abs() < 0.01);
+        // 發射高＝extent（50pt；帶量化餘量不虛構成圖高）。
+        assert!(
+            (im.h_pt - 50.0).abs() < 0.01,
+            "整片可見→高＝extent：{}",
+            im.h_pt
+        );
+    }
+
+    #[test]
+    fn cell_image_width_clamps_to_cell_inner_width() {
+        // 極寬圖（1000pt）進 300pt 欄：老實鉗進格內寬，不虛構溢出。
+        let c = CellInput {
+            blocks: vec![CellBlock::Image {
+                w_pt: 1000.0,
+                h_pt: 20.0,
+            }],
+            ..Default::default()
+        };
+        let t = layout_table(&shell_table(c), 400.0, 16.8, &measurer(), 0);
+        let (f, _, _) = t.fragment(0, 0, t.total_bands, false, 0.0);
+        let im = &f.rows[0].cells[0].images[0];
+        assert!(im.w_pt < 300.0, "寬必被鉗進格內：{}", im.w_pt);
+        assert!(im.w_pt > 200.0, "鉗到格內可用寬而非任意小：{}", im.w_pt);
+    }
+
+    #[test]
+    fn cell_image_cross_page_slice_emits_visible_fraction_only() {
+        // 單格：文字 1 帶＋圖 ceil(100/16.8)=6 帶＝7 帶；切片預算 3 帶。
+        // 首片帶 0..3（文字＋圖前 2 帶）、續片帶 3..7（圖剩 4/6 高）。
+        let c = CellInput {
+            blocks: vec![
+                CellBlock::Text("首".into()),
+                CellBlock::Image {
+                    w_pt: 100.0,
+                    h_pt: 100.0,
+                },
+            ],
+            ..Default::default()
+        };
+        let t = layout_table(&shell_table(c), 400.0, 16.8, &measurer(), 0);
+        assert_eq!(t.total_bands, 7);
+        let (f1, next, _) = t.fragment(0, 0, 3, false, 0.0);
+        let i1 = &f1.rows[0].cells[0].images[0];
+        assert!(
+            (i1.h_pt - 100.0 * 2.0 / 6.0).abs() < 0.5,
+            "首片只發可見 2/6 帶高：{}",
+            i1.h_pt
+        );
+        assert!(i1.y_pt > 0.0, "首片圖接在文字帶後：{}", i1.y_pt);
+        let (f2, _, _) = t.fragment(0, 3, 4, false, 0.0);
+        let i2 = &f2.rows[0].cells[0].images[0];
+        assert!(
+            (i2.h_pt - 100.0 * 4.0 / 6.0).abs() < 0.5,
+            "續片發剩餘 4/6 帶高：{}",
+            i2.h_pt
+        );
+        assert!(i2.y_pt < 1.0, "續片圖頂對齊切片頂：{}", i2.y_pt);
+        // 兩片帶數和＝圖全高，不重不跳。
+        assert!((i1.h_pt + i2.h_pt - 100.0).abs() < 1.0);
+        assert_eq!((next.0, next.1), (0, 3), "單列表續排游標＝同列帶 3");
     }
 }

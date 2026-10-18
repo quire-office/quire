@@ -87,6 +87,17 @@ fn has_any_edges(e: &EdgeSetInput) -> bool {
     .any(|p| p.is_some_and(|p| p.val.is_some()))
 }
 
+/// 格內圖片投影表（t_a1397522）：錨定段落 → 依文档序的尺寸序列。
+/// 同一段落多張圖＝逐張注入（CellBlock::Image 在格內垂直堆疊、帶高累加
+/// ——卡片語義；不合併，合併會虛構容量）。
+fn cell_image_map(images: &[quire_ooxml::InlineImage]) -> HashMap<usize, Vec<(f32, f32)>> {
+    let mut m: HashMap<usize, Vec<(f32, f32)>> = HashMap::new();
+    for im in images.iter().filter(|im| im.in_cell) {
+        m.entry(im.para_index).or_default().push((im.w_pt, im.h_pt));
+    }
+    m
+}
+
 /// `word/styles.xml` → styleId → 表格框線（沿 basedOn 鏈合成後的結果）。
 ///
 /// 實作：先收錄每張樣式「自帶」的 tblBorders，再逐樣式沿 basedOn 向上補缺位
@@ -213,10 +224,13 @@ fn find_tbl_borders(seg: &str) -> Option<Borders> {
 }
 
 /// canonical 表 → layout 輸入（遞迴巢狀表；樣式框線查 `styles`）。
+/// `cell_imgs`（t_a1397522）：格內圖片投影（錨定段落 → 尺寸）——段落的
+/// Block 之後追加 `CellBlock::Image`（文件序：文字在上、圖在下）。
 pub fn table_input(
     t: &Table,
     texts: &[String],
     styles: &HashMap<String, EdgeSetInput>,
+    cell_imgs: &HashMap<usize, Vec<(f32, f32)>>,
 ) -> TableInput {
     let p = &t.props;
     TableInput {
@@ -259,10 +273,17 @@ pub fn table_input(
                                     if let Some(s) = texts.get(*index) {
                                         blocks.push(CellBlock::Text(s.clone()));
                                     }
+                                    // 錨定在該段的格內圖（t_a1397522）：段落
+                                    // 之後依序追加（文件序；查無尺寸＝老實跳過）。
+                                    if let Some(imgs) = cell_imgs.get(index) {
+                                        for &(w, h) in imgs {
+                                            blocks.push(CellBlock::Image { w_pt: w, h_pt: h });
+                                        }
+                                    }
                                 }
                                 Block::Table(inner) => {
                                     blocks.push(CellBlock::Table(Box::new(table_input(
-                                        inner, texts, styles,
+                                        inner, texts, styles, cell_imgs,
                                     ))));
                                 }
                             }
@@ -314,16 +335,66 @@ fn avail_w_for(sections: &[SectionSpec], params: &LayoutParams, para: usize) -> 
     }
 }
 
+/// 正文流圖片錨點（t_a1397522）：InlineImage 投影 → layout `ImageBand` 序列。
+/// 規則：
+/// - 格內圖（in_cell）不進正文流（由 CellBlock::Image 負載，格內堆疊）；
+/// - 浮動圖（anchor）且 posOffset 兩軸齊備 → **不佔帶**（bands=0），
+///   `anchor=Some(FloatingAnchor)`，各軸原點系由 relativeFrom 分類；
+/// - 鎖點缺軸 → 退化 inline（佔帶，誠實近似宁多撑帶不虚構空頁）；
+/// - 帶高 ceil(h/line_h)（至少 1）；寬高老實原值（layout 端再鉗）。
+///
+/// 輸出依 para 穩定排序（build_flow_images 的單調游標契約）。
+pub fn build_images(
+    images: &[quire_ooxml::InlineImage],
+    line_h: f32,
+) -> Vec<quire_layout::ImageBand> {
+    let mut out: Vec<quire_layout::ImageBand> = images
+        .iter()
+        .filter(|im| !im.in_cell)
+        .map(|im| {
+            let anchor = im
+                .anchor_lock_pt()
+                .map(|(x, y)| quire_layout::FloatingAnchor {
+                    x_pt: x,
+                    y_pt: y,
+                    x_frame: quire_layout::origin_frame(quire_ooxml::origin_of(
+                        im.pos_x_rel.as_deref(),
+                    )),
+                    y_frame: quire_layout::origin_frame(quire_ooxml::origin_of(
+                        im.pos_y_rel.as_deref(),
+                    )),
+                });
+            let bands = if anchor.is_none() {
+                (im.h_pt / line_h).ceil().max(1.0) as u32
+            } else {
+                0
+            };
+            quire_layout::ImageBand {
+                para: im.para_index,
+                w_pt: im.w_pt,
+                h_pt: im.h_pt,
+                bands,
+                anchor,
+            }
+        })
+        .collect();
+    out.sort_by_key(|b| b.para);
+    out
+}
+
 /// 由 canonical 樹＋扁平文字建出排版完成的表格槽序列（engine 開啟文件時呼叫）。
 /// 回傳依 para_start 排序（parser 保證 body 序單調），`build_flow` 契約直接成立。
+/// `images`（t_a1397522）：全文圖片投影；格內圖注入對應 `CellBlock::Image`。
 pub fn build_slots(
     tables: &[BodyTable],
     texts: &[String],
     styles_xml: Option<&[u8]>,
     params: &LayoutParams,
     sections: &[SectionSpec],
+    images: &[quire_ooxml::InlineImage],
 ) -> Vec<TableSlot> {
     let styles = styles_xml.map(table_style_borders).unwrap_or_default();
+    let cell_imgs = cell_image_map(images);
     let m = TextMeasurer::new(params.font_size_pt);
     let line_h = params.line_h_pt();
     let mut prev_end = 0usize; // 逐槽正規化游標：槽區間必不重疊且 ≤ n_paras
@@ -331,7 +402,7 @@ pub fn build_slots(
     tables
         .iter()
         .map(|bt| {
-            let input = table_input(&bt.table, texts, &styles);
+            let input = table_input(&bt.table, texts, &styles, &cell_imgs);
             let avail_w = avail_w_for(sections, params, bt.para_start);
             let layout = quire_layout::table::layout_table(&input, avail_w, line_h, &m, 0);
             let raw_end = table_para_end(&bt.table, bt.para_start);
@@ -386,7 +457,7 @@ mod tests {
             let texts = doc.paragraph_texts();
             let params = quire_layout::LayoutParams::default();
             let styles = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
-            let slots = build_slots(&doc.tables, &texts, styles, &params, &[]);
+            let slots = build_slots(&doc.tables, &texts, styles, &params, &[], &[]);
             assert!(!slots.is_empty(), "{rel}：標為 txbx-in-cell 檔應有表格槽");
             let mut prev_end = 0usize;
             for s in &slots {

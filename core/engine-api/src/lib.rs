@@ -132,9 +132,19 @@ impl Engine {
             None => params,
         };
         // 表格槽（Phase3-1b）：canonical 樹＋styles.xml 框線查表 → layout 幾何。
+        // 圖片投影（t_a1397522）：純讀取（PM 補正 1）——格內圖注入 CellBlock，
+        // 正文流圖走 ImageBand，浮動鎖點圖附掛錨定頁。
         let styles = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
-        let slots = table_map::build_slots(&doc.tables, &texts, styles, &params, &sections);
-        let layout = LayoutEngine::with_tables(&texts, params, sections.clone(), slots);
+        let images = doc
+            .parts
+            .get("word/document.xml")
+            .map(|xml| quire_ooxml::read_images(xml))
+            .unwrap_or_default();
+        let slots =
+            table_map::build_slots(&doc.tables, &texts, styles, &params, &sections, &images);
+        let bands = table_map::build_images(&images, params.line_h_pt());
+        let layout =
+            LayoutEngine::with_tables_images(&texts, params, sections.clone(), slots, bands);
         // 頁首頁尾層（t_b39f108b）：sectPr 宣告＋rels 查表＋part 解析。
         // 全鏈純讀取派生——parts／bundle 一個位元組都不碰（round-trip 零影響）。
         let (hf, hf_parts, even_odd, sec_geo) = build_hf_layer(&doc, &sections, &params);
@@ -243,6 +253,15 @@ impl Engine {
                 canon_tbl,
                 &self.doc.paragraphs,
             );
+        }
+        // 圖片佔位（t_a1397522）：正文流圖＝版心左緣＋行網格帶 y；浮動鎖點
+        // 圖＝layout 已按各軸 relativeFrom 原點系換算成頁絕對座標，直接發射。
+        for im in &p.images {
+            let y = p.margin_top_pt + im.band as f32 * line_h;
+            emit_image_placeholder(&mut items, p.margin_left_pt, y, im.w_pt, im.h_pt);
+        }
+        for fm in &p.floating_images {
+            emit_image_placeholder(&mut items, fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt);
         }
         for (i, l) in p.lines.iter().enumerate() {
             let band = p.line_bands.get(i).copied().unwrap_or(i as u32) as f32;
@@ -426,6 +445,42 @@ mod collab_tests {
 
 /// 預設文字顏色：不透明黑（0xFF000000）。
 const DEFAULT_TEXT_COLOR_ARGB: u32 = 0xFF00_0000;
+
+/// 圖片佔位框配色（t_a1397522）：灰底＋淺灰描邊。「誠實的近似」視覺：
+/// 用戶看得見這裡有圖、多大、在哪，點陣直出屬像素渲染卡。
+const IMAGE_PLACEHOLDER_FILL: u32 = 0xFFF0_F0F0;
+const IMAGE_PLACEHOLDER_EDGE: u32 = 0xFFCC_CCCC;
+const IMAGE_PLACEHOLDER_RULE_PT: f32 = 0.75;
+
+/// 發射圖片佔位框：灰底 Rect＋四邊 Rule（尺寸＝extent）。不動 DrawItem
+/// 契約（零新增變體，卡片鐵律）；座標＝頁絕對。
+fn emit_image_placeholder(items: &mut Vec<DrawItem>, x: f32, y: f32, w: f32, h: f32) {
+    if w <= 0.0 || h <= 0.0 {
+        return; // 非法尺寸老實不發射（容錯鐵律）
+    }
+    items.push(DrawItem::Rect {
+        x,
+        y,
+        w,
+        h,
+        fill_argb: IMAGE_PLACEHOLDER_FILL,
+    });
+    let rule = |x1: f32, y1: f32, x2: f32, y2: f32, items: &mut Vec<DrawItem>| {
+        items.push(DrawItem::Rule {
+            x1,
+            y1,
+            x2,
+            y2,
+            width_pt: IMAGE_PLACEHOLDER_RULE_PT,
+            color_argb: IMAGE_PLACEHOLDER_EDGE,
+            dash: None,
+        })
+    };
+    rule(x, y, x + w, y, items);
+    rule(x, y + h, x + w, y + h, items);
+    rule(x, y, x, y + h, items);
+    rule(x + w, y, x + w, y + h, items);
+}
 
 /// 將 OOXML `Run` 樣式換算為 `(flags, color_argb)`。
 fn run_style(r: &quire_ooxml::Run) -> (u8, u32) {
@@ -676,6 +731,17 @@ fn push_frag_items(
                     text: t.text.clone(),
                 });
             }
+            // 圖片佔位框（t_a1397522）：灰底 Rect＋四邊 Rule（誠實近似——
+            // 點陣直出屬像素渲染卡；分頁容量先對，像素後補）。
+            for im in &cell.images {
+                emit_image_placeholder(
+                    items,
+                    base_x + im.x_pt,
+                    base_y + ry + im.y_pt,
+                    im.w_pt,
+                    im.h_pt,
+                );
+            }
             let nested_tbls: Vec<&CanonicalTable> = canon_cell
                 .map(|cc| {
                     cc.blocks
@@ -860,7 +926,9 @@ impl Engine {
         let line_h = hf_params.line_h_pt();
         // 表格槽：與正文同一映射層（styles 框線查表）；單 section 合成表。
         let sec_one = [SectionSpec { id: 0, geo: *geo }];
-        let slots_tbl = table_map::build_slots(&part.tables, &texts, styles, hf_params, &sec_one);
+        // 頁首 part 內無圖片投影需求：空清單（build_slots 新簽名，t_a1397522）。
+        let slots_tbl =
+            table_map::build_slots(&part.tables, &texts, styles, hf_params, &sec_one, &[]);
         // 流項＝段落行＋表格依序排列（簡化 packer：頁首本就一小節，不跨頁，
         // 表格整張放進自身帶高，超出部分由頁首自然向下延伸——重疊風險見模組注）。
         let pls = quire_layout::layout_paragraphs(&texts, hf_params);
@@ -1297,6 +1365,142 @@ mod tests {
         let _: &CanonicalTable = &typed[0].table;
         // 無損鐵律：開檔→不動→存檔位元組級相同（解析純讀入，不碰寫回來源）。
         assert_eq!(engine.save_docx().unwrap().as_slice(), TABLE_MIXED);
+    }
+
+    // ---------------- t_a1397522：圖片幾何佔位框（end-to-end 投影） ----------------
+
+    const INLINE_IMG: &[u8] = include_bytes!("../../../fixtures/inline_image.docx");
+
+    /// selfgen fixture：文字＋100pt inline 圖＋文字——中間段恰佔
+    /// ceil(100/16.8)＝6 帶，SVG 層（display list）有灰 Rect＋四邊 Rule。
+    #[test]
+    fn inline_image_fixture_bands_and_placeholder_items() {
+        let engine = Engine::from_docx_bytes(INLINE_IMG).unwrap();
+        assert_eq!(engine.paragraph_count(), 3);
+        let dl = engine.page_display_list(0).unwrap();
+        let rects: Vec<&DrawItem> = dl
+            .items
+            .iter()
+            .filter(|it| matches!(it, DrawItem::Rect { fill_argb, .. } if *fill_argb == IMAGE_PLACEHOLDER_FILL))
+            .collect();
+        assert_eq!(rects.len(), 1, "恰好一張佔位 Rect");
+        let rules = dl
+            .items
+            .iter()
+            .filter(|it| matches!(it, DrawItem::Rule { color_argb, .. } if *color_argb == IMAGE_PLACEHOLDER_EDGE))
+            .count();
+        assert_eq!(rules, 4, "Rect 四邊各一條 Rule");
+        // Rect 幾何＝extent：200×100pt，x＝版心左緣（A4 1 吋邊界＝72pt）。
+        if let DrawItem::Rect { x, y, w, h, .. } = rects[0] {
+            assert!(
+                (w - 200.0).abs() < 1e-2 && (h - 100.0).abs() < 1e-2,
+                "{w}x{h}"
+            );
+            assert!((x - 72.0).abs() < 1e-2, "版心左緣：{x}");
+            // 段落 0 帶 0 → 圖頂帶 1（吸收態：空行帶＝圖頂帶；本段行=空行）。
+            let line_h = engine.params.line_h_pt();
+            assert!((y - (72.0 + 1.0 * line_h)).abs() < 1e-2, "圖 y＝帶 1：{y}");
+        }
+    }
+
+    /// anchor（頁面鎖點）不撐正文行帶：與 inline 同 XML 換成 anchor 後，
+    /// 正文行序不動，只有 floating Rect 出現。
+    #[test]
+    fn anchored_fixture_does_not_push_lines() {
+        let mut base = Engine::from_docx_bytes(INLINE_IMG).unwrap();
+        let inline_xml =
+            String::from_utf8_lossy(base.doc.parts.get("word/document.xml").unwrap().as_slice())
+                .into_owned();
+        let anchor_xml = inline_xml
+            .replace("<wp:inline", "<wp:anchor")
+            .replace("</wp:inline>", "</wp:anchor>")
+            .replace(
+                "<wp:extent",
+                "<wp:positionH relativeFrom=\"page\"><wp:posOffset>914400</wp:posOffset></wp:positionH>\
+                 <wp:positionV relativeFrom=\"page\"><wp:posOffset>1828800</wp:posOffset></wp:positionV><wp:extent",
+            );
+        base.set_part("word/document.xml", anchor_xml.into_bytes());
+        let engine = Engine::from_docx_bytes(&base.save_docx().unwrap()).unwrap();
+        // 正文行與無圖基線一致：三行（圖段是空行，浮動圖不再疊幽靈行）。
+        let lines: Vec<String> = (0..engine.page_count())
+            .flat_map(|i| engine.page_lines(i).unwrap_or_default())
+            .collect();
+        assert_eq!(
+            lines.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            vec![
+                "圖片前段：占位框登場之前的文字。",
+                "",
+                "圖片後段：占位框之後的文字。"
+            ],
+            "浮動圖不得撐動正文行：{lines:?}"
+        );
+        let dl = engine.page_display_list(0).unwrap();
+        let rects = dl
+            .items
+            .iter()
+            .filter(|it| matches!(it, DrawItem::Rect { fill_argb, .. } if *fill_argb == IMAGE_PLACEHOLDER_FILL))
+            .count();
+        assert_eq!(rects, 1, "鎖點佔位 Rect 仍發射");
+        if let Some(DrawItem::Rect { x, y, .. }) = dl
+            .items
+            .iter()
+            .find(|it| matches!(it, DrawItem::Rect { fill_argb, .. } if *fill_argb == IMAGE_PLACEHOLDER_FILL))
+        {
+            assert!((x - 72.0).abs() < 1e-2 && (y - 144.0).abs() < 1e-2, "頁鎖點 1in/2in：{x},{y}");
+        }
+    }
+
+    /// 格內圖注入 CellBlock::Image：表內儲存格發射佔位 Rect（隨表格切片）。
+    #[test]
+    fn cell_image_injects_into_table_slot() {
+        let mut base = Engine::from_docx_bytes(SAMPLE).unwrap();
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
+  <w:body>
+    <w:p><w:r><w:t>表前段</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tblPr><w:tblW w:w="4000" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr>
+      <w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid>
+      <w:tr><w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr>
+        <w:p><w:r><w:t>格內文字</w:t></w:r></w:p>
+        <w:p><w:r><w:drawing><wp:inline><wp:extent cx="317500" cy="254000"/>
+          <a:graphic xmlns:a="a"><a:graphicData><pic:pic xmlns:pic="p"/></a:graphicData></a:graphic>
+        </wp:inline></w:drawing></w:r></w:p>
+      </w:tc></w:tr>
+    </w:tbl>
+    <w:p><w:r><w:t>表後段</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+        base.set_part("word/document.xml", xml.as_bytes().to_vec());
+        let docx = base.save_docx().unwrap();
+        let engine = Engine::from_docx_bytes(&docx).unwrap();
+        let dl = engine.page_display_list(0).unwrap();
+        let rects: Vec<(f32, f32, f32, f32)> = dl
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                DrawItem::Rect {
+                    x,
+                    y,
+                    w,
+                    h,
+                    fill_argb,
+                } if *fill_argb == IMAGE_PLACEHOLDER_FILL => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rects.len(), 1, "格內圖＝一格佔位 Rect：{rects:?}");
+        let (_, _, w, h) = rects[0];
+        assert!(
+            (w - 25.0).abs() < 0.5 && (h - 20.0).abs() < 0.5,
+            "extent 25×20pt：{w}x{h}"
+        );
+        // 格內圖不進正文流：表後段仍是第 3 段，行數不受圖影響多出幽靈行。
+        let lines: Vec<String> = (0..engine.page_count())
+            .flat_map(|i| engine.page_lines(i).unwrap_or_default())
+            .collect();
+        assert_eq!(lines.len(), 2, "正文只有表前/表後兩行：{lines:?}");
     }
 
     #[test]
