@@ -79,6 +79,11 @@ pub struct Run {
     /// 未見任何 rPr 宣告＝None（整段繼承樣式）。存檔不經此欄位。
     #[serde(default)]
     pub direct: Option<RunStyle>,
+    /// 級聯合成的**有效字級**（pt；t_5dfc8ac7，engine 開啟文件時烘焙寫入）。
+    /// `None`＝級聯未宣告（發射層退回段落／文件級字級）。純派生欄位——
+    /// 存檔路徑完全不經它（parts passthrough），serde default 保舊快照相容。
+    #[serde(default)]
+    pub size_pt: Option<f32>,
 }
 
 /// 本卡支援的頁碼欄位型別（其余欄位名如 SECTIONPAGES／DATE 老實保留快取文字）。
@@ -581,9 +586,24 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                             if hyperlink_depth > 0 {
                                 if !run_has_color && run.color.is_none() {
                                     run.color = Some(HYPERLINK_DEFAULT_COLOR_ARGB);
+                                    // 代擬色同時進三態快照（t_5dfc8ac7）：它是
+                                    // 解析器代擬的**直接格式**，級聯時必須與
+                                    // 真實 rPr/w:color 同層，否則 docDefaults
+                                    // 的顏色會越過它抢先命中（連結變色）。
+                                    let d = run.direct.get_or_insert_with(RunStyle::default);
+                                    d.color_set = true;
+                                    d.color = Some(HYPERLINK_DEFAULT_COLOR_ARGB);
                                 }
                                 if !run_has_underline {
                                     run.underline = true;
+                                    if let Some(d) = run.direct.as_mut() {
+                                        d.underline = Some(true);
+                                    } else {
+                                        run.direct = Some(RunStyle {
+                                            underline: Some(true),
+                                            ..Default::default()
+                                        });
+                                    }
                                 }
                             }
                             p.runs.push(run);

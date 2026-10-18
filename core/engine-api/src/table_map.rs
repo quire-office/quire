@@ -226,11 +226,13 @@ fn find_tbl_borders(seg: &str) -> Option<Borders> {
 /// canonical 表 → layout 輸入（遞迴巢狀表；樣式框線查 `styles`）。
 /// `cell_imgs`（t_a1397522）：格內圖片投影（錨定段落 → 尺寸）——段落的
 /// Block 之後追加 `CellBlock::Image`（文件序：文字在上、圖在下）。
+/// `sizes`（t_5dfc8ac7）：段落索引 → 級聯有效字級（一格多段取最大）。
 pub fn table_input(
     t: &Table,
     texts: &[String],
     styles: &HashMap<String, EdgeSetInput>,
     cell_imgs: &HashMap<usize, Vec<(f32, f32)>>,
+    sizes: &HashMap<usize, f32>,
 ) -> TableInput {
     let p = &t.props;
     TableInput {
@@ -266,12 +268,18 @@ pub fn table_input(
                         // 子表各自入獨立 Vec 會丟失拓撲序，子表後的尾部段落
                         // 會被拉回頂部——流式堆疊的前提就在這裡。
                         let mut blocks = Vec::new();
+                        // 一格多段的級聯字級＝段內最大（斷行量測保守尺：
+                        // 大字級少塞字，不虛構塞得下的行）。
+                        let mut cell_size: Option<f32> = None;
                         for b in &c.blocks {
                             match b {
                                 // 段落索引引用扁平序列：越界＝畸形檔，跳過（容錯）。
                                 Block::Paragraph { index } => {
                                     if let Some(s) = texts.get(*index) {
                                         blocks.push(CellBlock::Text(s.clone()));
+                                    }
+                                    if let Some(sz) = sizes.get(index) {
+                                        cell_size = Some(cell_size.map_or(*sz, |v| v.max(*sz)));
                                     }
                                     // 錨定在該段的格內圖（t_a1397522）：段落
                                     // 之後依序追加（文件序；查無尺寸＝老實跳過）。
@@ -283,7 +291,7 @@ pub fn table_input(
                                 }
                                 Block::Table(inner) => {
                                     blocks.push(CellBlock::Table(Box::new(table_input(
-                                        inner, texts, styles, cell_imgs,
+                                        inner, texts, styles, cell_imgs, sizes,
                                     ))));
                                 }
                             }
@@ -302,6 +310,7 @@ pub fn table_input(
                                 .filter(|f| !f.is_empty() && f != "auto"),
                             valign: c.props.valign.clone(),
                             margins: c.props.margins.as_ref().map(cell_margins),
+                            text_size_pt: cell_size,
                         }
                     })
                     .collect(),
@@ -385,6 +394,8 @@ pub fn build_images(
 /// 由 canonical 樹＋扁平文字建出排版完成的表格槽序列（engine 開啟文件時呼叫）。
 /// 回傳依 para_start 排序（parser 保證 body 序單調），`build_flow` 契約直接成立。
 /// `images`（t_a1397522）：全文圖片投影；格內圖注入對應 `CellBlock::Image`。
+/// `paras`（t_5dfc8ac7）：級聯烘焙後的段落投影（run 帶 effective size）——
+/// 逐格文字字級＝格內段落首 run 有效字級（首 run 無宣告＝無宣告）。
 pub fn build_slots(
     tables: &[BodyTable],
     texts: &[String],
@@ -392,9 +403,17 @@ pub fn build_slots(
     params: &LayoutParams,
     sections: &[SectionSpec],
     images: &[quire_ooxml::InlineImage],
+    paras: &[quire_ooxml::Paragraph],
 ) -> Vec<TableSlot> {
     let styles = styles_xml.map(table_style_borders).unwrap_or_default();
     let cell_imgs = cell_image_map(images);
+    // 段落 → 級聯有效字級（首 run；None 不入表＝全域尺）。
+    let mut sizes: HashMap<usize, f32> = HashMap::new();
+    for (i, p) in paras.iter().enumerate() {
+        if let Some(sz) = p.runs.first().and_then(|r| r.size_pt) {
+            sizes.insert(i, sz);
+        }
+    }
     let m = TextMeasurer::new(params.font_size_pt);
     let line_h = params.line_h_pt();
     let mut prev_end = 0usize; // 逐槽正規化游標：槽區間必不重疊且 ≤ n_paras
@@ -402,7 +421,7 @@ pub fn build_slots(
     tables
         .iter()
         .map(|bt| {
-            let input = table_input(&bt.table, texts, &styles, &cell_imgs);
+            let input = table_input(&bt.table, texts, &styles, &cell_imgs, &sizes);
             let avail_w = avail_w_for(sections, params, bt.para_start);
             let layout = quire_layout::table::layout_table(&input, avail_w, line_h, &m, 0);
             let raw_end = table_para_end(&bt.table, bt.para_start);
@@ -457,7 +476,7 @@ mod tests {
             let texts = doc.paragraph_texts();
             let params = quire_layout::LayoutParams::default();
             let styles = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
-            let slots = build_slots(&doc.tables, &texts, styles, &params, &[], &[]);
+            let slots = build_slots(&doc.tables, &texts, styles, &params, &[], &[], &doc.paragraphs);
             assert!(!slots.is_empty(), "{rel}：標為 txbx-in-cell 檔應有表格槽");
             let mut prev_end = 0usize;
             for s in &slots {

@@ -160,6 +160,11 @@ pub struct StyleTable {
     styles: HashMap<String, OwnStyle>,
     /// styleId → 合成後（parse 結束一次性沿鏈合成；查詢期不可變）。
     resolved: HashMap<String, (RunStyle, ParaStyle)>,
+    /// styleId → **只沿 basedOn 鏈**合成的 run 宣告（不含 docDefaults）。
+    /// 字元樣式（`w:rStyle`）疊在段落級結果之上時必須用本表：ECMA-376
+    /// §17.7.2 的解析序是「run 直接 → 字元樣式鏈 → 段落樣式鏈 → docDefaults」，
+    /// 若把 docDefaults 先烘進字元樣式，它會越過段落樣式的明確宣告抢先命中。
+    chain: HashMap<String, RunStyle>,
     /// `w:default="1"` 的段落樣式 id（通常 Normal）；段落未宣告 pStyle 時用。
     default_para: Option<String>,
     /// 有無任何宣告（空表＝呼叫端全走後備值）。
@@ -550,6 +555,7 @@ impl StyleTable {
     }
 
     /// 取得 styleId 合成結果（遞迴先父後子＋快取；環／超深擋在 MAX_CHAIN）。
+    /// 同步合成 `chain`（只沿 basedOn、不含 docDefaults 的 run 宣告，見欄位注）。
     fn resolve_cached(&mut self, id: &str) -> (RunStyle, ParaStyle) {
         if let Some(hit) = self.resolved.get(id) {
             return *hit;
@@ -558,26 +564,30 @@ impl StyleTable {
         let Some(own) = self.styles.get(id).cloned() else {
             // 查無樣式：只剩 docDefaults 基底（畸形 pStyle/rStyle 引用容錯）。
             self.resolved.insert(id.to_string(), doc);
+            self.chain.insert(id.to_string(), RunStyle::default());
             return doc;
         };
         if self.visiting.len() >= MAX_CHAIN {
             // 超深／環：老實停在 doc 基底（見模組頭）。
             self.resolved.insert(id.to_string(), doc);
+            self.chain.insert(id.to_string(), RunStyle::default());
             return doc;
         }
-        let parent = match own.based_on.as_deref().filter(|s| !s.is_empty()) {
+        let (parent, parent_chain) = match own.based_on.as_deref().filter(|s| !s.is_empty()) {
             Some(b) => {
                 // 自引用（basedOn 自己）直接停——避免無意義遞迴。
                 if b == id || self.visiting.iter().any(|v| v == b) {
-                    doc
+                    (doc, RunStyle::default())
                 } else {
                     self.visiting.push(id.to_string());
                     let p = self.resolve_cached(b);
+                    // resolve_cached 必已填 chain（含查無／超深分支）。
+                    let pc = self.chain.get(b).copied().unwrap_or_default();
                     self.visiting.pop();
-                    p
+                    (p, pc)
                 }
             }
-            None => doc,
+            None => (doc, RunStyle::default()),
         };
         // 本樣式自帶（rPr ∪ pPr/rPr）疊在父合成結果上；段落欄位缺位補父。
         let run = own.run.overlay(&parent.0);
@@ -588,6 +598,8 @@ impl StyleTable {
         };
         let hit = (run, para);
         self.resolved.insert(id.to_string(), hit);
+        self.chain
+            .insert(id.to_string(), own.run.overlay(&parent_chain));
         hit
     }
 
@@ -595,6 +607,13 @@ impl StyleTable {
     /// 段落樣式 id 誤傳進來也回傳其 run 基底（畸形檔容錯，不虛構）。
     pub fn effective_char(&self, id: &str) -> Option<RunStyle> {
         self.resolved.get(id).map(|hit| hit.0)
+    }
+
+    /// 字元樣式（`w:rStyle`）的**純鏈**宣告：只沿 basedOn 合成、不含
+    /// docDefaults——engine 層把它疊在段落級結果之上時，docDefaults 必須
+    /// 留在段落基底裡（ECMA-376 §17.7.2 層序；見 `chain` 欄位注）。
+    pub fn char_chain(&self, id: &str) -> Option<RunStyle> {
+        self.chain.get(id).copied()
     }
 
     /// 段落級級聯：段落樣式（未宣告 pStyle＝落預設段落樣式 Normal，再落
