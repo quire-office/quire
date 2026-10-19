@@ -302,6 +302,36 @@ pub(crate) fn break_para_lines(
     (lines, para_breaks)
 }
 
+/// 逐段落斷行（可帶 per-paragraph 字級網格；t_5dfc8ac7）。`grid` 與 `texts`
+/// 等長時逐段取 `(字級pt, 行高pt)` 的字級量測斷行；缺位/短＝退回 `p` 全域字級
+/// （既有行為逐位元組不變）。頁首頁尾路徑用（正文走 `LayoutEngine` 內部網格）。
+/// br-page 不介入頁首頁尾（hdr/ftr 內 br 屬表格跨頁卡範圍）：`para_breaks` 空。
+pub fn layout_paragraphs_grid(
+    texts: &[String],
+    p: &LayoutParams,
+    sections: &[SectionSpec],
+    grid: &[(f32, f32)],
+) -> Vec<ParagraphLayout> {
+    texts
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let size = grid.get(i).map_or(p.font_size_pt, |g| g.0);
+            let content_w = section_params(p, sections, i).content_w_pt();
+            let m = TextMeasurer::new(size);
+            let mut pl = ParagraphLayout {
+                para_index: i,
+                lines: break_lines(t, content_w, &m),
+                para_breaks: Vec::new(),
+            };
+            for l in pl.lines.iter_mut() {
+                l.para_index = i;
+            }
+            pl
+        })
+        .collect()
+}
+
 /// 段落 i 所屬 section 的版面參數（字級/行距維持 `p`，頁面幾何來自 section）。
 fn section_params(p: &LayoutParams, sections: &[SectionSpec], para: usize) -> LayoutParams {
     match sections.get(para) {
@@ -348,6 +378,39 @@ pub enum FlowItem {
     Text { para: usize },
     Table { slot: usize },
     Image { img: usize },
+}
+
+/// 逐段落字級/行帶表（t_5dfc8ac7）：engine 由樣式級聯算出餵入（段落級有效
+/// 字級→斷行量測尺；段行高÷文件帶尺向上取整→該段每行佔用帶數）。
+/// **兩表皆空＝全域 params 尺**——既有呼叫端（goldens/測試/無樣式宣告文件）
+/// 行為逐位元組不變。缺位/短＝該段退回全域值（容錯，不虛構）。
+#[derive(Debug, Clone, Default)]
+pub struct ParaGrid {
+    /// 逐段斷行量測字級（pt）；缺＝`params.font_size_pt`。
+    pub size_pt: Vec<f32>,
+    /// 逐段每行佔用帶數（engine 算 ceil(段行高/文件帶尺)，至少 1）；缺＝1。
+    pub bands: Vec<u32>,
+    /// 逐段顯式分頁旗標（`w:br type="page"`／`w:pageBreakBefore`；t_5dfc8ac7）：
+    /// true＝該段錨點的流項前強制換頁（Word 語義；段內 br 粗化為整段推頁）。
+    /// 缺＝false（全域無宣告＝舊行為）。純 (flow,fi) 函數——增量重排復入同樣成立。
+    pub break_before: Vec<bool>,
+}
+
+impl ParaGrid {
+    /// 段落 i 的斷行字級（缺＝全域 fallback）。
+    pub fn size_of(&self, para: usize, fallback: f32) -> f32 {
+        self.size_pt.get(para).copied().unwrap_or(fallback)
+    }
+
+    /// 段落 i 前是否強制換頁（缺＝false）。
+    pub fn break_before_of(&self, para: usize) -> bool {
+        self.break_before.get(para).copied().unwrap_or(false)
+    }
+
+    /// 段落 i 每行佔用帶數（缺＝1；恆 ≥1，行至少佔一格）。
+    pub fn bands_of(&self, para: usize) -> u32 {
+        self.bands.get(para).copied().unwrap_or(1).max(1)
+    }
 }
 
 /// 版面排定的表格來源（engine 由 canonical 映射餵入；slot＝陣列索引）。
@@ -624,6 +687,7 @@ fn pack_run(
     images: &[ImageBand],
     p: &LayoutParams,
     sections: &[SectionSpec],
+    grid: &ParaGrid,
     st: &mut PackState,
     out: &mut Vec<Page>,
     out_starts: &mut Vec<FlowPos>,
@@ -682,6 +746,9 @@ fn pack_run(
                     .get(im.para)
                     .is_some_and(|pl| pl.lines.len() == 1 && pl.lines[0].text.trim().is_empty())
         };
+        // 段落佔帶（t_5dfc8ac7）：段落行按段行高量化（ceil(行高/帶尺)，至少 1）。
+        // 全域尺（ParaGrid 空）時恆 1——既有行為逐位元組不變。
+        let para_band = |para: usize| grid.bands_of(para);
         let para_img_bands = |fi: usize| -> u32 {
             // Text 項前視：純圖段落（唯一空行＋下一流項即其流內圖）→ 整段帶數。
             let FlowItem::Text { para } = &flow[fi] else {
@@ -699,13 +766,17 @@ fn pack_run(
             if images[*img].anchor.is_some() {
                 return 0; // 浮動鎖點項不在流裡，不構成吸收
             }
-            images[*img].bands.max(1)
+            // 整段（空行＋圖）原子檢查＝max(圖帶, 空行帶)——absorb 語義：
+            // 圖頂落在段落起始帶，空行不另計（原 ceil(h/line_h) 公式的
+            // per-para 行高推廣；全域尺 P=1 時＝舊式逐位元組全等）。
+            images[*img].bands.max(1).max(para_band(*para))
         };
         let item_bands = match &flow[fi] {
             FlowItem::Image { img } => {
                 let b = images[*img].bands.max(1);
                 if absorb_slot(*img, fi) {
-                    b.saturating_sub(1)
+                    // 空行帶已由前項 Text 涵蓋：只補差額（b<P 時補 0）。
+                    b.saturating_sub(para_band(images[*img].para))
                 } else {
                     b
                 }
@@ -713,10 +784,19 @@ fn pack_run(
             FlowItem::Text { .. } => para_img_bands(fi),
             _ => 0,
         };
-        // 吸收態下那頁「唯一內容」就是共用的空行（cur_used==1）：容量不足
-        // 也不得換頁（巨型圖頂格放規則對空行同样豁免），否則空行會孤留在
-        // 前一頁、圖獨排下頁。
+        // 吸收態下那頁「唯一內容」就是共用的空行（cur_used==該段行帶數）：
+        // 容量不足也不得換頁（巨型圖頂格放規則對空行同樣豁免），否則空行會
+        // 孤留在前一頁、圖獨排下頁。
         let absorb_here = matches!(&flow[fi], FlowItem::Image { img } if absorb_slot(*img, fi));
+        let absorb_exemption = if absorb_here {
+            // 空行自身已計帶（該段 para_band）：豁免門檻＝空行不計入後的用量。
+            match &flow[fi] {
+                FlowItem::Image { img } => para_band(images[*img].para),
+                _ => 0,
+            }
+        } else {
+            0
+        };
         // br-page 硬斷點（游標位置的純函數，語義見 pack_run doc）：段前
         // (k=0) 與段中 (0<k<nli) 斷點在游標恰落 (fi,k,0) 時命中；段尾斷點
         // (k=nli) 折疊為「游標在下一流項起頭且前一文字項以 k=nli 收尾」。
@@ -734,12 +814,22 @@ fn pack_run(
         let start_new = match st.cur_spec {
             // section 邊界（非 continuous）一律換頁；同尺寸也換。
             Some(prev) if prev.id != spec.id => !spec.geo.continuous,
+            // 顯式分頁（t_5dfc8ac7）：該段首行前一律換頁（Word pageBreakBefore／
+            // 段內 w:br type="page" 的段級粗化）。純 flow 輸入函數：增量復入、
+            // 收斂比較皆決定性。首項（None＝本頁尚無內容）不換頁——游標前已
+            // flush，段本就從頁首起，無須空白頁。
+            Some(_)
+                if li == 0
+                    && matches!(&flow[fi], FlowItem::Text { para } if grid.break_before_of(*para)) =>
+            {
+                true
+            }
             Some(_) => {
                 st.cur_used >= cap as u32
                     || hard
                     || hard_after
                     || (item_bands > 0
-                        && st.cur_used > u32::from(absorb_here)
+                        && st.cur_used > absorb_exemption
                         && st.cur_used + item_bands > cap as u32)
             }
             None => false,
@@ -764,7 +854,8 @@ fn pack_run(
             FlowItem::Text { para } => {
                 st.cur.push(pls[*para].lines[li].clone());
                 st.cur_bands.push(st.cur_used);
-                st.cur_used += 1;
+                // 段落行按段行高量化佔帶（全域尺＝1，舊行為逐位元組不變）。
+                st.cur_used += para_band(*para);
                 st.cursor = if li + 1 < pls[*para].lines.len() {
                     (fi, li + 1, 0)
                 } else {
@@ -809,7 +900,8 @@ fn pack_run(
                 let b = im.bands.max(1);
                 let absorb = absorb_slot(*img, fi);
                 let top = if absorb {
-                    st.cur_used.saturating_sub(1)
+                    // 圖頂＝段落起始帶：回退空行自身已計的帶數（全域尺＝1）。
+                    st.cur_used.saturating_sub(para_band(im.para))
                 } else {
                     st.cur_used
                 };
@@ -819,7 +911,13 @@ fn pack_run(
                     w_pt: im.w_pt,
                     h_pt: im.h_pt.min(b as f32 * line_h),
                 });
-                st.cur_used += if absorb { b.saturating_sub(1) } else { b };
+                // 佔用：absorb＝max(圖帶, 空行帶)－空行帶（空行帶已由 Text 空行
+                // 計入）；非 absorb＝圖帶原額（段落另有實文，不共用帶）。
+                st.cur_used += if absorb {
+                    b.saturating_sub(para_band(im.para))
+                } else {
+                    b
+                };
                 st.cursor = (fi + 1, 0, 0);
             }
         }
@@ -867,7 +965,16 @@ pub fn paginate_tables_images(
 ) -> (Vec<Page>, Vec<FlowPos>) {
     let refs: Vec<&ParagraphLayout> = pls.iter().collect();
     let flow = build_flow_images(pls.len(), tables, images);
-    paginate_flow(&flow, &refs, tables, images, p, sections)
+    // 公開版無逐段網格（全域尺＝舊行為逐位元組不變）。
+    paginate_flow(
+        &flow,
+        &refs,
+        tables,
+        images,
+        p,
+        sections,
+        &ParaGrid::default(),
+    )
 }
 
 /// 段落＋表格＋圖片混排流（Phase3-1b＋t_a1397522）：依 para_start 把表格
@@ -946,6 +1053,7 @@ fn paginate_flow(
     images: &[ImageBand],
     p: &LayoutParams,
     sections: &[SectionSpec],
+    grid: &ParaGrid,
 ) -> (Vec<Page>, Vec<FlowPos>) {
     let mut pages: Vec<Page> = Vec::new();
     let mut starts: Vec<FlowPos> = Vec::new();
@@ -957,6 +1065,7 @@ fn paginate_flow(
         images,
         p,
         sections,
+        grid,
         &mut PackState::fresh(),
         &mut pages,
         &mut starts,
@@ -1212,6 +1321,8 @@ pub struct LayoutEngine {
     /// `para_breaks`）都由此取數；編輯改文時偏移依 changed_bytes 平移（同
     /// undo 快照的標尺鐵律：改文不丟使用者手插的硬斷點）。
     breaks: Vec<Vec<usize>>,
+    /// 逐段落字級/行帶表（t_5dfc8ac7；空＝全域 params 尺＝既有行為）。
+    grid: ParaGrid,
     pages: Vec<Page>,
     // ---------------- Phase0-6 增量狀態 ----------------
     /// 逐段落斷行結果快取（已蓋 para_index 章）；`None` = 待重斷（髒）。
@@ -1281,12 +1392,37 @@ impl LayoutEngine {
         images: Vec<ImageBand>,
         breaks: Vec<Vec<usize>>,
     ) -> Self {
+        Self::with_breaks_grid(
+            texts,
+            params,
+            sections,
+            tables,
+            images,
+            breaks,
+            ParaGrid::default(),
+        )
+    }
+
+    /// 帶 br-page 硬斷點＋逐段落字級/行帶表的建構（t_5dfc8ac7，合併 t_01fa57af
+    /// 的 `with_breaks` 為單一最終形）。`grid` 由 engine 層從樣式級聯算出餵入：
+    /// 段落斷行用段字級量測、分頁按段行高量化佔帶。空表＝全域 params 尺
+    /// （既有全部呼叫端行為逐位元組不變）。
+    pub fn with_breaks_grid(
+        texts: &[String],
+        params: LayoutParams,
+        sections: Vec<SectionSpec>,
+        tables: Vec<TableSlot>,
+        images: Vec<ImageBand>,
+        breaks: Vec<Vec<usize>>,
+        grid: ParaGrid,
+    ) -> Self {
         let cache: Vec<Option<ParagraphLayout>> = vec![None; texts.len()];
         let mut eng = Self {
             texts: texts.to_vec(),
             params,
             sections,
             breaks,
+            grid,
             pages: Vec::new(),
             cache,
             starts: Vec::new(),
@@ -1321,6 +1457,7 @@ impl LayoutEngine {
             &self.images,
             &self.params,
             &self.sections,
+            &self.grid,
         );
         self.pages = pages;
         self.starts = starts;
@@ -1329,10 +1466,12 @@ impl LayoutEngine {
 
     /// 單段 KP 斷行（蓋 para_index 章）。只給髒段落呼叫——快取命中零成本。
     /// br-page 段中斷點折入斷行（KP 硬收行）、段首/段尾斷點進 `para_breaks`
-    /// 給 pack_run 升格為頁邊界。
+    /// 給 pack_run 升格為頁邊界；段字級取自 band grid（缺位＝全域 params
+    /// 字級＝舊行為，t_5dfc8ac7）。
     fn break_para(&self, i: usize) -> ParagraphLayout {
         let content_w = section_params(&self.params, &self.sections, i).content_w_pt();
-        let m = TextMeasurer::new(self.params.font_size_pt);
+        let size = self.grid.size_of(i, self.params.font_size_pt);
+        let m = TextMeasurer::new(size);
         let (lines, para_breaks) = break_para_lines(
             &self.texts[i],
             content_w,
@@ -1472,6 +1611,7 @@ impl LayoutEngine {
             &self.images,
             &self.params,
             &self.sections,
+            &self.grid,
             &mut st,
             &mut out,
             &mut out_starts,
@@ -1551,6 +1691,7 @@ impl LayoutEngine {
             &self.images,
             &self.params,
             &self.sections,
+            &self.grid,
             &mut st,
             &mut out,
             &mut out_starts,

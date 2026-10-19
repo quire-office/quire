@@ -6,13 +6,13 @@
 //! - 型別全 serde 化，跨 wasm 邊界走 JSON 字串。
 
 use quire_layout::{
-    breaks_from_pages, CaretPos, LayoutEngine, LayoutParams, Page, SectionGeometry, SectionSpec,
-    TableSlot, TextMeasurer, MARGIN_LEFT,
+    breaks_from_pages, CaretPos, LayoutEngine, LayoutParams, Page, ParaGrid, SectionGeometry,
+    SectionSpec, TableSlot, TextMeasurer, MARGIN_LEFT,
 };
 use quire_ooxml::{
     diff_untouched, diff_zip_structure, parse, parse_header_footer_part, read_even_and_odd_headers,
     read_rels, read_sections_header_footer, read_sections_per_paragraph, resolve_relationship,
-    OoxmlDoc, OoxmlError, SlotRefs, ZipDiff,
+    LineSpacing, OoxmlDoc, OoxmlError, ParaStyle, SlotRefs, StyleTable, ZipDiff,
 };
 use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
@@ -49,6 +49,11 @@ pub struct Engine {
     doc: OoxmlDoc,
     layout: LayoutEngine,
     params: LayoutParams,
+    /// 樣式級聯的發射投影（t_5dfc8ac7）：`Some`＝run 級粗/斜/底/刪/色/字級
+    /// 已換成級聯有效值（發射層與表格格內樣式一律讀本欄）；`None`＝文件
+    /// 無 styles.xml 或全無宣告——讀本體 `doc.paragraphs`，既有輸出逐位元
+    /// 組不變。純讀取派生：存檔路徑（save_docx／roundtrip）完全不經本欄。
+    paras_eff: Option<Vec<quire_ooxml::Paragraph>>,
     /// 開啟時的原始位元組——roundtrip 對照的基準。
     original: Vec<u8>,
     /// 被編輯器動過的 part key（round-trip 白名單：這些 entry 允許內容變動）。
@@ -67,9 +72,12 @@ pub struct Engine {
 /// 頁首／頁尾 part 的已解析投影（開啟文件時一次性解析；純讀取）。
 /// 段落與表格走與 document.xml 同一組解析器（同 w:p Start 口徑、同
 /// mc:Fallback 吞沒）；索引只在 part 內自洽。
+/// `styles`＝級聯烘焙後的發射投影（t_5dfc8ac7；無 styles.xml＝解析原樣）；
+/// `metrics`＝逐段 (斷行字級, 段行高 pt)。
 #[derive(Debug)]
 struct HfPart {
-    paragraphs: Vec<quire_ooxml::Paragraph>,
+    styles: Vec<quire_ooxml::Paragraph>,
+    metrics: Vec<(f32, f32)>,
     tables: Vec<quire_ooxml::BodyTable>,
 }
 
@@ -101,13 +109,29 @@ impl Engine {
     /// （Phase0-2b）。檔案毫無 sectPr 時退回 `LayoutParams::default()`（後備）。
     pub fn from_docx_bytes(bytes: &[u8]) -> Result<Self, EngineError> {
         let doc = parse(bytes)?;
-        let texts = doc.paragraph_texts();
-        let params = LayoutParams::default();
+        // ---- 樣式級聯層（t_5dfc8ac7）----
+        // 開啟文件時一次性解析 styles.xml：逐段級聯合成的 (斷行字級, 段行高)
+        // 網格餵 `ParaGrid`，run 級有效樣式烘焙進發射用投影 `paras_eff`（見
+        // 欄位注）。純讀取派生資料——`doc` 本體一個欄位不改，存檔路徑完全不
+        // 經此層（parts passthrough，round-trip 零影響）。無 styles.xml part
+        // ＝None：全部走後備值，既有文件行為逐位元組不變。
+        let style_table = doc
+            .parts
+            .get("word/styles.xml")
+            .map(|s| StyleTable::parse(s.as_slice()));
+        let (doc_size, doc_line) = style_table.as_ref().map_or((None, None), |t| t.doc_grid());
+        // 文件基準字級：docDefaults∪Normal 鏈的有效 sz（ECMA 無宣告時的
+        // Word 預設 12pt 兜底）。無級聯層＝12（既有硬編碼後備）。
+        let def_size = doc_size.unwrap_or(12.0);
+        // 文件帶尺（行網格量化單位）＝預設段落的行高；無宣告＝12pt×1.4，
+        // 與舊 `LayoutParams::default()` 恆等（零宣告檔案逐位元組不變）。
+        let grid_line_h = resolve_line_h_pt(def_size, doc_line);
+        let n_paras = doc.paragraphs.len();
         let sections: Vec<SectionSpec> = doc
             .parts
             .get("word/document.xml")
             .map(|xml| {
-                read_sections_per_paragraph(xml, texts.len())
+                read_sections_per_paragraph(xml, n_paras)
                     .into_iter()
                     .map(|s| SectionSpec {
                         id: s.id,
@@ -125,11 +149,59 @@ impl Engine {
                     .collect()
             })
             .unwrap_or_default();
-        // 基準 params：以首 section 的頁面欄位覆寫後備值（字級/行距不變），
-        // 讓「無 section 段落」與 shells 讀 params() 時也拿到文件實際尺寸。
+        // 基準 params：字級/行距吃級聯文件基準（無級聯＝12pt×1.4 後備不變），
+        // 再覆寫首 section 的頁面欄位，讓「無 section 段落」與 shells 讀
+        // params() 時也拿到文件實際尺寸。
+        let params = LayoutParams {
+            font_size_pt: def_size,
+            line_spacing: if def_size > 0.0 {
+                grid_line_h / def_size
+            } else {
+                1.4
+            },
+            ..LayoutParams::default()
+        };
         let params = match sections.first() {
             Some(s) => LayoutParams::from_section(&s.geo, params.font_size_pt, params.line_spacing),
             None => params,
+        };
+        // 級聯烘焙（需 params 已定：製表位點引填補按該段可用寬計算）：
+        // 逐段可用寬＝該段 section 的 content_w（無 section 表＝基準 params）。
+        let widths: Vec<f32> = (0..n_paras)
+            .map(|i| match sections.get(i) {
+                Some(s) => {
+                    LayoutParams::from_section(&s.geo, params.font_size_pt, params.line_spacing)
+                        .content_w_pt()
+                }
+                None => params.content_w_pt(),
+            })
+            .collect();
+        let mut grid_size_v: Vec<f32> = Vec::with_capacity(n_paras);
+        let mut grid_bands_v: Vec<u32> = Vec::with_capacity(n_paras);
+        // 顯式分頁旗標（parser 直讀，任何檔案都收；全 false＝舊行為）。
+        let grid_break_v: Vec<bool> = doc.paragraphs.iter().map(|p| p.page_break).collect();
+        // 發射投影：Some＝級聯有作用（run 樣式欄位已烘焙）；None＝發射層直讀
+        // `doc.paragraphs`（零級聯檔案逐位元組舊行為的快路徑）。
+        let mut paras_eff: Option<Vec<quire_ooxml::Paragraph>> = None;
+        if let Some(st) = style_table.as_ref() {
+            let (eff_all, metrics) = cascade_paragraphs(st, &doc.paragraphs, def_size, &widths);
+            grid_size_v = metrics.iter().map(|m| m.0).collect();
+            // 段行高量化到文件帶尺（至少 1 帶；帶尺＝12pt×1.4 且段行高不大於
+            // 帶尺時恆 1＝舊行為）。
+            grid_bands_v = metrics
+                .iter()
+                .map(|m| ((m.1 / grid_line_h).ceil() as u32).max(1))
+                .collect();
+            paras_eff = Some(eff_all);
+        }
+        // 版面文字：以發射投影為準（級聯路徑含點引填補——斷行與發射同源，
+        // run↔line 碼點對齊不破）。無級聯＝原始串接（舊行為）。
+        let texts: Vec<String> = match paras_eff.as_ref() {
+            Some(eff) => eff
+                .iter()
+                .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+                .collect(),
+            None => doc.paragraph_texts(),
         };
         // 表格槽（Phase3-1b）：canonical 樹＋styles.xml 框線查表 → layout 幾何。
         // 圖片投影（t_a1397522）：純讀取（PM 補正 1）——格內圖注入 CellBlock，
@@ -140,8 +212,16 @@ impl Engine {
             .get("word/document.xml")
             .map(|xml| quire_ooxml::read_images(xml))
             .unwrap_or_default();
-        let slots =
-            table_map::build_slots(&doc.tables, &texts, styles, &params, &sections, &images);
+        let eff_refs: &[quire_ooxml::Paragraph] = paras_eff.as_deref().unwrap_or(&doc.paragraphs);
+        let slots = table_map::build_slots(
+            &doc.tables,
+            &texts,
+            styles,
+            &params,
+            &sections,
+            &images,
+            eff_refs,
+        );
         let bands = table_map::build_images(&images, params.line_h_pt());
         // br-page 硬斷點（ECMA-376 §17.4.3）：canonical 段落的 w:br w:type="page"
         // 偏移直傳版面層（與 texts 逐段同標）。無 br 檔案＝全空清單＝舊行為。
@@ -150,15 +230,30 @@ impl Engine {
             .iter()
             .map(|p| p.page_breaks.clone())
             .collect();
-        let layout =
-            LayoutEngine::with_breaks(&texts, params, sections.clone(), slots, bands, breaks);
+        // 樣式級聯網格（t_5dfc8ac7）：逐段字級/行帶＋pageBreakBefore 旗標。
+        let grid = ParaGrid {
+            size_pt: grid_size_v,
+            bands: grid_bands_v,
+            break_before: grid_break_v,
+        };
+        let layout = LayoutEngine::with_breaks_grid(
+            &texts,
+            params,
+            sections.clone(),
+            slots,
+            bands,
+            breaks,
+            grid,
+        );
         // 頁首頁尾層（t_b39f108b）：sectPr 宣告＋rels 查表＋part 解析。
         // 全鏈純讀取派生——parts／bundle 一個位元組都不碰（round-trip 零影響）。
-        let (hf, hf_parts, even_odd, sec_geo) = build_hf_layer(&doc, &sections, &params);
+        let (hf, hf_parts, even_odd, sec_geo) =
+            build_hf_layer(&doc, &sections, style_table.as_ref());
         Ok(Self {
             doc,
             layout,
             params,
+            paras_eff,
             original: bytes.to_vec(),
             touched: BTreeMap::new(),
             hf,
@@ -170,6 +265,12 @@ impl Engine {
 
     pub fn page_count(&self) -> usize {
         self.layout.page_count()
+    }
+
+    /// 發射用段落投影（t_5dfc8ac7）：級聯有作用時回烘焙版（run 的粗/斜/底/
+    /// 刪/色/字級＝級聯有效值）；否則回本體（零級聯檔案逐位元組舊行為）。
+    fn eff_paragraphs(&self) -> &[quire_ooxml::Paragraph] {
+        self.paras_eff.as_deref().unwrap_or(&self.doc.paragraphs)
     }
 
     pub fn paragraph_count(&self) -> usize {
@@ -241,11 +342,11 @@ impl Engine {
         let p: &Page = self.layout.pages().get(page)?;
         let line_h = self.params.line_h_pt();
         let size = self.params.font_size_pt;
-        let measurer = TextMeasurer::new(size);
         let mut items: Vec<DrawItem> = Vec::new();
+        let paras = self.eff_paragraphs();
         // 頁首頁尾先發射（填色/框線在文字之前，與表格同一約定）——其文字項
         // 由下方統一幾何排序落到閱讀序應有位置（頁首 y 小排最前、頁尾最後）。
-        self.push_header_footer_items(&mut items, p, &measurer);
+        self.push_header_footer_items(&mut items, p);
         // 底層先畫表格（填色＋框線＋格內文字），再疊正文行；最後對「文字項」
         // 依 (y, x) 幾何閱讀序重排——跨表格/正文統一由上而下、由左而右。
         // 填色與框線保持推入序（穩定排序 key 同鍵，不互相顛倒遮蓋次序）。
@@ -258,7 +359,7 @@ impl Engine {
                 &tp.frag,
                 size,
                 canon_tbl,
-                &self.doc.paragraphs,
+                paras,
             );
         }
         // 圖片佔位（t_a1397522）：正文流圖＝版心左緣＋行網格帶 y；浮動鎖點
@@ -273,8 +374,8 @@ impl Engine {
         for (i, l) in p.lines.iter().enumerate() {
             let band = p.line_bands.get(i).copied().unwrap_or(i as u32) as f32;
             let y = p.margin_top_pt + band * line_h;
-            let para = self.doc.paragraphs.get(l.para_index);
-            emit_line_run_items(&mut items, p.margin_left_pt, y, size, l, para, &measurer);
+            let para = paras.get(l.para_index);
+            emit_line_run_items(&mut items, p.margin_left_pt, y, size, l, para);
         }
         // 穩定排序：非文字項（填色/框線）同鍵保持原序且恆在前；文字項依基線 y
         // 再依 x 排列，讓「正文→表格→正文」的閱讀序與 PDF 抽取端一致。
@@ -453,6 +554,117 @@ mod collab_tests {
 /// 預設文字顏色：不透明黑（0xFF000000）。
 const DEFAULT_TEXT_COLOR_ARGB: u32 = 0xFF00_0000;
 
+/// 發射字級後備（無任何級聯宣告時的既有硬編碼尺；`LayoutParams::default()`
+/// 的 12pt 同源，只準有一處定義）。
+const FALLBACK_SIZE_PT: f32 = 12.0;
+
+/// [`LineSpacing`] → 段行高（pt）。本引擎行高無內容自適應成分，三態換算：
+/// - `Auto(m)`：字級×倍數（240＝單倍；與 fallback 12pt×1.4 同口徑）；
+/// - `Exact(v)`：固定 v pt（文字超出亦不撐高）；
+/// - `AtLeast(v)`：v 與「字級×單倍」取大（ECMA 語義：至少 v，行不低於字面高）；
+/// - `None`：字級×1.4（既有硬編碼後備，零宣告檔案逐位元組不變）。
+fn resolve_line_h_pt(size_pt: f32, line: Option<LineSpacing>) -> f32 {
+    let s = size_pt.max(1.0);
+    let h = match line {
+        Some(LineSpacing::Auto(m)) => s * m.max(0.1),
+        Some(LineSpacing::Exact(v)) => v,
+        Some(LineSpacing::AtLeast(v)) => v.max(s),
+        None => s * 1.4,
+    };
+    h.max(1.0)
+}
+
+/// 逐段級聯＋烘焙（t_5dfc8ac7；正文與頁首頁尾 part 共用同一條路徑）。
+/// 回傳 (發射投影——run 粗/斜/底/刪/色/字級換成級聯有效值, 逐段
+/// (斷行量測字級, 段行高 pt))。`def_size`＝文件基準字級（級聯全無宣告時）。
+/// `widths`＝逐段可用寬（pt）：製表位點引填補的計算尺；短/空＝該段不展開
+/// （無錨點不虛構——頁首尾 part 走空表＝tab 維持原樣，既有行為不變）。
+fn cascade_paragraphs(
+    st: &StyleTable,
+    paras: &[quire_ooxml::Paragraph],
+    def_size: f32,
+    widths: &[f32],
+) -> (Vec<quire_ooxml::Paragraph>, Vec<(f32, f32)>) {
+    let mut eff_all: Vec<quire_ooxml::Paragraph> = Vec::with_capacity(paras.len());
+    let mut metrics: Vec<(f32, f32)> = Vec::with_capacity(paras.len());
+    for (pi, p) in paras.iter().enumerate() {
+        let inline = ParaStyle {
+            run: p.prun.unwrap_or_default(),
+            line: p.line,
+            align: p.jc,
+        };
+        let (base, para) = st.effective_para(p.style.as_deref(), inline);
+        let mut meas_size = base.size_pt.unwrap_or(def_size);
+        let mut eff_runs: Vec<quire_ooxml::Run> = Vec::with_capacity(p.runs.len());
+        for r in &p.runs {
+            let mut b = base;
+            if let Some(cid) = r.rstyle.as_deref() {
+                b = StyleTable::resolve_run(b, st.char_chain(cid).unwrap_or_default());
+            }
+            let eff = StyleTable::resolve_run(b, r.direct.unwrap_or_default());
+            // 斷行字級＝段內 run 有效字級最大值（Word 行高/斷行依段內最大
+            // 字級成形；本引擎斷行用單一尺，取大者保守不切字）。
+            if let Some(sz) = eff.size_pt {
+                meas_size = meas_size.max(sz);
+            }
+            let mut r2 = r.clone();
+            // 三態 None＝全鏈未宣告＝未開（與舊「rPr 不見即 false」等價——
+            // 舊 bool 欄位本就是 rPr 的有損投影）。
+            r2.bold = eff.bold.unwrap_or(false);
+            r2.italic = eff.italic.unwrap_or(false);
+            r2.underline = eff.underline.unwrap_or(false);
+            r2.strike = eff.strike.unwrap_or(false);
+            if eff.color_set {
+                // 宣告 w:color（含 auto/非法→明確黑）以級聯為準；
+                // 未宣告不動——保留解析期代擬色（hyperlink 藍）。
+                r2.color = eff.color;
+            }
+            r2.size_pt = eff.size_pt;
+            eff_runs.push(r2);
+        }
+        let line_h = resolve_line_h_pt(base.size_pt.unwrap_or(def_size), para.line);
+        // 點引 leads 展開（t_5dfc8ac7）：段落宣告右對齊製表位＋leader＋內含
+        // w:tab run 時，於首個 tab run 前插入填充符串至「製表位 − 尾串寬」
+        // （Word/LO 同款視覺 `Heading 1 ......... 2`）。填充是獨立 run——
+        // texts 由 eff run 串接重建，run↔line 碼點對齊天然不破。斷行量測
+        // 尺＝meas_size（與 break_lines 同尺，填充寬計算與斷行一致）。
+        // widths 缺位（頁首尾 part／畸形檔）＝不展開——無可用寬不虛構。
+        let leader_ch = match p.tab_leader.as_deref() {
+            Some("dot") => Some('.'),
+            Some("underscore") => Some('_'),
+            Some("hyphen") => Some('-'),
+            _ => None,
+        };
+        if let (Some(pos), Some(ch)) = (p.tab_right_pt, leader_ch) {
+            if let Some(ti) = eff_runs.iter().position(|r| r.tab) {
+                if widths.len() > pi {
+                    let m = TextMeasurer::new(meas_size);
+                    let prefix: String = eff_runs[..ti].iter().map(|r| r.text.as_str()).collect();
+                    let suffix: String = eff_runs[ti..].iter().map(|r| r.text.as_str()).collect();
+                    let dot_w = m.text_width(&ch.to_string());
+                    let need = pos - m.text_width(&suffix) - m.text_width(&prefix);
+                    let n = if dot_w > 0.0 {
+                        (need / dot_w).floor() as usize
+                    } else {
+                        0
+                    };
+                    if n > 0 {
+                        let mut fill = eff_runs[ti].clone();
+                        fill.text = ch.to_string().repeat(n.min(4000));
+                        fill.tab = false;
+                        eff_runs.insert(ti, fill);
+                    }
+                }
+            }
+        }
+        metrics.push((meas_size, line_h));
+        let mut ep = p.clone();
+        ep.runs = eff_runs;
+        eff_all.push(ep);
+    }
+    (eff_all, metrics)
+}
+
 /// 圖片佔位框配色（t_a1397522）：灰底＋淺灰描邊。「誠實的近似」視覺：
 /// 用戶看得見這裡有圖、多大、在哪，點陣直出屬像素渲染卡。
 const IMAGE_PLACEHOLDER_FILL: u32 = 0xFFF0_F0F0;
@@ -489,8 +701,9 @@ fn emit_image_placeholder(items: &mut Vec<DrawItem>, x: f32, y: f32, w: f32, h: 
     rule(x + w, y, x + w, y + h, items);
 }
 
-/// 將 OOXML `Run` 樣式換算為 `(flags, color_argb)`。
-fn run_style(r: &quire_ooxml::Run) -> (u8, u32) {
+/// 將 OOXML `Run` 樣式換算為 `(flags, color_argb, size_pt)`。
+/// `size_pt`＝級聯烘焙的有效字級（None＝未宣告，發射層退回段落／文件級尺）。
+fn run_style(r: &quire_ooxml::Run) -> (u8, u32, Option<f32>) {
     let mut flags = 0u8;
     if r.bold {
         flags |= FLAG_BOLD;
@@ -505,12 +718,14 @@ fn run_style(r: &quire_ooxml::Run) -> (u8, u32) {
         flags |= FLAG_STRIKE;
     }
     let color_argb = r.color.unwrap_or(DEFAULT_TEXT_COLOR_ARGB);
-    (flags, color_argb)
+    (flags, color_argb, r.size_pt)
 }
 
 /// 將單行文字與所屬段落的 `Run` 邊界（依 char offset 累積）求交集，
-/// 每個樣式同質段發射一個 `DrawItem::Text`；段 x 偏移以同一 `TextMeasurer`
-/// 累加前段寬度，保證所有段寬總和與整行寬零漂移。
+/// 每個樣式同質段發射一個 `DrawItem::Text`；段 x 偏移以**該段發射字級**的
+/// `TextMeasurer` 累加前段寬度——全行無字級宣告時量測尺恆等 `size_pt`，
+/// 所有段寬總和與整行寬零漂移（既有契約）；有宣告時各段按自身尺排版
+/// （Word 同款視覺近似：字級不同的 run 本就不共用同一基線寬）。
 fn emit_line_run_items(
     items: &mut Vec<DrawItem>,
     base_x: f32,
@@ -518,19 +733,19 @@ fn emit_line_run_items(
     size_pt: f32,
     line: &quire_layout::Line,
     para: Option<&quire_ooxml::Paragraph>,
-    measurer: &TextMeasurer,
 ) {
     let char_indices: Vec<(usize, char)> = line.text.char_indices().collect();
     let line_len_cp = char_indices.len();
     if line_len_cp == 0 {
-        let (flags, color_argb) = para
-            .and_then(|p| p.runs.first())
-            .map(run_style)
-            .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB));
+        let (flags, color_argb, sz) = para.and_then(|p| p.runs.first()).map(run_style).unwrap_or((
+            0,
+            DEFAULT_TEXT_COLOR_ARGB,
+            None,
+        ));
         items.push(DrawItem::Text {
             x: base_x,
             y,
-            size_pt,
+            size_pt: sz.unwrap_or(size_pt),
             flags,
             color_argb,
             text: String::new(),
@@ -540,20 +755,20 @@ fn emit_line_run_items(
 
     let line_start = line.char_offset;
     let line_end = line_start + line_len_cp;
-    // (行內起始碼點, 行內結束碼點, flags, color_argb)
-    let mut segments: Vec<(usize, usize, u8, u32)> = Vec::new();
-    let mut push_seg = |s: usize, e: usize, flags: u8, color: u32| {
+    // (行內起始碼點, 行內結束碼點, flags, color_argb, 級聯字級)
+    let mut segments: Vec<(usize, usize, u8, u32, Option<f32>)> = Vec::new();
+    let mut push_seg = |s: usize, e: usize, flags: u8, color: u32, size: Option<f32>| {
         if s >= e {
             return;
         }
         if let Some(last) = segments.last_mut() {
             // 相鄰且樣式相同時合併為單一可繪段。
-            if last.1 == s && last.2 == flags && last.3 == color {
+            if last.1 == s && last.2 == flags && last.3 == color && last.4 == size {
                 last.1 = e;
                 return;
             }
         }
-        segments.push((s, e, flags, color));
+        segments.push((s, e, flags, color, size));
     };
 
     let mut covered = 0usize;
@@ -570,16 +785,16 @@ fn emit_line_run_items(
                 let rel_s = inter_s - line_start;
                 let rel_e = inter_e - line_start;
                 if rel_s > covered {
-                    push_seg(covered, rel_s, 0, DEFAULT_TEXT_COLOR_ARGB);
+                    push_seg(covered, rel_s, 0, DEFAULT_TEXT_COLOR_ARGB, None);
                 }
-                let (f, c) = run_style(r);
-                push_seg(rel_s, rel_e, f, c);
+                let (f, c, sz) = run_style(r);
+                push_seg(rel_s, rel_e, f, c, sz);
                 covered = rel_e;
             }
         }
     }
     if covered < line_len_cp {
-        push_seg(covered, line_len_cp, 0, DEFAULT_TEXT_COLOR_ARGB);
+        push_seg(covered, line_len_cp, 0, DEFAULT_TEXT_COLOR_ARGB, None);
     }
 
     let byte_of = |cp: usize| -> usize {
@@ -589,17 +804,23 @@ fn emit_line_run_items(
             .unwrap_or(line.text.len())
     };
     let mut x_off = 0.0f32;
-    for (rel_s, rel_e, flags, color_argb) in segments {
+    for (rel_s, rel_e, flags, color_argb, run_size) in segments {
         let seg_text = &line.text[byte_of(rel_s)..byte_of(rel_e)];
+        let seg_size = run_size.unwrap_or(size_pt);
         items.push(DrawItem::Text {
             x: base_x + x_off,
             y,
-            size_pt,
+            size_pt: seg_size,
             flags,
             color_argb,
             text: seg_text.to_string(),
         });
-        x_off += measurer.text_width(seg_text);
+        // 零漂移契約：無宣告段（seg_size==size_pt）與舊實作同尺；宣告段按自身尺。
+        if (seg_size - size_pt).abs() < 1e-3 {
+            x_off += TextMeasurer::new(size_pt).text_width(seg_text);
+        } else {
+            x_off += TextMeasurer::new(seg_size).text_width(seg_text);
+        }
     }
 }
 
@@ -627,7 +848,7 @@ fn resolve_cell_line_style(
             let r_end = run_cp + r_len;
             run_cp = r_end;
             if r_start.max(start_cp) < r_end.min(end_cp) {
-                let (rf, rc) = run_style(r);
+                let (rf, rc, _sz) = run_style(r);
                 flags |= rf;
                 if color.is_none() && r.color.is_some() {
                     color = Some(rc);
@@ -732,7 +953,9 @@ fn push_frag_items(
                 items.push(DrawItem::Text {
                     x: base_x + t.x_pt,
                     y: y + t.y_pt,
-                    size_pt: size,
+                    // 級聯字級（t_5dfc8ac7）：table_map 已按格內段落有效字級
+                    // 填入 CellText.size_pt；無宣告＝全域尺（舊行為）。
+                    size_pt: t.size_pt.unwrap_or(size),
                     flags,
                     color_argb,
                     text: t.text.clone(),
@@ -817,12 +1040,7 @@ impl Engine {
     }
 
     /// 頁首頁尾 → 顯示列表項。找不到宣告/投影時靜默略過（容錯）。
-    fn push_header_footer_items(
-        &self,
-        items: &mut Vec<DrawItem>,
-        p: &Page,
-        measurer: &TextMeasurer,
-    ) {
+    fn push_header_footer_items(&self, items: &mut Vec<DrawItem>, p: &Page) {
         if self.hf.is_empty() {
             return;
         }
@@ -854,7 +1072,6 @@ impl Engine {
             styles,
             &page_no,
             &total_no,
-            measurer,
         );
         self.push_hf_slot(
             items,
@@ -867,7 +1084,6 @@ impl Engine {
             styles,
             &page_no,
             &total_no,
-            measurer,
         );
     }
 
@@ -899,7 +1115,6 @@ impl Engine {
         styles: Option<&[u8]>,
         page_no: &str,
         total_no: &str,
-        measurer: &TextMeasurer,
     ) {
         let path = pick_slot(slots, use_first, use_even);
         let Some(path) = path else { return };
@@ -909,7 +1124,7 @@ impl Engine {
         // 欄位代換：帶 field 標記**且有實際文字**的 run，以當頁頁碼/總頁數
         // 覆寫（end 標記 run 只帶 fldChar、無文字——空文字注入會虛増頁碼）。
         let paragraphs: Vec<quire_ooxml::Paragraph> = part
-            .paragraphs
+            .styles
             .iter()
             .map(|pp| {
                 let mut pp = pp.clone();
@@ -934,11 +1149,20 @@ impl Engine {
         // 表格槽：與正文同一映射層（styles 框線查表）；單 section 合成表。
         let sec_one = [SectionSpec { id: 0, geo: *geo }];
         // 頁首 part 內無圖片投影需求：空清單（build_slots 新簽名，t_a1397522）。
-        let slots_tbl =
-            table_map::build_slots(&part.tables, &texts, styles, hf_params, &sec_one, &[]);
+        let slots_tbl = table_map::build_slots(
+            &part.tables,
+            &texts,
+            styles,
+            hf_params,
+            &sec_one,
+            &[],
+            &paragraphs,
+        );
         // 流項＝段落行＋表格依序排列（簡化 packer：頁首本就一小節，不跨頁，
         // 表格整張放進自身帶高，超出部分由頁首自然向下延伸——重疊風險見模組注）。
-        let pls = quire_layout::layout_paragraphs(&texts, hf_params);
+        // 斷行走級聯逐段字級（t_5dfc8ac7；無宣告＝hf_params 全域尺＝舊行為）。
+        let grid: Vec<(f32, f32)> = part.metrics.clone();
+        let pls = quire_layout::layout_paragraphs_grid(&texts, hf_params, &[], &grid);
         let mut cursor_bands: u32 = 0;
         let mut ti = 0usize;
         let mut skip_until = 0usize;
@@ -973,7 +1197,6 @@ impl Engine {
                     hf_params.font_size_pt,
                     l,
                     paragraphs.get(l.para_index),
-                    measurer,
                 );
             }
             cursor_bands += pl.lines.len().max(1) as u32;
@@ -1057,8 +1280,13 @@ type HfLayer = (
     HashMap<u32, SectionGeometry>,
 );
 
-/// 構建頁首頁尾發射層：宣告解析→rels 換算→存在性過濾→part 解析（去重）。
-fn build_hf_layer(doc: &OoxmlDoc, sections: &[SectionSpec], _params: &LayoutParams) -> HfLayer {
+/// 構建頁首頁尾發射層：宣告解析→rels 換算→存在性過濾→part 解析（去重）→
+/// 樣式級聯烘焙（t_5dfc8ac7：與正文同一條 `cascade_paragraphs` 路徑）。
+fn build_hf_layer(
+    doc: &OoxmlDoc,
+    sections: &[SectionSpec],
+    style_table: Option<&StyleTable>,
+) -> HfLayer {
     let mut sec_geo: HashMap<u32, SectionGeometry> = HashMap::new();
     for s in sections {
         sec_geo.entry(s.id).or_insert(s.geo);
@@ -1123,10 +1351,24 @@ fn build_hf_layer(doc: &OoxmlDoc, sections: &[SectionSpec], _params: &LayoutPara
         );
     }
     let mut hf_parts: HashMap<String, HfPart> = HashMap::new();
+    // 級聯基準字級：hf part 與正文共用同一文件基準（doc_grid；無級聯＝12）。
+    let def_size = style_table.map_or(FALLBACK_SIZE_PT, |t| t.doc_grid().0.unwrap_or(12.0));
     for path in want {
         if let Some(xml) = doc.parts.get(&path) {
             if let Ok((paragraphs, tables)) = parse_header_footer_part(xml) {
-                hf_parts.insert(path, HfPart { paragraphs, tables });
+                let (styles, metrics) = match style_table {
+                    // 頁首尾不展開點引（widths 空＝不虛構；既有行為不變）。
+                    Some(st) => cascade_paragraphs(st, &paragraphs, def_size, &[]),
+                    None => (paragraphs, Vec::new()),
+                };
+                hf_parts.insert(
+                    path,
+                    HfPart {
+                        styles,
+                        metrics,
+                        tables,
+                    },
+                );
             }
         }
     }

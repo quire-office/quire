@@ -13,6 +13,7 @@ mod diff;
 mod drawing;
 mod rels;
 mod sectpr;
+mod styles;
 mod table;
 mod zip_struct;
 
@@ -23,6 +24,7 @@ pub use sectpr::{
     read_even_and_odd_headers, read_sections_header_footer, read_sections_per_paragraph,
     SectionGeometry, SectionHeaderFooter, SectionSpec, SlotRefs,
 };
+pub use styles::{Align, LineSpacing, ParaStyle, RunStyle, StyleTable};
 pub use table::{
     Block, BodyTable, Border, Borders, CellProps, GridCol, Margins, RowProps, Shading, Table,
     TableCell, TableProps, TableRow, TblWidth,
@@ -68,6 +70,24 @@ pub struct Run {
     /// 快取值只在存檔那一刻正確，渲染當下即時換算）。
     #[serde(default)]
     pub field: Option<FieldKind>,
+    /// 字元樣式引用（`w:rPr/w:rStyle/@w:val`＝styleId；t_5dfc8ac7）。級聯層
+    /// 以它查 `StyleTable::effective_char` 作 run 直接格式之下的基底；缺＝None。
+    #[serde(default)]
+    pub rstyle: Option<String>,
+    /// run 直接格式 `w:rPr` 的三態快照（sz/b/i/u/strike/color；t_5dfc8ac7）。
+    /// 既有 bool 欄位是它的有損投影（無「未宣告」態）；級聯層只讀本欄。
+    /// 未見任何 rPr 宣告＝None（整段繼承樣式）。存檔不經此欄位。
+    #[serde(default)]
+    pub direct: Option<RunStyle>,
+    /// 級聯合成的**有效字級**（pt；t_5dfc8ac7，engine 開啟文件時烘焙寫入）。
+    /// `None`＝級聯未宣告（發射層退回段落／文件級字級）。純派生欄位——
+    /// 存檔路徑完全不經它（parts passthrough），serde default 保舊快照相容。
+    #[serde(default)]
+    pub size_pt: Option<f32>,
+    /// run 內含製表符（`w:tab`；t_5dfc8ac7）。文字欄不動（tab 不是字元），
+    /// engine 投影時以「前綴→點導引填補」展開（TOC 點引leads）。
+    #[serde(default)]
+    pub tab: bool,
 }
 
 /// 本卡支援的頁碼欄位型別（其余欄位名如 SECTIONPAGES／DATE 老實保留快取文字）。
@@ -140,6 +160,30 @@ pub struct Paragraph {
     /// 亦非頁斷點。round-trip 與此欄無關：寫回來源仍是 parts 明文。
     #[serde(default)]
     pub page_breaks: Vec<usize>,
+    /// 段落直接格式 `w:pPr/w:rPr`（run 級三態宣告；t_5dfc8ac7）。段落級級聯
+    /// （`styles::StyleTable::effective_para`）的 inline 輸入；無宣告＝None
+    /// （serde default：舊序列化相容）。存檔不經此欄位（parts passthrough）。
+    #[serde(default)]
+    pub prun: Option<RunStyle>,
+    /// 段落直接行距宣告（`w:pPr/w:spacing/@w:line`＋`@w:lineRule`）。
+    #[serde(default)]
+    pub line: Option<LineSpacing>,
+    /// 段落直接對齊宣告（`w:pPr/w:jc/@w:val`；本卡解析保留，發射不消費）。
+    #[serde(default)]
+    pub jc: Option<Align>,
+    /// 顯式分頁開關（`w:pPr/w:pageBreakBefore`；t_5dfc8ac7）。段級語義＝本段
+    /// 從新頁開始。**w:br type="page" 不寫此欄**——段內 br 一律走 `page_breaks`
+    /// 碼點偏移（粗細兩條路涇渭分明，合併裁決：br 由 br-page 卡細分語義為準，
+    /// 此欄只承載 pageBreakBefore，避免同一 br 雙機制重複推頁）。存檔不經此欄。
+    #[serde(default)]
+    pub page_break: bool,
+    /// 首個右對齊製表位（`w:pPr/w:tabs/w:tab/@w:pos`，pt；t_5dfc8ac7）。
+    /// TOC 點引leads 的對齊目標；無宣告＝None。
+    #[serde(default)]
+    pub tab_right_pt: Option<f32>,
+    /// 該製表位導引字元（`w:tab/@w:leader` 原值：dot/hyphen/underscore/…）。
+    #[serde(default)]
+    pub tab_leader: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,13 +291,55 @@ pub fn parse_header_footer_part(
 /// 解析 OOXML 開關型或底線屬性（`w:b`、`w:i`、`w:strike`、`w:u`）：
 /// 無 `w:val` 時視為開啟（`true`）；有 `w:val` 時若為 `"none"`/`"false"`/`"0"`/`"off"`
 /// （不分大小寫）則為關閉（`false`），其餘（如 `"true"`/`"1"`/`"on"`/`"single"`）為開啟。
-fn toggle_attr_on(e: &quick_xml::events::BytesStart) -> bool {
+pub(crate) fn toggle_attr_on(e: &quick_xml::events::BytesStart) -> bool {
     match attr_val(e, "val") {
         None => true,
         Some(v) => !matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "none" | "false" | "0" | "off"
         ),
+    }
+}
+
+/// 段落級分頁/製表位標籤（Start 與 Empty 共用；t_5dfc8ac7）。呼叫端已保證
+/// 處於 pPr 區（ppr_depth==1 且非 pPr/rPr）或 run 區（依標籤各自判定）。
+/// - `w:br/@w:type="page"`：段級顯式分頁（見 `Paragraph::page_break` 注）。
+/// - `w:pageBreakBefore`：同上（開關語義同 toggle_attr_on）。
+/// - `w:tabs/w:tab`：首個 `val="right"` 的製表位（pos twips→pt）＋leader。
+/// - run 內 `w:tab`：製表符標記（文字欄不動，engine 投影展開）。
+fn apply_break_tab_tag(
+    name: &[u8],
+    e: &quick_xml::events::BytesStart,
+    p: &mut Paragraph,
+    cur_run: &mut Option<Run>,
+    ppr_depth: usize,
+    ppr_rpr_depth: usize,
+) {
+    match name {
+        b"pageBreakBefore" if ppr_depth == 1 && ppr_rpr_depth == 0 => {
+            p.page_break |= toggle_attr_on(e);
+        }
+        b"tab" => {
+            if cur_run.is_some() {
+                // run 內 w:tab：run 級標記（無文字產出；投影層展開）。
+                cur_run.as_mut().expect("剛查 some").tab = true;
+            } else if ppr_depth == 1
+                && ppr_rpr_depth == 0
+                && p.tab_right_pt.is_none()
+                && attr_val(e, "val").as_deref() == Some("right")
+            {
+                // pPr/w:tabs/w:tab：只取首個右對齊位（本引擎 leads 錨點）。
+                // ppr_depth 守門：tblPr/w:tblTabs 的 w:tab（表格尺度）不收。
+                if let Some(twips) = attr_val(e, "pos")
+                    .as_deref()
+                    .and_then(|v| v.trim().parse::<f64>().ok())
+                {
+                    p.tab_right_pt = Some((twips / 20.0) as f32);
+                    p.tab_leader = attr_val(e, "leader");
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -266,7 +352,24 @@ fn apply_style_tag(
     run_has_color: &mut bool,
     run_has_underline: &mut bool,
 ) {
+    // ---- run 直接格式三態快照（t_5dfc8ac7）：語義唯一來源＝styles::apply_run_tag。
+    // bool 欄位照舊寫（既有消費者不動），三態快照並行記錄給級聯層。只認
+    // run 屬性標籤本身——catch-all 送來的無關標籤（noProof/lang…）不得把
+    // direct 材料化成 Some（None＝「未見任何 rPr 宣告」的語義必須守住）。
+    if matches!(name, b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz") {
+        if let Some(r) = cur_run.as_mut() {
+            styles::apply_run_tag(name, e, r.direct.get_or_insert_with(RunStyle::default));
+        }
+    }
     match name {
+        b"rStyle" => {
+            // 字元樣式引用（styleId）：級聯層在 run 直接格式之下作基底查表。
+            if let Some(r) = cur_run.as_mut() {
+                if let Some(v) = attr_val(e, "val") {
+                    r.rstyle = Some(v);
+                }
+            }
+        }
         b"b" => {
             if let Some(r) = cur_run.as_mut() {
                 r.bold = toggle_attr_on(e);
@@ -324,6 +427,10 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
     let mut cur_run: Option<Run> = None;
     let mut run_has_color = false;
     let mut run_has_underline = false;
+    // 段落直接格式（t_5dfc8ac7）：w:pPr 巢狀深度（只認 depth==1；深一層＝
+    // w:pPrChange 修訂殘影不收）＋其內 w:rPr 深度（spacing/jc 只收 rPr 外的）。
+    let mut ppr_depth = 0usize;
+    let mut ppr_rpr_depth = 0usize;
     let mut hyperlink_depth = 0usize;
     let mut in_t = false;
     // >0＝正在吞 mc:Fallback 子樹（巢狀 Fallback 以開閉計數自行平衡）。
@@ -365,6 +472,10 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                         out.push(Paragraph::default());
                         cur_run = None;
                         hyperlink_depth = 0;
+                        // 防呆：上游若有未閉合的 pPr/rPr（畸形檔），新段落起點
+                        // 一律歸零（同 hyperlink_depth 的防禦策略）。
+                        ppr_depth = 0;
+                        ppr_rpr_depth = 0;
                     }
                     b"hyperlink" => {
                         hyperlink_depth += 1;
@@ -372,7 +483,61 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     b"br" => {
                         // 成對標籤寫法 `<w:br w:type="page"></w:br>`（合法但罕見）
                         // 的入口：Start/Empty 互斥，自閉合不會重入此臂、零雙計。
+                        // 合併裁決：段內 w:br type="page" 一律走此細分記錄
+                        // （page_breaks 碼點偏移），t_5dfc8ac7 的粗化臂只留
+                        // pPr/w:pageBreakBefore（見下方 pageBreakBefore 臂）。
                         record_page_break(&mut stack, &e);
+                    }
+                    // 段落直接格式（t_5dfc8ac7）：w:pPr 欄位＋其內 w:rPr 收進
+                    // 段落棧頂（三態級聯輸入）。只認 depth==1 的 pPr——深一層
+                    // 的 pPr 只可能是 w:pPrChange（修訂歷史殘影），Word 正常
+                    // 顯示不套它，我們也不收（收了會用過期值污染級聯）。
+                    b"pPr" if fb == 0 => {
+                        ppr_depth += 1;
+                    }
+                    b"rPr" if ppr_depth == 1 => {
+                        ppr_rpr_depth += 1;
+                    }
+                    b"spacing" if ppr_depth == 1 && ppr_rpr_depth == 0 => {
+                        if let Some((_, p, _)) = stack.last_mut() {
+                            p.line = styles::line_spacing(
+                                attr_val(&e, "line").as_deref(),
+                                attr_val(&e, "lineRule").as_deref(),
+                            );
+                        }
+                    }
+                    b"jc" if ppr_depth == 1 && ppr_rpr_depth == 0 => {
+                        if let Some((_, p, _)) = stack.last_mut() {
+                            p.jc = styles::align_of(attr_val(&e, "val").as_deref());
+                        }
+                    }
+                    // 顯式分頁開關＋製表位（t_5dfc8ac7）：w:br 已由上方細分臂
+                    // 攔截，此臂收 pPr/w:pageBreakBefore 與 w:tabs/w:tab。
+                    b"pageBreakBefore" | b"tab" if ppr_rpr_depth == 0 => {
+                        if let Some((_, p, _)) = stack.last_mut() {
+                            apply_break_tab_tag(
+                                name.as_slice(),
+                                &e,
+                                p,
+                                &mut cur_run,
+                                ppr_depth,
+                                ppr_rpr_depth,
+                            );
+                        }
+                    }
+                    // pPr 直下的 w:rPr 內容：收進段落棧頂的三態快照（段落級
+                    // 級聯輸入）。ppr_rpr_depth>0 時 run 標籤**不得**走下方
+                    // apply_style_tag（會把段落標記屬性誤灌給進行中的 run）。
+                    b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz" | b"rStyle"
+                        if ppr_rpr_depth > 0 =>
+                    {
+                        if let Some((_, p, _)) = stack.last_mut() {
+                            styles::apply_run_tag(
+                                name.as_slice(),
+                                &e,
+                                p.prun.get_or_insert_with(RunStyle::default),
+                            );
+                        }
                     }
                     b"fldSimple" => {
                         // 簡單欄：w:instr 指令立即分類，其子樹 run 全標記。
@@ -457,6 +622,37 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                             p.style = Some(v);
                         }
                     }
+                } else if name == b"rPr" && ppr_depth == 1 {
+                    // 自閉合 pPr/rPr（`<w:rPr/>`）：不進 run 區（其後的
+                    // spacing/jc 仍是段落欄位）。
+                } else if name == b"spacing" && ppr_depth == 1 && ppr_rpr_depth == 0 {
+                    // 自閉合直接行距（Word 產出恆為自閉合）。
+                    if let Some((_, p, _)) = stack.last_mut() {
+                        p.line = styles::line_spacing(
+                            attr_val(&e, "line").as_deref(),
+                            attr_val(&e, "lineRule").as_deref(),
+                        );
+                    }
+                } else if name == b"jc" && ppr_depth == 1 && ppr_rpr_depth == 0 {
+                    if let Some((_, p, _)) = stack.last_mut() {
+                        p.jc = styles::align_of(attr_val(&e, "val").as_deref());
+                    }
+                } else if matches!(name.as_slice(), b"br" | b"tab" | b"pageBreakBefore")
+                    && ppr_rpr_depth == 0
+                {
+                    // 顯式分頁開關/製表符（Word 產出恆為自閉合；t_5dfc8ac7）。
+                    // w:br type="page" 已在上方 record_page_break 細分記錄，
+                    // 此處 br 落 apply_break_tab_tag 只剩 run 級 w:tab 標記。
+                    if let Some((_, p, _)) = stack.last_mut() {
+                        apply_break_tab_tag(
+                            name.as_slice(),
+                            &e,
+                            p,
+                            &mut cur_run,
+                            ppr_depth,
+                            ppr_rpr_depth,
+                        );
+                    }
                 } else {
                     apply_style_tag(
                         name.as_slice(),
@@ -483,6 +679,8 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                 }
                 match name.as_slice() {
                     b"t" => in_t = false,
+                    b"pPr" => ppr_depth = ppr_depth.saturating_sub(1),
+                    b"rPr" => ppr_rpr_depth = ppr_rpr_depth.saturating_sub(1),
                     b"instrText" => {
                         instr_active = false;
                     }
@@ -505,9 +703,24 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                             if hyperlink_depth > 0 {
                                 if !run_has_color && run.color.is_none() {
                                     run.color = Some(HYPERLINK_DEFAULT_COLOR_ARGB);
+                                    // 代擬色同時進三態快照（t_5dfc8ac7）：它是
+                                    // 解析器代擬的**直接格式**，級聯時必須與
+                                    // 真實 rPr/w:color 同層，否則 docDefaults
+                                    // 的顏色會越過它搶先命中（連結變色）。
+                                    let d = run.direct.get_or_insert_with(RunStyle::default);
+                                    d.color_set = true;
+                                    d.color = Some(HYPERLINK_DEFAULT_COLOR_ARGB);
                                 }
                                 if !run_has_underline {
                                     run.underline = true;
+                                    if let Some(d) = run.direct.as_mut() {
+                                        d.underline = Some(true);
+                                    } else {
+                                        run.direct = Some(RunStyle {
+                                            underline: Some(true),
+                                            ..Default::default()
+                                        });
+                                    }
                                 }
                             }
                             p.runs.push(run);

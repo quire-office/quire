@@ -123,6 +123,12 @@ pub struct CellInput {
     /// `w:vAlign`：top／center／bottom。
     pub valign: Option<String>,
     pub margins: Option<CellMarginInput>,
+    /// 級聯有效字級（pt；t_5dfc8ac7）：engine 由格內段落級聯結果餵入（一格
+    /// 多段取最大者——斷行保守不切字）。`None`＝無宣告（全域 params 尺，
+    /// 既有檔案逐位元組不變）。影響格內斷行寬度與發射字級；格內行高仍走
+    /// 表格行網格帶高（格內逐帶量化屬後續卡，本卡老實近似）。
+    #[serde(default)]
+    pub text_size_pt: Option<f32>,
 }
 
 /// 列輸入。
@@ -186,6 +192,10 @@ pub struct CellText {
     pub x_pt: f32,
     pub y_pt: f32,
     pub text: String,
+    /// 級聯有效字級（pt；t_5dfc8ac7）。`None`＝無宣告，繪製端用全域字級。
+    /// serde default 兼容舊快照（goldens 的自訂序列化器不寫本欄，零位移）。
+    #[serde(default)]
+    pub size_pt: Option<f32>,
 }
 
 /// 切片中的一格圖片佔位（t_a1397522）：x/y 為表格本地／切片相對（與
@@ -258,8 +268,13 @@ enum Valign {
 /// 一格內單一 block 的排版結果（垂直流式堆疊的單位；根因 2/3：並列假設→累加）。
 #[derive(Debug, Clone, PartialEq)]
 enum CellBlockGeom {
-    /// 段落：斷行結果＋佔用帶數（空段規則見 pass 1 注）。
-    Text { lines: Vec<Line>, bands: u32 },
+    /// 段落：斷行結果＋佔用帶數（空段規則見 pass 1 注）。`size_pt`＝級聯
+    /// 有效字級（t_5dfc8ac7；None＝全域尺），繪製端據此發射文字。
+    Text {
+        lines: Vec<Line>,
+        bands: u32,
+        size_pt: Option<f32>,
+    },
     /// 巢狀子表：完整排版；帶高＝自身 total_bands（至少 1）。
     Table { layout: TableLayout, bands: u32 },
     /// 圖片佔位（t_a1397522）：extent 尺寸（pt）＋量化帶高 ceil(h/line_h)，
@@ -499,7 +514,11 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
         let mut cur = block0 + cg.pad_top_bands;
         'blocks: for bg in &cg.blocks {
             match bg {
-                CellBlockGeom::Text { lines, bands } => {
+                CellBlockGeom::Text {
+                    lines,
+                    bands,
+                    size_pt,
+                } => {
                     let start = cur;
                     for ln in lines {
                         if cur >= win1 {
@@ -510,6 +529,7 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                                 x_pt: cg.x + cg.text_x_off,
                                 y_pt: (shift + (cur - win0) as f32 * tl.line_h).max(0.0),
                                 text: ln.text.clone(),
+                                size_pt: *size_pt,
                             });
                         }
                         cur += 1;
@@ -635,6 +655,12 @@ pub fn layout_table(
             let inner_w = (w - margins.left - margins.right).max(8.0);
             let pad_top_bands = (margins.top / line_h).ceil() as u32;
             let pad_bottom_bands = (margins.bottom / line_h).ceil() as u32;
+            // 級聯字級（t_5dfc8ac7）：有宣告→本格斷行按自身尺量測（None＝
+            // 全域 m，既有檔案逐位元組不變）。
+            let cell_m = match cell.text_size_pt {
+                Some(s) if s > 0.0 => TextMeasurer::new(s),
+                _ => *m,
+            };
 
             // 格內 block 流式堆疊（根因 1/2/3）：段落與子表按文件序逐塊排版，
             // 帶高**累加**而非 max()。ECMA-376 §17.4.66 要求「以子表結尾的 tc
@@ -644,8 +670,9 @@ pub fn layout_table(
             let mut blocks: Vec<CellBlockGeom> = Vec::new();
             if cell.blocks.is_empty() {
                 blocks.push(CellBlockGeom::Text {
-                    lines: break_lines("", inner_w, m),
+                    lines: break_lines("", inner_w, &cell_m),
                     bands: 1,
+                    size_pt: cell.text_size_pt,
                 });
             } else {
                 let has_table = cell.blocks.iter().any(|b| matches!(b, CellBlock::Table(_)));
@@ -658,11 +685,16 @@ pub fn layout_table(
                                 blocks.push(CellBlockGeom::Text {
                                     lines: Vec::new(),
                                     bands: 0,
+                                    size_pt: cell.text_size_pt,
                                 });
                             } else {
-                                let ls = break_lines(t, inner_w, m);
+                                let ls = break_lines(t, inner_w, &cell_m);
                                 let bands = ls.len().max(1) as u32;
-                                blocks.push(CellBlockGeom::Text { lines: ls, bands });
+                                blocks.push(CellBlockGeom::Text {
+                                    lines: ls,
+                                    bands,
+                                    size_pt: cell.text_size_pt,
+                                });
                             }
                         }
                         CellBlock::Table(n) => {
