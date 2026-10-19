@@ -292,10 +292,8 @@ fn parse_ppr(
                             );
                         }
                     }
-                    b"jc" => {
-                        if align.is_none() {
-                            align = align_of(attr_val(&e, "val").as_deref());
-                        }
+                    b"jc" if align.is_none() => {
+                        align = align_of(attr_val(&e, "val").as_deref());
                     }
                     b"rPr" => in_rpr = true,
                     _ => {}
@@ -318,10 +316,8 @@ fn parse_ppr(
                             );
                         }
                     }
-                    b"jc" => {
-                        if align.is_none() {
-                            align = align_of(attr_val(&e, "val").as_deref());
-                        }
+                    b"jc" if align.is_none() => {
+                        align = align_of(attr_val(&e, "val").as_deref());
                     }
                     _ => {}
                 }
@@ -353,10 +349,8 @@ fn skip_to_rpr(reader: &mut quick_xml::Reader<&[u8]>, container_end: &[u8]) -> O
                     return None;
                 }
             }
-            Ok(Event::Empty(e)) => {
-                if e.local_name().as_ref() == container_end {
-                    return None;
-                }
+            Ok(Event::Empty(e)) if e.local_name().as_ref() == container_end => {
+                return None;
             }
             _ => {}
         }
