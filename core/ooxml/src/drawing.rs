@@ -758,7 +758,7 @@ mod tests {
         assert_eq!(emu_to_pt(Some("4000000000000000000000")), None);
         assert_eq!(emu_to_pt(Some("1e39")), None);
         assert_eq!(emu_to_pt(Some("1e400")), None); // f64 即 inf
-        // 4000 億 EMU ≈ 3.1e7pt：f32 表得住（有限）→ 老實保留（爆量由 bands 上限兜底）。
+                                                    // 4000 億 EMU ≈ 3.1e7pt：f32 表得住（有限）→ 老實保留（爆量由 bands 上限兜底）。
         assert!(emu_to_pt(Some("400000000000")).unwrap().is_finite());
     }
 
@@ -798,7 +798,7 @@ mod tests {
             None
         );
         assert_eq!(vml_style_wh(Some("width:1e39pt;height:12pt")).0, None); // 非法單位
-        // 4e9in＝2.88e11pt：f32 表得住（有限）→ 老實保留，爆量由 bands 上限兜底。
+                                                                            // 4e9in＝2.88e11pt：f32 表得住（有限）→ 老實保留，爆量由 bands 上限兜底。
         assert!(vml_style_wh(Some("width:4000000000in;height:12pt"))
             .0
             .unwrap()
@@ -861,7 +861,11 @@ mod tests {
             "align 對齊不是 posOffset：文字數字不得當成 EMU 鎖點"
         );
         assert_eq!(imgs[0].pos_y_pt, None, "positionV 同口徑");
-        assert_eq!(imgs[0].anchor_lock_pt(), None, "鎖點不可用→呼叫端退化 inline");
+        assert_eq!(
+            imgs[0].anchor_lock_pt(),
+            None,
+            "鎖點不可用→呼叫端退化 inline"
+        );
     }
 
     #[test]

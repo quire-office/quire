@@ -859,9 +859,15 @@ mod tests {
         // IF 條件引用 PAGE：欄位是 IF，不是頁碼——快取顯示文字必須保留。
         assert_eq!(classify_field_instr(r#" IF PAGE > 1 "A" "B" "#), None);
         // HYPERLINK 路徑含 page：不是欄位。
-        assert_eq!(classify_field_instr(r#" HYPERLINK "https://x/page/1" "#), None);
+        assert_eq!(
+            classify_field_instr(r#" HYPERLINK "https://x/page/1" "#),
+            None
+        );
         // 引用域引數裡的 NUMPAGES 同理。
-        assert_eq!(classify_field_instr(r#" IF { NUMPAGES } > 1 "x" "y" "#), None);
+        assert_eq!(
+            classify_field_instr(r#" IF { NUMPAGES } > 1 "x" "y" "#),
+            None
+        );
         // 真頁碼欄位（首 token 命中）不受影響；\* MERGEFORMAT 開關在首 token 之後。
         assert_eq!(classify_field_instr(" PAGE \\* MERGEFORMAT "), Some(Page));
         assert_eq!(classify_field_instr("NUMPAGES \\# 0"), Some(NumPages));
@@ -891,7 +897,10 @@ mod tests {
         assert_eq!(marked.len(), 1, "只有內層 PAGE 的結果 run 是頁碼欄位");
         assert_eq!(marked[0].field, Some(FieldKind::Page));
         assert_eq!(marked[0].text, "7");
-        let jia = runs.iter().find(|r| r.text == "甲").expect("外層結果 run 存在");
+        let jia = runs
+            .iter()
+            .find(|r| r.text == "甲")
+            .expect("外層結果 run 存在");
         assert_eq!(
             jia.field, None,
             "外層 IF 欄位不是頁碼：顯示文字「甲」不得被頁碼覆寫"
