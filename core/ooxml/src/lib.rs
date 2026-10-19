@@ -100,21 +100,20 @@ pub enum FieldKind {
 }
 
 /// 欄位指令字串 → `FieldKind`（只認 `PAGE`／`NUMPAGES` 兩個**完整 token**，
-/// 先比 NUMPAGES——"PAGE" 是 "NUMPAGES" 的子串）。指令可帶開關（如
-/// ` PAGE  \* MERGEFORMAT `），以非英数字元切 token 後逐字比對。
+/// 且只比對**首個指令 token**——ECMA-376 §17.5：指令第一個 token 就是欄位
+/// 名，其餘是參數與開關。全 token 掃描會讓 `{ IF PAGE > 1 ... }` 或
+/// `HYPERLINK ".../page/1"` 誤判成頁碼欄位並覆寫顯示文字（t_c1fb4c69 S2-6）。
+/// 指令可帶開關（如 ` PAGE  \* MERGEFORMAT `），以非英数字元切 token。
 pub fn classify_field_instr(instr: &str) -> Option<FieldKind> {
-    let mut hit: Option<FieldKind> = None;
-    for token in instr
-        .to_ascii_uppercase()
+    let upper = instr.to_ascii_uppercase();
+    let first = upper
         .split(|c: char| !c.is_ascii_alphanumeric())
-    {
-        match token {
-            "NUMPAGES" => return Some(FieldKind::NumPages),
-            "PAGE" => hit = Some(FieldKind::Page),
-            _ => {}
-        }
+        .find(|t| !t.is_empty())?;
+    match first {
+        "PAGE" => Some(FieldKind::Page),
+        "NUMPAGES" => Some(FieldKind::NumPages),
+        _ => None,
     }
-    hit
 }
 
 /// 超連結內 run 無顯式顏色時的預設藍色（Word Hyperlink 樣式標準色 #0563C1）。
@@ -442,11 +441,12 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
     // 簡單欄 `<w:fldSimple w:instr="…">` 巢狀棧（棧頂 None＝非頁碼欄位）。
     let mut fld_simple_stack: Vec<Option<FieldKind>> = Vec::new();
     // 複雜欄 `fldChar begin→instrText→separate→結果 run→end`：每層記
-    // （已辨識型別, 是否已過 separate）。separate 之後的 run 才是欄位結果
-    // （begin..separate 區間只有指令 run，不標記）。
-    let mut complex_stack: Vec<(Option<FieldKind>, bool)> = Vec::new();
+    // （已辨識型別, 是否已過 separate, 本層指令文字緩衝）。separate 之後的
+    // run 才是欄位結果（begin..separate 區間只有指令 run，不標記）。
+    // 指令緩衝**逐層持有**（t_c1fb4c69 S2-6）：全域單緩衝在巢套域會串味——
+    // 內層 begin 清空外層已累積指令、內層指令又混進外層 separate 的分類。
+    let mut complex_stack: Vec<(Option<FieldKind>, bool, String)> = Vec::new();
     let mut instr_active = false;
-    let mut instr_buf = String::new();
 
     loop {
         match reader
@@ -554,7 +554,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                         let kind = match fld_simple_stack.last() {
                             Some(k) => *k,
                             None => match complex_stack.last() {
-                                Some((k, true)) => *k,
+                                Some((k, true, _)) => *k,
                                 _ => None,
                             },
                         };
@@ -599,13 +599,17 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     // separate 翻結果標記、end 出層。未配對（漏 begin）老實無效。
                     match attr_val(&e, "fldCharType").as_deref() {
                         Some("begin") => {
-                            complex_stack.push((None, false));
-                            instr_buf.clear();
+                            // 本層自備指令緩衝（S2-6）：不再清空「全域」緩衝
+                            // ——那會把外層已累積的指令一併抹掉。
+                            complex_stack.push((None, false, String::new()));
                         }
                         Some("separate") => {
                             if let Some(top) = complex_stack.last_mut() {
                                 if top.0.is_none() {
-                                    top.0 = classify_field_instr(&instr_buf);
+                                    // take 出本層緩衝再分類（迴避 top 的重複借用），
+                                    // 分類後緩衝已無用、留在原地丟棄即可。
+                                    let instr = std::mem::take(&mut top.2);
+                                    top.0 = classify_field_instr(&instr);
                                 }
                                 top.1 = true;
                             }
@@ -741,9 +745,13 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     continue;
                 }
                 if instr_active {
-                    // 欄位指令文字（可能跨多個 Text 事件）：累積供分類。
+                    // 欄位指令文字（可能跨多個 Text 事件）：寫進**最內層**進行中
+                    // 的複雜欄緩衝（instrText 必落在其所屬域的 begin..separate
+                    // 區間，棧頂就是所屬層；t_c1fb4c69 S2-6 逐層隔離）。
                     if let Ok(s) = t.unescape() {
-                        instr_buf.push_str(&s);
+                        if let Some(top) = complex_stack.last_mut() {
+                            top.2.push_str(&s);
+                        }
                     }
                     continue;
                 }

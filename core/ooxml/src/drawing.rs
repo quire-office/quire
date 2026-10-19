@@ -48,6 +48,11 @@ use serde::{Deserialize, Serialize};
 /// EMU → pt（ECMA-376 §20.1：1 pt = 12700 EMU）。
 pub const EMU_PER_PT: f64 = 12_700.0;
 
+/// OOXML 整數值域上限（xsd:long）：屬性值寫到連 64 位整數都放不下
+/// （如 1e39／4e21）必為垃圾——不採納（t_c1fb4c69 S1-4）。真正的病態危害
+/// 在下游 `(h/line_h).ceil() as u32` 爆量→分頁迴圈 OOM，源头擋掉最乾淨。
+const MAX_OOXML_LONG: f64 = i64::MAX as f64;
+
 /// 圖片佔位投影：扁平段落序列第 `para_index` 段內的一個圖片/圖形框。
 ///
 /// 只讀投影（段落以索引引用，與 `Block::Paragraph{index}` 同款）；佔位
@@ -108,24 +113,34 @@ impl InlineImage {
 pub fn origin_of(relative_from: Option<&str>) -> &'static str {
     match relative_from {
         Some("page") | Some("pageMargin") => "page",
-        Some("column") | Some("margin") => "margin",
+        // margin 枚舉家族（ECMA-376 ST_RelFromH/V 全六值，t_c1fb4c69 S2-8）：
+        // 全部以版心為原點系，漏歸類會錯降為 paragraph 錨點。
+        Some(
+            "column" | "margin" | "topMargin" | "bottomMargin" | "leftMargin" | "rightMargin"
+            | "insideMargin" | "outsideMargin",
+        ) => "margin",
         _ => "paragraph",
     }
 }
 
 /// EMU 字串 → pt（非法／缺／<=0＝None，容錯鐵律：不猜、不虚構）。
+/// 超出 OOXML 整數值域（[`MAX_OOXML_LONG`]）或換算後 `as f32` 溢出成 inf
+/// （1e39）＝同樣 None——inf／爆量尺寸流入下游 bands 量化會把分頁打成
+/// 無限迴圈 OOM（t_c1fb4c69 S1-4）。
 pub fn emu_to_pt(raw: Option<&str>) -> Option<f32> {
     let v = raw?.trim().parse::<f64>().ok()?;
-    if !v.is_finite() || v <= 0.0 {
+    if !v.is_finite() || v <= 0.0 || v > MAX_OOXML_LONG {
         return None;
     }
-    Some((v / EMU_PER_PT) as f32)
+    let pt = (v / EMU_PER_PT) as f32;
+    pt.is_finite().then_some(pt)
 }
 
 /// VML style 長度值 → pt。支援 pt、cm、in、mm、px；`%` 與非法值 → None
-/// （頁寬百分比在本卡無所適從，老實不採納）。
+/// （頁寬百分比在本卡無所適從，老實不採納）。換算後 `as f32` 溢出成 inf
+/// 同樣 None（同 [`emu_to_pt`] 的爆量防護，t_c1fb4c69 S1-4）。
 fn vml_len_to_pt(num: f64, unit: &str) -> Option<f32> {
-    if !num.is_finite() || num <= 0.0 {
+    if !num.is_finite() || num <= 0.0 || num > MAX_OOXML_LONG {
         return None;
     }
     let pt = match unit {
@@ -136,7 +151,8 @@ fn vml_len_to_pt(num: f64, unit: &str) -> Option<f32> {
         "px" => num * 72.0 / 96.0,
         _ => return None,
     };
-    (pt > 0.0).then_some(pt as f32)
+    let pt = pt as f32;
+    (pt > 0.0).then_some(pt).filter(|p| p.is_finite())
 }
 
 /// `style="width:242.95pt;height:180.85pt;..."` → (寬pt, 高pt)。
@@ -197,9 +213,15 @@ struct Pending {
     pos_x_rel: Option<String>,
     pos_y_pt: Option<f32>,
     pos_y_rel: Option<String>,
-    /// posOffset 文本捕獲旗標（positionH 開＝Some(false)、positionV＝Some(true)、
-    /// 其 End＝None）；Text 事件據此寫入。
+    /// posOffset 文本捕獲旗標（Some(true)＝寫 pos_y、Some(false)＝寫 pos_x、
+    /// None＝不捕獲）。**只在 `wp:posOffset` 元素啟閉期間開啟**（t_c1fb4c69
+    /// S1-5）：舊實作在 positionH/V 開標就設 capture，`<wp:align>` 對齊或 pct
+    /// 偏移（無 posOffset）時 capture 永不重置，其後 txbxContent 的數字文字
+    /// 會被誤當 EMU 填入鎖點座標。
     capture: Option<bool>,
+    /// 進行中的 positionH/V 軸向（true=V）：其內 posOffset 開標時據此決定
+    /// 捕獲寫入哪一軸（positionH/V 閉合清空）。
+    pos_axis: Option<bool>,
     overlap: Option<bool>,
     rid: Option<String>,
     /// 產出目標是儲存格（建立時 tc 深度 > 0）而非正文段落。
@@ -223,6 +245,7 @@ impl Pending {
             pos_y_pt: None,
             pos_y_rel: None,
             capture: None,
+            pos_axis: None,
             overlap: None,
             rid: None,
             floating: false,
@@ -418,7 +441,13 @@ impl DrawingParser {
                     } else {
                         p.pos_x_rel = rel;
                     }
-                    p.capture = Some(vertical);
+                    // 軸向記帳但**不開啟捕獲**（t_c1fb4c69 S1-5）：capture 只
+                    // 屬 posOffset 元素本體；align/pct 形態整棵都不該吞文字。
+                    p.pos_axis = Some(vertical);
+                }
+                b"posOffset" => {
+                    // 真正的 EMU 偏移文本容器：開標才啟捕獲（S1-5 修法）。
+                    p.capture = p.pos_axis;
                 }
                 b"blip" => {
                     if p.rid.is_none() {
@@ -607,6 +636,28 @@ impl DrawingParser {
                     self.finalize_vml();
                 }
                 return;
+            }
+        }
+
+        // ---- DrawingML：欄位捕獲狀態收尾（t_c1fb4c69 S1-5）：posOffset 閉合
+        // 必清 capture（舊實作永不重置＝狀態洩漏的主因）；positionH/V 閉合
+        // 清軸向。graphic 完結路徑（inline/anchor End）在下方另行 take。----
+        if self.graphic.is_some() {
+            match name {
+                b"posOffset" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.capture = None;
+                    }
+                    return;
+                }
+                b"positionH" | b"positionV" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.pos_axis = None;
+                        p.capture = None;
+                    }
+                    return;
+                }
+                _ => {}
             }
         }
 
