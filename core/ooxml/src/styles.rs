@@ -173,28 +173,38 @@ pub struct StyleTable {
     visiting: Vec<String>,
 }
 
+/// OOXML 整數值域上限（病態檔守衛）。判據與 `drawing.rs` 的 `MAX_OOXML_LONG`
+/// 同源（該檔屬 t_c1fb4c69 熱區，本卡不動它，此處以同值常數鏡像）。
+/// 超出＝畸形宣告，老實拒收（不猜、不把天文數字帶進斷行/分頁算術）。
+const MAX_OOXML_LONG: f64 = i64::MAX as f64;
+
 /// `w:sz/@w:val`（半磅）→ pt。非法/缺＝None（容錯鐵律：不猜）。
+/// 畸形超大值（`parse::<f64>` 可吐出 inf／天文數字）一律拒收：舊實作只濾
+/// `>0.0`，`"1e400"`→inf、`"4000000000000"`→2e12pt 都能進 size_pt，經
+/// `resolve_line_h_pt`（只 clamp 下界）放大成段行高天文數，再在分頁佔帶
+/// 算術餵飽 u32（t_5b391cfd S2）。
 fn half_point_pt(raw: Option<&str>) -> Option<f32> {
-    raw.and_then(|s| s.trim().parse::<f32>().ok())
-        .filter(|v| *v > 0.0)
-        .map(|v| v / 2.0)
+    raw.and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v > 0.0 && *v <= MAX_OOXML_LONG)
+        .map(|v| (v / 2.0) as f32)
 }
 
 /// `w:spacing/@w:line`＋`@w:lineRule` → [`LineSpacing`]。line 非法＝None。
+/// 超大/inf 值同 [`half_point_pt`] 一律拒收（t_5b391cfd S2）。
 /// `pub(crate)`：document.xml 的直接格式 `w:pPr/w:spacing` 共用同一判據。
 pub(crate) fn line_spacing(line: Option<&str>, rule: Option<&str>) -> Option<LineSpacing> {
     let v = line
-        .and_then(|s| s.trim().parse::<f32>().ok())
-        .filter(|v| *v > 0.0)?;
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v > 0.0 && *v <= MAX_OOXML_LONG)?;
     let rule = rule.unwrap_or("auto");
     Some(if rule.eq_ignore_ascii_case("exact") {
         // twips → pt。
-        LineSpacing::Exact(v / 20.0)
+        LineSpacing::Exact((v / 20.0) as f32)
     } else if rule.eq_ignore_ascii_case("atLeast") {
-        LineSpacing::AtLeast(v / 20.0)
+        LineSpacing::AtLeast((v / 20.0) as f32)
     } else {
         // auto：240 = 單倍。
-        LineSpacing::Auto(v / 240.0)
+        LineSpacing::Auto((v / 240.0) as f32)
     })
 }
 

@@ -625,6 +625,26 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                 } else if name == b"rPr" && ppr_depth == 1 {
                     // 自閉合 pPr/rPr（`<w:rPr/>`）：不進 run 區（其後的
                     // spacing/jc 仍是段落欄位）。
+                } else if matches!(
+                    name.as_slice(),
+                    b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz" | b"rStyle"
+                ) && ppr_rpr_depth > 0
+                {
+                    // pPr/rPr 內自閉合 run 格式標籤（Word 產出恆為 `<w:b/>` 形）：
+                    // Start 臂的鏡像（t_5b391cfd S1）。缺本臂時它們落進下方
+                    // catch-all apply_style_tag，彼時 cur_run==None（pPr 在 run 群
+                    // 之前）→ 靜默丟棄，段落級級聯直接退回樣式鏈——同義兩制：
+                    // 成對標籤收、自閉合丟，且 styles.rs 樣式層 parse_ppr 對
+                    // 自閉合是收的（in_rpr 態 apply_run_tag），內部不一致。
+                    // rStyle 落 apply_run_tag 為明確的無操作（RunStyle 不承 rstyle
+                    // 引用），與 Start 臂同形，零雙標。
+                    if let Some((_, p, _)) = stack.last_mut() {
+                        styles::apply_run_tag(
+                            name.as_slice(),
+                            &e,
+                            p.prun.get_or_insert_with(RunStyle::default),
+                        );
+                    }
                 } else if name == b"spacing" && ppr_depth == 1 && ppr_rpr_depth == 0 {
                     // 自閉合直接行距（Word 產出恆為自閉合）。
                     if let Some((_, p, _)) = stack.last_mut() {
@@ -1253,6 +1273,85 @@ mod tests {
 
         assert_eq!(runs[3].color, Some(0xFF00_FF00));
         assert!(!runs[3].underline);
+    }
+
+    // ---------------- pPr/rPr 自閉合 run 標籤（t_5b391cfd S1） ----------------
+
+    /// 同義兩制回歸：`w:pPr/w:rPr` 內的 run 格式標籤，成對寫法 `<w:b></w:b>`
+    /// 一直收（Start 臂），自閉合寫法 `<w:b/>`（Word 產出恆為此形）曾被靜默
+    /// 丟棄——落進 catch-all apply_style_tag 時 cur_run==None。修後 Empty 臂
+    /// 鏡像 Start 臂，七標籤一律收進段落 p.prun（級聯 inline 輸入）。
+    #[test]
+    fn ppr_rpr_selfclosed_run_tags_collected_into_prun() {
+        let xml = r#"<w:document xmlns:w="x">
+            <w:body>
+            <w:p>
+              <w:pPr><w:rPr>
+                <w:b/><w:i/><w:u/><w:strike/>
+                <w:color w:val="FF0000"/><w:sz w:val="28"/><w:rStyle w:val="Tag"/>
+              </w:rPr></w:pPr>
+              <w:r><w:t>段落級宣告</w:t></w:r>
+            </w:p>
+            </w:body></w:document>"#
+            .as_bytes();
+        let paras = parse_document_xml(xml).expect("解析");
+        let prun = paras[0]
+            .prun
+            .expect("自閉合標籤必須收進 p.prun（與成對寫法同義）");
+        assert_eq!(prun.bold, Some(true));
+        assert_eq!(prun.italic, Some(true));
+        assert_eq!(prun.underline, Some(true));
+        assert_eq!(prun.strike, Some(true));
+        assert!(prun.color_set, "color 宣告必須置 color_set");
+        assert_eq!(prun.color, Some(0xFFFF_0000));
+        assert_eq!(prun.size_pt, Some(14.0), "28 半磅 = 14pt");
+        // 對照組：成對寫法（一直收的路徑）結果逐欄位一致——同義兩制消除。
+        let paired = parse_document_xml(
+            r#"<w:document xmlns:w="x"><w:body><w:p>
+              <w:pPr><w:rPr>
+                <w:b></w:b><w:i></w:i><w:u></w:u><w:strike></w:strike>
+                <w:color w:val="FF0000"></w:color><w:sz w:val="28"></w:sz>
+              </w:rPr></w:pPr>
+              <w:r><w:t>對照</w:t></w:r></w:p></w:body></w:document>"#
+                .as_bytes(),
+        )
+        .expect("解析對照")
+        .remove(0)
+        .prun
+        .expect("成對寫法本來就收");
+        assert_eq!(prun.bold, paired.bold);
+        assert_eq!(prun.italic, paired.italic);
+        assert_eq!(prun.underline, paired.underline);
+        assert_eq!(prun.strike, paired.strike);
+        assert_eq!(prun.color, paired.color);
+        assert_eq!(prun.size_pt, paired.size_pt);
+    }
+
+    /// 邊界：pPr **外**（run 前）的自閉合標籤不得誤入 prun；`<w:rPr/>` 自閉合
+    /// 本體後面的 spacing/jc 仍是段落欄位（既有臂不動）；rPr 外的 b（畸形位
+    /// 置）維持原 catch-all 語義（prun 保持 None，不無中生有）。
+    #[test]
+    fn ppr_rpr_empty_arms_do_not_leak_across_boundaries() {
+        // rPr 自閉合本體＋其後 spacing：spacing 仍收進 p.line。
+        let paras = parse_document_xml(
+            r#"<w:document xmlns:w="x"><w:body><w:p>
+              <w:pPr><w:rPr/><w:spacing w:line="480" w:lineRule="auto"/></w:pPr>
+              <w:r><w:t>a</w:t></w:r></w:p></w:body></w:document>"#
+                .as_bytes(),
+        )
+        .expect("解析");
+        assert!(paras[0].prun.is_none(), "<w:rPr/> 本體不材料化 prun");
+        assert_eq!(paras[0].line, Some(LineSpacing::Auto(2.0)));
+        // rPr 外的自閉合 b（pPr 直下，畸形位置）：不進 prun、不進任何 run。
+        let paras = parse_document_xml(
+            r#"<w:document xmlns:w="x"><w:body><w:p>
+              <w:pPr><w:b/></w:pPr>
+              <w:r><w:t>a</w:t></w:r></w:p></w:body></w:document>"#
+                .as_bytes(),
+        )
+        .expect("解析");
+        assert!(paras[0].prun.is_none(), "rPr 外的 b 不得材料化 prun");
+        assert!(!paras[0].runs[0].bold, "也不得灌給後續 run");
     }
 
     // ---------------- 強制分頁 br-page（t_01fa57af） ----------------
