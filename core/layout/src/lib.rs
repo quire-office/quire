@@ -830,7 +830,9 @@ fn pack_run(
                     || hard_after
                     || (item_bands > 0
                         && st.cur_used > absorb_exemption
-                        && st.cur_used + item_bands > cap as u32)
+                        // saturating：cur_used 已飽和（病態段行高，t_5b391cfd
+                        // S2）時加法不得 debug panic／release 繞回。
+                        && st.cur_used.saturating_add(item_bands) > cap as u32)
             }
             None => false,
         };
@@ -855,7 +857,12 @@ fn pack_run(
                 st.cur.push(pls[*para].lines[li].clone());
                 st.cur_bands.push(st.cur_used);
                 // 段落行按段行高量化佔帶（全域尺＝1，舊行為逐位元組不變）。
-                st.cur_used += para_band(*para);
+                // saturating（t_5b391cfd S2）：病態段行高（畸形 w:sz／line 的
+                // 殘影——入口守衛已擋，此處為第二道柵欄）量化出的巨型帶數
+                // 不得 debug panic／release 繞回把分頁狀態機打亂。飽和後
+                // `cur_used >= cap` 恆真＝之後每項強換頁，游標仍逐項前進、
+                // 必然收斂，不觸斷點邏輯。
+                st.cur_used = st.cur_used.saturating_add(para_band(*para));
                 st.cursor = if li + 1 < pls[*para].lines.len() {
                     (fi, li + 1, 0)
                 } else {
@@ -884,7 +891,7 @@ fn pack_run(
                     band: st.cur_used,
                     frag,
                 });
-                st.cur_used += used;
+                st.cur_used = st.cur_used.saturating_add(used); // 同 S2 守衛口徑
                 st.cursor = if next.0 >= tl.row_count() {
                     (fi + 1, 0, 0)
                 } else {
@@ -913,11 +920,11 @@ fn pack_run(
                 });
                 // 佔用：absorb＝max(圖帶, 空行帶)－空行帶（空行帶已由 Text 空行
                 // 計入）；非 absorb＝圖帶原額（段落另有實文，不共用帶）。
-                st.cur_used += if absorb {
+                st.cur_used = st.cur_used.saturating_add(if absorb {
                     b.saturating_sub(para_band(im.para))
                 } else {
                     b
-                };
+                }); // 同 S2 守衛口徑
                 st.cursor = (fi + 1, 0, 0);
             }
         }
@@ -3350,6 +3357,129 @@ mod tests {
         assert_eq!(with.pages()[1].tables.len(), 1);
         assert!(with.pages()[0].tables.is_empty(), "表格不得回填斷點前的頁");
         assert_layout_invariants(&with, "br＋表格");
+    }
+
+    // ---------------- ParaGrid：段行帶量化＋段首換頁（t_5b391cfd 測試缺口 ii） ----------------
+
+    /// ParaGrid.bands_of 語義：缺位/0＝1（行至少一格）；break_before_of／
+    /// size_of 缺位退回 false／全域 fallback。
+    #[test]
+    fn para_grid_accessors_fall_back_per_contract() {
+        let g = ParaGrid {
+            size_pt: vec![14.0],
+            bands: vec![3, 0],
+            break_before: vec![false, true],
+        };
+        assert_eq!(g.bands_of(0), 3);
+        assert_eq!(g.bands_of(1), 1, "0 帶視為 1（行至少佔一格）");
+        assert_eq!(g.bands_of(9), 1, "缺位＝1（全域尺行為）");
+        assert!(!g.break_before_of(0));
+        assert!(g.break_before_of(1));
+        assert!(!g.break_before_of(9), "缺位＝false（零宣告＝舊行為）");
+        assert_eq!(g.size_of(0, 12.0), 14.0);
+        assert_eq!(g.size_of(9, 12.0), 12.0, "缺位＝全域 fallback");
+    }
+
+    /// break_before_of 段首換頁：段 2 宣告換頁→該段**首行**必從新頁起頭
+    /// （帶索引 0＝頁首）；首項宣告不換頁（游標前已 flush，段本就從頁首起，
+    /// 不產空白頁）。bands 量化：段 1 每行佔 2 帶→緊鄰行帶距 2。
+    #[test]
+    fn para_grid_break_before_and_band_quantization() {
+        let p = LayoutParams {
+            page_w_pt: 400.0,
+            page_h_pt: 300.0,
+            margins_pt: [40.0; 4],
+            font_size_pt: 12.0,
+            line_spacing: 1.4,
+        };
+        let texts: Vec<String> = (0..4).map(|i| format!("第{i}段內容")).collect();
+
+        // 段 2（索引 2）宣告 break_before：容量足以容全部 4 段（每段 1 行），
+        // 換頁純由旗標驅動。
+        let grid = ParaGrid {
+            size_pt: vec![],
+            bands: vec![1, 1, 1, 1],
+            break_before: vec![false, false, true, false],
+        };
+        let eng = LayoutEngine::with_breaks_grid(
+            &texts,
+            p,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            grid,
+        );
+        assert_layout_invariants(&eng, "break_before");
+        assert_eq!(eng.page_count(), 2, "段 2 起強推到新頁");
+        assert_eq!(eng.pages()[1].lines[0].para_index, 2, "新頁以段 2 起頭");
+        assert_eq!(
+            eng.pages()[1].line_bands[0],
+            0,
+            "換頁後首行帶索引必回 0（頁首）"
+        );
+
+        // 首項（索引 0）宣告：不換頁、不產空白頁（游標語義，見 pack_run 注）。
+        let first_flag = ParaGrid {
+            break_before: vec![true],
+            ..ParaGrid::default()
+        };
+        let eng0 = LayoutEngine::with_breaks_grid(
+            &texts,
+            p,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            first_flag,
+        );
+        assert_eq!(eng0.page_count(), 1, "首項宣告不換頁（段本就從頁首起）");
+
+        // bands 量化：段 1 每行佔 2 帶（cap 內），緊鄰行帶距＝2。
+        let band_grid = ParaGrid {
+            size_pt: vec![],
+            bands: vec![1, 2, 1, 1],
+            break_before: vec![],
+        };
+        let engb = LayoutEngine::with_breaks_grid(
+            &texts,
+            p,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            band_grid,
+        );
+        assert_layout_invariants(&engb, "bands 量化");
+        let bands: Vec<u32> = engb.pages()[0].line_bands.clone();
+        assert_eq!(bands.len(), 4, "四段各 1 行同頁");
+        assert_eq!(
+            bands[2].saturating_sub(bands[1]),
+            2,
+            "段 1 行佔 2 帶：其後行帶距應 2，實得 {bands:?}"
+        );
+        // 飽和守衛（S2 柵欄面）：超大 bands 不得 panic／死迴圈——游標逐項
+        // 前進、每段被 cap 強推各自成頁，有限頁收尾。
+        let huge = ParaGrid {
+            size_pt: vec![],
+            bands: vec![u32::MAX; 4],
+            break_before: vec![],
+        };
+        let eng_h = LayoutEngine::with_breaks_grid(
+            &texts,
+            p,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            huge,
+        );
+        assert!(eng_h.page_count() >= 4, "巨型帶數每段自成一頁以上");
+        assert!(
+            eng_h.page_count() <= texts.len() + 2,
+            "飽和態不得爆炸性增頁：{}",
+            eng_h.page_count()
+        );
     }
 
     fn text_only(t: &str) -> Vec<String> {
