@@ -297,8 +297,8 @@ fn apply_break_tab_tag(
     e: &quick_xml::events::BytesStart,
     p: &mut Paragraph,
     cur_run: &mut Option<Run>,
-    ppr_depth: u32,
-    ppr_rpr_depth: u32,
+    ppr_depth: usize,
+    ppr_rpr_depth: usize,
 ) {
     match name {
         b"br" => {
