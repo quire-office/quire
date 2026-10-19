@@ -190,7 +190,16 @@ impl Engine {
             // 帶尺時恆 1＝舊行為）。
             grid_bands_v = metrics
                 .iter()
-                .map(|m| ((m.1 / grid_line_h).ceil() as u32).max(1))
+                // 帶量化鉗上限（t_c1fb4c69 S1-4）：垃圾宣告行高不得量化出
+                // 天量帶數（正常段行高 ≤ 數帶，永不觸頂）。
+                .map(|m| {
+                    let b = (m.1 / grid_line_h).ceil();
+                    if !b.is_finite() {
+                        quire_layout::MAX_PAGE_BANDS
+                    } else {
+                        ((b.max(1.0)) as u32).min(quire_layout::MAX_PAGE_BANDS)
+                    }
+                })
                 .collect();
             paras_eff = Some(eff_all);
         }

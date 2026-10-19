@@ -374,7 +374,14 @@ pub fn build_images(
                     )),
                 });
             let bands = if anchor.is_none() {
-                (im.h_pt / line_h).ceil().max(1.0) as u32
+                // 帶量化鉗上限（t_c1fb4c69 S1-4）：病態 extent（源頭值域
+                // 拒絕後仍可能漏進投影層）不得量化出天量帶數拖垮分頁。
+                let b = (im.h_pt / line_h).ceil();
+                if !b.is_finite() {
+                    quire_layout::MAX_PAGE_BANDS
+                } else {
+                    ((b.max(1.0)) as u32).min(quire_layout::MAX_PAGE_BANDS)
+                }
             } else {
                 0
             };
@@ -452,7 +459,40 @@ pub fn build_slots(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quire_ooxml::parse;
+    use quire_ooxml::{parse, InlineImage};
+
+    /// 最小 InlineImage（只填測試有意義的欄位）。
+    fn img(para: usize, h_pt: f32) -> InlineImage {
+        InlineImage {
+            para_index: para,
+            w_pt: 100.0,
+            h_pt,
+            floating: false,
+            in_cell: false,
+            pos_x_pt: None,
+            pos_x_rel: None,
+            pos_y_pt: None,
+            pos_y_rel: None,
+            overlap: None,
+            embed_rid: None,
+        }
+    }
+
+    /// S1-4（t_c1fb4c69）engine 側同閘：正文流圖帶高 `(h/line_h).ceil() as u32`
+    /// 遇病態 extent（f32::MAX→天量帶數／inf）必鉗到 quire_layout 的帶量化
+    /// 上限——源頭 ooxml 值域拒絕後，這是投影層的第二道閘。
+    #[test]
+    fn build_images_clamps_giant_extent_bands() {
+        let out = build_images(&[img(0, f32::MAX), img(1, f32::INFINITY)], 16.8);
+        assert_eq!(out.len(), 2);
+        for b in &out {
+            assert!(
+                b.bands <= quire_layout::MAX_PAGE_BANDS && b.bands >= 1,
+                "巨 extent 帶數必鉗上限：{}",
+                b.bands
+            );
+        }
+    }
 
     fn corpus_bytes(rel: &str) -> Vec<u8> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus");

@@ -122,6 +122,13 @@ impl LayoutParams {
     }
 }
 
+/// 帶量化上限（t_c1fb4c69 S1-4）：`(h/line_h).ceil() as u32` 遇病態高度
+/// （f32::MAX／inf／垃圾 trHeight）會衝進 u32::MAX——列帶累加溢出 panic、
+/// 切片與分頁迴圈被天量帶數拖垮。量化值一律鉗到此上限（4096 帶 ≈ 68k pt
+/// ＝正常檔案永遠到不了的規模，鉗了不影響任何真實版面）。源頭守衛在
+/// ooxml 轉換層（值域拒絕），此處是 layout/engine 側的第二道閘。
+pub const MAX_PAGE_BANDS: u32 = 4096;
+
 impl Default for LayoutParams {
     /// 無 sectPr 資訊時的後備：A4、1 吋邊界、12pt 字級、1.4 行距。
     /// （真實檔案的頁面幾何一律由 sectPr 解析覆寫，見 `from_section`。）
@@ -268,6 +275,10 @@ pub fn layout_paragraphs_with_breaks(
 /// 「斷行之後的行號 k」（斷點＝`lines[..k]` 收尾、`lines[k..]` 續排）：
 /// `o=0`→k=0（段前斷）、`o≥段長`→k=行數（段後斷）、段中取 `char_offset ≥ o`
 /// 的首行下標（硬收行使之一對齊；未對齊時向上取整，斷點前文字留在原行）。
+/// **零文字段（獨立 br-page 段，corpus 高頻）**：偏移 0 屬空行之後 →
+/// k=行數（段後斷），與 LO 實測同形（LO 對照 s1/s2/s3：空行留原頁、其後
+/// 換頁；文件首 br 不再整處消失，t_c1fb4c69 S1-2）。同位重複 br 仍 `dedup`
+/// 合併——LO 實測同 run 連發雙 br＝一處斷點不疊空白頁（s4/s5 裁決鎖）。
 pub(crate) fn break_para_lines(
     text: &str,
     content_w: f32,
@@ -288,10 +299,11 @@ pub(crate) fn break_para_lines(
     let mut para_breaks: Vec<usize> = brs
         .iter()
         .map(|&o| {
-            if o == 0 {
-                0
-            } else if o >= total {
+            if total == 0 || o >= total {
+                // 零文字段：唯一的空行就是 br 之前的全部內容 → 斷點在段後。
                 lines.len()
+            } else if o == 0 {
+                0
             } else {
                 lines.partition_point(|l| l.char_offset < o)
             }
@@ -521,6 +533,10 @@ struct PackState {
     /// 當前頁已佔行網格帶數（文字行＋表格帶）。
     cur_used: u32,
     cur_spec: Option<SectionSpec>,
+    /// 本頁**頁首項**的 section（t_c1fb4c69 S1-1）：continuous 同頁混節時
+    /// 末項會覆寫 cur_spec——頁的 section 必須按頁首項蓋章（titlePg／頁首
+    /// 選擇以此為準）。fresh_page flush 後重置，下一頁首項重蓋。
+    page_spec: Option<SectionSpec>,
     page_start: FlowPos,
 }
 
@@ -534,6 +550,7 @@ impl PackState {
             cur_images: Vec::new(),
             cur_used: 0,
             cur_spec: None,
+            page_spec: None,
             page_start: (0, 0, 0),
         }
     }
@@ -650,14 +667,28 @@ fn shift_breaks(old: &str, new: &str, brs: &[usize]) -> Vec<usize> {
 /// 前一個流項是否以「段尾 br-page」收尾（k＝行數：最後一行已放置，硬斷點
 /// 落在該段之後 → 下一個流項必須開新頁）。游標位於流項起頭 (fi, 0, 0) 時
 /// 查此項；斷點行號 k 的語義＝「在 lines[k-1] 之後、lines[k] 之前」。
-fn prev_item_breaks_after(flow: &[FlowItem], pls: &[&ParagraphLayout], fi_prev: usize) -> bool {
-    match flow.get(fi_prev) {
-        Some(FlowItem::Text { para }) => {
-            let pl = pls[*para];
-            pl.para_breaks.last().copied() == Some(pl.lines.len())
+/// 行內圖項回溯到所屬段落再判（t_c1fb4c69 S1-3）：段尾 br 的斷點在**圖之後**
+/// （圖是段落的行內內容，斷點屬圖後）——下一流項仍是同段圖時延後命中，
+/// 圖項前不推頁（否則圖與段落被拆到兩頁）。
+fn prev_item_breaks_after(
+    flow: &[FlowItem],
+    pls: &[&ParagraphLayout],
+    images: &[ImageBand],
+    fi_prev: usize,
+) -> bool {
+    let para = match &flow[fi_prev] {
+        FlowItem::Text { para } => *para,
+        FlowItem::Image { img } => images[*img].para,
+        _ => return false,
+    };
+    // fi_prev 必須是該段的最後一個流項：下一項仍是同段圖 → 斷點延到圖後。
+    if let Some(FlowItem::Image { img }) = flow.get(fi_prev + 1) {
+        if images[*img].para == para {
+            return false;
         }
-        _ => false,
     }
+    pls.get(para)
+        .is_some_and(|pl| pl.para_breaks.last().copied() == Some(pl.lines.len()))
 }
 
 /// 流排放主幹（`paginate_per_section` 與增量重排共用同一台狀態機——分頁
@@ -702,7 +733,10 @@ fn pack_run(
         if st.cur.is_empty() && st.cur_tables.is_empty() && st.cur_images.is_empty() {
             return;
         }
-        let s = st.cur_spec.unwrap();
+        // 頁幾何/身分別取**頁首項**的 section（t_c1fb4c69 S1-1）：continuous
+        // 同頁混節時 cur_spec 已被末項覆寫，直接拿它蓋章會讓頁首/頁尾選擇
+        // （titlePg 依 section_id）錯判成末節。
+        let s = st.page_spec.unwrap_or_else(|| st.cur_spec.unwrap());
         out.push(Page {
             index: out.len(),
             lines: std::mem::take(&mut st.cur),
@@ -719,6 +753,7 @@ fn pack_run(
         out_starts.push(st.page_start);
         st.page_start = st.cursor;
         st.cur_used = 0;
+        st.page_spec = None;
     };
 
     while st.cursor.0 < flow.len() {
@@ -810,30 +845,33 @@ fn pack_run(
             _ => false,
         };
         let hard_after =
-            li == 0 && band == 0 && fi > 0 && prev_item_breaks_after(flow, pls, fi - 1);
+            li == 0 && band == 0 && fi > 0 && prev_item_breaks_after(flow, pls, images, fi - 1);
+        // 顯式分頁（pageBreakBefore，t_5dfc8ac7）：段首行前一律換頁。
+        let page_break_before = li == 0
+            && band == 0
+            && matches!(&flow[fi], FlowItem::Text { para } if grid.break_before_of(*para));
+        // 容量/硬斷複合條件（t_c1fb4c69 S1-1）：頁滿、游標恰落 br 硬斷點、
+        // 前一項段尾 br、原子項放不下——這些與「是否跨 section 邊界」正交，
+        // continuous 邊界**不得**短路它們（協定只免「邊界強制換頁」一項）。
+        // 帶數加算 saturating（S1-4 防呆）：垃圾 bands 不得在 debug 下溢出
+        // panic（源頭守衛在 ooxml 轉換層，此處是 layout 側第二道閘）。
+        let cap_hard = st.cur_used >= cap as u32
+            || hard
+            || hard_after
+            || (item_bands > 0
+                && st.cur_used > absorb_exemption
+                && st.cur_used.saturating_add(item_bands) > cap as u32);
         let start_new = match st.cur_spec {
-            // section 邊界（非 continuous）一律換頁；同尺寸也換。
-            Some(prev) if prev.id != spec.id => !spec.geo.continuous,
-            // 顯式分頁（t_5dfc8ac7）：該段首行前一律換頁（Word pageBreakBefore／
-            // 段內 w:br type="page" 的段級粗化）。純 flow 輸入函數：增量復入、
-            // 收斂比較皆決定性。首項（None＝本頁尚無內容）不換頁——游標前已
-            // flush，段本就從頁首起，無須空白頁。
-            Some(_)
-                if li == 0
-                    && matches!(&flow[fi], FlowItem::Text { para } if grid.break_before_of(*para)) =>
-            {
-                true
+            // section 邊界：非 continuous 一律換頁（同尺寸也換）；continuous
+            // 只免邊界本身，容量已滿／硬斷照樣換頁（S1-1）。
+            Some(prev) if prev.id != spec.id => {
+                !spec.geo.continuous || cap_hard || page_break_before
             }
-            Some(_) => {
-                st.cur_used >= cap as u32
-                    || hard
-                    || hard_after
-                    || (item_bands > 0
-                        && st.cur_used > absorb_exemption
-                        // saturating：cur_used 已飽和（病態段行高，t_5b391cfd
-                        // S2）時加法不得 debug panic／release 繞回。
-                        && st.cur_used.saturating_add(item_bands) > cap as u32)
-            }
+            // 顯式分頁（pageBreakBefore，t_5dfc8ac7）：段首行前一律換頁（純 flow
+            // 輸入函數：增量復入、收斂比較皆決定性）。首項（None＝本頁尚無內容）
+            // 不換頁——游標前已 flush，段本就從頁首起，無須空白頁。
+            Some(_) if page_break_before => true,
+            Some(_) => cap_hard,
             None => false,
         };
         if start_new {
@@ -851,17 +889,21 @@ fn pack_run(
             }
         }
         st.cur_spec = Some(spec);
+        // 頁首項蓋章（S1-1）：本頁第一個被放置的流項決定頁的 section。
+        if st.page_spec.is_none() {
+            st.page_spec = Some(spec);
+        }
         let line_h = p.line_h_pt();
         match &flow[fi] {
             FlowItem::Text { para } => {
                 st.cur.push(pls[*para].lines[li].clone());
                 st.cur_bands.push(st.cur_used);
                 // 段落行按段行高量化佔帶（全域尺＝1，舊行為逐位元組不變）。
-                // saturating（t_5b391cfd S2）：病態段行高（畸形 w:sz／line 的
-                // 殘影——入口守衛已擋，此處為第二道柵欄）量化出的巨型帶數
-                // 不得 debug panic／release 繞回把分頁狀態機打亂。飽和後
-                // `cur_used >= cap` 恆真＝之後每項強換頁，游標仍逐項前進、
-                // 必然收斂，不觸斷點邏輯。
+                // saturating（t_5b391cfd S2／t_c1fb4c69 S1-4 同口徑）：病態段
+                // 行高（畸形 w:sz／line 的殘影——入口守衛已擋，此處為第二道
+                // 柵欄）量化出的巨型帶數不得 debug panic／release 繞回把分頁
+                // 狀態機打亂。飽和後 `cur_used >= cap` 恆真＝之後每項強換頁，
+                // 游標仍逐項前進、必然收斂，不觸斷點邏輯。
                 st.cur_used = st.cur_used.saturating_add(para_band(*para));
                 st.cursor = if li + 1 < pls[*para].lines.len() {
                     (fi, li + 1, 0)
@@ -1105,6 +1147,18 @@ fn paginate_flow(
     (pages, starts)
 }
 
+/// 浮圖附掛全掃計數（debug 斷言用，t_c1fb4c69 S2-7）：「無鎖點圖也全頁
+/// clear＋全 flow 重掃」是退化路徑——計數器設在 para_fi 全掃起點，早退
+/// 修好後純內嵌圖檔案的重排不得再推進它。
+#[cfg(debug_assertions)]
+pub(crate) static FLOATING_ATTACH_SCANS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(all(test, debug_assertions))]
+fn floating_attach_scans() -> usize {
+    FLOATING_ATTACH_SCANS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// 浮動圖片附掛（t_a1397522）：鎖點項不進流，分頁完成後按錨定段落所在頁
 /// 掛到該頁的 `floating_images`。段落 → 流項 → 頁：起頭 FlowPos 嚴格單調，
 /// partition_point 一步到位。錨定段落查無所在頁（未排/畸形）＝老實丟棄。
@@ -1118,11 +1172,16 @@ fn attach_floating_images(
     images: &[ImageBand],
     line_h: f32,
 ) {
+    // 無鎖點圖＝零可掛項（images 生命期內不變，浮掛只由 anchor 填充）：
+    // 在「全頁 clear＋全 flow 重掃」之前早退（t_c1fb4c69 S2-7——純內嵌圖
+    // 檔案每次編輯都白掃全版的退化路徑）。
+    if images.is_empty() || pages.is_empty() || !images.iter().any(|i| i.anchor.is_some()) {
+        return;
+    }
+    #[cfg(debug_assertions)]
+    FLOATING_ATTACH_SCANS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     for pg in pages.iter_mut() {
         pg.floating_images.clear();
-    }
-    if images.is_empty() || pages.is_empty() {
-        return;
     }
     // 段落 → 流項下標（文字項＝其本身；表格內部段落＝該表格項）。
     let mut para_fi: Vec<usize> =
@@ -1151,7 +1210,12 @@ fn attach_floating_images(
         if fi == usize::MAX {
             continue; // 錨定段落不在流（畸形）：不虛構放置
         }
-        let page = starts.partition_point(|s| s.0 <= fi).saturating_sub(1);
+        // 段落**起頭頁**（S2-7）：頁 p 涵蓋 [starts[p], starts[p+1])，段落首行
+        // 位址 (fi,0,0) 落在哪個區間就掛哪頁。舊式 `s.0 <= fi` 只比流項下標
+        // ——跨頁段落的後續頁起頭（同 fi、更大 li）也命中，被鉗到末頁。
+        let page = starts
+            .partition_point(|s| *s <= (fi, 0, 0))
+            .saturating_sub(1);
         let Some(pg) = pages.get_mut(page) else {
             continue;
         };
@@ -1595,6 +1659,8 @@ impl LayoutEngine {
             cur_used: 0,
             // 空 cur ⇒ 首行必不 trigger 換頁（前頁已保留），None 安全。
             cur_spec: None,
+            // 重排頁從掃描首項重蓋 section（S1-1 頁首項蓋章）。
+            page_spec: None,
             page_start: self.starts[a],
         };
         let mut out = self.pages[..a].to_vec();
@@ -3489,6 +3555,332 @@ mod tests {
             eng_h.page_count()
         );
         assert_layout_invariants(&eng_h, "飽和巨型帶");
+    }
+
+    // ---------------- t_c1fb4c69 返修紅燈：S1-1/2/3＋S1-4 layout 側＋S2-7 ----------------
+    // 基準來源：LibreOffice 實測（scratch/t_c1fb4c69/lo_ground.py，s1–s7 合成檔）。
+
+    /// 小頁尺：cap＝(40−0)/10＝4 行/頁（font 10、行距 1.0、零邊界）。
+    fn cap4_params() -> LayoutParams {
+        LayoutParams {
+            page_w_pt: 400.0,
+            page_h_pt: 40.0,
+            margins_pt: [0.0; 4],
+            font_size_pt: 10.0,
+            line_spacing: 1.0,
+        }
+    }
+
+    /// S1-2（LO s2_standalone_lead）：文件首的獨立 br-page 段（空文字 `<w:p>`
+    /// 只含 br，corpus 高頻形態）斷點不得消失——斷點屬空行**之後**，第一頁
+    /// 是該空行，文字自第 2 頁起。現行 k=0（段前斷）＋cur 空＝flush no-op
+    /// → 斷點整處被吞（1 頁 vs LO 2 頁）。
+    #[test]
+    fn standalone_br_page_at_doc_head_is_not_swallowed() {
+        let p = cap4_params();
+        let texts = vec![
+            String::new(),
+            "第一段文字".to_string(),
+            "第二段文字".to_string(),
+        ];
+        // 純 br 段的 w:br 偏移＝碼點 0（record_page_break 於零文字段記 0）。
+        let breaks = vec![vec![0usize], vec![], vec![]];
+        let eng = LayoutEngine::with_breaks(&texts, p, Vec::new(), Vec::new(), Vec::new(), breaks);
+        assert_layout_invariants(&eng, "文件首純 br 段");
+        assert_eq!(eng.page_count(), 2, "LO 對照：空行獨佔頁 1，文字自頁 2");
+        assert_eq!(eng.pages()[0].lines.len(), 1, "頁 1＝br 段的空行");
+        assert!(eng.pages()[0].lines[0].text.is_empty());
+        assert_eq!(eng.pages()[1].lines[0].para_index, 1, "第一段文字從頁 2 起");
+    }
+
+    /// S1-2（LO s1_standalone_mid）：文中間的獨立 br-page 段——斷點在空行之
+    /// 後：空行留在前頁（與段前文字同頁），下一段自新頁起。現行 k=0 把空行
+    /// 推落新頁（頁數同但斷點位置錯，LO 版面不同）。
+    #[test]
+    fn standalone_br_page_keeps_empty_line_on_prev_page() {
+        let p = cap4_params();
+        let texts = vec![
+            "第一段文字".to_string(),
+            String::new(),
+            "第二段文字".to_string(),
+        ];
+        let breaks = vec![vec![], vec![0usize], vec![]];
+        let eng = LayoutEngine::with_breaks(&texts, p, Vec::new(), Vec::new(), Vec::new(), breaks);
+        assert_layout_invariants(&eng, "文中純 br 段");
+        assert_eq!(eng.page_count(), 2);
+        assert_eq!(
+            eng.pages()[0].lines.len(),
+            2,
+            "頁 1＝第一段＋br 段空行（LO 同形）"
+        );
+        assert_eq!(
+            eng.pages()[1].lines[0].para_index,
+            2,
+            "第二段自頁 2 起，空行不跟"
+        );
+    }
+
+    /// S1-2（LO s3_double_standalone）：兩個連續獨立 br-page 段＝兩處斷點
+    /// （各段空行各自收頁）：LO 3 頁。
+    #[test]
+    fn consecutive_standalone_br_pages_each_break() {
+        let p = cap4_params();
+        let texts = vec![
+            "第一段文字".to_string(),
+            String::new(),
+            String::new(),
+            "第二段文字".to_string(),
+        ];
+        let breaks = vec![vec![], vec![0usize], vec![0usize], vec![]];
+        let eng = LayoutEngine::with_breaks(&texts, p, Vec::new(), Vec::new(), Vec::new(), breaks);
+        assert_layout_invariants(&eng, "雙純 br 段");
+        assert_eq!(eng.page_count(), 3, "LO 對照：兩個純 br 段各推一頁邊界");
+        assert_eq!(eng.pages().last().unwrap().lines[0].para_index, 3);
+    }
+
+    /// S1-2 裁決鎖（LO s4/s5）：同位重複 br（同 run 連發、同碼點偏移）＝
+    /// LibreOffice 合併為一處斷點（實測 2 頁，不產空白頁）——`dedup()` 的
+    /// 同 k 合併與 LO 一致，本測試鎖死此裁決防回歸。
+    #[test]
+    fn same_offset_double_br_merges_per_lo_baseline() {
+        let p = cap4_params();
+        let texts = vec![
+            "第一段文字".to_string(),
+            String::new(),
+            "第二段文字".to_string(),
+        ];
+        // 同 run 雙 br：record_page_break 於同一 cp 記兩次 → [0, 0]。
+        let breaks = vec![vec![], vec![0usize, 0usize], vec![]];
+        let eng = LayoutEngine::with_breaks(&texts, p, Vec::new(), Vec::new(), Vec::new(), breaks);
+        assert_eq!(
+            eng.page_count(),
+            2,
+            "LO 對照：同位雙 br＝一斷點，不疊空白頁"
+        );
+    }
+
+    /// S1-3：段尾 br-page＋行內圖——圖與段落同頁（斷點在**圖之後**），下一
+    /// 流項才換頁。現行雙錯：(a) hard_after 在圖項前就命中（圖被推落新頁，
+    /// 與段落分離）；(b) 修正 (a) 後若 `prev_item_breaks_after` 不認 Image
+    /// 項，斷點又整處消失。
+    #[test]
+    fn trailing_br_page_keeps_inline_image_then_breaks() {
+        let p = img_params(); // line_h 16.8、cap 7
+        let line_h = p.line_h_pt();
+        let texts = vec!["段落文字".to_string(), "後段文字".to_string()];
+        let brs = vec![vec![texts[0].chars().count()], vec![]]; // 段尾 br
+        let imgs = vec![band(0, 30.0, line_h)]; // ceil(30/16.8)＝2 帶，掛段 0
+        let eng = LayoutEngine::with_breaks(&texts, p, Vec::new(), Vec::new(), imgs, brs);
+        assert_layout_invariants(&eng, "段尾 br＋行內圖");
+        assert_eq!(eng.page_count(), 2, "斷點在圖之後：後段另起一頁");
+        assert_eq!(eng.pages()[0].lines.len(), 1, "段文字留頁 1");
+        assert_eq!(
+            eng.pages()[0].images.len(),
+            1,
+            "圖與段落同頁（斷點在圖之後）"
+        );
+        assert_eq!(eng.pages()[1].lines[0].para_index, 1, "後段自頁 2 起");
+    }
+
+    /// 小頁尺幾何：cap＝(40−0)/10＝4 帶/頁（與 `cap4_params` 同尺）。
+    fn small_geo(continuous: bool) -> SectionGeometry {
+        SectionGeometry {
+            page_w_pt: 400.0,
+            page_h_pt: 40.0,
+            margin_top_pt: 0.0,
+            margin_bottom_pt: 0.0,
+            margin_left_pt: 0.0,
+            margin_right_pt: 0.0,
+            landscape: false,
+            continuous,
+        }
+    }
+
+    /// S1-1（continuous 邊界＋頁滿）：continuous 只免「邊界強制換頁」，
+    /// **不得**短路容量已滿——現行把第 5 行塞進 cap=4 的頁（溢出）。
+    #[test]
+    fn continuous_boundary_never_overflows_page_capacity() {
+        let p = cap4_params();
+        let one_line = "字".repeat(40); // content 400pt＝恰 1 行
+        let texts: Vec<String> = (0..6).map(|_| one_line.clone()).collect();
+        // 前 4 段 section 0（恰好填滿 cap=4），後 2 段 continuous section 1。
+        let sections: Vec<SectionSpec> = (0..6)
+            .map(|i| SectionSpec {
+                id: if i < 4 { 0 } else { 1 },
+                geo: small_geo(i >= 4),
+            })
+            .collect();
+        let eng = LayoutEngine::with_sections(&texts, p, sections);
+        assert!(
+            eng.pages().iter().all(|pg| pg.lines.len() <= 4),
+            "continuous 邊界不得讓頁超出容量：{:?}",
+            eng.pages()
+                .iter()
+                .map(|pg| pg.lines.len())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(eng.pages()[0].lines.len(), 4, "頁 1＝section 0 的四行");
+        assert_eq!(eng.pages()[1].lines[0].para_index, 4, "邊界項因頁滿換頁");
+    }
+
+    /// S1-1（continuous 邊界＋br-page 硬斷點）：硬斷點在 continuous 邊界
+    /// 同樣生效——現行邊界 arm 直接短路 `false`，斷點被吞。
+    #[test]
+    fn continuous_boundary_still_honors_hard_break() {
+        let p = cap4_params();
+        let one_line = "字".repeat(40);
+        let texts = vec![one_line.clone(), one_line.clone()];
+        let mut cont = letter_geo();
+        cont.continuous = true;
+        let sections = vec![
+            SectionSpec {
+                id: 0,
+                geo: letter_geo(),
+            },
+            SectionSpec { id: 1, geo: cont },
+        ];
+        // 段 0 尾 br＝段 1 前硬斷點（游標在 (1,0,0) 的 hard_after）。
+        let breaks = vec![vec![one_line.chars().count()], vec![]];
+        let eng = LayoutEngine::with_breaks(&texts, p, sections, Vec::new(), Vec::new(), breaks);
+        assert_eq!(eng.page_count(), 2, "continuous 邊界吞不掉 br 硬斷點");
+        assert_eq!(eng.pages()[1].lines[0].para_index, 1);
+    }
+
+    /// S1-1（Page.section_id 蓋章）：continuous 同頁混節時，頁的 section
+    /// 必取**頁首項**的 section（現行被末項覆寫→首頁 titlePg/頁首選擇錯）。
+    #[test]
+    fn continuous_shared_page_stamps_first_item_section() {
+        let p = cap4_params();
+        let one_line = "字".repeat(40);
+        let texts: Vec<String> = (0..4).map(|_| one_line.clone()).collect();
+        let mut cont = letter_geo();
+        cont.continuous = true;
+        let sections: Vec<SectionSpec> = (0..4)
+            .map(|i| SectionSpec {
+                id: if i < 2 { 0 } else { 1 },
+                geo: if i < 2 { letter_geo() } else { cont },
+            })
+            .collect();
+        let eng = LayoutEngine::with_sections(&texts, p, sections);
+        assert_eq!(
+            eng.page_count(),
+            1,
+            "continuous＋未滿頁＝同頁續排（既有行為）"
+        );
+        assert_eq!(
+            eng.pages()[0].section_id,
+            0,
+            "混節頁蓋章取頁首項 section（titlePg 依此判定）"
+        );
+    }
+
+    /// S1-4（layout 側防呆）：u32::MAX 帶數的畸形圖不得令打包算術溢出
+    /// （debug 下 `cur_used + item_bands` panic）；照巨型圖規則整塊頂格、
+    /// 前後段各自歸頁、不無限換頁。
+    #[test]
+    fn giant_image_bands_saturate_instead_of_overflowing() {
+        let p = img_params();
+        let texts = vec!["前段".to_string(), "後段".to_string()];
+        let mut huge = band(0, 100.0, p.line_h_pt());
+        huge.bands = u32::MAX;
+        let pls = layout_paragraphs(&texts, &p);
+        let (pages, _s) = paginate_tables_images(&pls, &p, &[], &[], &[huge]);
+        assert_eq!(
+            pages.len(),
+            3,
+            "前段 p1／巨圖頂格 p2／後段 p3，不得溢出或死迴圈"
+        );
+        assert_eq!(pages[1].images.len(), 1);
+    }
+
+    /// S2-7（跨頁段落錨點取首頁）：鎖點圖錨定跨頁段落——掛該段落**起頭頁**
+    /// （現行 partition_point 只比 .0，段落跨頁時鉗到最後一頁）。
+    #[test]
+    fn floating_image_attaches_to_anchor_paragraph_first_page() {
+        let p = cap4_params();
+        let texts = vec!["字".repeat(400), "尾段".to_string()]; // 段 0＝10 行跨 3 頁
+        let mut floats = vec![band(0, 100.0, p.line_h_pt())];
+        floats[0].bands = 0;
+        floats[0].anchor = Some(FloatingAnchor {
+            x_pt: 0.0,
+            y_pt: 0.0,
+            x_frame: OriginFrame::Page,
+            y_frame: OriginFrame::Page,
+        });
+        let eng = LayoutEngine::with_tables_images(&texts, p, Vec::new(), Vec::new(), floats);
+        assert!(eng.page_count() >= 3);
+        assert_eq!(
+            eng.pages()[0].floating_images.len(),
+            1,
+            "跨頁段落的鎖點圖掛段落起頭頁（非末頁）"
+        );
+        for pg in &eng.pages()[1..] {
+            assert!(pg.floating_images.is_empty(), "單圖不得雙掛");
+        }
+    }
+
+    /// S2-7（無浮圖早退）：純內嵌圖（無任何 anchor）文件，編輯重排不得觸發
+    /// 浮圖附掛的全頁 clear＋全 flow 重掃（debug 計數器斷言）。
+    #[cfg(debug_assertions)]
+    #[test]
+    fn inline_only_doc_skips_floating_attach_scan() {
+        let p = img_params();
+        let texts = vec!["前段".to_string(), "後段".to_string()];
+        let eng_imgs = vec![band(0, 30.0, p.line_h_pt())]; // anchor=None：純內嵌
+        let mut eng = LayoutEngine::with_tables_images(&texts, p, Vec::new(), Vec::new(), eng_imgs);
+        let before = floating_attach_scans();
+        eng.replace_paragraph_text(1, "後段被編輯成更長的一段文字。");
+        let after = floating_attach_scans();
+        assert_eq!(before, after, "無鎖點圖的重排不得走附掛全掃");
+    }
+
+    /// S1-2（LO s8_page_head_br）：段中 br 換頁後，**頁首**又遇獨立 br 段
+    /// ——空行留在新頁（斷點在空行之後），其後段落再推一頁：LO 3 頁。
+    #[test]
+    fn standalone_br_page_at_page_head_breaks_after_empty_line() {
+        let p = cap4_params();
+        let text = format!("{}{}", "甲".repeat(30), "乙".repeat(30)); // br at 30
+        let texts = vec!["前段".to_string(), text, String::new(), "後段".to_string()];
+        let breaks = vec![
+            vec![],
+            vec![30usize], // 段中 br
+            vec![0usize],  // 純 br 段
+            vec![],
+        ];
+        let eng = LayoutEngine::with_breaks(&texts, p, Vec::new(), Vec::new(), Vec::new(), breaks);
+        assert_layout_invariants(&eng, "頁首純 br 段");
+        assert_eq!(eng.page_count(), 3, "LO 對照：頁 2 尾空行、後段落頁 3");
+        assert_eq!(
+            eng.pages()[1].lines.last().unwrap().para_index,
+            2,
+            "空行留頁 2 尾"
+        );
+        assert_eq!(eng.pages()[2].lines[0].para_index, 3);
+    }
+
+    /// S1-2（LO s10_lead_double）：文件首**兩個**獨立 br 段＝兩處斷點：
+    /// 空行各自收頁（頁 1 一行、頁 2 一行），文字自頁 3：LO 3 頁。
+    #[test]
+    fn two_standalone_br_paragraphs_at_doc_head_make_two_boundaries() {
+        let p = cap4_params();
+        let texts = vec![String::new(), String::new(), "第一段".to_string()];
+        let breaks = vec![vec![0usize], vec![0usize], vec![]];
+        let eng = LayoutEngine::with_breaks(&texts, p, Vec::new(), Vec::new(), Vec::new(), breaks);
+        assert_layout_invariants(&eng, "文件首雙 br 段");
+        assert_eq!(eng.page_count(), 3, "LO 對照：兩個純 br 段各推一頁邊界");
+        assert_eq!(eng.pages().last().unwrap().lines[0].para_index, 2);
+    }
+
+    /// S1-2（LO s11_diff_offsets）：同 run **不同偏移**雙 br（甲|乙|丙）＝
+    /// 真兩處斷點（段中口徑，既有 KP 硬收行路徑）：LO 3 頁。
+    #[test]
+    fn same_run_br_at_different_offsets_makes_two_breaks() {
+        let p = cap4_params();
+        let texts = vec!["前段".to_string(), "甲乙丙".to_string(), "後段".to_string()];
+        // record_page_break 記碼點偏移：甲後＝1、乙後＝2。
+        let breaks = vec![vec![], vec![1usize, 2usize], vec![]];
+        let eng = LayoutEngine::with_breaks(&texts, p, Vec::new(), Vec::new(), Vec::new(), breaks);
+        assert_eq!(eng.page_count(), 3, "LO 對照：不同偏移雙 br＝兩處斷點");
     }
 
     fn text_only(t: &str) -> Vec<String> {
