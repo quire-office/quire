@@ -286,7 +286,7 @@ pub(crate) fn toggle_attr_on(e: &quick_xml::events::BytesStart) -> bool {
     }
 }
 
-/// 段落級分頁/製表位標籤（Start 與 Empty 共用；t_5dfc8ac7）。呼叫端已保证
+/// 段落級分頁/製表位標籤（Start 與 Empty 共用；t_5dfc8ac7）。呼叫端已保證
 /// 處於 pPr 區（ppr_depth==1 且非 pPr/rPr）或 run 區（依標籤各自判定）。
 /// - `w:br/@w:type="page"`：段級顯式分頁（見 `Paragraph::page_break` 注）。
 /// - `w:pageBreakBefore`：同上（開關語義同 toggle_attr_on）。
@@ -603,7 +603,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     // 自閉合 pPr/rPr（`<w:rPr/>`）：不進 run 區（其後的
                     // spacing/jc 仍是段落欄位）。
                 } else if name == b"spacing" && ppr_depth == 1 && ppr_rpr_depth == 0 {
-                    // 自閉合直接行距（Word 產出恒為自閉合）。
+                    // 自閉合直接行距（Word 產出恆為自閉合）。
                     if let Some((_, p)) = stack.last_mut() {
                         p.line = styles::line_spacing(
                             attr_val(&e, "line").as_deref(),
@@ -615,7 +615,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                         p.jc = styles::align_of(attr_val(&e, "val").as_deref());
                     }
                 } else if matches!(name.as_slice(), b"br" | b"tab") && ppr_rpr_depth == 0 {
-                    // 顯式分頁/製表符（Word 產出恒為自閉合；t_5dfc8ac7）。
+                    // 顯式分頁/製表符（Word 產出恆為自閉合；t_5dfc8ac7）。
                     if let Some((_, p)) = stack.last_mut() {
                         apply_break_tab_tag(
                             name.as_slice(),
@@ -678,7 +678,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                                     // 代擬色同時進三態快照（t_5dfc8ac7）：它是
                                     // 解析器代擬的**直接格式**，級聯時必須與
                                     // 真實 rPr/w:color 同層，否則 docDefaults
-                                    // 的顏色會越過它抢先命中（連結變色）。
+                                    // 的顏色會越過它搶先命中（連結變色）。
                                     let d = run.direct.get_or_insert_with(RunStyle::default);
                                     d.color_set = true;
                                     d.color = Some(HYPERLINK_DEFAULT_COLOR_ARGB);

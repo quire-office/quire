@@ -50,8 +50,8 @@ pub struct Engine {
     layout: LayoutEngine,
     params: LayoutParams,
     /// 樣式級聯的發射投影（t_5dfc8ac7）：`Some`＝run 級粗/斜/底/刪/色/字級
-    /// 已換成級聯有效值（發射層與表格格內樣式一律读本欄）；`None`＝文件
-    /// 無 styles.xml 或全無宣告——读本體 `doc.paragraphs`，既有輸出逐位元
+    /// 已換成級聯有效值（發射層與表格格內樣式一律讀本欄）；`None`＝文件
+    /// 無 styles.xml 或全無宣告——讀本體 `doc.paragraphs`，既有輸出逐位元
     /// 組不變。純讀取派生：存檔路徑（save_docx／roundtrip）完全不經本欄。
     paras_eff: Option<Vec<quire_ooxml::Paragraph>>,
     /// 開啟時的原始位元組——roundtrip 對照的基準。
@@ -124,7 +124,7 @@ impl Engine {
         // Word 預設 12pt 兜底）。無級聯層＝12（既有硬編碼後備）。
         let def_size = doc_size.unwrap_or(12.0);
         // 文件帶尺（行網格量化單位）＝預設段落的行高；無宣告＝12pt×1.4，
-        // 與舊 `LayoutParams::default()` 恒等（零宣告檔案逐位元組不變）。
+        // 與舊 `LayoutParams::default()` 恆等（零宣告檔案逐位元組不變）。
         let grid_line_h = resolve_line_h_pt(def_size, doc_line);
         let n_paras = doc.paragraphs.len();
         let sections: Vec<SectionSpec> = doc
@@ -187,7 +187,7 @@ impl Engine {
             let (eff_all, metrics) = cascade_paragraphs(st, &doc.paragraphs, def_size, &widths);
             grid_size_v = metrics.iter().map(|m| m.0).collect();
             // 段行高量化到文件帶尺（至少 1 帶；帶尺＝12pt×1.4 且段行高不大於
-            // 帶尺時恒 1＝舊行為）。
+            // 帶尺時恆 1＝舊行為）。
             grid_bands_v = metrics
                 .iter()
                 .map(|m| ((m.1 / grid_line_h).ceil() as u32).max(1))
@@ -212,8 +212,7 @@ impl Engine {
             .get("word/document.xml")
             .map(|xml| quire_ooxml::read_images(xml))
             .unwrap_or_default();
-        let eff_refs: &[quire_ooxml::Paragraph] =
-            paras_eff.as_deref().unwrap_or(&doc.paragraphs);
+        let eff_refs: &[quire_ooxml::Paragraph] = paras_eff.as_deref().unwrap_or(&doc.paragraphs);
         let slots = table_map::build_slots(
             &doc.tables,
             &texts,
@@ -229,14 +228,8 @@ impl Engine {
             bands: grid_bands_v,
             break_before: grid_break_v,
         };
-        let layout = LayoutEngine::with_band_grid(
-            &texts,
-            params,
-            sections.clone(),
-            slots,
-            bands,
-            grid,
-        );
+        let layout =
+            LayoutEngine::with_band_grid(&texts, params, sections.clone(), slots, bands, grid);
         // 頁首頁尾層（t_b39f108b）：sectPr 宣告＋rels 查表＋part 解析。
         // 全鏈純讀取派生——parts／bundle 一個位元組都不碰（round-trip 零影響）。
         let (hf, hf_parts, even_odd, sec_geo) =
@@ -547,7 +540,7 @@ mod collab_tests {
 const DEFAULT_TEXT_COLOR_ARGB: u32 = 0xFF00_0000;
 
 /// 發射字級後備（無任何級聯宣告時的既有硬編碼尺；`LayoutParams::default()`
-/// 的 12pt 同源，只準有一处定義）。
+/// 的 12pt 同源，只準有一處定義）。
 const FALLBACK_SIZE_PT: f32 = 12.0;
 
 /// [`LineSpacing`] → 段行高（pt）。本引擎行高無內容自適應成分，三態換算：
@@ -632,8 +625,7 @@ fn cascade_paragraphs(
                 if widths.len() > pi {
                     let m = TextMeasurer::new(meas_size);
                     let prefix: String = eff_runs[..ti].iter().map(|r| r.text.as_str()).collect();
-                    let suffix: String =
-                        eff_runs[ti..].iter().map(|r| r.text.as_str()).collect();
+                    let suffix: String = eff_runs[ti..].iter().map(|r| r.text.as_str()).collect();
                     let dot_w = m.text_width(&ch.to_string());
                     let need = pos - m.text_width(&suffix) - m.text_width(&prefix);
                     let n = if dot_w > 0.0 {
@@ -716,9 +708,9 @@ fn run_style(r: &quire_ooxml::Run) -> (u8, u32, Option<f32>) {
 
 /// 將單行文字與所屬段落的 `Run` 邊界（依 char offset 累積）求交集，
 /// 每個樣式同質段發射一個 `DrawItem::Text`；段 x 偏移以**該段發射字級**的
-/// `TextMeasurer` 累加前段寬度——全行無字級宣告時量測尺恒等 `size_pt`，
+/// `TextMeasurer` 累加前段寬度——全行無字級宣告時量測尺恆等 `size_pt`，
 /// 所有段寬總和與整行寬零漂移（既有契約）；有宣告時各段按自身尺排版
-/// （Word 同款视觉近似：字級不同的 run 本就不共用同一基線寬）。
+/// （Word 同款視覺近似：字級不同的 run 本就不共用同一基線寬）。
 fn emit_line_run_items(
     items: &mut Vec<DrawItem>,
     base_x: f32,
@@ -730,10 +722,11 @@ fn emit_line_run_items(
     let char_indices: Vec<(usize, char)> = line.text.char_indices().collect();
     let line_len_cp = char_indices.len();
     if line_len_cp == 0 {
-        let (flags, color_argb, sz) = para
-            .and_then(|p| p.runs.first())
-            .map(run_style)
-            .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
+        let (flags, color_argb, sz) = para.and_then(|p| p.runs.first()).map(run_style).unwrap_or((
+            0,
+            DEFAULT_TEXT_COLOR_ARGB,
+            None,
+        ));
         items.push(DrawItem::Text {
             x: base_x,
             y,
@@ -1274,7 +1267,11 @@ type HfLayer = (
 
 /// 構建頁首頁尾發射層：宣告解析→rels 換算→存在性過濾→part 解析（去重）→
 /// 樣式級聯烘焙（t_5dfc8ac7：與正文同一條 `cascade_paragraphs` 路徑）。
-fn build_hf_layer(doc: &OoxmlDoc, sections: &[SectionSpec], style_table: Option<&StyleTable>) -> HfLayer {
+fn build_hf_layer(
+    doc: &OoxmlDoc,
+    sections: &[SectionSpec],
+    style_table: Option<&StyleTable>,
+) -> HfLayer {
     let mut sec_geo: HashMap<u32, SectionGeometry> = HashMap::new();
     for s in sections {
         sec_geo.entry(s.id).or_insert(s.geo);

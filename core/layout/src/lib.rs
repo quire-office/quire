@@ -326,7 +326,7 @@ impl ParaGrid {
         self.break_before.get(para).copied().unwrap_or(false)
     }
 
-    /// 段落 i 每行佔用帶數（缺＝1；恒 ≥1，行至少佔一格）。
+    /// 段落 i 每行佔用帶數（缺＝1；恆 ≥1，行至少佔一格）。
     pub fn bands_of(&self, para: usize) -> u32 {
         self.bands.get(para).copied().unwrap_or(1).max(1)
     }
@@ -611,7 +611,7 @@ fn pack_run(
                     .is_some_and(|pl| pl.lines.len() == 1 && pl.lines[0].text.trim().is_empty())
         };
         // 段落佔帶（t_5dfc8ac7）：段落行按段行高量化（ceil(行高/帶尺)，至少 1）。
-        // 全域尺（ParaGrid 空）時恒 1——既有行為逐位元組不變。
+        // 全域尺（ParaGrid 空）時恆 1——既有行為逐位元組不變。
         let para_band = |para: usize| grid.bands_of(para);
         let para_img_bands = |fi: usize| -> u32 {
             // Text 項前視：純圖段落（唯一空行＋下一流項即其流內圖）→ 整段帶數。
@@ -649,7 +649,7 @@ fn pack_run(
             _ => 0,
         };
         // 吸收態下那頁「唯一內容」就是共用的空行（cur_used==該段行帶數）：
-        // 容量不足也不得換頁（巨型圖頂格放規則對空行同样豁免），否則空行會
+        // 容量不足也不得換頁（巨型圖頂格放規則對空行同樣豁免），否則空行會
         // 孤留在前一頁、圖獨排下頁。
         let absorb_here = matches!(&flow[fi], FlowItem::Image { img } if absorb_slot(*img, fi));
         let absorb_exemption = if absorb_here {
@@ -666,7 +666,7 @@ fn pack_run(
             Some(prev) if prev.id != spec.id => !spec.geo.continuous,
             // 顯式分頁（t_5dfc8ac7）：該段首行前一律換頁（Word pageBreakBefore／
             // 段內 w:br type="page" 的段級粗化）。純 flow 輸入函數：增量復入、
-            // 收斂比較皆決定性。首項（None＝本页尚无内容）不换頁——游標前已
+            // 收斂比較皆決定性。首項（None＝本頁尚無內容）不換頁——游標前已
             // flush，段本就從頁首起，無須空白頁。
             Some(_)
                 if li == 0
@@ -814,7 +814,15 @@ pub fn paginate_tables_images(
     let refs: Vec<&ParagraphLayout> = pls.iter().collect();
     let flow = build_flow_images(pls.len(), tables, images);
     // 公開版無逐段網格（全域尺＝舊行為逐位元組不變）。
-    paginate_flow(&flow, &refs, tables, images, p, sections, &ParaGrid::default())
+    paginate_flow(
+        &flow,
+        &refs,
+        tables,
+        images,
+        p,
+        sections,
+        &ParaGrid::default(),
+    )
 }
 
 /// 段落＋表格＋圖片混排流（Phase3-1b＋t_a1397522）：依 para_start 把表格

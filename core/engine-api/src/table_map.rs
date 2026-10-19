@@ -476,7 +476,15 @@ mod tests {
             let texts = doc.paragraph_texts();
             let params = quire_layout::LayoutParams::default();
             let styles = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
-            let slots = build_slots(&doc.tables, &texts, styles, &params, &[], &[], &doc.paragraphs);
+            let slots = build_slots(
+                &doc.tables,
+                &texts,
+                styles,
+                &params,
+                &[],
+                &[],
+                &doc.paragraphs,
+            );
             assert!(!slots.is_empty(), "{rel}：標為 txbx-in-cell 檔應有表格槽");
             let mut prev_end = 0usize;
             for s in &slots {

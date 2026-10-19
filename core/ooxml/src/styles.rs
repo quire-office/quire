@@ -83,7 +83,7 @@ pub enum Align {
     Distribute,
 }
 
-/// 行距（`w:spacing/@w:line`＋`@w:lineRule` 的合成結果）。三態忠实保留
+/// 行距（`w:spacing/@w:line`＋`@w:lineRule` 的合成結果）。三態忠實保留
 /// （ECMA-376 §17.4.1.3），「怎麼變成 pt」由排版端決定：
 /// - `Auto(f)`：倍數（240＝單倍）——本引擎近似為「字級×倍數」（見 engine-api
 ///   `resolve_line_h_pt` 注），與既有 fallback（12pt×1.4）同口徑；
@@ -163,7 +163,7 @@ pub struct StyleTable {
     /// styleId → **只沿 basedOn 鏈**合成的 run 宣告（不含 docDefaults）。
     /// 字元樣式（`w:rStyle`）疊在段落級結果之上時必須用本表：ECMA-376
     /// §17.7.2 的解析序是「run 直接 → 字元樣式鏈 → 段落樣式鏈 → docDefaults」，
-    /// 若把 docDefaults 先烘進字元樣式，它會越過段落樣式的明確宣告抢先命中。
+    /// 若把 docDefaults 先烘進字元樣式，它會越過段落樣式的明確宣告搶先命中。
     chain: HashMap<String, RunStyle>,
     /// `w:default="1"` 的段落樣式 id（通常 Normal）；段落未宣告 pStyle 時用。
     default_para: Option<String>,
@@ -181,7 +181,7 @@ fn half_point_pt(raw: Option<&str>) -> Option<f32> {
 }
 
 /// `w:spacing/@w:line`＋`@w:lineRule` → [`LineSpacing`]。line 非法＝None。
-/// `pub(crate)`：document.xml 的直接格式 `w:pPr/w:spacing` 共用同一判据。
+/// `pub(crate)`：document.xml 的直接格式 `w:pPr/w:spacing` 共用同一判據。
 pub(crate) fn line_spacing(line: Option<&str>, rule: Option<&str>) -> Option<LineSpacing> {
     let v = line
         .and_then(|s| s.trim().parse::<f32>().ok())
@@ -216,7 +216,7 @@ fn toggle_on_attr(e: &quick_xml::events::BytesStart) -> bool {
 }
 
 /// 套用單個 run 屬性標籤（Start/Empty 共用）。未支援標籤靜默略過（模組頭清單）。
-/// `pub(crate)`：document.xml 的直接格式 `w:pPr/w:rPr` 共用同一判据。
+/// `pub(crate)`：document.xml 的直接格式 `w:pPr/w:rPr` 共用同一判據。
 pub(crate) fn apply_run_tag(name: &[u8], e: &quick_xml::events::BytesStart, rs: &mut RunStyle) {
     match name {
         b"b" => rs.bold = Some(toggle_on_attr(e)),
@@ -231,7 +231,7 @@ pub(crate) fn apply_run_tag(name: &[u8], e: &quick_xml::events::BytesStart, rs: 
         b"color" => {
             // themeColor 暫不解析（誠實近似，同 `lib.rs::apply_style_tag`）：
             // 只認 w:val。宣告 auto/非法 → 明確的「自動色」（黑）：color_set
-            // 置真但 color 留空，不得當「未宣告」而误继承樣式色。
+            // 置真但 color 留空，不得當「未宣告」而誤繼承樣式色。
             if let Some(v) = attr_val(e, "val") {
                 rs.color_set = true;
                 rs.color = crate::parse_color_val(&v);
@@ -303,7 +303,7 @@ fn parse_ppr(
             }
             Ok(Event::Empty(e)) => {
                 // 自閉合標籤：`<w:rPr/>` 不進入 run 區（否則會吞掉其後的
-                // spacing/jc——行距靜默丟失是本级聯層最壞的失敗模式）。
+                // spacing/jc——行距靜默丟失是本級聯層最壞的失敗模式）。
                 let name = e.local_name().as_ref().to_vec();
                 if in_rpr {
                     apply_run_tag(&name, &e, &mut run);
@@ -373,9 +373,7 @@ fn parse_ppr_default(
             Ok(Event::End(e)) if e.local_name().as_ref() == b"pPrDefault" => {
                 return Default::default()
             }
-            Ok(Event::Start(e)) if e.local_name().as_ref() == b"pPr" => {
-                return parse_ppr(reader)
-            }
+            Ok(Event::Start(e)) if e.local_name().as_ref() == b"pPr" => return parse_ppr(reader),
             _ => {}
         }
     }
@@ -436,7 +434,13 @@ impl StyleTable {
                             if is_default && kind == StyleKind::Paragraph && !id.is_empty() {
                                 t.default_para = Some(id.clone());
                             }
-                            cur = Some((id, OwnStyle { kind, ..Default::default() }));
+                            cur = Some((
+                                id,
+                                OwnStyle {
+                                    kind,
+                                    ..Default::default()
+                                },
+                            ));
                         }
                         b"basedOn" => {
                             if let Some((_, own)) = cur.as_mut() {
@@ -619,17 +623,29 @@ impl StyleTable {
     /// 段落級級聯：段落樣式（未宣告 pStyle＝落預設段落樣式 Normal，再落
     /// docDefaults）→ 疊段落直接格式（`inline`：直接 pPr 欄位＋其內 rPr，
     /// 由呼叫端解析後傳入）。回傳（段內 run 基底, 段落欄位合成結果）。
-    pub fn effective_para(&self, para_style_id: Option<&str>, inline: ParaStyle) -> (RunStyle, ParaStyle) {
+    pub fn effective_para(
+        &self,
+        para_style_id: Option<&str>,
+        inline: ParaStyle,
+    ) -> (RunStyle, ParaStyle) {
         let (_, mut para) = match para_style_id.filter(|s| !s.is_empty()) {
             // 引用查無＝落預設段落樣式，再落 docDefaults（容錯不虛構）。
             Some(id) => self
                 .resolved
                 .get(id)
                 .copied()
-                .or_else(|| self.default_para.as_deref().and_then(|d| self.resolved.get(d).copied()))
+                .or_else(|| {
+                    self.default_para
+                        .as_deref()
+                        .and_then(|d| self.resolved.get(d).copied())
+                })
                 .unwrap_or_else(|| self.doc_base()),
             None => match self.default_para.as_deref() {
-                Some(dp) => self.resolved.get(dp).copied().unwrap_or_else(|| self.doc_base()),
+                Some(dp) => self
+                    .resolved
+                    .get(dp)
+                    .copied()
+                    .unwrap_or_else(|| self.doc_base()),
                 None => self.doc_base(),
             },
         };
@@ -655,7 +671,8 @@ mod tests {
         StyleTable::parse(xml.as_ref().as_bytes())
     }
 
-    const PREFIX: &str = r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#;
+    const PREFIX: &str =
+        r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#;
     const SUFFIX: &str = "</w:styles>";
 
     fn wrap(body: &str) -> String {
@@ -682,7 +699,7 @@ mod tests {
         assert_eq!(base.size_pt, Some(14.0)); // 28 半磅 = 14pt。
         assert_eq!(base.bold, Some(true)); // 繼承自父。
         assert_eq!(base.italic, Some(true)); // 子自帶。
-        // 父自身不變。
+                                             // 父自身不變。
         let (pbase, _) = t.effective_para(Some("Parent"), ParaStyle::default());
         assert_eq!(pbase.italic, None);
     }
@@ -702,9 +719,9 @@ mod tests {
         };
         let eff = StyleTable::resolve_run(base, direct);
         assert_eq!(eff.bold, Some(false)); // 直接格式熄滅樣式粗體。
-        assert_eq!(eff.size_pt, Some(20.0)); // 未宣告→继承樣式。
-        assert_eq!(eff.color, Some(0xFFFF0000)); // 未宣告→继承樣式色。
-        // 同段落改宣告 color auto → 明確黑（不得继承 FF0000）。
+        assert_eq!(eff.size_pt, Some(20.0)); // 未宣告→繼承樣式。
+        assert_eq!(eff.color, Some(0xFFFF0000)); // 未宣告→繼承樣式色。
+                                                 // 同段落改宣告 color auto → 明確黑（不得繼承 FF0000）。
         let direct_auto = RunStyle {
             color_set: true,
             color: None,
@@ -742,7 +759,7 @@ mod tests {
         let (base, _) = t.effective_para(Some("A"), ParaStyle::default());
         assert_eq!(base.size_pt, Some(20.0)); // A 自帶。
         assert_eq!(base.italic, Some(true)); // B 截斷後仍沿鏈傳下（A←B←doc）。
-        // 自引用（basedOn 自己）也照樣停在自身宣告。
+                                             // 自引用（basedOn 自己）也照樣停在自身宣告。
         let t2 = table(wrap(
             r#"<w:style w:type="paragraph" w:styleId="S"><w:basedOn w:val="S"/><w:rPr><w:sz w:val="24"/></w:rPr></w:style>"#,
         ));
@@ -809,7 +826,9 @@ mod tests {
     #[test]
     fn parse_survives_garbage_and_no_ns_prefix() {
         // 畸形 XML：就地停在已收部分，不 panic、不中斷。
-        let t = table(wrap(r#"<w:style w:type="paragraph" w:styleId="A"><w:rPr><w:sz w:val="30"/>"#));
+        let t = table(wrap(
+            r#"<w:style w:type="paragraph" w:styleId="A"><w:rPr><w:sz w:val="30"/>"#,
+        ));
         let (base, _) = t.effective_para(Some("A"), ParaStyle::default());
         assert_eq!(base.size_pt, Some(15.0));
         // 無 w: 前綴（極少見，名稱以 local-name 匹配為準）也能收。
