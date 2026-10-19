@@ -413,11 +413,46 @@ impl Engine {
 
     /// 回傳失效事件（序列化），供 shells 做增量重繪。
     pub fn replace_paragraph_text(&mut self, para: usize, text: &str) -> Vec<String> {
-        self.layout
-            .replace_paragraph_text(para, text)
-            .into_iter()
-            .map(|ev| format!("{ev:?}"))
-            .collect()
+        let evs = self.layout.replace_paragraph_text(para, text);
+        // paras_eff 同步（t_5b391cfd S4）：發射層讀的是投影不是 doc 本體——
+        // 只改 layout.texts 的話，`eff_paragraphs()` 發射時仍以**舊 run 碼點
+        // 區間**套新文字，編輯後段的 flags/顏色錯映；級聯 leader 段的填充
+        // run 也會在下次發射時無痕消失（發射與斷行兩條來源分岔）。
+        // 契約＝段落級整段置換（shells/web 傳入的是 layout 顯示全文，含
+        // 填充；crdt 落地同一路徑）。新文字寫進首個有字 run、其餘清空：
+        // run 區間和＝段長＝texts 段長，發射↔斷行碼點對齊天然成立；樣式
+        // 取首個有字 run（多段樣式混排的整段置換是骨架契約外的近似——
+        // run 級穿透編輯面屬後續卡，此處只求「不錯映、投影不陳舊」）。
+        if let Some(eff) = self.paras_eff.as_mut() {
+            if let Some(p) = eff.get_mut(para) {
+                let mut first = true;
+                for r in &mut p.runs {
+                    if r.text.is_empty() {
+                        continue; // 空 run（如欄位標記殘影）不動。
+                    }
+                    if first {
+                        r.text = text.to_string();
+                        // 編輯落地＝使用者字面文字：欄位標記撤除，否則發射層
+                        // 會把頁碼覆寫回使用者剛打的字（欄位快取語義已死）。
+                        r.field = None;
+                        first = false;
+                    } else {
+                        r.text = String::new();
+                    }
+                }
+                if first {
+                    // 原段全空：文字掛進首個 run 保留其樣式；無 run 才新掛。
+                    match p.runs.first_mut() {
+                        Some(r) => r.text = text.to_string(),
+                        None => p.runs.push(quire_ooxml::Run {
+                            text: text.to_string(),
+                            ..Default::default()
+                        }),
+                    }
+                }
+            }
+        }
+        evs.into_iter().map(|ev| format!("{ev:?}")).collect()
     }
 
     // ---------------- Phase0-6：增量重排的控制面（shells 唯一入口） ----------------
@@ -629,13 +664,24 @@ fn cascade_paragraphs(
         // texts 由 eff run 串接重建，run↔line 碼點對齊天然不破。斷行量測
         // 尺＝meas_size（與 break_lines 同尺，填充寬計算與斷行一致）。
         // widths 缺位（頁首尾 part／畸形檔）＝不展開——無可用寬不虛構。
+        // page_breaks 非空＝不展開（t_5b391cfd S3 案 a）：breaks 直讀原始
+        // 文字碼點偏移（from_docx_bytes），填充讓 texts 碼點軸右移，斷點
+        // 位置即與文字錯位（填充越長錯越多）。同段共現 corpus 0/400 但
+        // web 編輯器打「標題....頁碼」＋插分頁就踩。誠實退化：寧可少畫
+        // 點引，不可錯斷頁（與「無錨點不虛構」同一取徑）。
         let leader_ch = match p.tab_leader.as_deref() {
             Some("dot") => Some('.'),
             Some("underscore") => Some('_'),
             Some("hyphen") => Some('-'),
             _ => None,
         };
-        if let (Some(pos), Some(ch)) = (p.tab_right_pt, leader_ch) {
+        // 顯式分頁段：取消導引字元＝整段跳過填充展開（見上注）。
+        let leader_fill = if p.page_breaks.is_empty() {
+            leader_ch
+        } else {
+            None
+        };
+        if let (Some(pos), Some(ch)) = (p.tab_right_pt, leader_fill) {
             if let Some(ti) = eff_runs.iter().position(|r| r.tab) {
                 if widths.len() > pi {
                     let m = TextMeasurer::new(meas_size);
@@ -1953,6 +1999,218 @@ mod tests {
                 eng.page_display_list_json(p).is_some(),
                 "第 {p} 頁顯示列表缺失"
             );
+        }
+    }
+
+    // ---------------- 樣式級聯返修（t_5b391cfd S1–S4＋測試缺口） ----------------
+
+    /// S1＋量化佔帶＋break_before＋leader×br（fixture 四合一；形態由
+    /// scripts/gen_style_cascade_fixture.py 落地）。
+    /// - pPr/rPr 自閉合 `<w:b/>` 段（內容 run 零 rPr）→ 級聯必須把 FLAG_BOLD
+    ///   送達 display list（修前 prun=None → flags 恆 0）；
+    /// - 24pt Heading1 段行高 33.6pt > 帶尺 16.8pt → 佔 2 帶：大字段與緊鄰
+    ///   下段的 y 距必須是 2×行高（量化佔帶路徑的產物鎖——3-1b 教訓：宣稱
+    ///   「尺不變」只證了未觸發面，本斷言咬住已觸發面）；
+    /// - pageBreakBefore 段必須從頁首（y＝top margin）起頭（break_before_of）；
+    /// - 同段 leader＋br-page：填充不得展開（S3 案 a 誠實退化），且 br 後
+    ///   段落從新頁起頭（斷點碼點不偏移）。
+    #[test]
+    fn style_cascade_fixture_bold_bands_break_and_leader_br() {
+        const FX: &[u8] = include_bytes!("../../../fixtures/style_cascade.docx");
+        let engine = Engine::from_docx_bytes(FX).expect("開啟 style_cascade.docx 失敗");
+        let line_h = engine.params.line_h_pt();
+        // 頁頂＝該頁 section 的 top margin（發射層 y 座標的原點，同頁必同值）。
+        let top_of = |page: usize| engine.layout.pages()[page].margin_top_pt;
+
+        // --- S1：段落級自閉合 b → display list flags ---
+        let bold_item = (0..engine.page_count())
+            .flat_map(|p| engine.page_display_list(p).expect("頁存在").items)
+            .find_map(|it| match it {
+                DrawItem::Text { text, flags, .. } if text == "段落級自閉合粗體" => {
+                    Some(flags)
+                }
+                _ => None,
+            })
+            .expect("自閉合 b 段文字必須發射");
+        assert_ne!(
+            bold_item & FLAG_BOLD,
+            0,
+            "pPr/rPr 自閉合 <w:b/>（run 群零 rPr）級聯後必須帶 FLAG_BOLD"
+        );
+        // 對照：直接格式粗體綠字照舊（回歸面不破）。
+        let direct = (0..engine.page_count())
+            .flat_map(|p| engine.page_display_list(p).expect("頁存在").items)
+            .find_map(|it| match it {
+                DrawItem::Text {
+                    text,
+                    flags,
+                    color_argb,
+                    ..
+                } if text == "直接格式粗體綠字" => Some((flags, color_argb)),
+                _ => None,
+            })
+            .expect("直接格式段文字必須發射");
+        assert_ne!(direct.0 & FLAG_BOLD, 0);
+        assert_eq!(direct.1, 0xFF00_FF00);
+
+        // --- 量化佔帶：24pt 大字段＋緊鄰下段 y 距＝2×行高 ---
+        let all: Vec<(usize, f32, f32, String)> = (0..engine.page_count())
+            .flat_map(|p| {
+                engine
+                    .page_display_list(p)
+                    .expect("頁存在")
+                    .items
+                    .into_iter()
+                    .filter_map(move |it| match it {
+                        DrawItem::Text {
+                            x,
+                            y,
+                            size_pt,
+                            text,
+                            ..
+                        } => Some((p, y, x, (text, size_pt))),
+                        _ => None,
+                    })
+                    .map(|(p, y, x, (text, size_pt))| (p, y, x, format!("{text}|{size_pt}")))
+            })
+            .collect();
+        let (head_p, head_y, _, _) = *all
+            .iter()
+            .find(|(_, _, _, k)| k.starts_with("大字標題二十六磅|"))
+            .expect("大字段必須發射");
+        let (_, next_y, _, _) = all
+            .iter()
+            .filter(|(p, y, _, _)| *p == head_p && *y > head_y)
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .expect("大字段同頁之後必有其他行");
+        let gap = next_y - head_y;
+        assert!(
+            (gap - 2.0 * line_h).abs() < 0.5,
+            "24pt 段行高 33.6pt→ceil(33.6/16.8)=2 帶：下段 y 距應 2×行高={}，實得 gap={gap} head_y={head_y} next_y={next_y}",
+            2.0 * line_h
+        );
+
+        // --- break_before_of：pageBreakBefore 段從頁首起頭 ---
+        let pb = all
+            .iter()
+            .find(|(_, _, _, k)| k.starts_with("強制換頁段從新頁起頭|"))
+            .expect("pageBreakBefore 段必須發射");
+        let first_on_page = all
+            .iter()
+            .filter(|(p, ..)| *p == pb.0)
+            .map(|(_, y, _, _)| *y)
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            (pb.1 - first_on_page).abs() < 0.01,
+            "pageBreakBefore 段必須是所在頁最頂行（y={}，頁頂={}）",
+            pb.1,
+            first_on_page
+        );
+        assert!(
+            (pb.1 - top_of(pb.0)).abs() < 0.01,
+            "頁首起頭＝margin_top_pt，實得 {}",
+            pb.1
+        );
+
+        // --- leader 正常展開（同段無 br）：點引填充確實出現 ---
+        let all_lines: Vec<String> = (0..engine.page_count())
+            .flat_map(|p| engine.page_lines(p).unwrap_or_default())
+            .collect();
+        let leader_lines = all_lines.iter().find(|l| l.contains("目錄條目前綴"));
+        assert!(
+            leader_lines.is_some_and(|l| l.contains('.')),
+            "無 br 的 leader 段必須照常展開點引填充（既有行為不破）：{:?}",
+            leader_lines
+        );
+
+        // --- S3：同段 leader＋br-page → 不展開填充；br 後段從新頁起頭 ---
+        let s3_lines: Vec<String> = (0..engine.page_count())
+            .flat_map(|p| engine.page_lines(p).unwrap_or_default())
+            .collect();
+        let s3 = s3_lines
+            .iter()
+            .find(|l| l.contains("分頁段前綴"))
+            .expect("br×leader 段必須發射");
+        assert!(
+            !s3.contains('.'),
+            "page_breaks 非空段填充必須取消（S3 案 a），實得 {s3:?}"
+        );
+        let tail = all
+            .iter()
+            .find(|(_, _, _, k)| k.starts_with("分頁後的尾段|"))
+            .expect("br 後段必須發射");
+        let tail_first = all
+            .iter()
+            .filter(|(p, ..)| *p == tail.0)
+            .map(|(_, y, _, _)| *y)
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            (tail.1 - tail_first).abs() < 0.01 && (tail.1 - top_of(tail.0)).abs() < 0.01,
+            "br-page 後段必須從新頁頁首起頭（y={}）",
+            tail.1
+        );
+    }
+
+    /// S4：編輯級聯段後 paras_eff 必須同步——帶自閉合 b 的段整段置換後，
+    /// 新文字仍帶 FLAG_BOLD（修前：舊 run 碼點區間套新文字 → flags 錯映／
+    /// 填充永久丟失）。round-trip 鐵律不受影響（編輯走 layout，parts 不動）。
+    #[test]
+    fn edit_syncs_paras_eff_styles_and_round_trip() {
+        const FX: &[u8] = include_bytes!("../../../fixtures/style_cascade.docx");
+        let mut engine = Engine::from_docx_bytes(FX).expect("開啟失敗");
+        while !engine.is_settled() {
+            engine.reflow_step_json();
+        }
+        engine.replace_paragraph_text(0, "改後新文字");
+        while !engine.is_settled() {
+            engine.reflow_step_json();
+        }
+        assert_eq!(engine.paragraph_text(0).as_deref(), Some("改後新文字"));
+        let edited = (0..engine.page_count())
+            .flat_map(|p| engine.page_display_list(p).expect("頁存在").items)
+            .find_map(|it| match it {
+                DrawItem::Text { text, flags, .. } if text == "改後新文字" => Some(flags),
+                _ => None,
+            })
+            .expect("編輯後新文字必須發射");
+        assert_ne!(
+            edited & FLAG_BOLD,
+            0,
+            "編輯後段落仍承載段落級級聯粗體（paras_eff 未同步時此處歸 0）"
+        );
+        // round-trip：parts passthrough——發射投影 edits 不得污染存檔。
+        let saved = engine.save_docx().expect("存檔");
+        assert_eq!(saved.as_slice(), FX, "編輯發射投影後存檔仍須位元組級相同");
+    }
+
+    /// S2：病態數值（sz=4e12 半磅、line=999999999、sz="1e400"→inf）——
+    /// 開啟不 panic（debug 建置帶整數溢出檢查）、頁數確定（兩次開啟一致、
+    /// 全速與預算制收斂同頁數）、全頁顯示列表可取、重排有限步定案。
+    #[test]
+    fn pathological_sizes_are_stable() {
+        const PX: &[u8] = include_bytes!("../../../fixtures/style_pathological.docx");
+        let a = Engine::from_docx_bytes(PX).expect("病態檔開啟不可 panic");
+        let b = Engine::from_docx_bytes(PX).expect("重開不可 panic");
+        assert_eq!(a.page_count(), b.page_count(), "頁數須確定性");
+        assert!(a.page_count() >= 1, "至少一頁（病態段不得吞掉版面）");
+        for p in 0..a.page_count() {
+            assert!(
+                a.page_display_list_json(p).is_some(),
+                "第 {p} 頁顯示列表缺失"
+            );
+        }
+        // 增量重排路徑（cur_used saturating 的第二條入口）：編輯後必有限步定案。
+        let mut c = Engine::from_docx_bytes(PX).unwrap();
+        c.set_sync_budget(Some(1));
+        c.replace_paragraph_text(0, "病態檔上的編輯");
+        let mut guard = 0usize;
+        while !c.is_settled() {
+            c.reflow_step_json();
+            guard += 1;
+            assert!(guard < 1000, "病態檔背景重排必須有限步內定案");
+        }
+        for p in 0..c.page_count() {
+            assert!(c.page_display_list_json(p).is_some());
         }
     }
 }
