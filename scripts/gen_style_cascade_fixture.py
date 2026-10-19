@@ -70,10 +70,11 @@ BODY = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 # 不 panic、頁數確定（兩次開啟一致）、全頁顯示列表可取、重排有限步定案。
 PATHOLOGICAL = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document {W}><w:body>
-<w:p><w:pPr><w:spacing w:line="999999999" w:lineRule="auto"/></w:pPr><w:r><w:t>超大行距段</w:t></w:r></w:p>
+<w:p><w:r><w:t>病態檔基準段：正常段排在前，讓病態段落在 cur_used 非零的頁上（紅燈形態）。</w:t></w:r></w:p>
 <w:p><w:r><w:rPr><w:sz w:val="4000000000000"/></w:rPr><w:t>超大字級段</w:t></w:r></w:p>
 <w:p><w:r><w:rPr><w:sz w:val="1e400"/></w:rPr><w:t>無限字級段</w:t></w:r></w:p>
-<w:p><w:r><w:t>病態檔基準段</w:t></w:r></w:p>
+<w:p><w:pPr><w:spacing w:line="99999999999999" w:lineRule="auto"/></w:pPr><w:r><w:t>超大行距段</w:t></w:r></w:p>
+<w:p><w:pPr><w:spacing w:line="999999999" w:lineRule="exact"/></w:pPr><w:r><w:t>超大固定行距段</w:t></w:r></w:p>
 {''.join(f'<w:p><w:r><w:t>病態填充第{i}段確保分頁狀態機走完全部頁面而不繞回。</w:t></w:r></w:p>' for i in range(30))}
 <w:sectPr>
 <w:pgSz w:w="11906" w:h="16838"/>

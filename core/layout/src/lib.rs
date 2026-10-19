@@ -3458,11 +3458,13 @@ mod tests {
             2,
             "段 1 行佔 2 帶：其後行帶距應 2，實得 {bands:?}"
         );
-        // 飽和守衛（S2 柵欄面）：超大 bands 不得 panic／死迴圈——游標逐項
-        // 前進、每段被 cap 強推各自成頁，有限頁收尾。
+        // 飽和守衛（S2 柵欄面）：間隔超大 bands——正常行把 cur_used 抬到
+        // (0, cap) 後，巨型帶段在**未換頁**分支直接相加：修前 debug panic
+        // ／release 繞回；修後 saturating 收斂（飽和態 cur_used >= cap
+        // 恆真＝每項強換頁，游標逐項前進、有限頁收尾）。
         let huge = ParaGrid {
             size_pt: vec![],
-            bands: vec![u32::MAX; 4],
+            bands: vec![1, u32::MAX, 1, u32::MAX],
             break_before: vec![],
         };
         let eng_h = LayoutEngine::with_breaks_grid(
@@ -3474,12 +3476,19 @@ mod tests {
             Vec::new(),
             huge,
         );
-        assert!(eng_h.page_count() >= 4, "巨型帶數每段自成一頁以上");
+        assert_eq!(
+            eng_h.page_count(),
+            2,
+            "飽和語義：頁1＝正常段＋巨型段（溢出後飽和），頁2＝正常段＋巨型段"
+        );
+        let total_lines: usize = eng_h.pages().iter().map(|pg| pg.lines.len()).sum();
+        assert_eq!(total_lines, texts.len(), "飽和態不得吞行");
         assert!(
             eng_h.page_count() <= texts.len() + 2,
             "飽和態不得爆炸性增頁：{}",
             eng_h.page_count()
         );
+        assert_layout_invariants(&eng_h, "飽和巨型帶");
     }
 
     fn text_only(t: &str) -> Vec<String> {
