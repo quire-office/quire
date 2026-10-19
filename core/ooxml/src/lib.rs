@@ -84,6 +84,10 @@ pub struct Run {
     /// 存檔路徑完全不經它（parts passthrough），serde default 保舊快照相容。
     #[serde(default)]
     pub size_pt: Option<f32>,
+    /// run 內含製表符（`w:tab`；t_5dfc8ac7）。文字欄不動（tab 不是字元），
+    /// engine 投影時以「前綴→點導引填補」展開（TOC 點引leads）。
+    #[serde(default)]
+    pub tab: bool,
 }
 
 /// 本卡支援的頁碼欄位型別（其余欄位名如 SECTIONPAGES／DATE 老實保留快取文字）。
@@ -153,6 +157,18 @@ pub struct Paragraph {
     /// 段落直接對齊宣告（`w:pPr/w:jc/@w:val`；本卡解析保留，發射不消費）。
     #[serde(default)]
     pub jc: Option<Align>,
+    /// 顯式分頁（`w:br/@w:type="page"` 於段內任一 run，或 `w:pPr/w:pageBreakBefore`；
+    /// t_5dfc8ac7）。段級語義＝本段從新頁開始（br 在段中後段 Word 會斷段內文，
+    /// 本引擎粗化整段推頁——頁數同、不虛構段內切片）。存檔不經此欄位。
+    #[serde(default)]
+    pub page_break: bool,
+    /// 首個右對齊製表位（`w:pPr/w:tabs/w:tab/@w:pos`，pt；t_5dfc8ac7）。
+    /// TOC 點引leads 的對齊目標；無宣告＝None。
+    #[serde(default)]
+    pub tab_right_pt: Option<f32>,
+    /// 該製表位導引字元（`w:tab/@w:leader` 原值：dot/hyphen/underscore/…）。
+    #[serde(default)]
+    pub tab_leader: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,6 +283,54 @@ pub(crate) fn toggle_attr_on(e: &quick_xml::events::BytesStart) -> bool {
             v.trim().to_ascii_lowercase().as_str(),
             "none" | "false" | "0" | "off"
         ),
+    }
+}
+
+/// 段落級分頁/製表位標籤（Start 與 Empty 共用；t_5dfc8ac7）。呼叫端已保证
+/// 處於 pPr 區（ppr_depth==1 且非 pPr/rPr）或 run 區（依標籤各自判定）。
+/// - `w:br/@w:type="page"`：段級顯式分頁（見 `Paragraph::page_break` 注）。
+/// - `w:pageBreakBefore`：同上（開關語義同 toggle_attr_on）。
+/// - `w:tabs/w:tab`：首個 `val="right"` 的製表位（pos twips→pt）＋leader。
+/// - run 內 `w:tab`：製表符標記（文字欄不動，engine 投影展開）。
+fn apply_break_tab_tag(
+    name: &[u8],
+    e: &quick_xml::events::BytesStart,
+    p: &mut Paragraph,
+    cur_run: &mut Option<Run>,
+    ppr_depth: u32,
+    ppr_rpr_depth: u32,
+) {
+    match name {
+        b"br" => {
+            // br 只在 run 區有意義（pPr 區出現＝畸形檔，不收）。
+            if cur_run.is_some() && attr_val(e, "type").as_deref() == Some("page") {
+                p.page_break = true;
+            }
+        }
+        b"pageBreakBefore" if ppr_depth == 1 && ppr_rpr_depth == 0 => {
+            p.page_break |= toggle_attr_on(e);
+        }
+        b"tab" => {
+            if cur_run.is_some() {
+                // run 內 w:tab：run 級標記（無文字產出；投影層展開）。
+                cur_run.as_mut().expect("剛查 some").tab = true;
+            } else if ppr_depth == 1
+                && ppr_rpr_depth == 0
+                && p.tab_right_pt.is_none()
+                && attr_val(e, "val").as_deref() == Some("right")
+            {
+                // pPr/w:tabs/w:tab：只取首個右對齊位（本引擎 leads 錨點）。
+                // ppr_depth 守門：tblPr/w:tblTabs 的 w:tab（表格尺度）不收。
+                if let Some(twips) = attr_val(e, "pos")
+                    .as_deref()
+                    .and_then(|v| v.trim().parse::<f64>().ok())
+                {
+                    p.tab_right_pt = Some((twips / 20.0) as f32);
+                    p.tab_leader = attr_val(e, "leader");
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -430,6 +494,19 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                             p.jc = styles::align_of(attr_val(&e, "val").as_deref());
                         }
                     }
+                    // 顯式分頁＋製表位（t_5dfc8ac7）：br/tab 皆非 pPr-rPr 區語義。
+                    b"br" | b"tab" if ppr_rpr_depth == 0 => {
+                        if let Some((_, p)) = stack.last_mut() {
+                            apply_break_tab_tag(
+                                name.as_slice(),
+                                &e,
+                                p,
+                                &mut cur_run,
+                                ppr_depth,
+                                ppr_rpr_depth,
+                            );
+                        }
+                    }
                     // pPr 直下的 w:rPr 內容：收進段落棧頂的三態快照（段落級
                     // 級聯輸入）。ppr_rpr_depth>0 時 run 標籤**不得**走下方
                     // apply_style_tag（會把段落標記屬性誤灌給進行中的 run）。
@@ -536,6 +613,18 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                 } else if name == b"jc" && ppr_depth == 1 && ppr_rpr_depth == 0 {
                     if let Some((_, p)) = stack.last_mut() {
                         p.jc = styles::align_of(attr_val(&e, "val").as_deref());
+                    }
+                } else if matches!(name.as_slice(), b"br" | b"tab") && ppr_rpr_depth == 0 {
+                    // 顯式分頁/製表符（Word 產出恒為自閉合；t_5dfc8ac7）。
+                    if let Some((_, p)) = stack.last_mut() {
+                        apply_break_tab_tag(
+                            name.as_slice(),
+                            &e,
+                            p,
+                            &mut cur_run,
+                            ppr_depth,
+                            ppr_rpr_depth,
+                        );
                     }
                 } else {
                     apply_style_tag(

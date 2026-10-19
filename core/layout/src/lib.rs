@@ -309,12 +309,21 @@ pub struct ParaGrid {
     pub size_pt: Vec<f32>,
     /// 逐段每行佔用帶數（engine 算 ceil(段行高/文件帶尺)，至少 1）；缺＝1。
     pub bands: Vec<u32>,
+    /// 逐段顯式分頁旗標（`w:br type="page"`／`w:pageBreakBefore`；t_5dfc8ac7）：
+    /// true＝該段錨點的流項前強制換頁（Word 語義；段內 br 粗化為整段推頁）。
+    /// 缺＝false（全域無宣告＝舊行為）。純 (flow,fi) 函數——增量重排復入同樣成立。
+    pub break_before: Vec<bool>,
 }
 
 impl ParaGrid {
     /// 段落 i 的斷行字級（缺＝全域 fallback）。
     pub fn size_of(&self, para: usize, fallback: f32) -> f32 {
         self.size_pt.get(para).copied().unwrap_or(fallback)
+    }
+
+    /// 段落 i 前是否強制換頁（缺＝false）。
+    pub fn break_before_of(&self, para: usize) -> bool {
+        self.break_before.get(para).copied().unwrap_or(false)
     }
 
     /// 段落 i 每行佔用帶數（缺＝1；恒 ≥1，行至少佔一格）。
@@ -655,6 +664,16 @@ fn pack_run(
         let start_new = match st.cur_spec {
             // section 邊界（非 continuous）一律換頁；同尺寸也換。
             Some(prev) if prev.id != spec.id => !spec.geo.continuous,
+            // 顯式分頁（t_5dfc8ac7）：該段首行前一律換頁（Word pageBreakBefore／
+            // 段內 w:br type="page" 的段級粗化）。純 flow 輸入函數：增量復入、
+            // 收斂比較皆決定性。首項（None＝本页尚无内容）不换頁——游標前已
+            // flush，段本就從頁首起，無須空白頁。
+            Some(_)
+                if li == 0
+                    && matches!(&flow[fi], FlowItem::Text { para } if grid.break_before_of(*para)) =>
+            {
+                true
+            }
             Some(_) => {
                 st.cur_used >= cap as u32
                     || (item_bands > 0
