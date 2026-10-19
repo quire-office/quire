@@ -329,11 +329,19 @@ fn apply_break_tab_tag(
             {
                 // pPr/w:tabs/w:tab：只取首個右對齊位（本引擎 leads 錨點）。
                 // ppr_depth 守門：tblPr/w:tblTabs 的 w:tab（表格尺度）不收。
-                if let Some(twips) = attr_val(e, "pos")
+                // 數值守衛（t_16a13211 R2）：parse::<f64> 對 "1e45"/
+                // "Infinity"/"NaN" 都成功，病態值直進 tab_right_pt 會讓
+                // engine leads 展開算出 inf→ usize 飽和、4000 字元填充撐爆
+                // 版面。口徑同 styles.rs MAX_OOXML_LONG 族：f64 值域＋鏡像
+                // f32 後再驗 finite。
+                if let Some(pt) = attr_val(e, "pos")
                     .as_deref()
                     .and_then(|v| v.trim().parse::<f64>().ok())
+                    .filter(|v| v.is_finite() && v.abs() <= styles::MAX_OOXML_LONG)
+                    .map(|v| (v / 20.0) as f32)
+                    .filter(|v| v.is_finite())
                 {
-                    p.tab_right_pt = Some((twips / 20.0) as f32);
+                    p.tab_right_pt = Some(pt);
                     p.tab_leader = attr_val(e, "leader");
                 }
             }
@@ -1490,5 +1498,43 @@ mod tests {
             .as_bytes();
         let paras = parse_document_xml(xml).expect("解析");
         assert_eq!(paras[0].page_breaks, vec![3], "中文字 2＋emoji 碼點 1＝3");
+    }
+
+    // ---------------- tab@pos 數值守衛（t_16a13211 R2） ----------------
+
+    /// `pPr/w:tabs/w:tab/@w:pos` 病態值（t_16a13211 R2）：`parse::<f64>` 對
+    /// 「1e45」「Infinity」「NaN」都成功，舊實作無過濾直進 `tab_right_pt` →
+    /// engine `cascade_paragraphs` 算 `need = pos − …` 得 inf，`(need/dot_w)
+    /// .floor() as usize` 飽和 usize::MAX 再被 min(4000) 截住——不 OOM 但炸開
+    /// 4000 字元填充撐爆版面。守衛口徑同 styles.rs `MAX_OOXML_LONG` 族。
+    #[test]
+    fn tab_pos_guard_rejects_non_finite_and_huge() {
+        let paras = parse_document_xml(
+            r#"<w:document xmlns:w="x"><w:body>
+              <w:p><w:pPr><w:tabs><w:tab w:val="right" w:pos="1e45" w:leader="dot"/></w:tabs></w:pPr>
+                 <w:r><w:t>a</w:t></w:r></w:p>
+              <w:p><w:pPr><w:tabs><w:tab w:val="right" w:pos="Infinity"/></w:tabs></w:pPr>
+                 <w:r><w:t>b</w:t></w:r></w:p>
+              <w:p><w:pPr><w:tabs><w:tab w:val="right" w:pos="NaN"/></w:tabs></w:pPr>
+                 <w:r><w:t>c</w:t></w:r></w:p>
+              </w:body></w:document>"#
+                .as_bytes(),
+        )
+        .expect("解析");
+        for (i, p) in paras.iter().enumerate() {
+            assert_eq!(p.tab_right_pt, None, "第 {i} 段：病態 pos 必須拒收");
+            assert_eq!(p.tab_leader, None, "第 {i} 段：拒收時 leader 不得單飛");
+        }
+        // 過度修正防護：正常 twips（4680=234pt）與負值（罕見但字面合法）照收。
+        let paras = parse_document_xml(
+            r#"<w:document xmlns:w="x"><w:body>
+              <w:p><w:pPr><w:tabs><w:tab w:val="right" w:pos="4680" w:leader="dot"/></w:tabs></w:pPr>
+                 <w:r><w:t>a</w:t></w:r></w:p>
+              </w:body></w:document>"#
+                .as_bytes(),
+        )
+        .expect("解析");
+        assert_eq!(paras[0].tab_right_pt, Some(234.0));
+        assert_eq!(paras[0].tab_leader.as_deref(), Some("dot"));
     }
 }

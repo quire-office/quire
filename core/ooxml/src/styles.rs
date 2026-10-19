@@ -118,9 +118,12 @@ pub struct ParaStyle {
 /// 一張 `w:style` 的自帶宣告（未沿鏈合成前）。
 #[derive(Debug, Clone, Default)]
 struct OwnStyle {
-    /// 合成序視角：`w:rPr` ∪ `w:pPr/w:rPr`（段落樣式兩處 rPr 對段內 run
-    /// 同時生效；rPr 直接宣告優先——與 LO/Word 合成行為一致）。
+    /// 主 `w:rPr`（ECMA §17.7.2.3 style run properties）——段內文字的唯一
+    /// 風格來源。與 `ppr_run` 分欄存放（t_16a13211 R3）：合成時固定
+    /// `run.overlay(&ppr_run)`，優先序是語義、不是 XML 出現序。
     run: RunStyle,
+    /// `w:pPr/w:rPr`（段落標記 run 屬性）：對段內 run 只補主 rPr 未宣告欄。
+    ppr_run: RunStyle,
     line: Option<LineSpacing>,
     align: Option<Align>,
     based_on: Option<String>,
@@ -176,7 +179,9 @@ pub struct StyleTable {
 /// OOXML 整數值域上限（病態檔守衛）。判據與 `drawing.rs` 的 `MAX_OOXML_LONG`
 /// 同源（該檔屬 t_c1fb4c69 熱區，本卡不動它，此處以同值常數鏡像）。
 /// 超出＝畸形宣告，老實拒收（不猜、不把天文數字帶進斷行/分頁算術）。
-const MAX_OOXML_LONG: f64 = i64::MAX as f64;
+/// `pub(crate)`：`lib.rs` 的 `w:tabs/w:tab/@w:pos` 數值守衛共用同一口徑
+/// （t_16a13211 R2）。
+pub(crate) const MAX_OOXML_LONG: f64 = i64::MAX as f64;
 
 /// `w:sz/@w:val`（半磅）→ pt。非法/缺＝None（容錯鐵律：不猜）。
 /// 畸形超大值（`parse::<f64>` 可吐出 inf／天文數字）一律拒收：舊實作只濾
@@ -458,7 +463,9 @@ impl StyleTable {
                         }
                         b"rPr" => {
                             if let Some((_, own)) = cur.as_mut() {
-                                // rPr 直接宣告優先於 pPr/rPr（後面 pPr 分支 overlay 時）。
+                                // 主 rPr（style run properties）：段內文字的
+                                // 唯一風格來源（t_16a13211 R3）。同 style 內
+                                // 重複宣告＝首見為準。
                                 own.run = own.run.overlay(&parse_rpr_body(&mut reader));
                             }
                         }
@@ -473,9 +480,12 @@ impl StyleTable {
                                 }
                                 // 段落樣式的 pPr/rPr（段落標記 run 屬性）對段內
                                 // 所有 run 生效（Word 段落標記/內容共用基底）；
-                                // 樣式自帶 w:rPr（ECMA §17.7.2.3 的 style run
-                                // properties）優先，pPr/rPr 只補未宣告欄位。
-                                own.run = own.run.overlay(&r);
+                                // 但只補主 w:rPr 未宣告欄（ECMA §17.7.2.3）。
+                                // 分欄存放（t_16a13211 R3）：標準 CT_Style 序
+                                // pPr 在 rPr 之前，就地 overlay 會讓先解析的
+                                // pPr/rPr 反客為主——合成式固定主 rPr 贏在
+                                // resolve_cached。
+                                own.ppr_run = own.ppr_run.overlay(&r);
                             }
                         }
                         _ => {}
@@ -597,8 +607,11 @@ impl StyleTable {
             }
             None => (doc, RunStyle::default()),
         };
-        // 本樣式自帶（rPr ∪ pPr/rPr）疊在父合成結果上；段落欄位缺位補父。
-        let run = own.run.overlay(&parent.0);
+        // 本樣式自帶疊在父合成結果上：先固定 `run.overlay(&ppr_run)`（主
+        // rPr 贏段落標記 rPr，ECMA §17.7.2.3；t_16a13211 R3——優先序與 XML
+        // 出現序無關），再補父缺；段落欄位缺位補父。
+        let own_run = own.run.overlay(&own.ppr_run);
+        let run = own_run.overlay(&parent.0);
         let para = ParaStyle {
             run,
             line: own.line.or(parent.1.line),
@@ -607,7 +620,7 @@ impl StyleTable {
         let hit = (run, para);
         self.resolved.insert(id.to_string(), hit);
         self.chain
-            .insert(id.to_string(), own.run.overlay(&parent_chain));
+            .insert(id.to_string(), own_run.overlay(&parent_chain));
         hit
     }
 
@@ -825,6 +838,64 @@ mod tests {
         assert_eq!(base.size_pt, Some(10.0)); // 樣式級（段落直接 rPr 未宣告 sz）。
         assert_eq!(base.italic, Some(true)); // 段落直接 rPr。
         assert_eq!(para.align, Some(Align::Center)); // jc 解析保留。
+    }
+
+    #[test]
+    fn style_main_rpr_beats_ppr_rpr_regardless_of_xml_order() {
+        // ECMA-376 §17.7.2.3（t_16a13211 R3）：style 的主 `w:rPr`（style run
+        // properties）對段內文字生效；`pPr/w:rPr` 是段落標記 run 屬性。段內
+        // run 以主 rPr 為準。標準 CT_Style 序列 pPr 在 rPr **之前**——舊實作
+        // 「先解析者贏」讓 Word 規範序反客為主（pPr/rPr 覆蓋主 rPr 同名欄）。
+        // 修法＝OwnStyle 拆 run/ppr_run 兩欄，合成時固定主 rPr 優先。
+        let t = table(wrap(
+            r#"<w:style w:type="paragraph" w:styleId="S">
+                 <w:pPr><w:rPr><w:sz w:val="20"/><w:i/></w:rPr></w:pPr>
+                 <w:rPr><w:sz w:val="40"/></w:rPr>
+               </w:style>"#,
+        ));
+        let (base, _) = t.effective_para(Some("S"), ParaStyle::default());
+        assert_eq!(
+            base.size_pt,
+            Some(20.0),
+            "主 rPr sz=40（半磅）贏 pPr/rPr sz=20"
+        );
+        assert_eq!(
+            base.italic,
+            Some(true),
+            "pPr/rPr 未與主 rPr 衝突的欄位照常補缺"
+        );
+        // 出現序反轉（非規範序）不得翻轉結果——優先序是語義，不是 XML 順。
+        let t2 = table(wrap(
+            r#"<w:style w:type="paragraph" w:styleId="S">
+                 <w:rPr><w:sz w:val="40"/></w:rPr>
+                 <w:pPr><w:rPr><w:sz w:val="20"/><w:i/></w:rPr></w:pPr>
+               </w:style>"#,
+        ));
+        let (base2, _) = t2.effective_para(Some("S"), ParaStyle::default());
+        assert_eq!(base2.size_pt, Some(20.0));
+        assert_eq!(base2.italic, Some(true));
+        // basedOn 鏈同口徑：子樣式的 pPr/rPr 不得越過子主 rPr，更不得越過
+        // 子主 rPr 搶父宣告（chain 合成走同一合成式）。
+        let t3 = table(wrap(
+            r#"<w:style w:type="paragraph" w:styleId="P"><w:rPr><w:b/></w:rPr></w:style>
+               <w:style w:type="paragraph" w:styleId="C">
+                 <w:basedOn w:val="P"/>
+                 <w:pPr><w:rPr><w:sz w:val="20"/></w:rPr></w:pPr>
+                 <w:rPr><w:sz w:val="40"/></w:rPr>
+               </w:style>"#,
+        ));
+        let (base3, _) = t3.effective_para(Some("C"), ParaStyle::default());
+        assert_eq!(base3.size_pt, Some(20.0), "子主 rPr 贏本子 pPr/rPr");
+        assert_eq!(base3.bold, Some(true), "父宣告照常沿鏈補缺");
+        // 字元樣式純鏈（chain）同口徑：pPr/rPr 只補缺、不蓋主 rPr。
+        let t4 = table(wrap(
+            r#"<w:style w:type="character" w:styleId="K">
+                 <w:pPr><w:rPr><w:sz w:val="20"/></w:rPr></w:pPr>
+                 <w:rPr><w:sz w:val="40"/></w:rPr>
+               </w:style>"#,
+        ));
+        let chain = t4.char_chain("K").expect("字元樣式純鏈");
+        assert_eq!(chain.size_pt, Some(20.0));
     }
 
     #[test]

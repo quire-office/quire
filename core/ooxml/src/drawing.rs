@@ -570,13 +570,17 @@ impl DrawingParser {
         if let Some(p) = self.graphic.as_mut() {
             if let Some(vertical) = p.capture {
                 // posOffset 合法值含負數（版心外偏移）：不套 emu_to_pt 的正數
-                // 限制，只守 finite。
-                let parsed = text.trim().parse::<f64>().ok().map(|x| {
-                    (x / EMU_PER_PT)
-                        .is_finite()
-                        .then_some((x / EMU_PER_PT) as f32)
-                });
-                if let Some(Some(val)) = parsed {
+                // 限制，但守衛同 emu_to_pt 口徑補齊**鏡像後**那層（t_16a13211
+                // R1）：舊實作只查 f64 域 finite，4.3e43÷12700 在 f64 有限、
+                // `as f32` 溢出成 inf 照收——inf 座標流入顯示幾何。
+                let parsed = text
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|x| x.is_finite() && x.abs() <= MAX_OOXML_LONG)
+                    .map(|x| (x / EMU_PER_PT) as f32)
+                    .filter(|v| v.is_finite());
+                if let Some(val) = parsed {
                     if vertical {
                         if p.pos_y_pt.is_none() {
                             p.pos_y_pt = Some(val);
@@ -880,6 +884,42 @@ mod tests {
         );
         let imgs = read_images(xml.as_bytes());
         assert_eq!(imgs[0].anchor_lock_pt(), Some((10.0, 2.0)));
+    }
+
+    #[test]
+    fn posoffset_beyond_f32_range_rejected() {
+        // 病態檔（t_16a13211 R1）：4.3e43 EMU ÷12700 在 f64 有限（≈3.4e39），
+        // 但 `as f32` 溢出成 inf——舊守衛只查 f64 域，inf 直接進 pos_x_pt／
+        // pos_y_pt 流入顯示幾何。修法＝f64 值域＋f32 鏡像後雙重守衛（同
+        // emu_to_pt 口徑，t_c1fb4c69 守衛族補齊本臂）。
+        let xml = doc(
+            r#"<w:p><w:r><w:drawing><wp:anchor><wp:positionH relativeFrom="column">
+               <wp:posOffset>4.3e43</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page">
+               <wp:posOffset>-4.3e43</wp:posOffset></wp:positionV><wp:extent cx="127000" cy="127000"/>
+               </wp:anchor></w:drawing></w:r></w:p>"#,
+        );
+        let imgs = read_images(xml.as_bytes());
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(
+            imgs[0].pos_x_pt, None,
+            "f32 鏡像溢出＝拒收，inf 不得流入下游幾何"
+        );
+        assert_eq!(imgs[0].pos_y_pt, None, "負號側同口徑");
+        assert_eq!(
+            imgs[0].anchor_lock_pt(),
+            None,
+            "鎖點不可用→呼叫端退化 inline"
+        );
+        // 過度修正防護：合法負偏移（版心外）照樣採納——本臂不得套 emu_to_pt
+        // 的正數限制，只補鏡像後 finite 那層。
+        let xml2 = doc(
+            r#"<w:p><w:r><w:drawing><wp:anchor><wp:positionH relativeFrom="column">
+               <wp:posOffset>-127000</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page">
+               <wp:posOffset>25400</wp:posOffset></wp:positionV><wp:extent cx="127000" cy="127000"/>
+               </wp:anchor></w:drawing></w:r></w:p>"#,
+        );
+        let imgs2 = read_images(xml2.as_bytes());
+        assert_eq!(imgs2[0].anchor_lock_pt(), Some((-10.0, 2.0)));
     }
 
     #[test]
