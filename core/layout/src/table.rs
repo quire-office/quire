@@ -888,7 +888,8 @@ fn compute_row_heights(tl: &mut TableLayout, input: &TableInput) {
         let mut bands = natural;
         if let Some(row) = input.rows.get(ri) {
             if let Some(h) = row.height_pt {
-                let need = (h / tl.line_h).ceil() as u32;
+                // 帶量化鉗上限（S1-4）：垃圾 trHeight 不得量化出天量帶數。
+                let need = quant_bands(h, tl.line_h);
                 bands = if row.height_exact {
                     need.max(1)
                 } else {
@@ -1936,6 +1937,41 @@ mod tests {
             "整片可見→高＝extent：{}",
             im.h_pt
         );
+    }
+
+    /// S1-4（t_c1fb4c69）：病態巨大 trHeight（w:trHeight val 垃圾→天量 pt）
+    /// ——列帶量化 `(h/line_h).ceil() as u32` 飽和成 u32::MAX 會拖垮切片與
+    /// 分頁迴圈：老實鉗到 [`crate::MAX_PAGE_BANDS`]。
+    #[test]
+    fn row_giant_trheight_clamps_bands() {
+        let c = CellInput {
+            blocks: vec![CellBlock::Text("列內文".into())],
+            ..Default::default()
+        };
+        let t = layout_table(
+            &TableInput {
+                grid_pt: vec![300.0],
+                width: Some(WidthSpec::Pt(300.0)),
+                rows: vec![RowInput {
+                    cells: vec![c],
+                    height_pt: Some(f32::MAX),
+                    height_exact: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            400.0,
+            16.8,
+            &measurer(),
+            0,
+        );
+        assert!(
+            t.total_bands <= crate::MAX_PAGE_BANDS,
+            "巨 trHeight 列帶數必鉗上限：{}",
+            t.total_bands
+        );
+        let (_f, _next, used) = t.fragment(0, 0, 8, false, 0.0);
+        assert!(used > 0);
     }
 
     /// S1-4（t_c1fb4c69）：病態巨大圖高（h＝1e39→f32 inf 或天量 pt）進格內
