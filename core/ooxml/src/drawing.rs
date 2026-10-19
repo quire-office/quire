@@ -702,6 +702,13 @@ mod tests {
         assert_eq!(emu_to_pt(Some("-5")), None);
         assert_eq!(emu_to_pt(Some("abc")), None);
         assert_eq!(emu_to_pt(None), None);
+        // 畸形巨大值（t_c1fb4c69 S1-4）：f64 有限但 ÷12700 後 as f32 溢出成 inf
+        // → 必須 None（不採納），否則 inf 高度下游 bands 爆量 OOM。
+        assert_eq!(emu_to_pt(Some("4000000000000000000000")), None);
+        assert_eq!(emu_to_pt(Some("1e39")), None);
+        assert_eq!(emu_to_pt(Some("1e400")), None); // f64 即 inf
+        // 4000 億 EMU ≈ 3.1e7pt：f32 表得住（有限）→ 老實保留（爆量由 bands 上限兜底）。
+        assert!(emu_to_pt(Some("400000000000")).unwrap().is_finite());
     }
 
     #[test]
@@ -730,6 +737,21 @@ mod tests {
         );
         assert_eq!(vml_style_wh(Some("width:50%;height:50%")), (None, None));
         assert_eq!(vml_style_wh(None), (None, None));
+        // 畸形巨大值（t_c1fb4c69 S1-4）：f64 有限、換算後 as f32 溢出成 inf →
+        // 整側 None（字面長數字不走科學記號——本解析器不認 e 記號）。
+        assert_eq!(
+            vml_style_wh(Some(
+                "width:9999999999999999999999999999999999999999999;height:12pt"
+            ))
+            .0,
+            None
+        );
+        assert_eq!(vml_style_wh(Some("width:1e39pt;height:12pt")).0, None); // 非法單位
+        // 4e9in＝2.88e11pt：f32 表得住（有限）→ 老實保留，爆量由 bands 上限兜底。
+        assert!(vml_style_wh(Some("width:4000000000in;height:12pt"))
+            .0
+            .unwrap()
+            .is_finite());
     }
 
     #[test]
@@ -769,6 +791,43 @@ mod tests {
     }
 
     #[test]
+    fn align_only_position_never_captures_textbox_digits() {
+        // capture 狀態洩漏（t_c1fb4c69 S1-5）：positionH/V 用 <wp:align>（無
+        // posOffset）時，on_start 設了 capture 而 on_end 永不重置——之後
+        // w:txbxContent 的文字「123」被當成 EMU 填入 pos_x/pos_y（123/12700
+        // ≈0.0097pt 的幽靈鎖點）。修法＝只在 posOffset 元素啟閉捕獲。
+        let xml = doc(
+            r#"<w:p><w:r><w:drawing><wp:anchor><wp:positionH relativeFrom="column">
+               <wp:align>center</wp:align></wp:positionH><wp:positionV relativeFrom="paragraph">
+               <wp:align>top</wp:align></wp:positionV><wp:extent cx="127000" cy="127000"/>
+               <wps:txbx xmlns:wps="w"><w:txbxContent><w:p><w:r><w:t>123</w:t></w:r></w:p></w:txbxContent></wps:txbx>
+               </wp:anchor></w:drawing></w:r></w:p> "#,
+        );
+        let imgs = read_images(xml.as_bytes());
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(
+            imgs[0].pos_x_pt, None,
+            "align 對齊不是 posOffset：文字數字不得當成 EMU 鎖點"
+        );
+        assert_eq!(imgs[0].pos_y_pt, None, "positionV 同口徑");
+        assert_eq!(imgs[0].anchor_lock_pt(), None, "鎖點不可用→呼叫端退化 inline");
+    }
+
+    #[test]
+    fn posoffset_capture_still_works_after_leak_fix() {
+        // 過度修正防護（t_c1fb4c69 S1-5 綠燈伴測）：真正的 posOffset 兩軸
+        // 照常捕獲（10pt／2pt），修 leak 不得把正路徑一起修壞。
+        let xml = doc(
+            r#"<w:p><w:r><w:drawing><wp:anchor><wp:positionH relativeFrom="column">
+               <wp:posOffset>127000</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page">
+               <wp:posOffset>25400</wp:posOffset></wp:positionV><wp:extent cx="127000" cy="127000"/>
+               </wp:anchor></w:drawing></w:r></w:p>"#,
+        );
+        let imgs = read_images(xml.as_bytes());
+        assert_eq!(imgs[0].anchor_lock_pt(), Some((10.0, 2.0)));
+    }
+
+    #[test]
     fn anchor_missing_posoffset_degrades_to_inline() {
         // 卡片鐵律：posOffset 缺任一軸＝鎖點不可用 → 退化 inline（呼叫端佔帶）。
         let xml = doc(
@@ -791,6 +850,18 @@ mod tests {
         assert_eq!(origin_of(Some("paragraph")), "paragraph");
         assert_eq!(origin_of(Some("line")), "paragraph");
         assert_eq!(origin_of(None), "paragraph");
+        // margin 枚舉家族（t_c1fb4c69 S2-8，ECMA-376 ST_RelFromH/V）：六個
+        // *Margin 值同屬「版心」原點系，漏歸類會錯降為 paragraph 原點。
+        for k in [
+            "topMargin",
+            "bottomMargin",
+            "leftMargin",
+            "rightMargin",
+            "insideMargin",
+            "outsideMargin",
+        ] {
+            assert_eq!(origin_of(Some(k)), "margin", "{k} 應歸 margin 原點系");
+        }
     }
 
     #[test]

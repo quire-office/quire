@@ -620,12 +620,61 @@ mod tests {
             classify_field_instr(" NUMPAGES \\* MERGEFORMAT "),
             Some(NumPages)
         );
-        // "PAGE" 是 "NUMPAGES" 的子串：混合指令以 NUMPAGES 為準。
-        assert_eq!(classify_field_instr(" PAGE NUMPAGES "), Some(NumPages));
+        // 首 token 語義（t_c1fb4c69 S2-6 改寫舊斷言）：欄位型別＝指令首個
+        // token；「 PAGE NUMPAGES 」這種畸形指令以首個 PAGE 為準（舊「全掃
+        // 描 NUMPAGES 優先」語義會把 IF/HYPERLINK 裡的 PAGE 誤判成頁碼）。
+        assert_eq!(classify_field_instr(" PAGE NUMPAGES "), Some(Page));
         // 不支援的欄位老實回 None（發射層保留快取文字，不虛構）。
         assert_eq!(classify_field_instr(" SECTIONPAGES "), None);
         assert_eq!(classify_field_instr(" DATE \\@ M "), None);
         assert_eq!(classify_field_instr(""), None);
+    }
+
+    /// 首 token 判定（t_c1fb4c69 S2-6）：欄位型別只看**第一個指令 token**，
+    /// 全 token 掃描會讓參數／運算式裡的 PAGE 誤判為頁碼欄位並覆寫顯示文字。
+    #[test]
+    fn field_instr_only_first_token_counts() {
+        use FieldKind::{NumPages, Page};
+        // IF 條件引用 PAGE：欄位是 IF，不是頁碼——快取顯示文字必須保留。
+        assert_eq!(classify_field_instr(r#" IF PAGE > 1 "A" "B" "#), None);
+        // HYPERLINK 路徑含 page：不是欄位。
+        assert_eq!(classify_field_instr(r#" HYPERLINK "https://x/page/1" "#), None);
+        // 引用域引數裡的 NUMPAGES 同理。
+        assert_eq!(classify_field_instr(r#" IF { NUMPAGES } > 1 "x" "y" "#), None);
+        // 真頁碼欄位（首 token 命中）不受影響；\* MERGEFORMAT 開關在首 token 之後。
+        assert_eq!(classify_field_instr(" PAGE \\* MERGEFORMAT "), Some(Page));
+        assert_eq!(classify_field_instr("NUMPAGES \\# 0"), Some(NumPages));
+    }
+
+    /// 巢套域的 instr_buf 必須逐層隔離（t_c1fb4c69 S2-6）：外層 IF 的指令
+    /// 與內層 PAGE 的指令各自獨立——內層分類不得被外層文字污染，外層也不
+    /// 得被內層的 PAGE 誤判。
+    #[test]
+    fn nested_field_instr_is_per_layer() {
+        let xml = r#"<w:document xmlns:w="x"><w:body>
+            <w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>
+                 <w:r><w:instrText> IF PAGE &gt; 1 </w:instrText></w:r>
+                 <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+                 <w:r><w:instrText> PAGE </w:instrText></w:r>
+                 <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+                 <w:r><w:t>7</w:t></w:r>
+                 <w:r><w:fldChar w:fldCharType="end"/></w:r>
+                 <w:r><w:instrText> "A" "B" </w:instrText></w:r>
+                 <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+                 <w:r><w:t>甲</w:t></w:r>
+                 <w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
+            </w:body></w:document>"#;
+        let paras = parse_document_xml(xml.as_bytes()).unwrap();
+        let runs = &paras[0].runs;
+        let marked: Vec<_> = runs.iter().filter(|r| r.field.is_some()).collect();
+        assert_eq!(marked.len(), 1, "只有內層 PAGE 的結果 run 是頁碼欄位");
+        assert_eq!(marked[0].field, Some(FieldKind::Page));
+        assert_eq!(marked[0].text, "7");
+        let jia = runs.iter().find(|r| r.text == "甲").expect("外層結果 run 存在");
+        assert_eq!(
+            jia.field, None,
+            "外層 IF 欄位不是頁碼：顯示文字「甲」不得被頁碼覆寫"
+        );
     }
 
     /// 頁首頁尾 part 解析：與正文同一 w:p 佔槽口徑；表格（w:tbl 公文表頭）
