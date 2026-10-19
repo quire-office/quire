@@ -122,6 +122,13 @@ impl LayoutParams {
     }
 }
 
+/// 帶量化上限（t_c1fb4c69 S1-4）：`(h/line_h).ceil() as u32` 遇病態高度
+/// （f32::MAX／inf／垃圾 trHeight）會衝進 u32::MAX——列帶累加溢出 panic、
+/// 切片與分頁迴圈被天量帶數拖垮。量化值一律鉗到此上限（4096 帶 ≈ 68k pt
+/// ＝正常檔案永遠到不了的規模，鉗了不影響任何真實版面）。源頭守衛在
+/// ooxml 轉換層（值域拒絕），此處是 layout/engine 側的第二道閘。
+pub const MAX_PAGE_BANDS: u32 = 4096;
+
 impl Default for LayoutParams {
     /// 無 sectPr 資訊時的後備：A4、1 吋邊界、12pt 字級、1.4 行距。
     /// （真實檔案的頁面幾何一律由 sectPr 解析覆寫，見 `from_section`。）

@@ -611,6 +611,18 @@ const DEFAULT_SIDE_MARGIN_PT: f32 = 5.4; // 108 twip（Word TableNormal 預設�
 /// 巢狀表深度上限（防惡意深巢狀爆堆疊；超過即略過子表——老實不虛構）。
 const MAX_NEST_DEPTH: usize = 8;
 
+/// 高度→帶數量化（ceil，至少 0）＋上限鉗制（t_c1fb4c69 S1-4）：非有限值
+/// （inf/NaN）與天量高度一律鉗到 [`MAX_PAGE_BANDS`]，負值歸 0——`as u32`
+/// 直轉在病態輸入下會溢出/爆量，拖垮切片與分頁迴圈。正常輸入與
+/// `(h/line_h).ceil() as u32` 逐位元組同值（golden 鐵律）。
+fn quant_bands(h_pt: f32, line_h: f32) -> u32 {
+    let b = (h_pt / line_h).ceil();
+    if !b.is_finite() {
+        return crate::MAX_PAGE_BANDS;
+    }
+    (b.max(0.0) as u32).min(crate::MAX_PAGE_BANDS)
+}
+
 /// 排版一張表格。`avail_w`＝可用寬（pt；頂層＝版心寬，巢狀＝儲存格內寬）；
 /// `line_h`＝行網格高度（pt）；`m`＝文字量測器；`depth`＝巢狀深度。
 pub fn layout_table(
@@ -653,8 +665,9 @@ pub fn layout_table(
 
             let margins = resolve_margins(cell.margins.as_ref(), input.cell_margins.as_ref());
             let inner_w = (w - margins.left - margins.right).max(8.0);
-            let pad_top_bands = (margins.top / line_h).ceil() as u32;
-            let pad_bottom_bands = (margins.bottom / line_h).ceil() as u32;
+            // 帶量化鉗上限（S1-4）：垃圾 margin 不得量化出天量帶數。
+            let pad_top_bands = quant_bands(margins.top, line_h);
+            let pad_bottom_bands = quant_bands(margins.bottom, line_h);
             // 級聯字級（t_5dfc8ac7）：有宣告→本格斷行按自身尺量測（None＝
             // 全域 m，既有檔案逐位元組不變）。
             let cell_m = match cell.text_size_pt {
@@ -706,9 +719,10 @@ pub fn layout_table(
                             // 深度超限：老實略過子表（不虛構幾何）。
                         }
                         CellBlock::Image { w_pt, h_pt } => {
-                            // 圖片＝atomic block：帶高 ceil(h/line_h)（至少 1）；
-                            // 寬只縮不放大（超出可用寬＝老實鉗進格寬，不虚構溢出）。
-                            let bands = (h_pt / line_h).ceil().max(1.0) as u32;
+                            // 圖片＝atomic block：帶高 ceil(h/line_h)（至少 1，
+                            // 鉗上限 S1-4）；寬只縮不放大（超出可用寬＝老實鉗進
+                            // 格寬，不虚構溢出）。
+                            let bands = quant_bands(*h_pt, line_h).max(1);
                             blocks.push(CellBlockGeom::Image {
                                 w_pt: w_pt.min(inner_w).max(1.0),
                                 h_pt: *h_pt,
@@ -1922,6 +1936,29 @@ mod tests {
             "整片可見→高＝extent：{}",
             im.h_pt
         );
+    }
+
+    /// S1-4（t_c1fb4c69）：病態巨大圖高（h＝1e39→f32 inf 或天量 pt）進格內
+    /// ——帶數量化 `(h/line_h).ceil() as u32` 不得溢出/爆量：老實鉗到上限
+    /// （debug 下不 panic，切片迴圈有限步終止）。
+    #[test]
+    fn cell_image_giant_height_clamps_bands() {
+        let c = CellInput {
+            blocks: vec![CellBlock::Image {
+                w_pt: 100.0,
+                h_pt: f32::MAX / 2.0, // ~1e38：ceil(h/16.8) 遠超 u32 值域
+            }],
+            ..Default::default()
+        };
+        let t = layout_table(&shell_table(c), 400.0, 16.8, &measurer(), 0);
+        assert!(
+            t.total_bands <= crate::MAX_PAGE_BANDS,
+            "格內巨圖帶數必鉗上限：{}",
+            t.total_bands
+        );
+        // 切片可正常取出（不 OOM、不死迴圈）。
+        let (_f, _next, used) = t.fragment(0, 0, 8, false, 0.0);
+        assert!(used > 0);
     }
 
     #[test]
