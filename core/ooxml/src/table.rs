@@ -83,6 +83,9 @@ pub struct Border {
     /// `@w:color`：RRGGBB／auto／theme 色名。
     pub color: Option<String>,
     /// `@w:themeColor`（不吞）。
+    ///
+    /// TODO（未支援）：框線的主題色尚未查表（`w:themeColor` → theme1.xml 的
+    /// clrScheme，見 `crate::theme` 模組）——目前一律當「非 hex」處理。
     pub theme_color: Option<String>,
     /// `@w:themeShade`（不吞）。
     pub theme_shade: Option<String>,
@@ -144,7 +147,12 @@ pub struct Shading {
     pub val: Option<String>,
     pub color: Option<String>,
     pub fill: Option<String>,
+    /// `@w:themeFill`（不吞）。
+    ///
+    /// TODO（未支援）：底紋的主題色尚未查表（`w:themeFill` → theme1.xml 的
+    /// clrScheme，見 `crate::theme` 模組的槽位對照表）——目前只保留原字串。
     pub theme_fill: Option<String>,
+    /// `@w:themeColor`（不吞；紋路色，見上欄 TODO）。
     pub theme_color: Option<String>,
 }
 
@@ -1354,7 +1362,12 @@ mod tests {
             .as_bytes();
         // 主解析器同口徑交叉驗證（Start 佔槽＋Fallback 吞沒）：
         // 表前段、格內段、框內段（Choice 一份）＝3。
-        assert_eq!(crate::parse_document_xml(xml).expect("主解析").len(), 3);
+        assert_eq!(
+            crate::parse_document_xml(xml, &crate::ThemeColors::default())
+                .expect("主解析")
+                .len(),
+            3
+        );
         assert_eq!(
             crate::table::count_flat_paras(xml),
             3,
