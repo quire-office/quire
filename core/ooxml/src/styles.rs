@@ -39,6 +39,8 @@ use std::collections::HashMap;
 use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
 
+use crate::theme::{self, ThemeColors};
+
 /// basedOn 鏈深度上限（超鏈＝畸形檔，老實停在已合成結果，見模組頭）。
 const MAX_CHAIN: usize = 32;
 
@@ -263,7 +265,16 @@ fn toggle_on_attr(e: &quick_xml::events::BytesStart) -> bool {
 
 /// 套用單個 run 屬性標籤（Start/Empty 共用）。未支援標籤靜默略過（模組頭清單）。
 /// `pub(crate)`：document.xml 的直接格式 `w:pPr/w:rPr` 共用同一判據。
-pub(crate) fn apply_run_tag(name: &[u8], e: &quick_xml::events::BytesStart, rs: &mut RunStyle) {
+///
+/// `theme`＝文件的主題色表（`w:themeColor` → theme1.xml 的 clrScheme 查表；
+/// ECMA-376 §17.3.2.25——**主題色優先於 `w:val` 回退值**）。空表＝無 theme
+/// part＝老實退回 `w:val`（既有行為）。
+pub(crate) fn apply_run_tag(
+    name: &[u8],
+    e: &quick_xml::events::BytesStart,
+    rs: &mut RunStyle,
+    theme: &ThemeColors,
+) {
     match name {
         b"b" => rs.bold = Some(toggle_on_attr(e)),
         b"i" => rs.italic = Some(toggle_on_attr(e)),
@@ -275,13 +286,23 @@ pub(crate) fn apply_run_tag(name: &[u8], e: &quick_xml::events::BytesStart, rs: 
             }
         }
         b"color" => {
-            // themeColor 暫不解析（誠實近似，同 `lib.rs::apply_style_tag`）：
-            // 只認 w:val。宣告 auto/非法 → 明確的「自動色」（黑）：color_set
-            // 置真但 color 留空，不得當「未宣告」而誤繼承樣式色。
-            if let Some(v) = attr_val(e, "val") {
+            // 色彩宣告（ECMA-376 §17.3.2.25）：`w:themeColor` 指向 theme1.xml 的
+            // clrScheme 槽位，**優先於** `w:val` 回退值（Word/LO 實際渲染口徑）；
+            // 查不到（無 theme part／查無該名）→ 老實退回 `w:val`。
+            // 帶 `w:themeShade`／`w:themeTint` 時正確色是「變換後」的主題色，
+            // 本卡不實作變換 → 保留 Word 預算好的 `w:val`（見 theme 模組 TODO）。
+            // 宣告 auto/非法 → 明確的「自動色」（黑）：color_set 置真但 color
+            // 留空，不得當「未宣告」而誤繼承樣式色。
+            let theme_color = theme::theme_color_of(theme, e);
+            if let Some(t) = theme_color {
+                rs.color_set = true;
+                rs.color = Some(t);
+            } else if let Some(v) = attr_val(e, "val") {
                 rs.color_set = true;
                 rs.color = crate::parse_color_val(&v);
             }
+            // 只宣告了查不到的 `w:themeColor`（無 theme part／查無該名）→
+            // 維持「未宣告」語義（繼承上層色），不虛構黑。
         }
         _ => {}
     }
@@ -289,14 +310,14 @@ pub(crate) fn apply_run_tag(name: &[u8], e: &quick_xml::events::BytesStart, rs: 
 
 /// 讀取 `w:rPr` 的**內容**（呼叫端已消耗 `<w:rPr>` Start；本函數消費至
 /// `</w:rPr>`）。未支援標籤靜默略過（模組頭清單）。
-fn parse_rpr_body(reader: &mut quick_xml::Reader<&[u8]>) -> RunStyle {
+fn parse_rpr_body(reader: &mut quick_xml::Reader<&[u8]>, theme: &ThemeColors) -> RunStyle {
     let mut rs = RunStyle::default();
     loop {
         match reader.read_event() {
             Err(_) | Ok(Event::Eof) => break,
             Ok(Event::End(e)) if e.local_name().as_ref() == b"rPr" => break,
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                apply_run_tag(e.local_name().as_ref(), &e, &mut rs);
+                apply_run_tag(e.local_name().as_ref(), &e, &mut rs, theme);
             }
             _ => {}
         }
@@ -308,6 +329,7 @@ fn parse_rpr_body(reader: &mut quick_xml::Reader<&[u8]>) -> RunStyle {
 /// run 基底回傳）。本卡只收 spacing(line)/jc/rPr，其餘段落屬性略過。
 fn parse_ppr(
     reader: &mut quick_xml::Reader<&[u8]>,
+    theme: &ThemeColors,
 ) -> (Option<LineSpacing>, Option<Align>, RunStyle) {
     let mut line = None;
     let mut align = None;
@@ -326,7 +348,7 @@ fn parse_ppr(
             Ok(Event::Start(e)) => {
                 let name = e.local_name().as_ref().to_vec();
                 if in_rpr {
-                    apply_run_tag(&name, &e, &mut run);
+                    apply_run_tag(&name, &e, &mut run, theme);
                     continue;
                 }
                 match name.as_slice() {
@@ -350,7 +372,7 @@ fn parse_ppr(
                 // spacing/jc——行距靜默丟失是本級聯層最壞的失敗模式）。
                 let name = e.local_name().as_ref().to_vec();
                 if in_rpr {
-                    apply_run_tag(&name, &e, &mut run);
+                    apply_run_tag(&name, &e, &mut run, theme);
                     continue;
                 }
                 match name.as_slice() {
@@ -376,14 +398,18 @@ fn parse_ppr(
 
 /// 在容器內向前掃到 `w:rPr` 起點並收其內容（呼叫端已消耗容器 Start；遇到
 /// 容器自身 End＝容器沒有 rPr，回 None）。
-fn skip_to_rpr(reader: &mut quick_xml::Reader<&[u8]>, container_end: &[u8]) -> Option<RunStyle> {
+fn skip_to_rpr(
+    reader: &mut quick_xml::Reader<&[u8]>,
+    container_end: &[u8],
+    theme: &ThemeColors,
+) -> Option<RunStyle> {
     loop {
         match reader.read_event() {
             Err(_) | Ok(Event::Eof) => return None,
             Ok(Event::Start(e)) => {
                 let name = e.local_name().as_ref().to_vec();
                 if name == b"rPr" {
-                    return Some(parse_rpr_body(reader));
+                    return Some(parse_rpr_body(reader, theme));
                 }
                 if name.as_slice() == container_end {
                     return None;
@@ -406,6 +432,7 @@ fn skip_to_rpr(reader: &mut quick_xml::Reader<&[u8]>, container_end: &[u8]) -> O
 /// `w:pPrDefault` 子樹（其內可含 `w:pPr`；呼叫端已消耗 pPrDefault Start）。
 fn parse_ppr_default(
     reader: &mut quick_xml::Reader<&[u8]>,
+    theme: &ThemeColors,
 ) -> (Option<LineSpacing>, Option<Align>, RunStyle) {
     loop {
         match reader.read_event() {
@@ -413,7 +440,9 @@ fn parse_ppr_default(
             Ok(Event::End(e)) if e.local_name().as_ref() == b"pPrDefault" => {
                 return Default::default()
             }
-            Ok(Event::Start(e)) if e.local_name().as_ref() == b"pPr" => return parse_ppr(reader),
+            Ok(Event::Start(e)) if e.local_name().as_ref() == b"pPr" => {
+                return parse_ppr(reader, theme)
+            }
             _ => {}
         }
     }
@@ -430,9 +459,18 @@ fn attr_val(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
 }
 
 impl StyleTable {
-    /// 解析 `word/styles.xml`。XML 錯誤＝就地停在已收部分（容錯：排版退回
+    /// 解析 `word/styles.xml`（**無主題色**：空主題表＝`w:themeColor` 一律
+    /// 退回 `w:val` 回退值）。XML 錯誤＝就地停在已收部分（容錯：排版退回
     /// 後備值，不中斷開檔）。
     pub fn parse(xml: &[u8]) -> StyleTable {
+        StyleTable::parse_with_theme(xml, &ThemeColors::default())
+    }
+
+    /// 解析 `word/styles.xml`，並帶入文件的主題色表（`w:themeColor` 查表用；
+    /// ECMA-376 §17.3.2.25——**主題色優先於 `w:val` 回退值**）。
+    ///
+    /// 空主題表（無 theme part）＝退回 `w:val`，與 [`StyleTable::parse`] 同結果。
+    pub fn parse_with_theme(xml: &[u8], theme: &ThemeColors) -> StyleTable {
         let mut t = StyleTable {
             empty: true,
             ..Default::default()
@@ -450,13 +488,13 @@ impl StyleTable {
                         b"rPrDefault" if in_doc_defaults => {
                             // rPrDefault 的子 rPr 直接收進 run_default（自閉合
                             // `<w:rPrDefault/>` 或無 rPr 時得空基底）。
-                            if let Some(r) = skip_to_rpr(&mut reader, b"rPrDefault") {
+                            if let Some(r) = skip_to_rpr(&mut reader, b"rPrDefault", theme) {
                                 t.run_default = r;
                             }
                             t.empty = false;
                         }
                         b"pPrDefault" if in_doc_defaults => {
-                            let (l, a, r) = parse_ppr_default(&mut reader);
+                            let (l, a, r) = parse_ppr_default(&mut reader, theme);
                             t.para_default_line = l;
                             t.para_default_align = a;
                             t.para_default_run = r;
@@ -497,12 +535,12 @@ impl StyleTable {
                                 // 主 rPr（style run properties）：段內文字的
                                 // 唯一風格來源（t_16a13211 R3）。同 style 內
                                 // 重複宣告＝首見為準。
-                                own.run = own.run.overlay(&parse_rpr_body(&mut reader));
+                                own.run = own.run.overlay(&parse_rpr_body(&mut reader, theme));
                             }
                         }
                         b"pPr" => {
                             if let Some((_, own)) = cur.as_mut() {
-                                let (l, a, r) = parse_ppr(&mut reader);
+                                let (l, a, r) = parse_ppr(&mut reader, theme);
                                 if own.line.is_none() {
                                     own.line = l;
                                 }
@@ -761,12 +799,136 @@ mod tests {
         StyleTable::parse(xml.as_ref().as_bytes())
     }
 
+    /// 最小主題 part：hlink＝305090（LO 實測的連結色）、accent1＝4F81BD。
+    const THEME_HLINK: &[u8] =
+        br#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+      <a:themeElements>
+        <a:clrScheme name="Office">
+          <a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
+          <a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
+          <a:accent1><a:srgbClr val="4F81BD"/></a:accent1>
+          <a:hlink><a:srgbClr val="305090"/></a:hlink>
+          <a:folHlink><a:srgbClr val="800080"/></a:folHlink>
+        </a:clrScheme>
+      </a:themeElements>
+    </a:theme>"#;
+
+    /// 主題色表（含 hlink＝305090）。
+    fn theme() -> ThemeColors {
+        ThemeColors::parse(THEME_HLINK)
+    }
+
     const PREFIX: &str =
         r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#;
     const SUFFIX: &str = "</w:styles>";
 
     fn wrap(body: &str) -> String {
         format!("{PREFIX}{body}{SUFFIX}")
+    }
+
+    // ---------------- 主題色查表（w:themeColor → theme1.xml clrScheme） ----------------
+
+    /// 主題色**優先於** `w:val` 回退值（ECMA-376 §17.3.2.25）：樣式層的
+    /// `<w:color w:val="0000FF" w:themeColor="hyperlink"/>` 有效色＝主題 hlink
+    /// ＝0x305090（修復前只吃 w:val＝純藍 0x0000FF，與 Word/LO 偏離）。
+    #[test]
+    fn theme_color_overrides_val_in_style() {
+        let t = StyleTable::parse_with_theme(
+            wrap(
+                r#"<w:style w:type="character" w:styleId="Hyperlink">
+                     <w:rPr><w:color w:val="0000FF" w:themeColor="hyperlink"/></w:rPr>
+                   </w:style>"#,
+            )
+            .as_bytes(),
+            &theme(),
+        );
+        let eff = t.effective_char("Hyperlink").expect("字元樣式必須可查");
+        assert_eq!(
+            eff.color,
+            Some(0xFF30_5090),
+            "主題色必須覆蓋 w:val 回退值（0x0000FF）"
+        );
+        assert!(eff.color_set, "宣告了顏色 → color_set 必真");
+    }
+
+    /// 回歸保護：**無 theme part** → 老實退回 `w:val`（不虛構主題色）。
+    #[test]
+    fn theme_absent_falls_back_to_val() {
+        let t = StyleTable::parse_with_theme(
+            wrap(
+                r#"<w:style w:type="character" w:styleId="Hyperlink">
+                     <w:rPr><w:color w:val="0000FF" w:themeColor="hyperlink"/></w:rPr>
+                   </w:style>"#,
+            )
+            .as_bytes(),
+            &ThemeColors::default(),
+        );
+        let eff = t.effective_char("Hyperlink").expect("字元樣式必須可查");
+        assert_eq!(eff.color, Some(0xFF00_00FF), "無主題 → 退回 w:val");
+        assert!(eff.color_set);
+    }
+
+    /// 容錯：`w:themeColor` 指向**查無**的名字（accent9）→ 退回 `w:val`。
+    #[test]
+    fn theme_unknown_name_falls_back_to_val() {
+        let t = StyleTable::parse_with_theme(
+            wrap(
+                r#"<w:style w:type="character" w:styleId="Ghost">
+                     <w:rPr><w:color w:val="123456" w:themeColor="accent9"/></w:rPr>
+                   </w:style>"#,
+            )
+            .as_bytes(),
+            &theme(),
+        );
+        let eff = t.effective_char("Ghost").expect("字元樣式必須可查");
+        assert_eq!(eff.color, Some(0xFF12_3456), "查無該名 → 退回 w:val");
+    }
+
+    /// 誠實近似：帶 `w:themeShade`／`w:themeTint` 時，正確色是「變換後」的
+    /// 主題色（lumMod/lumOff 變換本卡未實作）→ **保留 Word 預算好的
+    /// `w:val`**，不得拿未變換的主題色冒充（會渲出 Word/LO 都沒有的色）。
+    #[test]
+    fn theme_shade_keeps_precomputed_val() {
+        let t = StyleTable::parse_with_theme(
+            wrap(
+                r#"<w:style w:type="paragraph" w:styleId="Heading1">
+                     <w:rPr><w:color w:val="365F91" w:themeColor="accent1" w:themeShade="BF"/></w:rPr>
+                   </w:style>
+                   <w:style w:type="paragraph" w:styleId="Heading2">
+                     <w:rPr><w:color w:val="272727" w:themeColor="text1" w:themeTint="D8"/></w:rPr>
+                   </w:style>"#,
+            )
+            .as_bytes(),
+            &theme(),
+        );
+        let h1 = t.effective_para(Some("Heading1"), ParaStyle::default()).0;
+        assert_eq!(
+            h1.color,
+            Some(0xFF36_5F91),
+            "帶 themeShade → 保留 Word 預算色（非未變換的 accent1 4F81BD）"
+        );
+        let h2 = t.effective_para(Some("Heading2"), ParaStyle::default()).0;
+        assert_eq!(
+            h2.color,
+            Some(0xFF27_2727),
+            "帶 themeTint → 保留 Word 預算色（非未變換的 dk1 000000）"
+        );
+    }
+
+    /// 主題色只在 `w:themeColor` 宣告時生效；無 themeColor 的樣式色不動。
+    #[test]
+    fn plain_val_untouched_by_theme() {
+        let t = StyleTable::parse_with_theme(
+            wrap(
+                r#"<w:style w:type="character" w:styleId="Plain">
+                     <w:rPr><w:color w:val="ABCDEF"/></w:rPr>
+                   </w:style>"#,
+            )
+            .as_bytes(),
+            &theme(),
+        );
+        let eff = t.effective_char("Plain").expect("字元樣式必須可查");
+        assert_eq!(eff.color, Some(0xFFAB_CDEF));
     }
 
     #[test]

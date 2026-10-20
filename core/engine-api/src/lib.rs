@@ -12,7 +12,7 @@ use quire_layout::{
 use quire_ooxml::{
     diff_untouched, diff_zip_structure, parse, parse_header_footer_part, read_even_and_odd_headers,
     read_rels, read_sections_header_footer, read_sections_per_paragraph, resolve_relationship,
-    LineSpacing, OoxmlDoc, OoxmlError, ParaStyle, SlotRefs, StyleTable, ZipDiff,
+    LineSpacing, OoxmlDoc, OoxmlError, ParaStyle, SlotRefs, StyleTable, ThemeColors, ZipDiff,
 };
 use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
@@ -118,11 +118,16 @@ impl Engine {
         // 還承載「超連結合成預設」的末端兜底（`RunStyle::with_hyperlink_default`）；
         // 若此處短路，無 styles.xml 的檔案連結會失去預設藍／底線。空表一切
         // 落後備值，與舊 None 路徑逐欄等價。
+        // 主題色表（word/theme/theme1.xml 的 clrScheme）：純讀取派生資料——
+        // `w:themeColor` 查表用（ECMA-376 §17.3.2.25：主題色優先於 `w:val`
+        // 回退值）。無 theme part → 空表＝老實退回 `w:val`（既有行為不變）。
+        // 存檔路徑完全不經此層（parts passthrough，round-trip 零影響）。
+        let theme = ThemeColors::from_parts(&doc.parts);
         let style_table = Some(
             doc.parts
                 .get("word/styles.xml")
-                .map(|s| StyleTable::parse(s.as_slice()))
-                .unwrap_or_else(|| StyleTable::parse(&[])),
+                .map(|s| StyleTable::parse_with_theme(s.as_slice(), &theme))
+                .unwrap_or_else(|| StyleTable::parse_with_theme(&[], &theme)),
         );
         let (doc_size, doc_line) = style_table.as_ref().map_or((None, None), |t| t.doc_grid());
         // 文件基準字級：docDefaults∪Normal 鏈的有效 sz（ECMA 無宣告時的
@@ -262,7 +267,7 @@ impl Engine {
         // 頁首頁尾層（t_b39f108b）：sectPr 宣告＋rels 查表＋part 解析。
         // 全鏈純讀取派生——parts／bundle 一個位元組都不碰（round-trip 零影響）。
         let (hf, hf_parts, even_odd, sec_geo) =
-            build_hf_layer(&doc, &sections, style_table.as_ref());
+            build_hf_layer(&doc, &sections, style_table.as_ref(), &theme);
         Ok(Self {
             doc,
             layout,
@@ -1349,6 +1354,7 @@ fn build_hf_layer(
     doc: &OoxmlDoc,
     sections: &[SectionSpec],
     style_table: Option<&StyleTable>,
+    theme: &ThemeColors,
 ) -> HfLayer {
     let mut sec_geo: HashMap<u32, SectionGeometry> = HashMap::new();
     for s in sections {
@@ -1418,7 +1424,7 @@ fn build_hf_layer(
     let def_size = style_table.map_or(FALLBACK_SIZE_PT, |t| t.doc_grid().0.unwrap_or(12.0));
     for path in want {
         if let Some(xml) = doc.parts.get(&path) {
-            if let Ok((paragraphs, tables)) = parse_header_footer_part(xml) {
+            if let Ok((paragraphs, tables)) = parse_header_footer_part(xml, theme) {
                 let (styles, metrics) = match style_table {
                     // 頁首尾不展開點引（widths 空＝不虛構；既有行為不變）。
                     Some(st) => cascade_paragraphs(st, &paragraphs, def_size, &[]),
@@ -1562,6 +1568,63 @@ mod tests {
             .flatten()
             .collect();
         assert!(all_pages.contains("Quire"));
+    }
+
+    // ---------------- 主題色查表（w:themeColor → theme1.xml clrScheme） ----------------
+
+    /// 端到端：`w:themeColor` 指向 theme1.xml 的 clrScheme 槽位，**優先於**
+    /// `w:val` 回退值（ECMA-376 §17.3.2.25——Word/LO 實際渲染口徑）。
+    /// fixture 的 hlink＝0x305090：樣式層與 run 直接格式層的有效色都必須是
+    /// 0x305090（修復前只吃 w:val＝純藍 0x0000FF，與 Word/LO 偏離）。
+    #[test]
+    fn theme_color_lookup_end_to_end() {
+        const THEME_COLOR: &[u8] = include_bytes!("../../../fixtures/theme_color.docx");
+        let engine = Engine::from_docx_bytes(THEME_COLOR).expect("開啟 theme_color.docx 失敗");
+        let dl = engine.page_display_list(0).expect("第 0 頁顯示列表不存在");
+        let color_of = |text: &str| -> Option<u32> {
+            dl.items.iter().find_map(|it| match it {
+                DrawItem::Text {
+                    text: t,
+                    color_argb,
+                    ..
+                } if t == text => Some(*color_argb),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            color_of("樣式層主題色"),
+            Some(0xFF30_5090),
+            "字元樣式層的主題色必須勝過 w:val 回退值（0x0000FF）"
+        );
+        assert_eq!(
+            color_of("直接格式主題色"),
+            Some(0xFF30_5090),
+            "run 直接格式層的主題色必須勝過 w:val 回退值"
+        );
+        assert_eq!(
+            color_of("查無該名退回回退值"),
+            Some(0xFF12_3456),
+            "查無該名 → 老實退回 w:val（容錯）"
+        );
+        assert_eq!(
+            color_of("帶著色保留預算色"),
+            Some(0xFF36_5F91),
+            "帶 themeShade → 保留 Word 預算色（變換未實作，不用未變換色冒充）"
+        );
+    }
+
+    /// 純讀取鐵律：主題色層是純讀取派生資料——開檔不動存檔必須 byte-identical
+    /// （theme1.xml 亦是 untouched 條目，必須原樣回填）。
+    #[test]
+    fn theme_color_round_trip_untouched() {
+        const THEME_COLOR: &[u8] = include_bytes!("../../../fixtures/theme_color.docx");
+        let engine = Engine::from_docx_bytes(THEME_COLOR).unwrap();
+        let saved = engine.save_docx().unwrap();
+        assert_eq!(
+            saved.as_slice(),
+            THEME_COLOR,
+            "含 theme part 的文件存檔必須位元組級相同（passthrough）"
+        );
     }
 
     #[test]

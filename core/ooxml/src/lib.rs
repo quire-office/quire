@@ -15,6 +15,7 @@ mod rels;
 mod sectpr;
 mod styles;
 mod table;
+mod theme;
 mod zip_struct;
 
 pub use diff::{diff_untouched, diff_zip_structure, EntryDiff, ZipDiff, ZipStructureError};
@@ -29,6 +30,7 @@ pub use table::{
     Block, BodyTable, Border, Borders, CellProps, GridCol, Margins, RowProps, Shading, Table,
     TableCell, TableProps, TableRow, TblWidth,
 };
+pub use theme::{theme_slot_for, ThemeColors};
 pub use zip_struct::{Change, ZipBundle, ZipEntry, ZipError};
 
 use serde::{Deserialize, Serialize};
@@ -130,8 +132,10 @@ pub const HYPERLINK_DEFAULT_COLOR_ARGB: u32 = 0xFF05_63C1;
 /// - 6 位 hex（`RRGGBB`）→ 補齊不透明 alpha `0xFF00_0000 | rgb`；
 /// - 8 位 hex（`AARRGGBB`）→ 直接解析為 `u32`；
 /// - `"auto"`（不分大小寫）或非法字串 → `None`（發射至顯示列表時轉為黑 `0xFF00_0000`）。
-/// - 註：`w:themeColor` 佈景主題色暫不解析（誠實近似；若元素同時帶 6/8 位 `w:val`
-///   則直接採用該預計算色值）。
+/// - `w:themeColor`（主題色）**優先於** `w:val`：Word/LO 實際渲染以主題色為準，
+///   `w:val` 只是回退值（ECMA-376 §17.3.2.25）。查表見 [`theme`] 模組
+///   （`w:themeColor` → theme1.xml 的 `a:clrScheme` 槽位）；查不到（無 theme
+///   part／查無該名）→ 老實退回 `w:val`（誠實近似，不虛構）。
 pub fn parse_color_val(val: &str) -> Option<u32> {
     let s = val.trim();
     if s.eq_ignore_ascii_case("auto") {
@@ -267,7 +271,11 @@ pub fn parse(bytes: &[u8]) -> Result<OoxmlDoc, OoxmlError> {
     let xml = parts
         .get("word/document.xml")
         .ok_or(OoxmlError::MissingDocument)?;
-    let paragraphs = parse_document_xml(xml)?;
+    // 主題色表（theme1.xml 的 clrScheme）：純讀取，供 `w:themeColor` 查表
+    // （ECMA-376 §17.3.2.25——主題色優先於 `w:val` 回退值）。無 theme part
+    // → 空表（呼叫端老實退回 `w:val`，既有行為不變）。
+    let theme = ThemeColors::from_parts(&parts);
+    let paragraphs = parse_document_xml(xml, &theme)?;
     // 表格投影：純讀入（PM 補正 1——唯讀來源隔離；無損寫回路徑完全不經此处）。
     let tables = table::read_body_tables(xml);
     Ok(OoxmlDoc {
@@ -285,10 +293,13 @@ pub fn parse(bytes: &[u8]) -> Result<OoxmlDoc, OoxmlError> {
 /// ——段落索引只在 part 內自洽（engine 層按 part 各自持有 texts 序列），
 /// 不與正文索引共享計數空間。18.9% 的頁首用 `w:tbl` 排版（公文表頭），
 /// 表格投影這一條路必須與段落同時可解析。純讀取：parts 明文不動。
+///
+/// `theme`＝文件的主題色表（`w:themeColor` 查表用；與正文同一份）。
 pub fn parse_header_footer_part(
     xml: &[u8],
+    theme: &ThemeColors,
 ) -> Result<(Vec<Paragraph>, Vec<BodyTable>), OoxmlError> {
-    let paragraphs = parse_document_xml(xml)?;
+    let paragraphs = parse_document_xml(xml, theme)?;
     let tables = table::read_body_tables(xml);
     Ok((paragraphs, tables))
 }
@@ -358,14 +369,24 @@ fn apply_break_tab_tag(
 
 /// 套用段落或 run 內部的樣式標籤（Start 與 Empty 事件共用）。
 /// 注意：不含 `pStyle`——段落樣式改由呼叫端寫進段落棧頂（巢狀 `w:p` 口徑）。
-fn apply_style_tag(name: &[u8], e: &quick_xml::events::BytesStart, cur_run: &mut Option<Run>) {
+fn apply_style_tag(
+    name: &[u8],
+    e: &quick_xml::events::BytesStart,
+    cur_run: &mut Option<Run>,
+    theme: &ThemeColors,
+) {
     // ---- run 直接格式三態快照（t_5dfc8ac7）：語義唯一來源＝styles::apply_run_tag。
     // bool 欄位照舊寫（既有消費者不動），三態快照並行記錄給級聯層。只認
     // run 屬性標籤本身——catch-all 送來的無關標籤（noProof/lang…）不得把
     // direct 材料化成 Some（None＝「未見任何 rPr 宣告」的語義必須守住）。
     if matches!(name, b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz") {
         if let Some(r) = cur_run.as_mut() {
-            styles::apply_run_tag(name, e, r.direct.get_or_insert_with(RunStyle::default));
+            styles::apply_run_tag(
+                name,
+                e,
+                r.direct.get_or_insert_with(RunStyle::default),
+                theme,
+            );
         }
     }
     match name {
@@ -399,9 +420,10 @@ fn apply_style_tag(name: &[u8], e: &quick_xml::events::BytesStart, cur_run: &mut
         }
         b"color" => {
             if let Some(r) = cur_run.as_mut() {
-                // themeColor 暫不解析（誠實近似）：僅解析 w:val 的 6/8 位 hex，auto→None。
-                let parsed = attr_val(e, "val").and_then(|v| parse_color_val(&v));
-                r.color = parsed;
+                // 有效色：主題色（w:themeColor → theme1.xml 查表）**優先於**
+                // w:val 回退值（ECMA-376 §17.3.2.25）；查不到 → 退回 w:val
+                // （誠實近似，不虛構）。auto/非法 → None（發射層的黑）。
+                r.color = theme::resolve_color(theme, e);
             }
         }
         _ => {}
@@ -409,6 +431,9 @@ fn apply_style_tag(name: &[u8], e: &quick_xml::events::BytesStart, cur_run: &mut
 }
 
 /// 最小 word/document.xml 解析器：段落 / run / 文字 / 粗斜體 / 顏色 / 底線 / 刪除線 / 超連結 / 段落樣式。
+///
+/// `theme`＝文件的主題色表（`w:themeColor` 查表用；純讀取，無 theme part
+/// 時為空表＝退回 `w:val` 回退值）。
 ///
 /// 扁平段落序列的索引口徑（與 `table.rs`、`sectpr.rs` 三解析器對齊的唯一真相）：
 /// - 每個非自閉合 `w:p` 的 **Start** 佔一個槽位（Start 預位、End 回填完成品）
@@ -420,7 +445,7 @@ fn apply_style_tag(name: &[u8], e: &quick_xml::events::BytesStart, cur_run: &mut
 ///   table／sectpr 同口徑——不計）。
 ///
 /// 骨架階段刻意不求全面（欄位、圖形幾何皆未處理），演進順序由 corpus 綠燈率驅動。
-fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
+fn parse_document_xml(xml: &[u8], theme: &ThemeColors) -> Result<Vec<Paragraph>, OoxmlError> {
     use quick_xml::events::Event;
     let text = String::from_utf8_lossy(xml).into_owned();
     let mut reader = quick_xml::Reader::from_str(&text);
@@ -540,6 +565,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                                 name.as_slice(),
                                 &e,
                                 p.prun.get_or_insert_with(RunStyle::default),
+                                theme,
                             );
                         }
                     }
@@ -577,7 +603,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     }
                     b"Fallback" => fb += 1,
                     b"AlternateContent" => ac_stack.push(fb),
-                    other => apply_style_tag(other, &e, &mut cur_run),
+                    other => apply_style_tag(other, &e, &mut cur_run, theme),
                 }
             }
             Event::Empty(e) => {
@@ -643,6 +669,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                             name.as_slice(),
                             &e,
                             p.prun.get_or_insert_with(RunStyle::default),
+                            theme,
                         );
                     }
                 } else if name == b"spacing" && ppr_depth == 1 && ppr_rpr_depth == 0 {
@@ -674,7 +701,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                         );
                     }
                 } else {
-                    apply_style_tag(name.as_slice(), &e, &mut cur_run);
+                    apply_style_tag(name.as_slice(), &e, &mut cur_run, theme);
                 }
             }
             Event::End(e) => {
@@ -718,8 +745,10 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                             // ECMA-376 §17.7.2 會越過用戶 styles.xml 宣告的
                             // Hyperlink 字元樣式。兜底改由級聯末端
                             // （`RunStyle::with_hyperlink_default`）在全鏈未
-                            // 宣告時補上。TODO（未支援）：`w:themeColor`
-                            // （→ theme1.xml 查表）本卡不解析，僅認 `w:val`。
+                            // 宣告時補上。TODO（未支援）：合成預設連結色仍是
+                            // 寫死的 #0563C1（Word Hyperlink 樣式標準藍）——
+                            // Word 的實際預設連結色來自**主題 hlink**，本卡
+                            // 未接（見 theme 模組末「未做清單」）。
                             run.hyperlink_default = hyperlink_depth > 0;
                             p.runs.push(run);
                         }
@@ -791,6 +820,12 @@ fn record_page_break(stack: &mut [(usize, Paragraph, usize)], e: &quick_xml::eve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 測試用解析入口：**無 theme part**（空主題表）的文件解析。
+    /// 主題色查表另有專屬測試（`theme_color_lookup_*`），此處保持舊行為口徑。
+    fn parse_doc(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
+        parse_document_xml(xml, &ThemeColors::default())
+    }
 
     const SAMPLE: &[u8] = include_bytes!("../../../fixtures/sample.docx");
 
@@ -885,7 +920,7 @@ mod tests {
                  <w:r><w:t>甲</w:t></w:r>
                  <w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
             </w:body></w:document>"#;
-        let paras = parse_document_xml(xml.as_bytes()).unwrap();
+        let paras = parse_doc(xml.as_bytes()).unwrap();
         let runs = &paras[0].runs;
         let marked: Vec<_> = runs.iter().filter(|r| r.field.is_some()).collect();
         assert_eq!(marked.len(), 1, "只有內層 PAGE 的結果 run 是頁碼欄位");
@@ -916,7 +951,8 @@ mod tests {
             <w:tbl><w:tblGrid><w:gridCol w:w="100"/></w:tblGrid>
               <w:tr><w:tc><w:p><w:r><w:t>表頭</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
             </w:ftr>"#;
-        let (paras, tables) = parse_header_footer_part(xml.as_bytes()).expect("解析頁尾 part");
+        let (paras, tables) = parse_header_footer_part(xml.as_bytes(), &ThemeColors::default())
+            .expect("解析頁尾 part");
         assert_eq!(
             paras.len(),
             3,
@@ -938,6 +974,7 @@ mod tests {
         let (sp, _) = parse_header_footer_part(
             r#"<w:hdr xmlns:w="x"><w:p><w:fldSimple w:instr=" NUMPAGES "><w:r><w:t>3</w:t></w:r></w:fldSimple></w:p></w:hdr>"#
                 .as_bytes(),
+            &ThemeColors::default(),
         )
         .unwrap();
         assert_eq!(sp[0].runs[0].field, Some(FieldKind::NumPages));
@@ -959,7 +996,7 @@ mod tests {
             <w:p><w:r><w:t>後</w:t></w:r></w:p>
             </w:body></w:document>"#
             .as_bytes();
-        let paras = parse_document_xml(xml).expect("解析");
+        let paras = parse_doc(xml).expect("解析");
         let texts: Vec<String> = paras
             .iter()
             .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
@@ -983,7 +1020,7 @@ mod tests {
             <w:p><w:r><w:t>正文</w:t></w:r></w:p>
             </w:body></w:document>"#
             .as_bytes();
-        let paras = parse_document_xml(xml).expect("解析");
+        let paras = parse_doc(xml).expect("解析");
         assert_eq!(paras.len(), 1, "裸 Fallback 內段落不進扁平序列");
         assert_eq!(paras[0].runs[0].text, "正文");
         assert!(paras[0].style.is_none());
@@ -1008,7 +1045,7 @@ mod tests {
             </w:p>
             </w:body></w:document>"#
             .as_bytes();
-        let paras = parse_document_xml(xml).expect("解析");
+        let paras = parse_doc(xml).expect("解析");
         let texts: Vec<String> = paras
             .iter()
             .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
@@ -1031,7 +1068,7 @@ mod tests {
             <w:r><w:t>D</w:t></w:r></w:p>
             <w:p><w:r><w:t>E</w:t></w:r></w:p>
             </w:body>"#;
-        let paras = parse_document_xml(xml).expect("解析");
+        let paras = parse_doc(xml).expect("解析");
         let texts: Vec<String> = paras
             .iter()
             .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
@@ -1110,7 +1147,7 @@ mod tests {
             if !String::from_utf8_lossy(xml).contains("txbxContent") {
                 continue;
             }
-            let got = parse_document_xml(xml).expect("主解析").len();
+            let got = parse_doc(xml).expect("主解析").len();
             let want = crate::table::count_flat_paras(xml);
             assert_eq!(got, want, "{rel}：主解析器與表格計數器口徑分岔");
             checked += 1;
@@ -1145,7 +1182,7 @@ mod tests {
             if !has_pic && !text.contains("txbxContent") {
                 continue;
             }
-            let got = parse_document_xml(xml).expect("主解析").len();
+            let got = parse_doc(xml).expect("主解析").len();
             assert_eq!(
                 got,
                 crate::table::count_flat_paras(xml),
@@ -1174,7 +1211,7 @@ mod tests {
             let bytes = std::fs::read(corpus.join(rel)).expect("baseline corpus file");
             let doc = parse(&bytes).expect("parse");
             let xml = doc.parts.get("word/document.xml").expect("document.xml");
-            let n_paras = parse_document_xml(xml).expect("主解析").len();
+            let n_paras = parse_doc(xml).expect("主解析").len();
             let imgs = crate::drawing::read_images(xml);
             assert!(
                 imgs.len() >= min_imgs,
@@ -1297,7 +1334,7 @@ mod tests {
           </w:body>
         </w:document>"#
             .as_bytes();
-        let paras = parse_document_xml(xml).expect("解析樣式 XML 失敗");
+        let paras = parse_doc(xml).expect("解析樣式 XML 失敗");
         assert_eq!(paras.len(), 1);
         let runs = &paras[0].runs;
         assert_eq!(runs.len(), 4);
@@ -1344,7 +1381,7 @@ mod tests {
           </w:body>
         </w:document>"#;
         let st = StyleTable::parse(styles_xml.as_bytes());
-        let paras = parse_document_xml(doc_xml.as_bytes()).expect("解析 document.xml");
+        let paras = parse_doc(doc_xml.as_bytes()).expect("解析 document.xml");
         let run = &paras[0].runs[0];
         assert!(run.hyperlink_default, "超連結內 run 須標記來源");
         // 走正式級聯路徑：段落級 → 字元樣式純鏈 → run 直接格式 → 末端兜底。
@@ -1363,6 +1400,89 @@ mod tests {
         assert_eq!(eff.underline, Some(true));
     }
 
+    // ---------------- 主題色查表（w:themeColor → theme1.xml clrScheme） ----------------
+
+    /// 最小主題 part：hlink＝305090（LO 實測連結色）、accent1＝4F81BD。
+    const THEME_HLINK: &[u8] =
+        br#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+      <a:themeElements>
+        <a:clrScheme name="Office">
+          <a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
+          <a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
+          <a:accent1><a:srgbClr val="4F81BD"/></a:accent1>
+          <a:hlink><a:srgbClr val="305090"/></a:hlink>
+          <a:folHlink><a:srgbClr val="800080"/></a:folHlink>
+        </a:clrScheme>
+      </a:themeElements>
+    </a:theme>"#;
+
+    /// run 直接格式的主題色**優先於** `w:val` 回退值（ECMA-376 §17.3.2.25）：
+    /// `<w:color w:val="0000FF" w:themeColor="hyperlink"/>` 有效色＝主題 hlink
+    /// ＝0x305090（修復前只吃 w:val＝純藍 0x0000FF，與 Word/LO 偏離）。
+    #[test]
+    fn run_direct_theme_color_overrides_val() {
+        let theme = ThemeColors::parse(THEME_HLINK);
+        let doc_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body><w:p>
+            <w:r><w:rPr><w:color w:val="0000FF" w:themeColor="hyperlink"/></w:rPr><w:t>主題連結色</w:t></w:r>
+          </w:p></w:body>
+        </w:document>"#;
+        let paras = parse_document_xml(doc_xml.as_bytes(), &theme).expect("解析 document.xml");
+        let run = &paras[0].runs[0];
+        assert_eq!(
+            run.color,
+            Some(0xFF30_5090),
+            "run 直接格式的有效色必須是主題 hlink（0x305090），非 w:val 純藍"
+        );
+        let direct = run.direct.expect("run 直接格式快照必須存在");
+        assert_eq!(direct.color, Some(0xFF30_5090));
+        assert!(direct.color_set, "宣告了顏色 → color_set 必真");
+    }
+
+    /// 回歸保護：**無 theme part** → 老實退回 `w:val`（不虛構主題色）。
+    #[test]
+    fn run_direct_theme_absent_falls_back_to_val() {
+        let doc_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body><w:p>
+            <w:r><w:rPr><w:color w:val="0000FF" w:themeColor="hyperlink"/></w:rPr><w:t>無主題</w:t></w:r>
+          </w:p></w:body>
+        </w:document>"#;
+        let paras = parse_doc(doc_xml.as_bytes()).expect("解析 document.xml");
+        let run = &paras[0].runs[0];
+        assert_eq!(run.color, Some(0xFF00_00FF), "無主題 → 退回 w:val");
+    }
+
+    /// 容錯：`w:themeColor` 指向**查無**的名字（accent9）→ 退回 `w:val`。
+    #[test]
+    fn run_direct_theme_unknown_name_falls_back_to_val() {
+        let theme = ThemeColors::parse(THEME_HLINK);
+        let doc_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body><w:p>
+            <w:r><w:rPr><w:color w:val="123456" w:themeColor="accent9"/></w:rPr><w:t>查無</w:t></w:r>
+          </w:p></w:body>
+        </w:document>"#;
+        let paras = parse_document_xml(doc_xml.as_bytes(), &theme).expect("解析 document.xml");
+        assert_eq!(paras[0].runs[0].color, Some(0xFF12_3456));
+    }
+
+    /// 誠實近似：帶 `w:themeShade`／`w:themeTint` → 保留 Word 預算好的
+    /// `w:val`（正確色是變換後的主題色；lumMod/lumOff 變換本卡未實作）。
+    #[test]
+    fn run_direct_theme_shade_keeps_precomputed_val() {
+        let theme = ThemeColors::parse(THEME_HLINK);
+        let doc_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body><w:p>
+            <w:r><w:rPr><w:color w:val="365F91" w:themeColor="accent1" w:themeShade="BF"/></w:rPr><w:t>著色標題</w:t></w:r>
+          </w:p></w:body>
+        </w:document>"#;
+        let paras = parse_document_xml(doc_xml.as_bytes(), &theme).expect("解析 document.xml");
+        assert_eq!(
+            paras[0].runs[0].color,
+            Some(0xFF36_5F91),
+            "帶 themeShade → 保留 Word 預算色（非未變換的 accent1 4F81BD）"
+        );
+    }
+
     /// 回歸保護：styles.xml 無 Hyperlink 樣式、run 也無顯式色時，級聯末端
     /// 仍兜底合成 #0563C1＋底線（原本解析期合成的行為不因降格而消失）。
     #[test]
@@ -1377,7 +1497,7 @@ mod tests {
             </w:p>
           </w:body>
         </w:document>"#;
-        let paras = parse_document_xml(doc_xml.as_bytes()).expect("解析 document.xml");
+        let paras = parse_doc(doc_xml.as_bytes()).expect("解析 document.xml");
         let run = &paras[0].runs[0];
         assert!(run.color.is_none(), "解析期不得再合成顏色");
         assert!(!run.underline, "解析期不得再合成底線");
@@ -1411,7 +1531,7 @@ mod tests {
             </w:p>
           </w:body>
         </w:document>"#;
-        let paras = parse_document_xml(doc_xml.as_bytes()).expect("解析 document.xml");
+        let paras = parse_doc(doc_xml.as_bytes()).expect("解析 document.xml");
         let run = &paras[0].runs[0];
         let (base, _) = st.effective_para(None, ParaStyle::default());
         let eff = StyleTable::resolve_run(base, run.direct.unwrap_or_default())
@@ -1443,7 +1563,7 @@ mod tests {
             </w:p>
           </w:body>
         </w:document>"#;
-        let paras = parse_document_xml(doc_xml.as_bytes()).expect("解析 document.xml");
+        let paras = parse_doc(doc_xml.as_bytes()).expect("解析 document.xml");
         let run = &paras[0].runs[0];
         let (base, _) = st.effective_para(None, ParaStyle::default());
         let mut b = base;
@@ -1475,7 +1595,7 @@ mod tests {
             </w:p>
             </w:body></w:document>"#
             .as_bytes();
-        let paras = parse_document_xml(xml).expect("解析");
+        let paras = parse_doc(xml).expect("解析");
         let prun = paras[0]
             .prun
             .expect("自閉合標籤必須收進 p.prun（與成對寫法同義）");
@@ -1487,7 +1607,7 @@ mod tests {
         assert_eq!(prun.color, Some(0xFFFF_0000));
         assert_eq!(prun.size_pt, Some(14.0), "28 半磅 = 14pt");
         // 對照組：成對寫法（一直收的路徑）結果逐欄位一致——同義兩制消除。
-        let paired = parse_document_xml(
+        let paired = parse_doc(
             r#"<w:document xmlns:w="x"><w:body><w:p>
               <w:pPr><w:rPr>
                 <w:b></w:b><w:i></w:i><w:u></w:u><w:strike></w:strike>
@@ -1514,7 +1634,7 @@ mod tests {
     #[test]
     fn ppr_rpr_empty_arms_do_not_leak_across_boundaries() {
         // rPr 自閉合本體＋其後 spacing：spacing 仍收進 p.line。
-        let paras = parse_document_xml(
+        let paras = parse_doc(
             r#"<w:document xmlns:w="x"><w:body><w:p>
               <w:pPr><w:rPr/><w:spacing w:line="480" w:lineRule="auto"/></w:pPr>
               <w:r><w:t>a</w:t></w:r></w:p></w:body></w:document>"#
@@ -1524,7 +1644,7 @@ mod tests {
         assert!(paras[0].prun.is_none(), "<w:rPr/> 本體不材料化 prun");
         assert_eq!(paras[0].line, Some(LineSpacing::Auto(2.0)));
         // rPr 外的自閉合 b（pPr 直下，畸形位置）：不進 prun、不進任何 run。
-        let paras = parse_document_xml(
+        let paras = parse_doc(
             r#"<w:document xmlns:w="x"><w:body><w:p>
               <w:pPr><w:b/></w:pPr>
               <w:r><w:t>a</w:t></w:r></w:p></w:body></w:document>"#
@@ -1552,7 +1672,7 @@ mod tests {
             </w:p>
             </w:body></w:document>"#
             .as_bytes();
-        let paras = parse_document_xml(xml).expect("解析");
+        let paras = parse_doc(xml).expect("解析");
         assert_eq!(paras.len(), 1);
         let text: String = paras[0].runs.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(text, "abcd", "br 不得吞文字");
@@ -1575,7 +1695,7 @@ mod tests {
             </w:p>
             </w:body></w:document>"#
             .as_bytes();
-        let paras = parse_document_xml(xml).expect("解析");
+        let paras = parse_doc(xml).expect("解析");
         assert!(paras[0].page_breaks.is_empty(), "非 page 型別/渲染提示不記");
         let text: String = paras[0].runs.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(text, "xy");
@@ -1591,7 +1711,7 @@ mod tests {
             <w:br w:type="page"/>
             </w:body></w:document>"#
             .as_bytes();
-        let paras = parse_document_xml(xml).expect("解析");
+        let paras = parse_doc(xml).expect("解析");
         assert_eq!(paras[0].page_breaks, vec![2], "成對標籤記錄一次");
     }
 
@@ -1603,7 +1723,7 @@ mod tests {
             <w:p><w:r><w:t>中文🎉</w:t><w:br w:type="page"/><w:t>後</w:t></w:r></w:p>
             </w:body></w:document>"#
             .as_bytes();
-        let paras = parse_document_xml(xml).expect("解析");
+        let paras = parse_doc(xml).expect("解析");
         assert_eq!(paras[0].page_breaks, vec![3], "中文字 2＋emoji 碼點 1＝3");
     }
 
@@ -1616,7 +1736,7 @@ mod tests {
     /// 4000 字元填充撐爆版面。守衛口徑同 styles.rs `MAX_OOXML_LONG` 族。
     #[test]
     fn tab_pos_guard_rejects_non_finite_and_huge() {
-        let paras = parse_document_xml(
+        let paras = parse_doc(
             r#"<w:document xmlns:w="x"><w:body>
               <w:p><w:pPr><w:tabs><w:tab w:val="right" w:pos="1e45" w:leader="dot"/></w:tabs></w:pPr>
                  <w:r><w:t>a</w:t></w:r></w:p>
@@ -1633,7 +1753,7 @@ mod tests {
             assert_eq!(p.tab_leader, None, "第 {i} 段：拒收時 leader 不得單飛");
         }
         // 過度修正防護：正常 twips（4680=234pt）與負值（罕見但字面合法）照收。
-        let paras = parse_document_xml(
+        let paras = parse_doc(
             r#"<w:document xmlns:w="x"><w:body>
               <w:p><w:pPr><w:tabs><w:tab w:val="right" w:pos="4680" w:leader="dot"/></w:tabs></w:pPr>
                  <w:r><w:t>a</w:t></w:r></w:p>
