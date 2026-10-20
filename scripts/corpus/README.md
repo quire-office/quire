@@ -27,6 +27,30 @@ phase0 既有 130 檔位元級沿用，不被未消毒 pool 版覆寫）。
 `--quarantine <path>`），清單內檔案跳過評測、不計紅，彙報單列 `Q` 行。
 parse smoke 同步跳過並列原因。紅燈修復後從清單移除；不得用隔離掩蓋倒退。
 
+## XLSX corpus（獨立目錄 corpus-xlsx/，主 corpus/ 零觸碰）
+
+真實世界 XLSX/XLSM ≥60 份，供 XLSX groundwork（Card X1 round-trip 閘門）。
+來源：LibreOffice/core `sc/qa/**`（409 檔候選，MPL-2.0/GPL-3.0/LGPL-3.0；卡面
+原寫 sc/qa/extras/ooxmlimport/data，實測 sc/ 無該目錄，實際 QA 檔在
+sc/qa/unit/data/xlsx/** 等，故對 sc/qa 整棵 BFS 走查）＋ apache/poi
+`test-data/spreadsheet/`（367 檔候選，Apache-2.0；只收 .xlsx/.xlsm，
+.xls=OLE2、.ods=非 OOXML 一律排除）。跨來源 sha256 去重留 POI 版
+（`also_from` 記雙出處）。單檔 ≤2MB。副檔名 xlsx 實為 OLE2 的測試檔
+（CVE/fuzz 類）記 `.notzip` marker 屬預期剔除，重跑冪等零錯誤。
+
+- `fetch_xlsx.py [work]`：列清單（gh API；LO=sc/qa BFS、POI=recursive tree）＋
+  平行下載入 work/pool（預設 work=xlsx-work/，清單快取 *.tsv，`--refresh` 重列）
+- `select_xlsx.py [work] [out]`：探測特徵標籤（formula/sharedStrings/pivot_table/
+  chart/inlineStr/merged/numberFormat/dateSystem1904/definedNames/sheetProtection/
+  before_compat…）＋去重＋貪集合覆蓋＋lo/poi 各 40 配額 → `corpus-xlsx/` ＋
+  獨立 `manifest.json`（欄位沿主 manifest＋`doc_type: xlsx|xlsm`）
+- `../verify_corpus_xlsx.py [dir]`：閘門（≥60 檔 / license SPDX 白名單 /
+  feature_coverage 非空且達門檻 formula≥20、sharedStrings≥40、pivot≥3、chart≥3 /
+  zip EOCD＋[Content_Types].xml sanity / sha256 / ≤2MB / doc_type 與 vbaProject 一致）
+
+一鍵：`python3 scripts/corpus/fetch_xlsx.py /tmp/xlsx-work && python3 scripts/corpus/select_xlsx.py /tmp/xlsx-work corpus-xlsx && python3 scripts/verify_corpus_xlsx.py`
+（`corpus-xlsx/` 覆蓋重建；主 `corpus/manifest.json` 與 DOCX 400 閘門零觸碰。）
+
 ## 一鍵重跑
 
     bash scripts/corpus/collect.sh /tmp/corpus-work
