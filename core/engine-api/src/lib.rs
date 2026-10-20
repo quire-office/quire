@@ -2001,13 +2001,19 @@ mod tests {
             "Fallback 雙份＋align 式浮圖應收斂 LO 的 1 頁"
         );
         // 兩張 Choice 圖（550.8×50.4 與 245.55×792）都以 align/pct 鎖點發射，
-        // 不佔行帶：第 0 頁必須同時含兩張 Rect。
+        // 不佔行帶：第 0 頁必須同時含兩張圖片佔位 Rect（以專用填色辨識，
+        // 避免把表格背景 Rect 誤算成圖片）。
         let rects = engine
             .page_display_list(0)
             .expect("第 0 頁存在")
             .items
             .into_iter()
-            .filter(|it| matches!(it, DrawItem::Rect { .. }))
+            .filter(|it| {
+                matches!(
+                    it,
+                    DrawItem::Rect { fill_argb, .. } if *fill_argb == IMAGE_PLACEHOLDER_FILL
+                )
+            })
             .count();
         assert!(rects >= 2, "兩張浮圖都應以鎖點 Rect 發射，實得 {rects}");
         // round-trip 鐵律不受影響：parts passthrough，存檔位元組級相同。

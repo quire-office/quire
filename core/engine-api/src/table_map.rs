@@ -344,22 +344,31 @@ fn avail_w_for(sections: &[SectionSpec], params: &LayoutParams, para: usize) -> 
     }
 }
 
-/// `wp:positionH/V` 之 `<wp:align>` 白名單（ECMA-376 ST_PosHAlign／
-/// ST_PosVAlign；t_1a79f1c5）。t：left/center/right（V 軸 inner 對應居中）；
-/// b：top/center/bottom。其餘枚舉（insideLeft/bar/...）保守退回退化鏈。
+/// `wp:positionH/V` 之 `<wp:align>` 白名單（ECMA-376 §20.4 ST_PosHAlign／
+/// ST_PosVAlign；t_1a79f1c5）。t：left/center/right＋inside/outside；
+/// b：top/center/bottom＋inside/outside。其餘枚舉（insideLeft/bar/...）
+/// 保守退回退化鏈。
+///
+/// `inside`／`outside` 為裝訂雙面頁枚舉，真實落點取決於奇偶頁與裝訂方向；
+/// 本層無頁碼奇偶資訊，故以 frame 邊界近似：inside≈left、outside≈right。
 fn h_align_x(align: &str, frame_w: f32, w_pt: f32) -> Option<f32> {
-    match align {
-        "left" => Some(0.0),
+    // 比對前轉小寫：第三方工具可能輸出 `<wp:align>Center</wp:align>`（S3），
+    // 與 drawing 儲存處的正規化互為雙保險。
+    match align.to_ascii_lowercase().as_str() {
+        "left" | "inside" => Some(0.0),
         "center" => Some((frame_w - w_pt) / 2.0),
-        "right" => Some(frame_w - w_pt),
+        "right" | "outside" => Some(frame_w - w_pt),
         _ => None,
     }
 }
 fn v_align_y(align: &str, frame_h: f32, h_pt: f32) -> Option<f32> {
-    match align {
-        "top" => Some(0.0),
+    match align.to_ascii_lowercase().as_str() {
+        // 同 h 軸：inside≈top、outside≈bottom 之近似（無奇偶頁資訊）。
+        "top" | "inside" => Some(0.0),
+        // `inner` 非 ST_PosVAlign 標準枚舉（來源可疑，保留相容），
+        // 語意近似居中。
         "center" | "inner" => Some((frame_h - h_pt) / 2.0),
-        "bottom" => Some(frame_h - h_pt),
+        "bottom" | "outside" => Some(frame_h - h_pt),
         _ => None,
     }
 }
@@ -396,18 +405,25 @@ fn resolved_anchor(
         "page" => page_h,
         _ => avail_h.max(1.0),
     };
-    let x_pt = match (im.pos_x_pt, im.pos_x_align.as_deref(), im.pos_x_pct) {
-        (Some(x), _, _) => x,
-        (None, Some(a), _) => h_align_x(a, frame_w, im.w_pt)?,
-        (None, None, Some(p)) => frame_w * p / 100_000.0,
-        (None, None, None) => return None,
-    };
-    let y_pt = match (im.pos_y_pt, im.pos_y_align.as_deref(), im.pos_y_pct) {
-        (Some(y), _, _) => y,
-        (None, Some(a), _) => v_align_y(a, frame_h, im.h_pt)?,
-        (None, None, Some(p)) => frame_h * p / 100_000.0,
-        (None, None, None) => return None,
-    };
+    // 逐軸三式平滑退檔：posOffset → `<wp:align>` → `<wp14:pctPos*Offset>`。
+    // align 值不被識別（如 insideLeft／非法字串）只算該式落空，不可短路
+    // 整個錨點——否則第三式 pct 永遠退不到（S2）。
+    let x_pt = im
+        .pos_x_pt
+        .or_else(|| {
+            im.pos_x_align
+                .as_deref()
+                .and_then(|a| h_align_x(a, frame_w, im.w_pt))
+        })
+        .or_else(|| im.pos_x_pct.map(|p| frame_w * p / 100_000.0))?;
+    let y_pt = im
+        .pos_y_pt
+        .or_else(|| {
+            im.pos_y_align
+                .as_deref()
+                .and_then(|a| v_align_y(a, frame_h, im.h_pt))
+        })
+        .or_else(|| im.pos_y_pct.map(|p| frame_h * p / 100_000.0))?;
     Some(quire_layout::FloatingAnchor {
         x_pt,
         y_pt,
@@ -564,6 +580,77 @@ mod tests {
             overlap: None,
             embed_rid: None,
         }
+    }
+
+    /// 帶兩軸 page 原點的浮圖；y 已由 posOffset 鎖定，測試只折騰 x 軸。
+    fn anchored_img() -> InlineImage {
+        let mut im = img(0, 50.0);
+        im.floating = true;
+        im.pos_x_rel = Some("page".into());
+        im.pos_y_rel = Some("page".into());
+        im.pos_y_pt = Some(10.0);
+        im
+    }
+
+    /// S2（t_1a79f1c5 後續）：align 值不被識別時只算該式落空，必須平滑退到
+    /// 第三式 pct；舊 `?` 會讓整個錨點回 None（浮圖誤退化 inline 撐帶）。
+    /// `inside` 已於本卡補入白名單，故用仍不識別的 `insideLeft` 觸發同一路徑。
+    #[test]
+    fn unrecognized_align_falls_back_to_pct() {
+        let mut im = anchored_img();
+        im.pos_x_align = Some("insideLeft".into());
+        im.pos_x_pct = Some(50_000.0);
+        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None)
+            .expect("align 落空後應退到 pct，不得整體回 None");
+        assert!((a.x_pt - 300.0).abs() < 1e-4, "pct 半頁 x={}", a.x_pt);
+    }
+
+    /// 回歸保護：`left` 仍走 align 算式得 0，不受退檔重構影響。
+    #[test]
+    fn left_align_computes_zero_x() {
+        let mut im = anchored_img();
+        im.pos_x_align = Some("left".into());
+        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None).expect("left 應可解");
+        assert_eq!(a.x_pt, 0.0);
+    }
+
+    /// S3：第三方工具輸出首字母大寫 `<wp:align>Center</wp:align>` 仍須命中
+    /// center 算式（drawing 儲存正規化＋此處比對轉小寫雙保險）。
+    #[test]
+    fn uppercase_center_align_matches_center_formula() {
+        let mut im = anchored_img();
+        im.pos_x_align = Some("Center".into());
+        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None).expect("Center 應可解");
+        assert!((a.x_pt - 250.0).abs() < 1e-4, "置中 x={}", a.x_pt);
+    }
+
+    /// S2：ECMA-376 `inside`／`outside` 裝訂枚舉以 frame 邊界近似
+    /// （inside≈left、outside≈right，無奇偶頁資訊）。
+    #[test]
+    fn inside_outside_align_approximate_frame_edges() {
+        let mut im = anchored_img();
+        im.pos_x_align = Some("inside".into());
+        assert_eq!(
+            resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None)
+                .expect("inside 應可解")
+                .x_pt,
+            0.0
+        );
+        im.pos_x_align = Some("outside".into());
+        assert_eq!(
+            resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None)
+                .expect("outside 應可解")
+                .x_pt,
+            500.0
+        );
+    }
+
+    /// 回歸保護：mce-nested（Fallback 雙份＋align/pct 鎖點）仍收斂 1 頁。
+    #[test]
+    fn mce_nested_corpus_stays_one_page() {
+        let bytes = corpus_bytes("ooxmlexport/mce-nested.docx");
+        let engine = crate::Engine::from_docx_bytes(&bytes).expect("開啟 mce-nested.docx");
+        assert_eq!(engine.page_count(), 1, "align/pct 三式退檔後仍應為 1 頁");
     }
 
     /// S1-4（t_c1fb4c69）engine 側同閘：正文流圖帶高 `(h/line_h).ceil() as u32`

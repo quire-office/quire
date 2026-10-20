@@ -618,7 +618,7 @@ impl DrawingParser {
             if let Some(vertical) = p.align_axis {
                 // `<wp:align>` 對齊枚舉：直存字串（trim 後），不解析數值
                 //（t_1a79f1c5；OOXMLExport 封面圖族 positionH/V 只有 align）。
-                let v = text.trim().to_string();
+                let v = text.trim().to_ascii_lowercase();
                 if !v.is_empty() {
                     if vertical {
                         if p.pos_y_align.is_none() {
