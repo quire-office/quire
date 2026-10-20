@@ -6,3 +6,5 @@ node_modules
 **/demo/dist/
 build/
 __pycache__/
+.worktrees/
+scripts/corpus/xlsx-work/
