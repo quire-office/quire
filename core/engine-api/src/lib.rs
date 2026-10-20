@@ -113,12 +113,17 @@ impl Engine {
         // 開啟文件時一次性解析 styles.xml：逐段級聯合成的 (斷行字級, 段行高)
         // 網格餵 `ParaGrid`，run 級有效樣式烘焙進發射用投影 `paras_eff`（見
         // 欄位注）。純讀取派生資料——`doc` 本體一個欄位不改，存檔路徑完全不
-        // 經此層（parts passthrough，round-trip 零影響）。無 styles.xml part
-        // ＝None：全部走後備值，既有文件行為逐位元組不變。
-        let style_table = doc
-            .parts
-            .get("word/styles.xml")
-            .map(|s| StyleTable::parse(s.as_slice()));
+        // 經此層（parts passthrough，round-trip 零影響）。
+        // 無 styles.xml part 時仍給一張空表而非 None：級聯層除了套用樣式，
+        // 還承載「超連結合成預設」的末端兜底（`RunStyle::with_hyperlink_default`）；
+        // 若此處短路，無 styles.xml 的檔案連結會失去預設藍／底線。空表一切
+        // 落後備值，與舊 None 路徑逐欄等價。
+        let style_table = Some(
+            doc.parts
+                .get("word/styles.xml")
+                .map(|s| StyleTable::parse(s.as_slice()))
+                .unwrap_or_else(|| StyleTable::parse(&[])),
+        );
         let (doc_size, doc_line) = style_table.as_ref().map_or((None, None), |t| t.doc_grid());
         // 文件基準字級：docDefaults∪Normal 鏈的有效 sz（ECMA 無宣告時的
         // Word 預設 12pt 兜底）。無級聯層＝12（既有硬編碼後備）。
@@ -645,7 +650,10 @@ fn cascade_paragraphs(
             if let Some(cid) = r.rstyle.as_deref() {
                 b = StyleTable::resolve_run(b, st.char_chain(cid).unwrap_or_default());
             }
-            let eff = StyleTable::resolve_run(b, r.direct.unwrap_or_default());
+            // 級聯末端兜底：只有整條鏈（直接格式／字元樣式／段落樣式／
+            // docDefaults）都沒宣告顏色、底線時，超連結 run 才補合成預設。
+            let eff = StyleTable::resolve_run(b, r.direct.unwrap_or_default())
+                .with_hyperlink_default(r.hyperlink_default);
             // 斷行字級＝段內 run 有效字級最大值（Word 行高/斷行依段內最大
             // 字級成形；本引擎斷行用單一尺，取大者保守不切字）。
             if let Some(sz) = eff.size_pt {
@@ -1920,6 +1928,28 @@ mod tests {
             "fdo77887 粗體標題段在 display list 中 flags 不可為 0"
         );
         assert_ne!(flags & FLAG_BOLD, 0, "fdo77887 粗體標題段應帶有 FLAG_BOLD");
+    }
+
+    /// 超連結色級聯回歸：style-inheritance.docx 的 TOC 連結 run 帶
+    /// `w:rStyle="Hyperlink"`，styles.xml 宣告 `w:color="0000FF"`；顯示列表
+    /// 必須採宣告色，不得被解析器合成預設 #0563C1 越過（本卡先紅後綠）。
+    #[test]
+    fn style_inheritance_hyperlink_uses_declared_style_color() {
+        const SI: &[u8] = include_bytes!("../../../corpus/ooxmlexport/style-inheritance.docx");
+        let engine = Engine::from_docx_bytes(SI).expect("開啟 style-inheritance.docx");
+        let link_color = (0..engine.page_count())
+            .flat_map(|p| engine.page_display_list(p).expect("頁存在").items)
+            .find_map(|it| match it {
+                DrawItem::Text {
+                    text, color_argb, ..
+                } if text == "Heading 1" => Some(color_argb),
+                _ => None,
+            })
+            .expect("TOC 應有「Heading 1」連結文字");
+        assert_eq!(
+            link_color, 0xFF00_00FF,
+            "TOC 連結必須採用 styles.xml Hyperlink 字元樣式宣告的 0000FF"
+        );
     }
 
     // ---------------- 強制分頁 br-page（t_01fa57af） ----------------

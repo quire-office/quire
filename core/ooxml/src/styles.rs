@@ -64,6 +64,29 @@ pub struct RunStyle {
 }
 
 impl RunStyle {
+    /// 超連結合成預設的**級聯末端兜底**（ECMA-376 §17.7.2：直接格式＞
+    /// 字元樣式鏈（含 Hyperlink 樣式）＞段落樣式＞docDefaults）。解析期不再
+    /// 把預設藍寫進 `Run::direct`——那會讓合成色冒充直接格式、越過用戶
+    /// styles.xml 宣告的 Hyperlink 字元樣式。只有整條鏈都沒宣告顏色時，才在
+    /// 此補上 Word Hyperlink 標準藍（`crate::HYPERLINK_DEFAULT_COLOR_ARGB`）；
+    /// 底線同理：鏈上已宣告 `w:u`（含 `none`＝明確關閉）即不再合成。
+    /// `hyperlink`＝本 run 位於 `w:hyperlink` 內（解析期 `Run::hyperlink_default`）。
+    ///
+    /// 呼叫端必須以「跑完 [`StyleTable::resolve_run`] 的最終結果」傳入，
+    /// 否則 `color_set`／`underline` 未反映全鏈宣告，兜底會誤蓋樣式色。
+    pub fn with_hyperlink_default(mut self, hyperlink: bool) -> RunStyle {
+        if hyperlink {
+            if !self.color_set {
+                self.color = Some(crate::HYPERLINK_DEFAULT_COLOR_ARGB);
+                self.color_set = true;
+            }
+            if self.underline.is_none() {
+                self.underline = Some(true);
+            }
+        }
+        self
+    }
+
     /// 疊加上層：`upper` 只補本層未宣告的欄位——本層已宣告者贏。
     /// （級聯組裝自根往下：`child.overlay(parent)` 型別上即「子補父缺」。）
     pub(crate) fn overlay(mut self, upper: &RunStyle) -> RunStyle {

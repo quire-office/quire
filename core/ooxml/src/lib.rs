@@ -88,6 +88,12 @@ pub struct Run {
     /// engine 投影時以「前綴→點導引填補」展開（TOC 點引leads）。
     #[serde(default)]
     pub tab: bool,
+    /// 本 run 位於 `w:hyperlink` 內（解析期標記）。合成預設藍／底線**不再**
+    /// 進 `direct`——那是直接格式，會依 ECMA-376 §17.7.2 越過用戶的
+    /// Hyperlink 字元樣式；改由級聯末端（`RunStyle::with_hyperlink_default`）
+    /// 只在整鏈未宣告顏色／底線時兜底。存檔不經此欄位（parts passthrough）。
+    #[serde(default)]
+    pub hyperlink_default: bool,
 }
 
 /// 本卡支援的頁碼欄位型別（其余欄位名如 SECTIONPAGES／DATE 老實保留快取文字）。
@@ -352,13 +358,7 @@ fn apply_break_tab_tag(
 
 /// 套用段落或 run 內部的樣式標籤（Start 與 Empty 事件共用）。
 /// 注意：不含 `pStyle`——段落樣式改由呼叫端寫進段落棧頂（巢狀 `w:p` 口徑）。
-fn apply_style_tag(
-    name: &[u8],
-    e: &quick_xml::events::BytesStart,
-    cur_run: &mut Option<Run>,
-    run_has_color: &mut bool,
-    run_has_underline: &mut bool,
-) {
+fn apply_style_tag(name: &[u8], e: &quick_xml::events::BytesStart, cur_run: &mut Option<Run>) {
     // ---- run 直接格式三態快照（t_5dfc8ac7）：語義唯一來源＝styles::apply_run_tag。
     // bool 欄位照舊寫（既有消費者不動），三態快照並行記錄給級聯層。只認
     // run 屬性標籤本身——catch-all 送來的無關標籤（noProof/lang…）不得把
@@ -389,7 +389,6 @@ fn apply_style_tag(
         }
         b"u" => {
             if let Some(r) = cur_run.as_mut() {
-                *run_has_underline = true;
                 r.underline = toggle_attr_on(e);
             }
         }
@@ -402,7 +401,6 @@ fn apply_style_tag(
             if let Some(r) = cur_run.as_mut() {
                 // themeColor 暫不解析（誠實近似）：僅解析 w:val 的 6/8 位 hex，auto→None。
                 let parsed = attr_val(e, "val").and_then(|v| parse_color_val(&v));
-                *run_has_color = parsed.is_some();
                 r.color = parsed;
             }
         }
@@ -432,8 +430,6 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
     // 覆寫＋清空，外層文字全吞；corpus 實測 25.5% 檔案受害）。
     let mut stack: Vec<(usize, Paragraph, usize)> = Vec::new();
     let mut cur_run: Option<Run> = None;
-    let mut run_has_color = false;
-    let mut run_has_underline = false;
     // 段落直接格式（t_5dfc8ac7）：w:pPr 巢狀深度（只認 depth==1；深一層＝
     // w:pPrChange 修訂殘影不收）＋其內 w:rPr 深度（spacing/jc 只收 rPr 外的）。
     let mut ppr_depth = 0usize;
@@ -556,8 +552,6 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     }
                     b"r" => {
                         cur_run = Some(Run::default());
-                        run_has_color = false;
-                        run_has_underline = false;
                         // 欄位結果 run 標記：簡單欄子樹，或複雜欄 separate 之後。
                         let kind = match fld_simple_stack.last() {
                             Some(k) => *k,
@@ -583,13 +577,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                     }
                     b"Fallback" => fb += 1,
                     b"AlternateContent" => ac_stack.push(fb),
-                    other => apply_style_tag(
-                        other,
-                        &e,
-                        &mut cur_run,
-                        &mut run_has_color,
-                        &mut run_has_underline,
-                    ),
+                    other => apply_style_tag(other, &e, &mut cur_run),
                 }
             }
             Event::Empty(e) => {
@@ -686,13 +674,7 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                         );
                     }
                 } else {
-                    apply_style_tag(
-                        name.as_slice(),
-                        &e,
-                        &mut cur_run,
-                        &mut run_has_color,
-                        &mut run_has_underline,
-                    );
+                    apply_style_tag(name.as_slice(), &e, &mut cur_run);
                 }
             }
             Event::End(e) => {
@@ -731,30 +713,14 @@ fn parse_document_xml(xml: &[u8]) -> Result<Vec<Paragraph>, OoxmlError> {
                             if run.text.is_empty() {
                                 run.field = None;
                             }
-                            // <w:hyperlink> 內 run 無顯式樣式時預設藍（0xFF0563C1）＋底線。
-                            if hyperlink_depth > 0 {
-                                if !run_has_color && run.color.is_none() {
-                                    run.color = Some(HYPERLINK_DEFAULT_COLOR_ARGB);
-                                    // 代擬色同時進三態快照（t_5dfc8ac7）：它是
-                                    // 解析器代擬的**直接格式**，級聯時必須與
-                                    // 真實 rPr/w:color 同層，否則 docDefaults
-                                    // 的顏色會越過它搶先命中（連結變色）。
-                                    let d = run.direct.get_or_insert_with(RunStyle::default);
-                                    d.color_set = true;
-                                    d.color = Some(HYPERLINK_DEFAULT_COLOR_ARGB);
-                                }
-                                if !run_has_underline {
-                                    run.underline = true;
-                                    if let Some(d) = run.direct.as_mut() {
-                                        d.underline = Some(true);
-                                    } else {
-                                        run.direct = Some(RunStyle {
-                                            underline: Some(true),
-                                            ..Default::default()
-                                        });
-                                    }
-                                }
-                            }
+                            // <w:hyperlink> 內 run 只標記來源，不在此合成顏色／
+                            // 底線——合成若落 direct 就成了「直接格式」，依
+                            // ECMA-376 §17.7.2 會越過用戶 styles.xml 宣告的
+                            // Hyperlink 字元樣式。兜底改由級聯末端
+                            // （`RunStyle::with_hyperlink_default`）在全鏈未
+                            // 宣告時補上。TODO（未支援）：`w:themeColor`
+                            // （→ theme1.xml 查表）本卡不解析，僅認 `w:val`。
+                            run.hyperlink_default = hyperlink_depth > 0;
                             p.runs.push(run);
                         }
                     }
@@ -1342,11 +1308,152 @@ mod tests {
         assert!(!runs[1].bold && !runs[1].italic && !runs[1].underline && !runs[1].strike);
         assert_eq!(runs[1].color, None);
 
-        assert_eq!(runs[2].color, Some(HYPERLINK_DEFAULT_COLOR_ARGB));
-        assert!(runs[2].underline);
+        // 超連結預設色／底線已降格為級聯末端兜底：解析期只標記來源，
+        // 不得寫進 run.color / run.direct（否則冒充直接格式越過字元樣式）。
+        assert_eq!(runs[2].color, None);
+        assert!(!runs[2].underline);
+        assert!(runs[2].hyperlink_default);
 
         assert_eq!(runs[3].color, Some(0xFF00_FF00));
         assert!(!runs[3].underline);
+        assert!(runs[3].hyperlink_default);
+    }
+
+    /// 紅燈先行：styles.xml 的 Hyperlink 字元樣式宣告 color=0000FF，
+    /// document.xml 的 w:hyperlink 內 run 只有 rStyle 引用、無顯式色。
+    /// 依 ECMA-376 §17.7.2（直接格式＞字元樣式＞段落樣式＞docDefaults），
+    /// 級聯有效色必須是 0000FF。修復前解析器把合成預設藍寫進 run.direct，
+    /// 直接格式越過字元樣式 → 本測試失敗（實際得到 0xFF0563C1）。
+    #[test]
+    fn hyperlink_character_style_color_beats_synthetic_default() {
+        let styles_xml = r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:style w:type="character" w:styleId="Hyperlink">
+            <w:rPr><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr>
+          </w:style>
+        </w:styles>"#;
+        let doc_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body>
+            <w:p>
+              <w:hyperlink w:anchor="_Toc1">
+                <w:r>
+                  <w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr>
+                  <w:t>目錄連結</w:t>
+                </w:r>
+              </w:hyperlink>
+            </w:p>
+          </w:body>
+        </w:document>"#;
+        let st = StyleTable::parse(styles_xml.as_bytes());
+        let paras = parse_document_xml(doc_xml.as_bytes()).expect("解析 document.xml");
+        let run = &paras[0].runs[0];
+        assert!(run.hyperlink_default, "超連結內 run 須標記來源");
+        // 走正式級聯路徑：段落級 → 字元樣式純鏈 → run 直接格式 → 末端兜底。
+        let (base, _) = st.effective_para(None, ParaStyle::default());
+        let mut b = base;
+        if let Some(cid) = run.rstyle.as_deref() {
+            b = StyleTable::resolve_run(b, st.char_chain(cid).unwrap_or_default());
+        }
+        let eff = StyleTable::resolve_run(b, run.direct.unwrap_or_default())
+            .with_hyperlink_default(run.hyperlink_default);
+        assert_eq!(
+            eff.color,
+            Some(0xFF00_00FF),
+            "Hyperlink 字元樣式的 0000FF 必須勝過解析器合成預設色"
+        );
+        assert_eq!(eff.underline, Some(true));
+    }
+
+    /// 回歸保護：styles.xml 無 Hyperlink 樣式、run 也無顯式色時，級聯末端
+    /// 仍兜底合成 #0563C1＋底線（原本解析期合成的行為不因降格而消失）。
+    #[test]
+    fn hyperlink_default_fallback_applies_when_no_layer_declares_color() {
+        let st = StyleTable::parse(b"");
+        let doc_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body>
+            <w:p>
+              <w:hyperlink>
+                <w:r><w:t>無樣式連結</w:t></w:r>
+              </w:hyperlink>
+            </w:p>
+          </w:body>
+        </w:document>"#;
+        let paras = parse_document_xml(doc_xml.as_bytes()).expect("解析 document.xml");
+        let run = &paras[0].runs[0];
+        assert!(run.color.is_none(), "解析期不得再合成顏色");
+        assert!(!run.underline, "解析期不得再合成底線");
+        let (base, _) = st.effective_para(None, ParaStyle::default());
+        let eff = StyleTable::resolve_run(base, run.direct.unwrap_or_default())
+            .with_hyperlink_default(run.hyperlink_default);
+        assert_eq!(eff.color, Some(HYPERLINK_DEFAULT_COLOR_ARGB));
+        assert_eq!(eff.underline, Some(true));
+    }
+
+    /// 直接格式仍贏過一切：run 自帶 `w:color`／`w:u` 時，末端兜底不得覆蓋。
+    #[test]
+    fn hyperlink_direct_format_beats_cascade_fallback() {
+        let st = StyleTable::parse(
+            r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+              <w:style w:type="character" w:styleId="Hyperlink">
+                <w:rPr><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr>
+              </w:style>
+            </w:styles>"#
+                .as_bytes(),
+        );
+        let doc_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body>
+            <w:p>
+              <w:hyperlink>
+                <w:r>
+                  <w:rPr><w:color w:val="FF0000"/><w:u w:val="none"/></w:rPr>
+                  <w:t>直接格式連結</w:t>
+                </w:r>
+              </w:hyperlink>
+            </w:p>
+          </w:body>
+        </w:document>"#;
+        let paras = parse_document_xml(doc_xml.as_bytes()).expect("解析 document.xml");
+        let run = &paras[0].runs[0];
+        let (base, _) = st.effective_para(None, ParaStyle::default());
+        let eff = StyleTable::resolve_run(base, run.direct.unwrap_or_default())
+            .with_hyperlink_default(run.hyperlink_default);
+        assert_eq!(eff.color, Some(0xFFFF_0000), "直接色贏過樣式與兜底");
+        assert_eq!(eff.underline, Some(false), "直接 u=none 明確關閉底線");
+    }
+
+    /// Hyperlink 樣式已有 `w:u` 宣告（含 none）時，末端兜底不得重複合成底線。
+    #[test]
+    fn hyperlink_style_underline_declaration_blocks_synthesis() {
+        let st = StyleTable::parse(
+            r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+              <w:style w:type="character" w:styleId="Hyperlink">
+                <w:rPr><w:u w:val="none"/></w:rPr>
+              </w:style>
+            </w:styles>"#
+                .as_bytes(),
+        );
+        let doc_xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body>
+            <w:p>
+              <w:hyperlink>
+                <w:r>
+                  <w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr>
+                  <w:t>不畫底線的連結</w:t>
+                </w:r>
+              </w:hyperlink>
+            </w:p>
+          </w:body>
+        </w:document>"#;
+        let paras = parse_document_xml(doc_xml.as_bytes()).expect("解析 document.xml");
+        let run = &paras[0].runs[0];
+        let (base, _) = st.effective_para(None, ParaStyle::default());
+        let mut b = base;
+        if let Some(cid) = run.rstyle.as_deref() {
+            b = StyleTable::resolve_run(b, st.char_chain(cid).unwrap_or_default());
+        }
+        let eff = StyleTable::resolve_run(b, run.direct.unwrap_or_default())
+            .with_hyperlink_default(run.hyperlink_default);
+        assert_eq!(eff.underline, Some(false), "樣式宣告 u=none 即不合成");
+        assert_eq!(eff.color, Some(HYPERLINK_DEFAULT_COLOR_ARGB), "色仍兜底");
     }
 
     // ---------------- pPr/rPr 自閉合 run 標籤（t_5b391cfd S1） ----------------
