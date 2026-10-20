@@ -83,6 +83,10 @@ jobs:
           else
             echo "::warning::benches/corpus 是空的——benchmark 語料落地後此閘門才會真的咬合"
           fi
+          # ★ X1：XLSX/XLSM 容器級閘門——corpus-xlsx 全 80 檔未觸碰存檔必須
+          # byte-identical（DOCX 的無損紀律複製到第二格式的證明；失真即紅）。
+          cargo run -q -p quire-cli -- roundtrip-xlsx fixtures --check
+          cargo run -q -p quire-cli -- roundtrip-xlsx corpus-xlsx --check
 
       # ★ P0-6 性能閘門：500 頁檔打字輸入延遲 p95 < 8ms（debug info release build，
       # 貼近 ship 配置；增量重排退化成整篇重建會直接咬紅這裡）。
@@ -94,10 +98,13 @@ jobs:
       - name: ★ 雙目標鐵律——core 必須可編譯進 wasm32（全平台）
         run: |
           cargo check -p quire-ooxml -p quire-layout -p quire-render-trait \
-            -p quire-crdt -p quire-engine --target wasm32-unknown-unknown
+            -p quire-crdt -p quire-engine -p quire-xlsx --target wasm32-unknown-unknown
           cargo check -p quire-web -p quire-web-collab --target wasm32-unknown-unknown
           # collab feature 也要能編（協作分塊的依賴組合）。
           cargo check -p quire-engine --features collab --target wasm32-unknown-unknown
+          # xlsx feature 也要能編（XLSX 分塊走同款拆包紀律：native/未來 wasm
+          # 分塊可載入，但主 wasm 首包不帶——分層閘門守這條）。
+          cargo check -p quire-engine --features xlsx --target wasm32-unknown-unknown
 
       # check 只證明過型，連結才是 wasm 殼真正的收尾；三個 OS 各自的 rust-lld 都要能產貨。
       - name: wasm 殼實際連結出 .wasm（全平台）

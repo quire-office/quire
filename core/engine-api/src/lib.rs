@@ -43,6 +43,10 @@ pub enum EngineError {
     Ooxml(#[from] OoxmlError),
     #[error("zip 結構對照失敗: {0}")]
     Diff(#[from] quire_ooxml::ZipStructureError),
+    /// XLSX 容器面（feature = xlsx）：不透明字串出口——shells 因此
+    /// 不需要 import quire-xlsx 也能處理錯誤（分層鐵律）。
+    #[error("XLSX 容器失敗: {0}")]
+    Xlsx(String),
 }
 
 pub struct Engine {
@@ -524,6 +528,85 @@ impl Engine {
     ) -> Result<ZipDiff, EngineError> {
         let touched: BTreeMap<String, ()> = allow.iter().map(|k| (k.clone(), ())).collect();
         Ok(diff_zip_structure(original, saved, &touched)?)
+    }
+}
+
+// ---------------- XLSX 容器面（feature = xlsx）----------------
+//
+// 拆包紀律同 collab：主 wasm 不帶此 feature（首包體積＋攻擊面），XLSX 程式碼
+// 只由 shells/native（quire-cli）經 `quire-engine/xlsx` 鏈入。分層閘門
+// （scripts/check-layering.sh）以 cargo tree 守住 quire-web 不得直接或傳遞
+// 依賴 quire-xlsx。
+//
+// X1 卡範圍＝容器級無損 round-trip ＋最小 workbook 投影（只讀）。型別经本
+// crate pass-through re-export（分層鐵律：shells 只准 import engine）。
+
+/// XLSX/XLSM 容器句柄（zip 結構快照＋只讀 part 索引）。
+#[cfg(feature = "xlsx")]
+pub struct XlsxDoc {
+    bundle: quire_xlsx::XlsxBundle,
+    /// 開啟時的原始位元組——round-trip 對照基準。
+    original: Vec<u8>,
+}
+
+#[cfg(feature = "xlsx")]
+impl XlsxDoc {
+    /// 由 .xlsx/.xlsm 位元組開啟（不碰檔案系統；缺 [Content_Types].xml → Err）。
+    pub fn from_xlsx_bytes(bytes: &[u8]) -> Result<Self, EngineError> {
+        let bundle = quire_xlsx::XlsxBundle::open(bytes)?;
+        Ok(Self {
+            bundle,
+            original: bytes.to_vec(),
+        })
+    }
+
+    /// 存回：本卡不改任何 part → 未觸碰 entry 原樣搬運。
+    pub fn save_xlsx(&self) -> Result<Vec<u8>, EngineError> {
+        Ok(self.bundle.save()?)
+    }
+
+    pub fn part_names(&self) -> Vec<String> {
+        self.bundle.part_names()
+    }
+
+    pub fn part_count(&self) -> usize {
+        self.bundle.part_count()
+    }
+
+    pub fn part(&self, name: &str) -> Option<Vec<u8>> {
+        self.bundle.part(name)
+    }
+
+    /// workbook 最小模型（純讀取投影；本方法不失敗，病態輸入落空集合）。
+    pub fn workbook_model_json(&self) -> String {
+        serde_json::to_string(&self.bundle.workbook_model()).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// sheet 數（投影；模型層容錯後的誠實數字）。
+    pub fn sheet_count(&self) -> usize {
+        self.bundle.workbook_model().sheets.len()
+    }
+
+    /// 未觸碰存檔是否 byte-identical（CLI 閘門的直接斷言）。
+    pub fn untouched_is_byte_identical(&self) -> Result<bool, EngineError> {
+        Ok(self.save_xlsx()? == self.original)
+    }
+}
+
+/// XLSX 離線對照：原始位元組 vs 存回位元組的 zip 結構級 diff（CLI --check 用）。
+/// 復用 ooxml 的 `diff_untouched`——zip 結構層本就是格式無關的。
+#[cfg(feature = "xlsx")]
+pub fn xlsx_roundtrip_diff(
+    original: &[u8],
+    saved: &[u8],
+) -> Result<quire_ooxml::ZipDiff, EngineError> {
+    Ok(quire_ooxml::diff_untouched(original, saved)?)
+}
+
+#[cfg(feature = "xlsx")]
+impl From<quire_xlsx::XlsxError> for EngineError {
+    fn from(e: quire_xlsx::XlsxError) -> Self {
+        EngineError::Xlsx(e.to_string())
     }
 }
 

@@ -1,0 +1,14 @@
+[package]
+name = "quire-xlsx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "XLSX/XLSM (OPC) container-level lossless round-trip + minimal workbook model (read-only)"
+
+[dependencies]
+# 容器層完全復用 core/ooxml 的 zip_struct::ZipBundle（entry 級 raw bytes 搬運，
+# 格式無關）——本卡的存在意義就是證明無損紀律能複製到第二格式，不重寫一個。
+quire-ooxml = { workspace = true }
+quick-xml = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
