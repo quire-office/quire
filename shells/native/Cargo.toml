@@ -10,6 +10,8 @@ name = "quire-cli"
 path = "src/main.rs"
 
 [dependencies]
-quire-engine = { workspace = true }
+# xlsx feature：X1 卡的 roundtrip-xlsx 閘門面（容器級無損＋workbook 投影）。
+# 拆包紀律：只有 native 殼開它，主 wasm（quire-web）不帶。
+quire-engine = { workspace = true, features = ["xlsx"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

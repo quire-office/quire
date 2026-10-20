@@ -373,7 +373,12 @@ impl ZipBundle {
             ));
         }
 
-        // 1) local headers＋資料＋gap，記錄每個 entry 的新位移。
+        // 1) local headers＋資料＋gap：**依實體位移順序**輸出——central 順序
+        //    與實體順序不一致的病態 archive（POI 寫出的 CVLKRA 類檔案，CD
+        //    把 [Content_Types].xml 排在首位但實體在尾端）若按 CD 順序搬運，
+        //    gap（以實體鄰接計算）會錯置到別的 entry 之後，未觸碰存檔即失真。
+        //    按實體順序輸出可完整保留 entry 間原始位元組佈局；central 記錄
+        //    仍按 CD 順序輸出（zip 的邏輯順序），各自回填正確位移。
         let mut out: Vec<u8> = Vec::with_capacity(
             self.prefix_raw.len()
                 + plan
@@ -383,9 +388,21 @@ impl ZipBundle {
                 + 4096,
         );
         out.extend_from_slice(&self.prefix_raw);
-        let mut offsets: Vec<u64> = Vec::with_capacity(plan.len());
-        for p in &plan {
-            offsets.push(out.len() as u64);
+        let mut offsets: Vec<u64> = vec![0; plan.len()];
+        let mut data_order: Vec<usize> = (0..plan.len()).collect();
+        data_order.sort_by_key(|&i| {
+            (
+                plan[i]
+                    .src
+                    .as_ref()
+                    .map(|e| e.local_header_offset)
+                    .unwrap_or(u64::MAX),
+                i,
+            )
+        });
+        for &i in &data_order {
+            let p = &plan[i];
+            offsets[i] = out.len() as u64;
             let local = match &p.src {
                 Some(e) if p.untouched => e.local_raw.clone(),
                 _ => build_local_with_extra(
@@ -1085,9 +1102,25 @@ mod tests {
         }
 
         fn finish(&mut self, archive_comment: &[u8]) -> Vec<u8> {
+            self.finish_impl(archive_comment, false)
+        }
+
+        /// central 記錄反轉後寫入（實體佈局與位移不變）——製造 CD 列序 ≠
+        /// 實體順序的病態 archive（POI 的 CVLKRA 形態）。
+        fn finish_reversed_cd(&mut self, archive_comment: &[u8]) -> Vec<u8> {
+            self.finish_impl(archive_comment, true)
+        }
+
+        fn finish_impl(&mut self, archive_comment: &[u8], reverse_cd: bool) -> Vec<u8> {
             let cd_off = self.buf.len() as u64;
-            for c in &self.centrals {
-                self.buf.extend_from_slice(c);
+            if reverse_cd {
+                for c in self.centrals.iter().rev() {
+                    self.buf.extend_from_slice(c);
+                }
+            } else {
+                for c in &self.centrals {
+                    self.buf.extend_from_slice(c);
+                }
             }
             let cd_size = self.buf.len() as u64 - cd_off;
             push_u32(&mut self.buf, SIG_EOCD);
@@ -1118,6 +1151,49 @@ mod tests {
 
     fn empty_changes() -> (BTreeMap<String, Change>, BTreeMap<String, Vec<u8>>) {
         (BTreeMap::new(), BTreeMap::new())
+    }
+
+    /// POI 寫出的病態 archive（corpus-xlsx CVLKRA 類）：central 記錄順序與
+    /// 實體位移順序**不一致**（CD 把 [Content_Types].xml 列為第一條，實體卻在
+    /// 尾端）。Builder 把 central 清單反轉即可完成這個形態（實體佈局與位移
+    /// 不變、CD 列序反轉、EOCD 計數照舊）。未觸碰存檔必須 byte-identical：
+    /// serialize 的資料段若照 CD 順序搬運，entry 間 gap（以實體鄰接計算）會
+    /// 錯置到別的 entry 之後，位元組立刻失真——這是 X1 corpus 抓出的真實 bug。
+    #[test]
+    fn cd_order_differing_from_physical_order_is_byte_identical() {
+        let mut b = Builder::new(b"");
+        b.entry(b"a.xml", METHOD_DEFLATE, b"<A/>", b"", b"", b"", b"", 0, 0);
+        {
+            let mut gap = Vec::new();
+            push_u32(&mut gap, 0x0807_4b50);
+            push_u32(&mut gap, 0);
+            push_u32(&mut gap, 0);
+            push_u32(&mut gap, 0);
+            b.entry(
+                b"b.bin",
+                METHOD_STORE,
+                b"BB",
+                b"",
+                b"",
+                b"",
+                &gap,
+                0x0008,
+                0,
+            );
+        }
+        b.entry(b"c.xml", METHOD_STORE, b"<C/>", b"", b"", b"", b"", 0, 0);
+        let src = b.finish_reversed_cd(b"");
+        // 前提確認：CD 列序與實體順序相反（a 的 CD 在最後、c 的最前）。
+        let bundle = ZipBundle::open(&src).expect("open");
+        assert_eq!(bundle.entries[0].key(), "c.xml");
+        assert_eq!(bundle.entries[2].key(), "a.xml");
+        assert!(bundle.entries[0].local_header_offset > bundle.entries[2].local_header_offset);
+        let (ch, ex) = empty_changes();
+        let out = bundle.serialize(&ch, &ex).expect("serialize");
+        assert_eq!(
+            out, src,
+            "CD 順序 ≠ 實體順序的病態檔，未觸碰存檔必須逐位元組相同"
+        );
     }
 
     /// 一個什麼怪都有的 archive：前綴 stub、Stored＋Deflate、目錄 entry、

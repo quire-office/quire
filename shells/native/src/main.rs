@@ -3,7 +3,7 @@
 
 mod render_svg;
 
-use quire_engine::{dump_display_lists_json, Engine};
+use quire_engine::{dump_display_lists_json, xlsx_roundtrip_diff, Engine, XlsxDoc};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -24,7 +24,13 @@ fn main() -> ExitCode {
                 --quarantine：隔離清單 JSON 檔，頂層 files 物件對應
                 「相對掃描根路徑（或檔名）→ 隔離原因」；
                 清單內檔案跳過評測、不計紅，於彙報單列示。dir 掃描未指定時
-                自動找 <dir>/quarantine.json。";
+                自動找 <dir>/quarantine.json。
+      quire-cli roundtrip-xlsx <file|dir> [--check]
+                XLSX/XLSM 容器級 round-trip：開檔→（X1 不改任何 part）→存回，
+                --check 斷言 byte-identical（zip 結構級，不碰內容）。
+                dir＝遞迴掃 *.xlsx 與 *.xlsm。非零離開碼＝有失真。
+      quire-cli xlsx-info <file.xlsx>       workbook 最小模型 JSON（sheet 清單/
+                definedNames 計數/rels 對照/dimension+row 計數）。";
     if args.len() < 3 {
         eprintln!("{usage}");
         return ExitCode::from(2);
@@ -32,6 +38,12 @@ fn main() -> ExitCode {
     let cmd = args[1].as_str();
     if cmd == "roundtrip" {
         return roundtrip(&args[2..], usage);
+    }
+    if cmd == "roundtrip-xlsx" {
+        return roundtrip_xlsx(&args[2..], usage);
+    }
+    if cmd == "xlsx-info" {
+        return xlsx_info(&args[2]);
     }
     if cmd == "render" {
         return render(&args[2..], usage);
@@ -401,6 +413,158 @@ fn collect_dir(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
             collect_dir(&p, out)?;
         } else if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
             n.to_ascii_lowercase().ends_with(".docx") && !n.starts_with('.') && !n.starts_with("~$")
+        }) {
+            out.push(p);
+        }
+    }
+    Ok(())
+}
+
+// ---------------- XLSX（X1：容器級無損 round-trip 閘門） ----------------
+
+/// roundtrip-xlsx 子命令：XLSX/XLSM 開檔→不動→存回，--check 斷言 byte-identical。
+fn roundtrip_xlsx(rest: &[String], usage: &str) -> ExitCode {
+    let mut check = false;
+    let mut target: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--check" => check = true,
+            other if other.starts_with("--") => {
+                eprintln!("未知選項: {other}\n{usage}");
+                return ExitCode::from(2);
+            }
+            other => target = Some(other.to_string()),
+        }
+        i += 1;
+    }
+    let Some(target) = target else {
+        eprintln!("需要 <file|dir>\n{usage}");
+        return ExitCode::from(2);
+    };
+    let files = match collect_xlsx(&PathBuf::from(&target)) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("掃描 {target} 失敗: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    if files.is_empty() {
+        eprintln!("在 {target} 找不到 .xlsx/.xlsm（corpus-xlsx 是空的？）");
+        return ExitCode::from(1);
+    }
+    let mut failed = 0usize;
+    let mut identical = 0usize;
+    for file in &files {
+        let bytes = match std::fs::read(file) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("讀檔失敗 {}: {e}", file.display());
+                failed += 1;
+                continue;
+            }
+        };
+        let doc = match XlsxDoc::from_xlsx_bytes(&bytes) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("開啟失敗 {}: {e}", file.display());
+                failed += 1;
+                continue;
+            }
+        };
+        let saved = match doc.save_xlsx() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("存檔失敗 {}: {e}", file.display());
+                failed += 1;
+                continue;
+            }
+        };
+        if !check {
+            continue;
+        }
+        match xlsx_roundtrip_diff(&bytes, &saved) {
+            Ok(d) if d.byte_identical && d.pass => {
+                identical += 1;
+                println!(
+                    "✓ {}（byte-identical，{} parts）",
+                    file.display(),
+                    doc.part_count()
+                );
+            }
+            Ok(d) => {
+                failed += 1;
+                eprintln!("✗ {} round-trip 失真:\n{}", file.display(), d.report());
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("✗ {} 對照失敗: {e}", file.display());
+            }
+        }
+    }
+    if check {
+        println!(
+            "roundtrip-xlsx --check: {} 檔，byte-identical {}，失敗 {}",
+            files.len(),
+            identical,
+            failed
+        );
+    }
+    if failed > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// xlsx-info 子命令：workbook 最小模型 JSON 直出（除錯/斷言用）。
+fn xlsx_info(path: &str) -> ExitCode {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("讀檔失敗 {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    match XlsxDoc::from_xlsx_bytes(&bytes) {
+        Ok(doc) => {
+            println!("{}", doc.workbook_model_json());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("開啟失敗 {path}: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// 目錄遞迴收集 *.xlsx＋*.xlsm（名稱排序，CI 可重現）；過濾規則同 collect_docx。
+fn collect_xlsx(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    if path.is_dir() {
+        collect_xlsx_dir(path, &mut out)?;
+        out.sort();
+    } else if path.exists() {
+        out.push(path.to_path_buf());
+    } else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "路徑不存在",
+        ));
+    }
+    Ok(out)
+}
+
+fn collect_xlsx_dir(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let p = entry?.path();
+        if p.is_dir() {
+            collect_xlsx_dir(&p, out)?;
+        } else if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+            let l = n.to_ascii_lowercase();
+            (l.ends_with(".xlsx") || l.ends_with(".xlsm"))
+                && !n.starts_with('.')
+                && !n.starts_with("~$")
         }) {
             out.push(p);
         }

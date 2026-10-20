@@ -4,13 +4,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CORES="quire-ooxml quire-layout quire-render-trait quire-crdt quire-engine"
+CORES="quire-ooxml quire-xlsx quire-layout quire-render-trait quire-crdt quire-engine"
 for c in $CORES; do
   if cargo tree -p "$c" --depth 1 -e normal 2>/dev/null | grep -E "quire-(web|cli)"; then
     echo "✗ 分層違規：core crate $c 直接依賴了 shell"; exit 1
   fi
 done
-if cargo tree -p quire-cli --depth 1 -e normal 2>/dev/null | grep -E "quire-(ooxml|layout|render-trait|crdt)"; then
+if cargo tree -p quire-cli --depth 1 -e normal 2>/dev/null | grep -E "quire-(ooxml|xlsx|layout|render-trait|crdt)"; then
   echo "✗ 分層違規：quire-cli 直接 import 了 engine 以下的 core crate（只能經 quire-engine）"; exit 1
 fi
 if cargo tree -p quire-web --depth 1 -e normal 2>/dev/null | grep -E "quire-(ooxml|layout|render-trait|crdt)"; then
@@ -26,4 +26,11 @@ fi
 if ! cargo tree -p quire-web-collab --target wasm32-unknown-unknown -e normal 2>/dev/null | grep -qE "quire-crdt"; then
   echo "✗ 拆包違規：quire-web-collab 沒有依賴 quire-crdt——collab feature 斷線"; exit 1
 fi
-echo "✓ 分層檢查通過（core↛shells；shells→engine 唯一入口；CRDT 僅在協作分塊）"
+
+# ---- X1 拆包紀律：XLSX 容器面只准經 engine 的 xlsx feature 鏈入 native 殼 ----
+# 主 wasm（quire-web）連「傳遞」依賴都不准出現 quire-xlsx（engine 預設不帶該
+# feature；若有人把 xlsx 加進 default features，這裡直接咬紅）。
+if cargo tree -p quire-web --target wasm32-unknown-unknown -e normal 2>/dev/null | grep -qE "quire-xlsx"; then
+  echo "✗ 拆包違規：quire-web（主 wasm）依賴了 quire-xlsx——xlsx 不進首包"; exit 1
+fi
+echo "✓ 分層檢查通過（core↛shells；shells→engine 唯一入口；CRDT 僅在協作分塊；xlsx 不進首包）"

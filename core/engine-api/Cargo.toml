@@ -13,6 +13,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 quire-crdt = { workspace = true, optional = true }
+# XLSX 容器面（X1）：預設**不帶**——與 collab 同款拆包紀律，主 wasm 首包不含
+# xlsx 程式碼；quire-cli（native 開發頭）開此 feature 取 round-trip 閘門面。
+quire-xlsx = { workspace = true, optional = true }
 
 [features]
 default = []
@@ -20,3 +23,5 @@ default = []
 # （scripts/check-wasm-size.mjs + CI cargo tree 守衛）保證首包不含 crdt 程式碼；
 # 協作程式碼只活在延遲載入的 shells/web-collab 產物裡。
 collab = ["dep:quire-crdt"]
+# XLSX 容器面（X1）。同樣預設不帶（首包體積紀律）；shells/native 開它。
+xlsx = ["dep:quire-xlsx"]

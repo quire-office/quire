@@ -149,6 +149,7 @@ dependencies = [
  "quire-layout",
  "quire-ooxml",
  "quire-render-trait",
+ "quire-xlsx",
  "serde",
  "serde_json",
  "thiserror",
@@ -196,6 +197,16 @@ version = "0.1.0"
 dependencies = [
  "quire-engine",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "quire-xlsx"
+version = "0.1.0"
+dependencies = [
+ "quick-xml",
+ "quire-ooxml",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
