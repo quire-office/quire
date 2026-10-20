@@ -21,6 +21,14 @@
 //! ECMA-376 §17.7.2.3——Normal 即全文件段落基底）。查無該 id＝退回預設段落
 //! 樣式，再查無＝只剩 docDefaults（畸形檔容錯，不虛構）。
 //!
+//! **樣式型別守衛**（`w:style/@w:type`，ECMA-376 §17.7.2.4）：`w:pStyle` 只能
+//! 引用段落型樣式（§17.7.2.32）、`w:rStyle` 只能引用字元型樣式
+//! （§17.7.2.29）。畸形檔（真實世界常見）把字元型 id 塞進 `w:pStyle` 時，
+//! Word 依 §17.7.2.32 忽略該引用——本卡同口徑：型別不符者**不套用**（pStyle
+//! 側落回預設段落樣式；rStyle 側整個跳過），且 `w:basedOn` 鏈（§17.7.2.3
+//! 須同型）遇到跨型祖先即**斷鏈**（不往上撈）。不驗證型別會讓字元樣式的
+//! rPr/pPr 併進段落級（或反之），污染字級/行距/對齊。
+//!
 //! `w:basedOn` 環／超鏈（畸形檔）：遞迴深度上限 [`MAX_CHAIN`] 層即停，老實
 //! 停在已合成結果（與 `table_map::table_style_borders` 同款容錯策略）。合成
 //! 在 [`StyleTable::parse`] 結束時一次性完成，之後全部查詢皆 `&self`——
@@ -536,6 +544,18 @@ impl StyleTable {
         self.empty
     }
 
+    /// styleId 的樣式型別（`w:style/@w:type`，ECMA-376 §17.7.2.4）。查無＝
+    /// None（該 id 不在表內：非段落/字元型的樣式（table/numbering）不入表，
+    /// 見 [`OwnStyle::kind`] 注）。
+    ///
+    /// 型別守衛的依據：`w:pStyle` 只能引用**段落型**樣式（§17.7.2.32），
+    /// `w:rStyle` 只能引用**字元型**樣式（§17.7.2.29）；引用到別型＝畸形
+    /// 檔，該引用不生效（Word 忽略之）。不驗證型別會讓字元樣式的 rPr/pPr
+    /// 併進段落級（或反之），污染字級/行距/對齊。
+    fn style_kind(&self, id: &str) -> Option<StyleKind> {
+        self.styles.get(id).map(|s| s.kind)
+    }
+
     /// 文件級行網格尺（呼叫端 fallback）：預設段落樣式（Normal，含其鏈與
     /// docDefaults）合成的（字級, 行距）。任一缺＝None（呼叫端自補 12pt／1.4）。
     pub fn doc_grid(&self) -> (Option<f32>, Option<LineSpacing>) {
@@ -594,7 +614,13 @@ impl StyleTable {
         let (parent, parent_chain) = match own.based_on.as_deref().filter(|s| !s.is_empty()) {
             Some(b) => {
                 // 自引用（basedOn 自己）直接停——避免無意義遞迴。
-                if b == id || self.visiting.iter().any(|v| v == b) {
+                // 跨型祖先（`w:basedOn` 須同型，ECMA-376 §17.7.2.3）：段落型
+                // 樣式的祖先是字元型（畸形）＝斷鏈（不往上撈），字元樣式的
+                // rPr/pPr 不得進段落級；反之（字元型的祖先是段落型）同樣斷鏈，
+                // 段落樣式的 rPr 不得進字元級。查無該 id 同樣斷鏈（＝落
+                // doc 基底，與舊實作同結果）。
+                let same_kind = self.style_kind(b) == Some(own.kind);
+                if !same_kind || b == id || self.visiting.iter().any(|v| v == b) {
                     (doc, RunStyle::default())
                 } else {
                     self.visiting.push(id.to_string());
@@ -625,21 +651,36 @@ impl StyleTable {
     }
 
     /// 字元樣式（`w:rStyle` 引用）的 run 合成結果；查無＝None（呼叫端跳過）。
-    /// 段落樣式 id 誤傳進來也回傳其 run 基底（畸形檔容錯，不虛構）。
+    /// 段落樣式 id 誤傳進來（畸形）＝**跳過**（None）：`w:rStyle` 只能引用
+    /// 字元型樣式（ECMA-376 §17.7.2.29），段落樣式的 rPr 不得併進字元級。
     pub fn effective_char(&self, id: &str) -> Option<RunStyle> {
+        if self.style_kind(id) != Some(StyleKind::Character) {
+            return None;
+        }
         self.resolved.get(id).map(|hit| hit.0)
     }
 
     /// 字元樣式（`w:rStyle`）的**純鏈**宣告：只沿 basedOn 合成、不含
     /// docDefaults——engine 層把它疊在段落級結果之上時，docDefaults 必須
     /// 留在段落基底裡（ECMA-376 §17.7.2 層序；見 `chain` 欄位注）。
+    ///
+    /// 鏡像守衛：只認**字元型**樣式；`w:rStyle` 指向段落型（畸形）＝跳過
+    /// （None）——否則段落樣式的 rPr 會在 run 級覆寫段內文字的字級/開關。
     pub fn char_chain(&self, id: &str) -> Option<RunStyle> {
+        if self.style_kind(id) != Some(StyleKind::Character) {
+            return None;
+        }
         self.chain.get(id).copied()
     }
 
     /// 段落級級聯：段落樣式（未宣告 pStyle＝落預設段落樣式 Normal，再落
     /// docDefaults）→ 疊段落直接格式（`inline`：直接 pPr 欄位＋其內 rPr，
     /// 由呼叫端解析後傳入）。回傳（段內 run 基底, 段落欄位合成結果）。
+    ///
+    /// 型別守衛：`w:pStyle` 只能引用**段落型**樣式（ECMA-376 §17.7.2.32）。
+    /// 引用到字元型樣式（畸形檔，真實世界常見）＝該引用不生效（Word 忽略
+    /// 之）——不得把字元樣式的 rPr/pPr 併進段落級（會污染字級/行距/對齊）。
+    /// 忽略後的落點與「查無 id」同徑：預設段落樣式 → docDefaults。
     pub fn effective_para(
         &self,
         para_style_id: Option<&str>,
@@ -647,16 +688,25 @@ impl StyleTable {
     ) -> (RunStyle, ParaStyle) {
         let (_, mut para) = match para_style_id.filter(|s| !s.is_empty()) {
             // 引用查無＝落預設段落樣式，再落 docDefaults（容錯不虛構）。
-            Some(id) => self
-                .resolved
-                .get(id)
-                .copied()
-                .or_else(|| {
-                    self.default_para
-                        .as_deref()
-                        .and_then(|d| self.resolved.get(d).copied())
-                })
-                .unwrap_or_else(|| self.doc_base()),
+            Some(id) => {
+                // 命中但型別不對（字元型塞進 pStyle）＝忽略該引用。
+                let target = if self
+                    .style_kind(id)
+                    .is_some_and(|k| k != StyleKind::Paragraph)
+                {
+                    None
+                } else {
+                    Some(id)
+                };
+                target
+                    .and_then(|t| self.resolved.get(t).copied())
+                    .or_else(|| {
+                        self.default_para
+                            .as_deref()
+                            .and_then(|d| self.resolved.get(d).copied())
+                    })
+                    .unwrap_or_else(|| self.doc_base())
+            }
             None => match self.default_para.as_deref() {
                 Some(dp) => self
                     .resolved
@@ -912,6 +962,91 @@ mod tests {
         );
         let (base, _) = t2.effective_para(Some("Z"), ParaStyle::default());
         assert_eq!(base.bold, Some(true));
+    }
+
+    #[test]
+    fn pstyle_pointing_to_character_style_is_ignored() {
+        // 畸形檔（真實世界常見）：段落 `w:pStyle` 指向**字元型**樣式。
+        // ECMA-376 §17.7.2.32：`w:pStyle` 只能引用段落型樣式，指向非段落
+        // 型時該引用不生效（Word 忽略之）。舊實作不驗證 StyleKind，把字元
+        // 樣式的 rPr/pPr 併進段落級——72 half-pt（＝36pt）的字級污染整段。
+        let t = table(wrap(
+            r#"<w:style w:type="character" w:styleId="X"><w:rPr><w:sz w:val="72"/></w:rPr></w:style>"#,
+        ));
+        let (base, _) = t.effective_para(Some("X"), ParaStyle::default());
+        assert_ne!(
+            base.size_pt,
+            Some(36.0),
+            "pStyle 指向字元型樣式＝忽略該樣式（不得套 72 half-pt＝36pt）"
+        );
+        assert_eq!(
+            base.size_pt, None,
+            "無任何合法來源＝不虛構字級（只剩 docDefaults 空基底）"
+        );
+        // 忽略後的落點與「查無 id」同徑：預設段落樣式仍生效（畸形引用
+        // 不得連帶打掉整份文件的預設基底）。
+        let t2 = table(wrap(
+            r#"<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:rPr><w:sz w:val="24"/></w:rPr></w:style>
+               <w:style w:type="character" w:styleId="X"><w:rPr><w:sz w:val="72"/></w:rPr></w:style>"#,
+        ));
+        let (base2, _) = t2.effective_para(Some("X"), ParaStyle::default());
+        assert_eq!(
+            base2.size_pt,
+            Some(12.0),
+            "忽略畸形 pStyle 後落回預設段落樣式（24 半磅＝12pt）"
+        );
+    }
+
+    #[test]
+    fn paragraph_style_kind_still_applies_normally() {
+        // 回歸保護：合法段落型樣式照常生效（型別守衛不得誤傷正常 pStyle）。
+        let t = table(wrap(
+            r#"<w:style w:type="paragraph" w:styleId="P"><w:rPr><w:sz w:val="40"/><w:b/></w:rPr></w:style>"#,
+        ));
+        let (base, _) = t.effective_para(Some("P"), ParaStyle::default());
+        assert_eq!(base.size_pt, Some(20.0)); // 40 半磅 = 20pt。
+        assert_eq!(base.bold, Some(true));
+    }
+
+    #[test]
+    fn based_on_chain_to_character_ancestor_is_cut() {
+        // 畸形 basedOn 鏈：段落樣式 Mid 的 basedOn 指向**字元型**樣式 Char。
+        // 段落級級聯遇到字元型祖先即斷鏈（不往上撈）——只吃合法前綴
+        // （Leaf 自身 ＋ Mid），Char 的字級不得滲入段落級。
+        let t = table(wrap(
+            r#"<w:style w:type="character" w:styleId="Char"><w:rPr><w:sz w:val="72"/></w:rPr></w:style>
+               <w:style w:type="paragraph" w:styleId="Mid"><w:basedOn w:val="Char"/><w:rPr><w:b/></w:rPr></w:style>
+               <w:style w:type="paragraph" w:styleId="Leaf"><w:basedOn w:val="Mid"/><w:rPr><w:i/></w:rPr></w:style>"#,
+        ));
+        let (base, _) = t.effective_para(Some("Leaf"), ParaStyle::default());
+        assert_eq!(
+            base.size_pt, None,
+            "字元型祖先的 72 half-pt（＝36pt）不得滲入段落級"
+        );
+        assert_eq!(base.bold, Some(true), "合法前綴 Mid 的宣告照常生效");
+        assert_eq!(base.italic, Some(true), "Leaf 自身宣告照常生效");
+    }
+
+    #[test]
+    fn rstyle_pointing_to_paragraph_style_is_skipped() {
+        // 鏡像守衛：`w:rStyle` 指向**段落型**樣式（畸形）＝跳過——段落樣式
+        // 的 rPr 不得併進字元級（否則整段字級被段落樣式重寫）。
+        let t = table(wrap(
+            r#"<w:style w:type="paragraph" w:styleId="P"><w:rPr><w:sz w:val="72"/></w:rPr></w:style>"#,
+        ));
+        assert!(
+            t.char_chain("P").is_none(),
+            "rStyle 指向段落型樣式＝跳過字元級套用"
+        );
+        assert!(
+            t.effective_char("P").is_none(),
+            "同口徑：effective_char 鏡像守衛"
+        );
+        // 反向（守衛不得誤傷）：字元型 rStyle 照常生效。
+        let t2 = table(wrap(
+            r#"<w:style w:type="character" w:styleId="C"><w:rPr><w:sz w:val="28"/></w:rPr></w:style>"#,
+        ));
+        assert_eq!(t2.char_chain("C").unwrap().size_pt, Some(14.0));
     }
 
     #[test]
