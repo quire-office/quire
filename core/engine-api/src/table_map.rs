@@ -344,35 +344,119 @@ fn avail_w_for(sections: &[SectionSpec], params: &LayoutParams, para: usize) -> 
     }
 }
 
+/// `wp:positionH/V` 之 `<wp:align>` 白名單（ECMA-376 ST_PosHAlign／
+/// ST_PosVAlign；t_1a79f1c5）。t：left/center/right（V 軸 inner 對應居中）；
+/// b：top/center/bottom。其餘枚舉（insideLeft/bar/...）保守退回退化鏈。
+fn h_align_x(align: &str, frame_w: f32, w_pt: f32) -> Option<f32> {
+    match align {
+        "left" => Some(0.0),
+        "center" => Some((frame_w - w_pt) / 2.0),
+        "right" => Some(frame_w - w_pt),
+        _ => None,
+    }
+}
+fn v_align_y(align: &str, frame_h: f32, h_pt: f32) -> Option<f32> {
+    match align {
+        "top" => Some(0.0),
+        "center" | "inner" => Some((frame_h - h_pt) / 2.0),
+        "bottom" => Some(frame_h - h_pt),
+        _ => None,
+    }
+}
+
+/// 浮動圖座標解析（t_1a79f1c5）：`wp:positionH/V` 的 posOffset 與 align 是
+/// **互斥兩式**（ECMA-376 §20.4.2.8）——OOXMLExport 對整頁封面圖（wrapNone
+/// ＋`<wp:align>center</wp:align>`）只寫 align 不寫 posOffset，舊口徑把缺
+/// posOffset 一律退化 inline，792pt 封面圖撐爆行網格（1 頁变 3 頁）。
+/// 現行規則：兩軸 posOffset 齊備 → 直接用；缺軸補 `<wp:align>` 換算
+/// （frame 依 relativeFrom 分類取頁寬／版心寬／錨點段寬）；兩式皆無 →
+/// None（呼叫端退化 inline，誠實近似宁多撑帶不虚構空頁）。
+/// `page_w`／`page_h`＝頁寬高（page 系 frame）；`avail_w`＝版心寬（margin 系 frame）。
+fn resolved_anchor(
+    im: &quire_ooxml::InlineImage,
+    page_w: f32,
+    page_h: f32,
+    avail_w: f32,
+    avail_h: f32,
+    anchor_para_w: Option<f32>,
+) -> Option<quire_layout::FloatingAnchor> {
+    // 逐軸可解析才成錨：posOffset 或 `<wp:align>` 兩式任一即可（互斥但
+    // 不必同時存在）；relativeFrom 缺＝段落系近似（origin_of 同款容錯）。
+    if !im.floating {
+        return None;
+    }
+    let x_origin = quire_ooxml::origin_of(im.pos_x_rel.as_deref());
+    let y_origin = quire_ooxml::origin_of(im.pos_y_rel.as_deref());
+    let frame_w = match x_origin {
+        "page" => page_w,
+        "column" | "margin" => avail_w,
+        _ => anchor_para_w.unwrap_or(avail_w),
+    };
+    let frame_h = match y_origin {
+        "page" => page_h,
+        _ => avail_h.max(1.0),
+    };
+    let x_pt = match (im.pos_x_pt, im.pos_x_align.as_deref(), im.pos_x_pct) {
+        (Some(x), _, _) => x,
+        (None, Some(a), _) => h_align_x(a, frame_w, im.w_pt)?,
+        (None, None, Some(p)) => frame_w * p / 100_000.0,
+        (None, None, None) => return None,
+    };
+    let y_pt = match (im.pos_y_pt, im.pos_y_align.as_deref(), im.pos_y_pct) {
+        (Some(y), _, _) => y,
+        (None, Some(a), _) => v_align_y(a, frame_h, im.h_pt)?,
+        (None, None, Some(p)) => frame_h * p / 100_000.0,
+        (None, None, None) => return None,
+    };
+    Some(quire_layout::FloatingAnchor {
+        x_pt,
+        y_pt,
+        x_frame: quire_layout::origin_frame(x_origin),
+        y_frame: quire_layout::origin_frame(y_origin),
+    })
+}
+
 /// 正文流圖片錨點（t_a1397522）：InlineImage 投影 → layout `ImageBand` 序列。
 /// 規則：
 /// - 格內圖（in_cell）不進正文流（由 CellBlock::Image 負載，格內堆疊）；
-/// - 浮動圖（anchor）且 posOffset 兩軸齊備 → **不佔帶**（bands=0），
-///   `anchor=Some(FloatingAnchor)`，各軸原點系由 relativeFrom 分類；
-/// - 鎖點缺軸 → 退化 inline（佔帶，誠實近似宁多撑帶不虚構空頁）；
+/// - 浮動圖（anchor）且座標可解析（posOffset 或 align，t_1a79f1c5）→
+///   **不佔帶**（bands=0），`anchor=Some(FloatingAnchor)`，各軸原點系由
+///   relativeFrom 分類；
+/// - 鎖點兩式皆缺 → 退化 inline（佔帶，誠實近似宁多撑帶不虚構空頁）；
 /// - 帶高 ceil(h/line_h)（至少 1）；寬高老實原值（layout 端再鉗）。
 ///
-/// 輸出依 para 穩定排序（build_flow_images 的單調游標契約）。
+/// align 換算的 frame 尺寸逐段查 `sections`（缺項退回 params 基準），
+/// 與表格 `avail_w_for` 同口徑。輸出依 para 穩定排序
+/// （build_flow_images 的單調游標契約）。
 pub fn build_images(
     images: &[quire_ooxml::InlineImage],
     line_h: f32,
+    params: &LayoutParams,
+    sections: &[SectionSpec],
 ) -> Vec<quire_layout::ImageBand> {
     let mut out: Vec<quire_layout::ImageBand> = images
         .iter()
         .filter(|im| !im.in_cell)
         .map(|im| {
-            let anchor = im
-                .anchor_lock_pt()
-                .map(|(x, y)| quire_layout::FloatingAnchor {
-                    x_pt: x,
-                    y_pt: y,
-                    x_frame: quire_layout::origin_frame(quire_ooxml::origin_of(
-                        im.pos_x_rel.as_deref(),
-                    )),
-                    y_frame: quire_layout::origin_frame(quire_ooxml::origin_of(
-                        im.pos_y_rel.as_deref(),
-                    )),
-                });
+            // 錨定段落的頁面幾何：page 系 frame 用頁寬高，margin 系用版心寬高。
+            let (page_w, page_h, avail_w, avail_h) = match sections.get(im.para_index) {
+                Some(s) => (
+                    s.geo.page_w_pt,
+                    s.geo.page_h_pt,
+                    (s.geo.page_w_pt - s.geo.margin_left_pt - s.geo.margin_right_pt).max(1.0),
+                    (s.geo.page_h_pt - s.geo.margin_top_pt - s.geo.margin_bottom_pt).max(1.0),
+                ),
+                None => (
+                    params.page_w_pt,
+                    params.page_h_pt,
+                    params.content_w_pt(),
+                    (params.page_h_pt
+                        - params.margin(quire_layout::MARGIN_TOP)
+                        - params.margin(quire_layout::MARGIN_BOTTOM))
+                    .max(1.0),
+                ),
+            };
+            let anchor = resolved_anchor(im, page_w, page_h, avail_w, avail_h, None);
             let bands = if anchor.is_none() {
                 // 帶量化鉗上限（t_c1fb4c69 S1-4）：病態 extent（源頭值域
                 // 拒絕後仍可能漏進投影層）不得量化出天量帶數拖垮分頁。
@@ -471,8 +555,12 @@ mod tests {
             in_cell: false,
             pos_x_pt: None,
             pos_x_rel: None,
+            pos_x_align: None,
+            pos_x_pct: None,
             pos_y_pt: None,
             pos_y_rel: None,
+            pos_y_align: None,
+            pos_y_pct: None,
             overlap: None,
             embed_rid: None,
         }
@@ -483,7 +571,13 @@ mod tests {
     /// 上限——源頭 ooxml 值域拒絕後，這是投影層的第二道閘。
     #[test]
     fn build_images_clamps_giant_extent_bands() {
-        let out = build_images(&[img(0, f32::MAX), img(1, f32::INFINITY)], 16.8);
+        let params = quire_layout::LayoutParams::default();
+        let out = build_images(
+            &[img(0, f32::MAX), img(1, f32::INFINITY)],
+            16.8,
+            &params,
+            &[],
+        );
         assert_eq!(out.len(), 2);
         for b in &out {
             assert!(

@@ -236,7 +236,7 @@ impl Engine {
             &images,
             eff_refs,
         );
-        let bands = table_map::build_images(&images, params.line_h_pt());
+        let bands = table_map::build_images(&images, params.line_h_pt(), &params, &sections);
         // br-page 硬斷點（ECMA-376 §17.4.3）：canonical 段落的 w:br w:type="page"
         // 偏移直傳版面層（與 texts 逐段同標）。無 br 檔案＝全空清單＝舊行為。
         let breaks: Vec<Vec<usize>> = doc
@@ -1984,6 +1984,34 @@ mod tests {
             "br-page 後的 Images 段應從末頁起頭，實得 {last:?}"
         );
         assert_eq!(engine.save_docx().unwrap().as_slice(), RS);
+    }
+
+    /// corpus 回歸（t_1a79f1c5）：mce-nested.docx（`mc:Fallback`×6，Choice
+    /// 的 DrawingML＋Fallback 的 VML 雙份表示，positionH/V 只有 `<wp:align>`
+    /// ／`<wp14:pctPosVOffset>` 無 posOffset）。舊口徑缺座標→浮圖退化
+    /// inline，792pt 高的封面圖撐爆行網格（1 頁變 3 頁，LO=1）。修後：
+    /// Fallback 整棵吞沒＋align/pct 兩式解鎖點 → 回 1 頁；round-trip 零影響。
+    #[test]
+    fn mce_nested_fallback_drawing_stays_one_page() {
+        const MN: &[u8] = include_bytes!("../../../corpus/ooxmlexport/mce-nested.docx");
+        let engine = Engine::from_docx_bytes(MN).expect("開啟 mce-nested.docx");
+        assert_eq!(
+            engine.page_count(),
+            1,
+            "Fallback 雙份＋align 式浮圖應收斂 LO 的 1 頁"
+        );
+        // 兩張 Choice 圖（550.8×50.4 與 245.55×792）都以 align/pct 鎖點發射，
+        // 不佔行帶：第 0 頁必須同時含兩張 Rect。
+        let rects = engine
+            .page_display_list(0)
+            .expect("第 0 頁存在")
+            .items
+            .into_iter()
+            .filter(|it| matches!(it, DrawItem::Rect { .. }))
+            .count();
+        assert!(rects >= 2, "兩張浮圖都應以鎖點 Rect 發射，實得 {rects}");
+        // round-trip 鐵律不受影響：parts passthrough，存檔位元組級相同。
+        assert_eq!(engine.save_docx().unwrap().as_slice(), MN);
     }
 
     /// Uranus（無 br-page，僅 lastRenderedPageBreak 渲染提示）：頁數不受本卡

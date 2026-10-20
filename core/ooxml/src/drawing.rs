@@ -79,12 +79,26 @@ pub struct InlineImage {
     /// `wp:positionH/@relativeFrom` 原字串。
     #[serde(default)]
     pub pos_x_rel: Option<String>,
+    /// `wp:positionH` 內 `<wp:align>` 對齊枚舉（ECMA-376 §20.4.2.8：與
+    /// posOffset **互斥兩式**，OOXMLExport 封面圖族常用；t_1a79f1c5）。
+    #[serde(default)]
+    pub pos_x_align: Option<String>,
+    /// `wp14:pctPosHOffset`（page 系 frame 寬度的百分比×100000；OOXMLExport
+    /// 對位圖常用的第三式；t_1a79f1c5）。
+    #[serde(default)]
+    pub pos_x_pct: Option<f32>,
     /// `wp:positionV` 之 `wp:posOffset`（EMU→pt）。
     #[serde(default)]
     pub pos_y_pt: Option<f32>,
     /// `wp:positionV/@relativeFrom` 原字串。
     #[serde(default)]
     pub pos_y_rel: Option<String>,
+    /// `wp:positionV` 內 `<wp:align>` 對齊枚舉（同上，V 軸）。
+    #[serde(default)]
+    pub pos_y_align: Option<String>,
+    /// `wp14:pctPosVOffset`（page 系 frame 高度的百分比×100000；同上第三式）。
+    #[serde(default)]
+    pub pos_y_pct: Option<f32>,
     /// `wp:anchor/@allowOverlap`（None＝元素不存在／非 anchor）。
     #[serde(default)]
     pub overlap: Option<bool>,
@@ -211,8 +225,12 @@ struct Pending {
     h: Option<f32>,
     pos_x_pt: Option<f32>,
     pos_x_rel: Option<String>,
+    pos_x_align: Option<String>,
+    pos_x_pct: Option<f32>,
     pos_y_pt: Option<f32>,
     pos_y_rel: Option<String>,
+    pos_y_align: Option<String>,
+    pos_y_pct: Option<f32>,
     /// posOffset 文本捕獲旗標（Some(true)＝寫 pos_y、Some(false)＝寫 pos_x、
     /// None＝不捕獲）。**只在 `wp:posOffset` 元素啟閉期間開啟**（t_c1fb4c69
     /// S1-5）：舊實作在 positionH/V 開標就設 capture，`<wp:align>` 對齊或 pct
@@ -222,6 +240,12 @@ struct Pending {
     /// 進行中的 positionH/V 軸向（true=V）：其內 posOffset 開標時據此決定
     /// 捕獲寫入哪一軸（positionH/V 閉合清空）。
     pos_axis: Option<bool>,
+    /// 進行中的 `<wp:align>` 軸向（true=V）：其文字直存對齊枚舉字串
+    /// （t_1a79f1c5；與 capture 分離——align 文字非數值，不得走 EMU 解析）。
+    align_axis: Option<bool>,
+    /// 進行中的 `<wp14:pctPos[HV]Offset>` 軸向（true=V）：其文字直存
+    /// 百分比×100000 整數（t_1a79f1c5；OOXMLExport 位圖第三式）。
+    pct_axis: Option<bool>,
     overlap: Option<bool>,
     rid: Option<String>,
     /// 產出目標是儲存格（建立時 tc 深度 > 0）而非正文段落。
@@ -242,10 +266,16 @@ impl Pending {
             h: None,
             pos_x_pt: None,
             pos_x_rel: None,
+            pos_x_align: None,
+            pos_x_pct: None,
             pos_y_pt: None,
             pos_y_rel: None,
+            pos_y_align: None,
+            pos_y_pct: None,
             capture: None,
             pos_axis: None,
+            align_axis: None,
+            pct_axis: None,
             overlap: None,
             rid: None,
             floating: false,
@@ -312,8 +342,12 @@ impl DrawingParser {
             in_cell: p.in_cell,
             pos_x_pt: p.pos_x_pt,
             pos_x_rel: p.pos_x_rel.clone(),
+            pos_x_align: p.pos_x_align.clone(),
+            pos_x_pct: p.pos_x_pct,
             pos_y_pt: p.pos_y_pt,
             pos_y_rel: p.pos_y_rel.clone(),
+            pos_y_align: p.pos_y_align.clone(),
+            pos_y_pct: p.pos_y_pct,
             overlap: p.overlap,
             embed_rid: p.rid.clone(),
         });
@@ -449,6 +483,19 @@ impl DrawingParser {
                     // 真正的 EMU 偏移文本容器：開標才啟捕獲（S1-5 修法）。
                     p.capture = p.pos_axis;
                 }
+                b"align" => {
+                    // 對齊枚舉文本容器（t_1a79f1c5）：positionH/V 開標過
+                    // （pos_axis 有值）才認——直存字串走 on_text 的
+                    // align_axis 分支，不走 EMU 數值解析。
+                    p.align_axis = p.pos_axis;
+                }
+                b"pctPosHOffset" => {
+                    // 百分比偏移文本容器（OOXMLExport 位圖第三式，t_1a79f1c5）。
+                    p.pct_axis = Some(false);
+                }
+                b"pctPosVOffset" => {
+                    p.pct_axis = Some(true);
+                }
                 b"blip" => {
                     if p.rid.is_none() {
                         p.rid = attr_local(e, b"embed");
@@ -568,6 +615,40 @@ impl DrawingParser {
             return;
         }
         if let Some(p) = self.graphic.as_mut() {
+            if let Some(vertical) = p.align_axis {
+                // `<wp:align>` 對齊枚舉：直存字串（trim 後），不解析數值
+                //（t_1a79f1c5；OOXMLExport 封面圖族 positionH/V 只有 align）。
+                let v = text.trim().to_string();
+                if !v.is_empty() {
+                    if vertical {
+                        if p.pos_y_align.is_none() {
+                            p.pos_y_align = Some(v);
+                        }
+                    } else if p.pos_x_align.is_none() {
+                        p.pos_x_align = Some(v);
+                    }
+                }
+            }
+            if let Some(vertical) = p.pct_axis {
+                // `<wp14:pctPos[HV]Offset>`：百分比×100000 整數直存（換算
+                // 成 pt 由 engine 端依 frame 尺寸做，t_1a79f1c5）。
+                let parsed = text
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|x| x.is_finite() && x.abs() <= MAX_OOXML_LONG)
+                    .map(|x| x as f32)
+                    .filter(|v| v.is_finite());
+                if let Some(val) = parsed {
+                    if vertical {
+                        if p.pos_y_pct.is_none() {
+                            p.pos_y_pct = Some(val);
+                        }
+                    } else if p.pos_x_pct.is_none() {
+                        p.pos_x_pct = Some(val);
+                    }
+                }
+            }
             if let Some(vertical) = p.capture {
                 // posOffset 合法值含負數（版心外偏移）：不套 emu_to_pt 的正數
                 // 限制，但守衛同 emu_to_pt 口徑補齊**鏡像後**那層（t_16a13211
@@ -654,10 +735,24 @@ impl DrawingParser {
                     }
                     return;
                 }
+                b"align" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.align_axis = None;
+                    }
+                    return;
+                }
+                b"pctPosHOffset" | b"pctPosVOffset" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.pct_axis = None;
+                    }
+                    return;
+                }
                 b"positionH" | b"positionV" => {
                     if let Some(p) = self.graphic.as_mut() {
                         p.pos_axis = None;
                         p.capture = None;
+                        p.align_axis = None;
+                        p.pct_axis = None;
                     }
                     return;
                 }
@@ -997,6 +1092,39 @@ mod tests {
             "DrawingML 與 VML 是雙份表示，只取 Choice 一份"
         );
         assert_eq!((imgs[0].w_pt, imgs[0].h_pt), (100.0, 100.0));
+    }
+
+    #[test]
+    fn nested_fallback_alternatecontent_still_counts_once() {
+        // 巢狀 Fallback（t_1a79f1c5 卡片測試項）：Fallback 內再嵌一層
+        // AlternateContent（Choice+Fallback 各帶 extent）→ 整棵吞沒，仍 1 份。
+        let xml = doc(r#"<w:p><w:r><mc:AlternateContent xmlns:mc="mc">
+               <mc:Choice xmlns:wp="wp"><w:drawing><wp:inline><wp:extent cx="1270000" cy="1270000"/></wp:inline></w:drawing></mc:Choice>
+               <mc:Fallback><mc:AlternateContent>
+                 <mc:Choice><w:drawing><wp:inline><wp:extent cx="2540000" cy="2540000"/></wp:inline></w:drawing></mc:Choice>
+                 <mc:Fallback><w:pict><v:shape xmlns:v="v" style="width:200pt;height:200pt"><v:imagedata xmlns:r="r" r:id="rId9"/></v:shape></w:pict></mc:Fallback>
+               </mc:AlternateContent></mc:Fallback>
+               </mc:AlternateContent></w:r></w:p>"#);
+        let imgs = read_images(xml.as_bytes());
+        assert_eq!(imgs.len(), 1, "巢狀 Fallback 內的 drawing 不得計入");
+        assert_eq!((imgs[0].w_pt, imgs[0].h_pt), (100.0, 100.0));
+    }
+
+    #[test]
+    fn align_and_pct_positions_are_captured() {
+        // 第三式捕獲（t_1a79f1c5）：OOXMLExport 封面圖族的 positionH/V 只有
+        // `<wp:align>` 或 `<wp14:pctPos*Offset>`，兩者都要進投影欄位——
+        // engine 端據此解算鎖點，不再盲退 inline。
+        let xml = doc(r#"<w:p><w:r><w:drawing><wp:anchor>
+               <wp:positionH relativeFrom="page"><wp:align>right</wp:align></wp:positionH>
+               <wp:positionV relativeFrom="page"><wp14:pctPosVOffset xmlns:wp14="wp14">25000</wp14:pctPosVOffset></wp:positionV>
+               <wp:extent cx="1270000" cy="640080"/></wp:anchor></w:drawing></w:r></w:p>"#);
+        let imgs = read_images(xml.as_bytes());
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(imgs[0].pos_x_align.as_deref(), Some("right"));
+        assert_eq!(imgs[0].pos_y_pct, Some(25000.0));
+        assert_eq!(imgs[0].pos_x_pt, None, "align 不是 posOffset");
+        assert_eq!(imgs[0].pos_y_pt, None, "pct 不是 posOffset");
     }
 
     #[test]
