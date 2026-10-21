@@ -15,7 +15,9 @@
 //! - `w:b`／`w:i`／`w:u`／`w:strike`／`w:color`：值語義與 `lib.rs` 的
 //!   `toggle_attr_on`／`parse_color_val` 逐字一致（none/false/0/off＝關閉）；
 //! - `w:rFonts`（ECMA-376 §17.3.2.26）：字型族宣告（ascii/eastAsia/cs＋
-//!   hint）——**只解析存檔**，選族與渲染不在本卡；
+//!   hint）與 theme 引用（asciiTheme/hAnsiTheme/eastAsiaTheme → fontScheme
+//!   槽位；`cstheme` 不建模）；theme 引用在**解析當下**即查表落地成直接值，
+//!   級聯系統裡不存在未解析的 theme 槽；
 //! - `w:jc/@w:val`：解析並保留（發射層本卡不消費——顯示列表以版心左緣起排）。
 //!
 //! `w:pStyle` 引用的是**樣式 id**（`w:styleId`），不是 `w:name`：查表以 id 為
@@ -41,7 +43,7 @@ use std::collections::HashMap;
 use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
 
-use crate::theme::{self, ThemeColors};
+use crate::theme::{self, ThemeColors, ThemeFonts};
 
 /// basedOn 鏈深度上限（超鏈＝畸形檔，老實停在已合成結果，見模組頭）。
 const MAX_CHAIN: usize = 32;
@@ -57,10 +59,13 @@ const MAX_CHAIN: usize = 32;
 /// 層宣告過 eastAsia 提示即為真。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunFonts {
-    /// `w:rFonts/@w:ascii`：西文（ASCII）字型族名。
+    /// `w:rFonts/@w:ascii`：西文（ASCII）字型族名。theme 引用
+    /// （`@w:asciiTheme`／`@w:hAnsiTheme`）在解析當下即查表落地成此欄的
+    /// 直接值——級聯系統裡不存在未解析的 theme 槽。
     #[serde(default)]
     pub ascii: Option<String>,
-    /// `w:rFonts/@w:eastAsia`：東亞字型族名。
+    /// `w:rFonts/@w:eastAsia`：東亞字型族名。theme 引用
+    /// （`@w:eastAsiaTheme`）同 [`RunFonts::ascii`] 在解析當下落地。
     #[serde(default)]
     pub east_asia: Option<String>,
     /// `w:rFonts/@w:cs`：複雜文字（complex script）字型族名。
@@ -339,6 +344,7 @@ pub(crate) fn apply_run_tag(
     e: &quick_xml::events::BytesStart,
     rs: &mut RunStyle,
     theme: &ThemeColors,
+    tf: Option<&ThemeFonts>,
 ) {
     match name {
         b"b" => rs.bold = Some(toggle_on_attr(e)),
@@ -373,7 +379,7 @@ pub(crate) fn apply_run_tag(
             // 字型族宣告（ECMA-376 §17.3.2.26）：只抓屬性（不讀文字）。
             // 四欄皆無宣告者（空元素）不動 rs——不得憑空物化一個空宣告。
             // 同 rPr 內重複宣告＝首見為準（與 styles.xml 樣式層同口徑）。
-            if let Some(f) = rfonts_of(e) {
+            if let Some(f) = rfonts_of(e, tf) {
                 if rs.fonts.is_none() {
                     rs.fonts = Some(f);
                 }
@@ -386,15 +392,45 @@ pub(crate) fn apply_run_tag(
 /// `w:rFonts` 元素 → 字型族宣告（ECMA-376 §17.3.2.26）。
 ///
 /// - `w:ascii`／`w:eastAsia`／`w:cs` → 對應族別（空字串視為未宣告）；
+/// - `w:asciiTheme`／`w:hAnsiTheme`／`w:eastAsiaTheme` → **在同一元素內**
+///   經 fontScheme 查表落地成直接值：同元素同時有 `w:ascii` 與
+///   `w:asciiTheme` 時主題取勝（`w:ascii` 是不支援主題字型軟體的回退值）；
+///   查不到（無 theme part／未宣告／`@typeface` 空白）＝保留直接值；
+///   兩者皆無＝該欄 None。`w:cstheme`（Bidi 系）不建模；
 /// - `w:hint="eastAsia"` → `hint_east_asian` 為真（其餘值視為非 eastAsia）。
 ///
 /// 四欄皆無宣告（空元素／無關屬性）→ `None`：呼叫端據此**不得**把
 /// 「未見任何 rPr 宣告」的 `None` 語義破壞成 `Some(空宣告)`。
-pub(crate) fn rfonts_of(e: &quick_xml::events::BytesStart) -> Option<RunFonts> {
+///
+/// 重點：查表在**解析當下**完成，級聯系統裡不再存在未解析的 theme 槽。
+/// 跨層就是普通逐欄級聯——下層直接值自然贏上層已落地的 theme 值。
+pub(crate) fn rfonts_of(
+    e: &quick_xml::events::BytesStart,
+    tf: Option<&ThemeFonts>,
+) -> Option<RunFonts> {
     let ascii = attr_val(e, "ascii").filter(|v| !v.trim().is_empty());
     let east_asia = attr_val(e, "eastAsia").filter(|v| !v.trim().is_empty());
     let cs = attr_val(e, "cs").filter(|v| !v.trim().is_empty());
     let hint = attr_val(e, "hint").is_some_and(|v| v.eq_ignore_ascii_case("eastAsia"));
+    // theme 引用（ECMA-376 §17.3.2.26）：`w:asciiTheme` 與 `w:hAnsiTheme`
+    // 指向同一個 HAnsi（latin）槽位——Word 通常只寫其中一個，兩者同現時
+    // 以 `w:asciiTheme` 為準（先到先贏，不讓第二個覆蓋）。無法識別的值
+    // → 老實 None，不虛構槽位。
+    let ascii_theme = attr_val(e, "asciiTheme")
+        .and_then(|v| theme::ascii_theme_slot(&v))
+        .or_else(|| attr_val(e, "hAnsiTheme").and_then(|v| theme::ascii_theme_slot(&v)));
+    let east_asia_theme =
+        attr_val(e, "eastAsiaTheme").and_then(|v| theme::east_asia_theme_slot(&v));
+    // 同層 theme 取勝：查表成功者覆蓋直接值；查不到則保留直接值
+    // （回退語義）；查不到且直接值也沒有 → 該欄維持 None。
+    let ascii = ascii_theme
+        .and_then(|slot| tf.and_then(|t| t.resolve_slot(slot)))
+        .map(str::to_string)
+        .or(ascii);
+    let east_asia = east_asia_theme
+        .and_then(|slot| tf.and_then(|t| t.resolve_slot(slot)))
+        .map(str::to_string)
+        .or(east_asia);
     if ascii.is_none() && east_asia.is_none() && cs.is_none() && !hint {
         return None;
     }
@@ -408,14 +444,18 @@ pub(crate) fn rfonts_of(e: &quick_xml::events::BytesStart) -> Option<RunFonts> {
 
 /// 讀取 `w:rPr` 的**內容**（呼叫端已消耗 `<w:rPr>` Start；本函數消費至
 /// `</w:rPr>`）。未支援標籤靜默略過（模組頭清單）。
-fn parse_rpr_body(reader: &mut quick_xml::Reader<&[u8]>, theme: &ThemeColors) -> RunStyle {
+fn parse_rpr_body(
+    reader: &mut quick_xml::Reader<&[u8]>,
+    theme: &ThemeColors,
+    tf: Option<&ThemeFonts>,
+) -> RunStyle {
     let mut rs = RunStyle::default();
     loop {
         match reader.read_event() {
             Err(_) | Ok(Event::Eof) => break,
             Ok(Event::End(e)) if e.local_name().as_ref() == b"rPr" => break,
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                apply_run_tag(e.local_name().as_ref(), &e, &mut rs, theme);
+                apply_run_tag(e.local_name().as_ref(), &e, &mut rs, theme, tf);
             }
             _ => {}
         }
@@ -428,6 +468,7 @@ fn parse_rpr_body(reader: &mut quick_xml::Reader<&[u8]>, theme: &ThemeColors) ->
 fn parse_ppr(
     reader: &mut quick_xml::Reader<&[u8]>,
     theme: &ThemeColors,
+    tf: Option<&ThemeFonts>,
 ) -> (Option<LineSpacing>, Option<Align>, RunStyle) {
     let mut line = None;
     let mut align = None;
@@ -446,7 +487,7 @@ fn parse_ppr(
             Ok(Event::Start(e)) => {
                 let name = e.local_name().as_ref().to_vec();
                 if in_rpr {
-                    apply_run_tag(&name, &e, &mut run, theme);
+                    apply_run_tag(&name, &e, &mut run, theme, tf);
                     continue;
                 }
                 match name.as_slice() {
@@ -470,7 +511,7 @@ fn parse_ppr(
                 // spacing/jc——行距靜默丟失是本級聯層最壞的失敗模式）。
                 let name = e.local_name().as_ref().to_vec();
                 if in_rpr {
-                    apply_run_tag(&name, &e, &mut run, theme);
+                    apply_run_tag(&name, &e, &mut run, theme, tf);
                     continue;
                 }
                 match name.as_slice() {
@@ -500,6 +541,7 @@ fn skip_to_rpr(
     reader: &mut quick_xml::Reader<&[u8]>,
     container_end: &[u8],
     theme: &ThemeColors,
+    tf: Option<&ThemeFonts>,
 ) -> Option<RunStyle> {
     loop {
         match reader.read_event() {
@@ -507,7 +549,7 @@ fn skip_to_rpr(
             Ok(Event::Start(e)) => {
                 let name = e.local_name().as_ref().to_vec();
                 if name == b"rPr" {
-                    return Some(parse_rpr_body(reader, theme));
+                    return Some(parse_rpr_body(reader, theme, tf));
                 }
                 if name.as_slice() == container_end {
                     return None;
@@ -531,6 +573,7 @@ fn skip_to_rpr(
 fn parse_ppr_default(
     reader: &mut quick_xml::Reader<&[u8]>,
     theme: &ThemeColors,
+    tf: Option<&ThemeFonts>,
 ) -> (Option<LineSpacing>, Option<Align>, RunStyle) {
     loop {
         match reader.read_event() {
@@ -539,7 +582,7 @@ fn parse_ppr_default(
                 return Default::default()
             }
             Ok(Event::Start(e)) if e.local_name().as_ref() == b"pPr" => {
-                return parse_ppr(reader, theme)
+                return parse_ppr(reader, theme, tf)
             }
             _ => {}
         }
@@ -561,14 +604,29 @@ impl StyleTable {
     /// 退回 `w:val` 回退值）。XML 錯誤＝就地停在已收部分（容錯：排版退回
     /// 後備值，不中斷開檔）。
     pub fn parse(xml: &[u8]) -> StyleTable {
-        StyleTable::parse_with_theme(xml, &ThemeColors::default())
+        StyleTable::parse_with_fonts(xml, &ThemeColors::default(), None)
     }
 
     /// 解析 `word/styles.xml`，並帶入文件的主題色表（`w:themeColor` 查表用；
     /// ECMA-376 §17.3.2.25——**主題色優先於 `w:val` 回退值**）。
     ///
-    /// 空主題表（無 theme part）＝退回 `w:val`，與 [`StyleTable::parse`] 同結果。
+    /// 舊簽名保留為「無主題字型表」的 shim（`tf=None`）：theme 引用查不到
+    /// 即保留直接值。需要 fontScheme 查表者請用
+    /// [`StyleTable::parse_with_fonts`]。
     pub fn parse_with_theme(xml: &[u8], theme: &ThemeColors) -> StyleTable {
+        StyleTable::parse_with_fonts(xml, theme, None)
+    }
+
+    /// 解析 `word/styles.xml`，帶入主題色表與主題字型表。
+    ///
+    /// `tf`＝文件 fontScheme：`w:rFonts` 的 theme 引用在**解析當下**查表
+    /// 落地成直接值（ECMA-376 §17.3.2.26），級聯系統裡不再有 theme 槽。
+    /// 無 theme part／查不到 → 保留直接值／該欄 None（老實回退）。
+    pub fn parse_with_fonts(
+        xml: &[u8],
+        theme: &ThemeColors,
+        tf: Option<&ThemeFonts>,
+    ) -> StyleTable {
         let mut t = StyleTable {
             empty: true,
             ..Default::default()
@@ -586,13 +644,13 @@ impl StyleTable {
                         b"rPrDefault" if in_doc_defaults => {
                             // rPrDefault 的子 rPr 直接收進 run_default（自閉合
                             // `<w:rPrDefault/>` 或無 rPr 時得空基底）。
-                            if let Some(r) = skip_to_rpr(&mut reader, b"rPrDefault", theme) {
+                            if let Some(r) = skip_to_rpr(&mut reader, b"rPrDefault", theme, tf) {
                                 t.run_default = r;
                             }
                             t.empty = false;
                         }
                         b"pPrDefault" if in_doc_defaults => {
-                            let (l, a, r) = parse_ppr_default(&mut reader, theme);
+                            let (l, a, r) = parse_ppr_default(&mut reader, theme, tf);
                             t.para_default_line = l;
                             t.para_default_align = a;
                             t.para_default_run = r;
@@ -633,13 +691,16 @@ impl StyleTable {
                                 // 主 rPr（style run properties）：段內文字的
                                 // 唯一風格來源（t_16a13211 R3）。同 style 內
                                 // 重複宣告＝首見為準。
-                                own.run = std::mem::take(&mut own.run)
-                                    .overlay(&parse_rpr_body(&mut reader, theme));
+                                own.run = std::mem::take(&mut own.run).overlay(&parse_rpr_body(
+                                    &mut reader,
+                                    theme,
+                                    tf,
+                                ));
                             }
                         }
                         b"pPr" => {
                             if let Some((_, own)) = cur.as_mut() {
-                                let (l, a, r) = parse_ppr(&mut reader, theme);
+                                let (l, a, r) = parse_ppr(&mut reader, theme, tf);
                                 if own.line.is_none() {
                                     own.line = l;
                                 }
@@ -917,6 +978,22 @@ mod tests {
     /// 主題色表（含 hlink＝305090）。
     fn theme() -> ThemeColors {
         ThemeColors::parse(THEME_HLINK)
+    }
+
+    /// 最小 fontScheme：major latin＝Calibri Light、minor latin＝Calibri。
+    const THEME_FONTS: &[u8] =
+        br#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+      <a:themeElements>
+        <a:fontScheme name="Office">
+          <a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface=""/></a:majorFont>
+          <a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/></a:minorFont>
+        </a:fontScheme>
+      </a:themeElements>
+    </a:theme>"#;
+
+    /// 主題字型表（major latin＝Calibri Light、minor latin＝Calibri）。
+    fn theme_fonts() -> ThemeFonts {
+        ThemeFonts::parse(THEME_FONTS)
     }
 
     const PREFIX: &str =
@@ -1439,6 +1516,51 @@ mod tests {
             Some("標楷體"),
             "east_asia 未宣告 → 逐欄繼承上層（不是整包覆蓋）"
         );
+    }
+
+    /// theme 引用逐層解析（G2b）：上層 docDefaults 宣告 `eastAsia="標楷體"`
+    /// ＋`asciiTheme="majorHAnsi"`、下層預設樣式宣告 `asciiTheme="minorHAnsi"`
+    /// ——每個 `w:rFonts` 存入前就在同層查表落地，所以級聯結果是
+    /// `ascii`＝minor 查表值（下層同層解析覆蓋上層）、`east_asia`＝標楷體
+    /// （逐欄繼承不破）。級聯系統裡不存在未解析的 theme 槽。
+    #[test]
+    fn theme_refs_resolve_per_layer_before_cascade() {
+        let t = StyleTable::parse_with_fonts(
+            wrap(
+                r#"<w:docDefaults><w:rPrDefault><w:rPr>
+                     <w:rFonts w:eastAsia="標楷體" w:asciiTheme="majorHAnsi"/>
+                   </w:rPr></w:rPrDefault></w:docDefaults>
+                   <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+                     <w:rPr><w:rFonts w:asciiTheme="minorHAnsi"/></w:rPr>
+                   </w:style>"#,
+            )
+            .as_bytes(),
+            &ThemeColors::default(),
+            Some(&theme_fonts()),
+        );
+        let (base, _) = t.effective_para(None, ParaStyle::default());
+        let fonts = base.fonts.as_ref().expect("樣式鏈必須合成出字型族");
+        assert_eq!(
+            fonts.ascii.as_deref(),
+            Some("Calibri"),
+            "下層 minorHAnsi 同層解析後必須覆蓋上層 majorHAnsi（不是 Calibri Light）"
+        );
+        assert_eq!(
+            fonts.east_asia.as_deref(),
+            Some("標楷體"),
+            "東亞直接值必須逐欄繼承（下層只宣告西文 theme 不得抹掉）"
+        );
+    }
+
+    /// 舊快照相容：`RunFonts` 的舊 JSON 照舊可讀。G2b 已刪除 theme 槽欄位，
+    /// 舊快照若曾帶 `ascii_theme`／`east_asia_theme` 也只會被 serde 當未知
+    /// 欄位忽略——不再有可往返的新欄位可測。
+    #[test]
+    fn run_fonts_old_json_still_reads() {
+        let old = r#"{"ascii":"Arial","east_asia":null,"cs":null,"hint_east_asian":false}"#;
+        let fonts: RunFonts = serde_json::from_str(old).expect("舊版 RunFonts JSON 必須可讀");
+        assert_eq!(fonts.ascii.as_deref(), Some("Arial"));
+        assert_eq!(fonts.east_asia, None);
     }
 
     /// 全鏈未宣告字型族 ＝ None（不虛構字型）。

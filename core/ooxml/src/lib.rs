@@ -94,9 +94,9 @@ pub struct Run {
     #[serde(default)]
     pub tab: bool,
     /// 級聯合成的**有效字型族**（`w:rFonts` 逐欄級聯結果；engine 開啟文件
-    /// 時烘焙寫入，仿 `size_pt` 的做法）。`None`＝整鏈未宣告任何字型。
-    /// 純派生欄位——**本卡只存不讀**：任何測量／分頁／顯示列表／SVG 輸出都
-    /// 不消費它（渲染輸出逐位元組零變化）。存檔路徑完全不經它（parts
+    /// 時烘焙寫入，仿 `size_pt` 的做法；theme 引用已在解析層落地成直接值）。
+    /// `None`＝整鏈未宣告任何字型。純派生欄位：顯示列表／SVG 選族消費它，
+    /// 但任何測量／分頁不消費（版面幾何不變）；存檔路徑完全不經它（parts
     /// passthrough），serde default 保舊快照相容。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_fonts: Option<RunFonts>,
@@ -298,7 +298,11 @@ pub fn parse(bytes: &[u8]) -> Result<OoxmlDoc, OoxmlError> {
     // （ECMA-376 §17.3.2.25——主題色優先於 `w:val` 回退值）。無 theme part
     // → 空表（呼叫端老實退回 `w:val`，既有行為不變）。
     let theme = ThemeColors::from_parts(&parts);
-    let paragraphs = parse_document_xml(xml, &theme)?;
+    // 主題字型表（theme1.xml 的 fontScheme）：與主題色表同處取得，供
+    // `w:rFonts` 的 theme 引用在解析當下查表落地（ECMA-376 §17.3.2.26）。
+    // 無 theme part → 四欄全 None＝保留直接值（既有行為不變）。
+    let theme_fonts = ThemeFonts::from_parts(&parts);
+    let paragraphs = parse_document_xml_with_fonts(xml, &theme, Some(&theme_fonts))?;
     // 表格投影：純讀入（PM 補正 1——唯讀來源隔離；無損寫回路徑完全不經此处）。
     let tables = table::read_body_tables(xml);
     // 註腳／尾註彙總（ECMA-376 §17.11）：純讀取；缺 part／壞 XML＝空彙總。
@@ -325,7 +329,17 @@ pub fn parse_header_footer_part(
     xml: &[u8],
     theme: &ThemeColors,
 ) -> Result<(Vec<Paragraph>, Vec<BodyTable>), OoxmlError> {
-    let paragraphs = parse_document_xml(xml, theme)?;
+    parse_header_footer_part_with_fonts(xml, theme, None)
+}
+
+/// [`parse_header_footer_part`] 的 fontScheme 版：`tf`＝文件主題字型表，
+/// `w:rFonts` 的 theme 引用在解析當下查表落地（ECMA-376 §17.3.2.26）。
+pub fn parse_header_footer_part_with_fonts(
+    xml: &[u8],
+    theme: &ThemeColors,
+    tf: Option<&ThemeFonts>,
+) -> Result<(Vec<Paragraph>, Vec<BodyTable>), OoxmlError> {
+    let paragraphs = parse_document_xml_with_fonts(xml, theme, tf)?;
     let tables = table::read_body_tables(xml);
     Ok((paragraphs, tables))
 }
@@ -400,6 +414,7 @@ fn apply_style_tag(
     e: &quick_xml::events::BytesStart,
     cur_run: &mut Option<Run>,
     theme: &ThemeColors,
+    tf: Option<&ThemeFonts>,
 ) {
     // ---- run 直接格式三態快照（t_5dfc8ac7）：語義唯一來源＝styles::apply_run_tag。
     // bool 欄位照舊寫（既有消費者不動），三態快照並行記錄給級聯層。只認
@@ -408,7 +423,7 @@ fn apply_style_tag(
     // `w:rFonts`（字型族）另有一道閘：空元素（無任何族別屬性）不材料化
     // direct——否則「未見任何 rPr 宣告」的 None 語義會被一個空宣告破掉。
     if matches!(name, b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz")
-        || (name == b"rFonts" && styles::rfonts_of(e).is_some())
+        || (name == b"rFonts" && styles::rfonts_of(e, tf).is_some())
     {
         if let Some(r) = cur_run.as_mut() {
             styles::apply_run_tag(
@@ -416,6 +431,7 @@ fn apply_style_tag(
                 e,
                 r.direct.get_or_insert_with(RunStyle::default),
                 theme,
+                tf,
             );
         }
     }
@@ -476,6 +492,16 @@ fn apply_style_tag(
 ///
 /// 骨架階段刻意不求全面（欄位、圖形幾何皆未處理），演進順序由 corpus 綠燈率驅動。
 fn parse_document_xml(xml: &[u8], theme: &ThemeColors) -> Result<Vec<Paragraph>, OoxmlError> {
+    parse_document_xml_with_fonts(xml, theme, None)
+}
+
+/// [`parse_document_xml`] 的 fontScheme 版：`tf`＝文件主題字型表，
+/// `w:rFonts` 的 theme 引用在解析當下查表落地（ECMA-376 §17.3.2.26）。
+fn parse_document_xml_with_fonts(
+    xml: &[u8],
+    theme: &ThemeColors,
+    tf: Option<&ThemeFonts>,
+) -> Result<Vec<Paragraph>, OoxmlError> {
     use quick_xml::events::Event;
     let text = String::from_utf8_lossy(xml).into_owned();
     let mut reader = quick_xml::Reader::from_str(&text);
@@ -596,6 +622,7 @@ fn parse_document_xml(xml: &[u8], theme: &ThemeColors) -> Result<Vec<Paragraph>,
                                 &e,
                                 p.prun.get_or_insert_with(RunStyle::default),
                                 theme,
+                                tf,
                             );
                         }
                     }
@@ -603,13 +630,14 @@ fn parse_document_xml(xml: &[u8], theme: &ThemeColors) -> Result<Vec<Paragraph>,
                     // 收進段落棧頂的三態快照（段落級級聯輸入）。空元素不得
                     // 物化 prun（守住「未見任何 rPr 宣告＝None」的語義）。
                     b"rFonts" if ppr_rpr_depth > 0 => {
-                        if styles::rfonts_of(&e).is_some() {
+                        if styles::rfonts_of(&e, tf).is_some() {
                             if let Some((_, p, _)) = stack.last_mut() {
                                 styles::apply_run_tag(
                                     name.as_slice(),
                                     &e,
                                     p.prun.get_or_insert_with(RunStyle::default),
                                     theme,
+                                    tf,
                                 );
                             }
                         }
@@ -654,7 +682,7 @@ fn parse_document_xml(xml: &[u8], theme: &ThemeColors) -> Result<Vec<Paragraph>,
                     b"footnoteReference" | b"endnoteReference" => {
                         record_note_ref(name.as_slice(), &e, &mut cur_run);
                     }
-                    other => apply_style_tag(other, &e, &mut cur_run, theme),
+                    other => apply_style_tag(other, &e, &mut cur_run, theme, tf),
                 }
             }
             Event::Empty(e) => {
@@ -721,18 +749,20 @@ fn parse_document_xml(xml: &[u8], theme: &ThemeColors) -> Result<Vec<Paragraph>,
                             &e,
                             p.prun.get_or_insert_with(RunStyle::default),
                             theme,
+                            tf,
                         );
                     }
                 } else if name == b"rFonts" && ppr_rpr_depth > 0 {
                     // pPr/rPr 內自閉合的字型族宣告（Start 臂的鏡像）。空元素
                     // 不物化 prun（守住「未見任何 rPr 宣告＝None」的語義）。
-                    if styles::rfonts_of(&e).is_some() {
+                    if styles::rfonts_of(&e, tf).is_some() {
                         if let Some((_, p, _)) = stack.last_mut() {
                             styles::apply_run_tag(
                                 name.as_slice(),
                                 &e,
                                 p.prun.get_or_insert_with(RunStyle::default),
                                 theme,
+                                tf,
                             );
                         }
                     }
@@ -768,7 +798,7 @@ fn parse_document_xml(xml: &[u8], theme: &ThemeColors) -> Result<Vec<Paragraph>,
                     // 註引用標記（自閉合＝Word 常態寫法）：標進進行中的 run。
                     record_note_ref(name.as_slice(), &e, &mut cur_run);
                 } else {
-                    apply_style_tag(name.as_slice(), &e, &mut cur_run, theme);
+                    apply_style_tag(name.as_slice(), &e, &mut cur_run, theme, tf);
                 }
             }
             Event::End(e) => {

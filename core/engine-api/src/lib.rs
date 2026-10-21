@@ -10,9 +10,10 @@ use quire_layout::{
     SectionSpec, TableSlot, TextMeasurer, MARGIN_LEFT,
 };
 use quire_ooxml::{
-    diff_untouched, diff_zip_structure, parse, parse_header_footer_part, read_even_and_odd_headers,
-    read_rels, read_sections_header_footer, read_sections_per_paragraph, resolve_relationship,
-    LineSpacing, OoxmlDoc, OoxmlError, ParaStyle, SlotRefs, StyleTable, ThemeColors, ZipDiff,
+    diff_untouched, diff_zip_structure, parse, parse_header_footer_part_with_fonts,
+    read_even_and_odd_headers, read_rels, read_sections_header_footer, read_sections_per_paragraph,
+    resolve_relationship, LineSpacing, OoxmlDoc, OoxmlError, ParaStyle, SlotRefs, StyleTable,
+    ThemeColors, ThemeFonts, ZipDiff,
 };
 use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
@@ -127,11 +128,15 @@ impl Engine {
         // 回退值）。無 theme part → 空表＝老實退回 `w:val`（既有行為不變）。
         // 存檔路徑完全不經此層（parts passthrough，round-trip 零影響）。
         let theme = ThemeColors::from_parts(&doc.parts);
+        // 主題字型表（theme1.xml 的 fontScheme）：純讀取派生資料，供 run 的
+        // `w:asciiTheme`／`w:eastAsiaTheme` 引用查表（ECMA-376 §17.3.2.26）。
+        // 無 theme part → 四欄全 None＝老實退回直接值（既有行為不變）。
+        let theme_fonts = ThemeFonts::from_parts(&doc.parts);
         let style_table = Some(
             doc.parts
                 .get("word/styles.xml")
-                .map(|s| StyleTable::parse_with_theme(s.as_slice(), &theme))
-                .unwrap_or_else(|| StyleTable::parse_with_theme(&[], &theme)),
+                .map(|s| StyleTable::parse_with_fonts(s.as_slice(), &theme, Some(&theme_fonts)))
+                .unwrap_or_else(|| StyleTable::parse_with_fonts(&[], &theme, Some(&theme_fonts))),
         );
         let (doc_size, doc_line) = style_table.as_ref().map_or((None, None), |t| t.doc_grid());
         // 文件基準字級：docDefaults∪Normal 鏈的有效 sz（ECMA 無宣告時的
@@ -760,9 +765,9 @@ fn cascade_paragraphs(
                 r2.color = eff.color;
             }
             r2.size_pt = eff.size_pt;
-            // 有效字型族（w:rFonts 逐欄級聯結果）——**只存不讀**：本卡不改
-            // 任何測量／分頁／顯示列表／SVG 輸出（渲染逐位元組零變化），
-            // 僅把級聯結果烘焙進發射用投影，供後續選族卡消費。
+            // 有效字型族（w:rFonts 逐欄級聯結果）：theme 引用已在 ooxml
+            // 解析層逐層查表落地，此處只是把級聯結果烘焙進發射用投影，
+            // 供 G1 選族消費。測量／分頁／存檔完全不經它（版面零變動）。
             r2.effective_fonts = eff.fonts;
             eff_runs.push(r2);
         }
@@ -881,9 +886,10 @@ fn is_cjk(c: char) -> bool {
 /// 4. 皆無 → `None`（渲染端沿用自身預設，即舊行為）。
 ///
 /// `cs`（複雜文字）本版不消費（引擎尚無 RTL 路徑）；`asciiTheme`／
-/// `eastAsiaTheme` 等 theme 字型引用也不消費（theme 查表另卡），遇到只有
-/// theme 引用的 run 會老實回 `None`。表格格內文字（CellText）目前不帶
-/// run 級字型（layout 層限制），發射時傳 `None`，格內選族待後續卡。
+/// `eastAsiaTheme` 等 theme 引用已在 ooxml 解析層查 fontScheme 落地成
+/// `ascii`／`east_asia` 值（theme 取勝），本函數只讀落地後的值。表格格內
+/// 文字（CellText）目前不帶 run 級字型（layout 層限制），發射時傳 `None`，
+/// 格內選族待後續卡。
 fn select_text_family(fonts: Option<&quire_ooxml::RunFonts>, text: &str) -> Option<String> {
     let f = fonts?;
     if f.hint_east_asian {
@@ -1516,6 +1522,9 @@ fn build_hf_layer(
     style_table: Option<&StyleTable>,
     theme: &ThemeColors,
 ) -> HfLayer {
+    // 主題字型表：與正文同一份 fontScheme，供頁首頁尾 part 的 `w:rFonts`
+    // theme 引用在解析當下查表落地（ECMA-376 §17.3.2.26）。
+    let theme_fonts = ThemeFonts::from_parts(&doc.parts);
     let mut sec_geo: HashMap<u32, SectionGeometry> = HashMap::new();
     for s in sections {
         sec_geo.entry(s.id).or_insert(s.geo);
@@ -1584,7 +1593,9 @@ fn build_hf_layer(
     let def_size = style_table.map_or(FALLBACK_SIZE_PT, |t| t.doc_grid().0.unwrap_or(12.0));
     for path in want {
         if let Some(xml) = doc.parts.get(&path) {
-            if let Ok((paragraphs, tables)) = parse_header_footer_part(xml, theme) {
+            if let Ok((paragraphs, tables)) =
+                parse_header_footer_part_with_fonts(xml, theme, Some(&theme_fonts))
+            {
                 let (styles, metrics) = match style_table {
                     // 頁首尾不展開點引（widths 空＝不虛構；既有行為不變）。
                     Some(st) => cascade_paragraphs(st, &paragraphs, def_size, &[]),
@@ -2708,6 +2719,231 @@ mod tests {
             plain.page_breaks_json(),
             with_font.page_breaks_json(),
             "新增字型宣告不得移動任何分頁斷點"
+        );
+    }
+
+    // ---------------- theme 字型引用（G2） ----------------
+
+    /// 跨頁找某段文字的選族結果（Heading／正文可能落在不同頁）。
+    fn family_on_pages(engine: &Engine, text: &str) -> String {
+        for p in 0..engine.page_count() {
+            let Some(dl) = engine.page_display_list(p) else {
+                continue;
+            };
+            let Some(item) = dl
+                .items
+                .iter()
+                .find(|it| matches!(it, DrawItem::Text { text: t, .. } if t == text))
+            else {
+                continue;
+            };
+            let DrawItem::Text { family, .. } = item else {
+                unreachable!("已確認是 Text 項");
+            };
+            return family
+                .clone()
+                .unwrap_or_else(|| panic!("測試文字 {text:?} 的 family 不得為 None"));
+        }
+        panic!("測試文字 {text:?} 必須存在於任一頁顯示列表");
+    }
+
+    /// 最小 fontScheme：major latin=Calibri Light／minor latin=Calibri，
+    /// 兩個 `a:ea` 皆空字串（對照 HC031 的實檔形狀）。
+    const THEME_FONTS_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <a:themeElements>
+    <a:fontScheme name="測試主題">
+      <a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface=""/></a:majorFont>
+      <a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/></a:minorFont>
+    </a:fontScheme>
+  </a:themeElements>
+</a:theme>"#;
+
+    /// 以 sample.docx 為容器，換入單段文件＋測試 theme part。
+    fn build_theme_doc(rpr: &str, text: &str) -> Engine {
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r>{rpr}<w:t>{text}</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#
+        );
+        let mut base = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx 失敗");
+        base.set_part("word/document.xml", xml.into_bytes());
+        base.set_part("word/theme/theme1.xml", THEME_FONTS_XML.as_bytes().to_vec());
+        let docx = base.save_docx().expect("存回 docx 失敗");
+        Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗")
+    }
+
+    /// 同 [`build_theme_doc`]，另換入指定的 `styles.xml`（跨層級聯測試用）。
+    fn build_theme_doc_with_styles(rpr: &str, text: &str, styles_xml: &str) -> Engine {
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r>{rpr}<w:t>{text}</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#
+        );
+        let mut base = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx 失敗");
+        base.set_part("word/document.xml", xml.into_bytes());
+        base.set_part("word/styles.xml", styles_xml.as_bytes().to_vec());
+        base.set_part("word/theme/theme1.xml", THEME_FONTS_XML.as_bytes().to_vec());
+        let docx = base.save_docx().expect("存回 docx 失敗");
+        Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗")
+    }
+
+    /// (a) HC031 實檔直接值守土（G2b 回歸）：run 層 rPr 宣告的直接字型族
+    /// 必須原樣抵達顯示列表，不得被 docDefaults 的 theme 引用跨層覆寫。
+    ///
+    /// 本檔 docDefaults 宣告 `asciiTheme="minorHAnsi"`（→Calibri），但這三處
+    /// 的 run 直接 rPr 各自宣告 Wide Latin／Consolas／Cambria Math——跨層
+    /// 是普通逐欄級聯，下層直接值必須贏上層的 theme 引用。
+    #[test]
+    fn hc031_direct_run_fonts_survive_theme_resolution() {
+        const HC031: &[u8] =
+            include_bytes!("../../../corpus/xopt/TestFiles_HC031-Complicated-Document.docx");
+        let engine = Engine::from_docx_bytes(HC031).expect("開啟 HC031 失敗");
+        assert_eq!(
+            family_on_pages(
+                &engine,
+                "Video provides a powerful way to help you prove your point."
+            ),
+            "Wide Latin".to_string(),
+            "run 直接 rPr 的 Wide Latin 不得被 docDefaults 的 minorHAnsi 覆寫"
+        );
+        assert_eq!(
+            family_on_pages(
+                &engine,
+                "You can also type a keyword to search online for the video that best fits your document."
+            ),
+            "Consolas".to_string(),
+            "run 直接 rPr 的 Consolas 不得被 docDefaults 的 minorHAnsi 覆寫"
+        );
+        assert_eq!(
+            family_on_pages(&engine, "x+an=k=0nnkxkan-k"),
+            "Cambria Math".to_string(),
+            "數學 run 直接 rPr 的 Cambria Math 不得被 docDefaults 的 minorHAnsi 覆寫"
+        );
+    }
+
+    /// (c) 跨層直接值取勝（G2b 新語義鎖）：docDefaults `asciiTheme="majorHAnsi"`
+    /// （→Calibri Light），run 直接 `w:ascii="Arial"` → **Arial**。
+    /// theme 引用的取勝只適用於同一 `w:rFonts` 元素內（ECMA-376 §17.3.2.26），
+    /// 跨層就是普通逐欄級聯。
+    #[test]
+    fn cross_layer_direct_font_wins_over_inherited_theme_ref() {
+        const STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults><w:rPrDefault><w:rPr>
+    <w:rFonts w:asciiTheme="majorHAnsi"/>
+  </w:rPr></w:rPrDefault></w:docDefaults>
+</w:styles>"#;
+        let engine = build_theme_doc_with_styles(
+            r#"<w:rPr><w:rFonts w:ascii="Arial"/></w:rPr>"#,
+            "跨層直接值",
+            STYLES,
+        );
+        let dl = engine.page_display_list(0).expect("第 0 頁存在");
+        assert_eq!(
+            family_of(&dl, "跨層直接值"),
+            "Arial".to_string(),
+            "下層直接值必須贏上層 docDefaults 的 theme 引用（不得變成 Calibri Light）"
+        );
+    }
+
+    /// (d) theme 引用仍生效：HC031 無直接 rPr 的本文文字（Heading2 樣式鏈）
+    /// 繼承 docDefaults 的 `minorHAnsi` → Calibri；text box run 的直接 rPr
+    /// `majorHAnsi` → Calibri Light（顯示列表確有落地）。
+    ///
+    /// 註：此 corpus 檔的 Heading 樣式鏈（Heading1/Heading2→Normal→
+    /// docDefaults）宣告的是 `minorHAnsi`，不是 `majorHAnsi`；實檔的 major
+    /// 引用落在 text box run 上。測試照實檔宣告驗證，不臆造 Heading 為 major。
+    #[test]
+    fn hc031_theme_font_refs_resolve_from_real_file() {
+        const HC031: &[u8] =
+            include_bytes!("../../../corpus/xopt/TestFiles_HC031-Complicated-Document.docx");
+        let engine = Engine::from_docx_bytes(HC031).expect("開啟 HC031 失敗");
+        // 本文 Heading2 段落繼承 docDefaults minorHAnsi → theme minor latin。
+        assert_eq!(
+            family_on_pages(&engine, "This is Heading 2"),
+            "Calibri".to_string(),
+            "minorHAnsi 必須查 theme 的 minor latin（Calibri）"
+        );
+        // 顯示列表確實把 major 引用落地（text box 的可見項目）。
+        let has_light = (0..engine.page_count()).any(|p| {
+            engine.page_display_list(p).is_some_and(|dl| {
+                dl.items.iter().any(|it| {
+                        matches!(it, DrawItem::Text { family: Some(f), .. } if f == "Calibri Light")
+                    })
+            })
+        });
+        assert!(has_light, "majorHAnsi 必須在顯示列表落地為 Calibri Light");
+    }
+
+    /// (b) 同層 `w:ascii="Arial"`＋`w:asciiTheme="minorHAnsi"` → theme 取勝
+    /// （ECMA-376 §17.3.2.26 明文），選 theme 的 minor latin＝Calibri。
+    #[test]
+    fn theme_font_ref_wins_over_direct_value_same_layer() {
+        let engine = build_theme_doc(
+            r#"<w:rPr><w:rFonts w:ascii="Arial" w:asciiTheme="minorHAnsi"/></w:rPr>"#,
+            "theme 取勝",
+        );
+        let dl = engine.page_display_list(0).expect("第 0 頁存在");
+        assert_eq!(
+            family_of(&dl, "theme 取勝"),
+            "Calibri".to_string(),
+            "theme 引用與直接值同層共存時必須以 theme 為準"
+        );
+    }
+
+    /// (c) theme 槽的 `@typeface` 空字串 → 視同查不到，不覆寫直接值
+    /// （theme 的 `a:ea` 在測試 theme 中即空字串）。
+    #[test]
+    fn empty_theme_typeface_falls_back_to_direct_value() {
+        let engine = build_theme_doc(
+            r#"<w:rPr><w:rFonts w:eastAsia="微軟正黑體" w:eastAsiaTheme="minorEastAsia"/></w:rPr>"#,
+            "東亞直接值",
+        );
+        let dl = engine.page_display_list(0).expect("第 0 頁存在");
+        assert_eq!(
+            family_of(&dl, "東亞直接值"),
+            "微軟正黑體".to_string(),
+            "空的 theme typeface 不得抹掉直接宣告的 eastAsia"
+        );
+    }
+
+    /// (f) theme 版分頁零位移：宣告 `w:asciiTheme` 前後 page_breaks 等值
+    /// （G1 直接值守門測的同款口徑）。
+    #[test]
+    fn theme_font_declaration_does_not_change_page_breaks() {
+        let long_text = "字型主題引用不得影響分頁。".repeat(400);
+        let doc = |rpr: &str| {
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r>{rpr}<w:t>{long_text}</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#
+            )
+        };
+        let build = |xml: String| {
+            let mut base = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx 失敗");
+            base.set_part("word/document.xml", xml.into_bytes());
+            base.set_part("word/theme/theme1.xml", THEME_FONTS_XML.as_bytes().to_vec());
+            let docx = base.save_docx().expect("存回 docx 失敗");
+            Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗")
+        };
+        let plain = build(doc(""));
+        let themed = build(doc(
+            r#"<w:rPr><w:rFonts w:asciiTheme="minorHAnsi"/></w:rPr>"#,
+        ));
+        assert_eq!(
+            plain.page_breaks_json(),
+            themed.page_breaks_json(),
+            "theme 字型引用不得移動任何分頁斷點"
         );
     }
 }
