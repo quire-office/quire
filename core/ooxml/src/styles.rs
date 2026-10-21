@@ -14,6 +14,8 @@
 //!   §17.4.1.3）；`exact`/`atLeast`→固定 pt（twips→pt）；
 //! - `w:b`／`w:i`／`w:u`／`w:strike`／`w:color`：值語義與 `lib.rs` 的
 //!   `toggle_attr_on`／`parse_color_val` 逐字一致（none/false/0/off＝關閉）；
+//! - `w:rFonts`（ECMA-376 §17.3.2.26）：字型族宣告（ascii/eastAsia/cs＋
+//!   hint）——**只解析存檔**，選族與渲染不在本卡；
 //! - `w:jc/@w:val`：解析並保留（發射層本卡不消費——顯示列表以版心左緣起排）。
 //!
 //! `w:pStyle` 引用的是**樣式 id**（`w:styleId`），不是 `w:name`：查表以 id 為
@@ -44,10 +46,56 @@ use crate::theme::{self, ThemeColors};
 /// basedOn 鏈深度上限（超鏈＝畸形檔，老實停在已合成結果，見模組頭）。
 const MAX_CHAIN: usize = 32;
 
+/// `w:rFonts`（ECMA-376 §17.3.2.26）：字型族宣告。各欄 None＝未宣告（繼承）。
+///
+/// 三個字型族槽各自分立宣告、各自分立繼承——**逐欄**級聯，不是整包覆蓋
+/// （下層只宣告 `w:ascii` 時，`w:eastAsia` 仍落到上層的值）。
+///
+/// `hint_east_asian` 是 `w:hint="eastAsia"` 的布林投影（ECMA-376
+/// §17.3.2.26：`w:hint` 指示「歧義字元優先用哪一族的字型」）。此欄是純
+/// bool（無法表達「本層明確宣告非 eastAsia」），故級聯採**或**語義：任一
+/// 層宣告過 eastAsia 提示即為真。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunFonts {
+    /// `w:rFonts/@w:ascii`：西文（ASCII）字型族名。
+    #[serde(default)]
+    pub ascii: Option<String>,
+    /// `w:rFonts/@w:eastAsia`：東亞字型族名。
+    #[serde(default)]
+    pub east_asia: Option<String>,
+    /// `w:rFonts/@w:cs`：複雜文字（complex script）字型族名。
+    #[serde(default)]
+    pub cs: Option<String>,
+    /// `w:rFonts/@w:hint` 是否為 `eastAsia`。
+    #[serde(default)]
+    pub hint_east_asian: bool,
+}
+
+impl RunFonts {
+    /// 逐欄級聯（ECMA-376 §17.3.2.26）：本層（較具體者）已宣告者贏，缺者
+    /// 取上層。`hint_east_asian` 採或語義（見欄位注）。
+    pub(crate) fn overlay(mut self, upper: &RunFonts) -> RunFonts {
+        if self.ascii.is_none() {
+            self.ascii = upper.ascii.clone();
+        }
+        if self.east_asia.is_none() {
+            self.east_asia = upper.east_asia.clone();
+        }
+        if self.cs.is_none() {
+            self.cs = upper.cs.clone();
+        }
+        self.hint_east_asian |= upper.hint_east_asian;
+        self
+    }
+}
+
 /// run 級有效樣式（級聯合成後；`None`＝該層完全未宣告，交下層／發射層兜底）。
 /// serde derives：段落直接格式（`w:pPr/w:rPr`）以本型別存進文檔模型（lib.rs
 /// `Paragraph::prun`）供 engine 級聯消費；`color_set` 帶 default 保舊 JSON 兼容。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+///
+/// 不 derive `Copy`：`fonts` 欄承載 `String` 字型族名（不可 Copy）。既有欄位
+/// 全為 Copy 型，語義不變；改用 `Clone` 複製的呼叫點皆在本檔與 engine-api 內。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunStyle {
     /// 字級（pt）。半磅值÷2；缺＝None（呼叫端退回 12pt 後備）。
     pub size_pt: Option<f32>,
@@ -63,6 +111,10 @@ pub struct RunStyle {
     /// 本層是否宣告過 `w:color`（含 auto→`color=None` 的情形）。
     #[serde(default)]
     pub color_set: bool,
+    /// 字型族宣告（`w:rFonts`；ECMA-376 §17.3.2.26）。`None`＝本層未宣告
+    /// 任何字型（整包繼承上層）。逐欄繼承見 [`RunFonts`]。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fonts: Option<RunFonts>,
 }
 
 impl RunStyle {
@@ -102,6 +154,14 @@ impl RunStyle {
             self.color = upper.color;
             self.color_set = upper.color_set;
         }
+        // 字型族逐欄繼承（ECMA-376 §17.3.2.26）：本層未宣告的族別取上層，
+        // 已宣告者贏——不是整包覆蓋（只宣告 ascii 時 eastAsia 仍繼承）。
+        self.fonts = match (self.fonts.take(), upper.fonts.as_ref()) {
+            (None, None) => None,
+            (None, Some(u)) => Some(u.clone()),
+            (Some(lower), None) => Some(lower),
+            (Some(lower), Some(u)) => Some(lower.overlay(u)),
+        };
         self
     }
 }
@@ -138,7 +198,9 @@ impl Default for LineSpacing {
 }
 
 /// 段落級有效樣式（級聯合成的段落部分）。
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+///
+/// 不 derive `Copy`：內含 [`RunStyle`]（其 `fonts` 欄承載 `String`）。
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ParaStyle {
     /// 段落基底 run 樣式：docDefaults∪樣式鏈∪段落 pPr/rPr 的合成結果
     /// （run 直接格式／字元樣式再疊於其上）。
@@ -179,11 +241,14 @@ enum StyleKind {
 /// 存檔路徑完全不經本層，styles.xml 照舊 passthrough）。
 ///
 /// 未支援清單（ECMA-376 §17.7 廣度所限，本卡刻意不實作、非漏實作）：
-/// `w:rFonts`（字型族——內嵌子集單一字型，無從選族）、`w:szCs`（複雜文字
-/// 字級）、`w:ind`（縮排）、`w:spacing` 的 before/after（段前後距——行帶
-/// 模型無段落間距概念）、`w:kern`、`w:shd`（底紋）、`w:vertAlign`（上下標）、
-/// `w:numPr`（編號）、`w:tabs`、`w:widowControl`、`w:bidi`、`w:suppress*`、
-/// `w:smallCaps`、`w:tblStylePr`（條件表格樣式，另見 `table_map`）。
+/// `w:szCs`（複雜文字字級）、`w:ind`（縮排）、`w:spacing` 的 before/after
+/// （段前後距——行帶模型無段落間距概念）、`w:kern`、`w:shd`（底紋）、
+/// `w:vertAlign`（上下標）、`w:numPr`（編號）、`w:tabs`、`w:widowControl`、
+/// `w:bidi`、`w:suppress*`、`w:smallCaps`、`w:tblStylePr`（條件表格樣式，
+/// 另見 `table_map`）。
+///
+/// `w:rFonts`（字型族）已解析存檔（見 [`RunFonts`]），但**選族**（哪一族
+/// 真的拿去排版）不在解析層——渲染層本卡零改動。
 #[derive(Debug, Clone, Default)]
 pub struct StyleTable {
     /// docDefaults 的 `w:rPrDefault/w:rPr`（全文件 run 基底）。
@@ -304,8 +369,41 @@ pub(crate) fn apply_run_tag(
             // 只宣告了查不到的 `w:themeColor`（無 theme part／查無該名）→
             // 維持「未宣告」語義（繼承上層色），不虛構黑。
         }
+        b"rFonts" => {
+            // 字型族宣告（ECMA-376 §17.3.2.26）：只抓屬性（不讀文字）。
+            // 四欄皆無宣告者（空元素）不動 rs——不得憑空物化一個空宣告。
+            // 同 rPr 內重複宣告＝首見為準（與 styles.xml 樣式層同口徑）。
+            if let Some(f) = rfonts_of(e) {
+                if rs.fonts.is_none() {
+                    rs.fonts = Some(f);
+                }
+            }
+        }
         _ => {}
     }
+}
+
+/// `w:rFonts` 元素 → 字型族宣告（ECMA-376 §17.3.2.26）。
+///
+/// - `w:ascii`／`w:eastAsia`／`w:cs` → 對應族別（空字串視為未宣告）；
+/// - `w:hint="eastAsia"` → `hint_east_asian` 為真（其餘值視為非 eastAsia）。
+///
+/// 四欄皆無宣告（空元素／無關屬性）→ `None`：呼叫端據此**不得**把
+/// 「未見任何 rPr 宣告」的 `None` 語義破壞成 `Some(空宣告)`。
+pub(crate) fn rfonts_of(e: &quick_xml::events::BytesStart) -> Option<RunFonts> {
+    let ascii = attr_val(e, "ascii").filter(|v| !v.trim().is_empty());
+    let east_asia = attr_val(e, "eastAsia").filter(|v| !v.trim().is_empty());
+    let cs = attr_val(e, "cs").filter(|v| !v.trim().is_empty());
+    let hint = attr_val(e, "hint").is_some_and(|v| v.eq_ignore_ascii_case("eastAsia"));
+    if ascii.is_none() && east_asia.is_none() && cs.is_none() && !hint {
+        return None;
+    }
+    Some(RunFonts {
+        ascii,
+        east_asia,
+        cs,
+        hint_east_asian: hint,
+    })
 }
 
 /// 讀取 `w:rPr` 的**內容**（呼叫端已消耗 `<w:rPr>` Start；本函數消費至
@@ -535,7 +633,8 @@ impl StyleTable {
                                 // 主 rPr（style run properties）：段內文字的
                                 // 唯一風格來源（t_16a13211 R3）。同 style 內
                                 // 重複宣告＝首見為準。
-                                own.run = own.run.overlay(&parse_rpr_body(&mut reader, theme));
+                                own.run = std::mem::take(&mut own.run)
+                                    .overlay(&parse_rpr_body(&mut reader, theme));
                             }
                         }
                         b"pPr" => {
@@ -554,7 +653,7 @@ impl StyleTable {
                                 // pPr 在 rPr 之前，就地 overlay 會讓先解析的
                                 // pPr/rPr 反客為主——合成式固定主 rPr 贏在
                                 // resolve_cached。
-                                own.ppr_run = own.ppr_run.overlay(&r);
+                                own.ppr_run = std::mem::take(&mut own.ppr_run).overlay(&r);
                             }
                         }
                         _ => {}
@@ -624,7 +723,7 @@ impl StyleTable {
             .default_para
             .as_deref()
             .and_then(|d| self.resolved.get(d))
-            .copied()
+            .cloned()
             .unwrap_or_else(|| self.doc_base());
         (base.0.size_pt, base.1.line)
     }
@@ -632,9 +731,9 @@ impl StyleTable {
     /// docDefaults 合成基底（pPrDefault/rPr 優先於 rPrDefault——ECMA §17.7.2.5
     /// 層級：段落預設在全域預設之上）。
     fn doc_base(&self) -> (RunStyle, ParaStyle) {
-        let run = self.para_default_run.overlay(&self.run_default);
+        let run = self.para_default_run.clone().overlay(&self.run_default);
         (
-            run,
+            run.clone(),
             ParaStyle {
                 run,
                 line: self.para_default_line,
@@ -657,18 +756,18 @@ impl StyleTable {
     /// 同步合成 `chain`（只沿 basedOn、不含 docDefaults 的 run 宣告，見欄位注）。
     fn resolve_cached(&mut self, id: &str) -> (RunStyle, ParaStyle) {
         if let Some(hit) = self.resolved.get(id) {
-            return *hit;
+            return hit.clone();
         }
         let doc = self.doc_base();
         let Some(own) = self.styles.get(id).cloned() else {
             // 查無樣式：只剩 docDefaults 基底（畸形 pStyle/rStyle 引用容錯）。
-            self.resolved.insert(id.to_string(), doc);
+            self.resolved.insert(id.to_string(), doc.clone());
             self.chain.insert(id.to_string(), RunStyle::default());
             return doc;
         };
         if self.visiting.len() >= MAX_CHAIN {
             // 超深／環：老實停在 doc 基底（見模組頭）。
-            self.resolved.insert(id.to_string(), doc);
+            self.resolved.insert(id.to_string(), doc.clone());
             self.chain.insert(id.to_string(), RunStyle::default());
             return doc;
         }
@@ -682,32 +781,34 @@ impl StyleTable {
                 // doc 基底，與舊實作同結果）。
                 let same_kind = self.style_kind(b) == Some(own.kind);
                 if !same_kind || b == id || self.visiting.iter().any(|v| v == b) {
-                    (doc, RunStyle::default())
+                    (doc.clone(), RunStyle::default())
                 } else {
                     self.visiting.push(id.to_string());
                     let p = self.resolve_cached(b);
                     // resolve_cached 必已填 chain（含查無／超深分支）。
-                    let pc = self.chain.get(b).copied().unwrap_or_default();
+                    let pc = self.chain.get(b).cloned().unwrap_or_default();
                     self.visiting.pop();
                     (p, pc)
                 }
             }
-            None => (doc, RunStyle::default()),
+            None => (doc.clone(), RunStyle::default()),
         };
         // 本樣式自帶疊在父合成結果上：先固定 `run.overlay(&ppr_run)`（主
         // rPr 贏段落標記 rPr，ECMA §17.7.2.3；t_16a13211 R3——優先序與 XML
         // 出現序無關），再補父缺；段落欄位缺位補父。
         let own_run = own.run.overlay(&own.ppr_run);
+        // 純鏈版（不含 docDefaults）先算：chain 與 resolved 兩份合成各要一份
+        // 輸入（`RunStyle` 不再 Copy，故先留一份副本）。
+        let chain_run = own_run.clone().overlay(&parent_chain);
         let run = own_run.overlay(&parent.0);
         let para = ParaStyle {
-            run,
+            run: run.clone(),
             line: own.line.or(parent.1.line),
             align: own.align.or(parent.1.align),
         };
         let hit = (run, para);
-        self.resolved.insert(id.to_string(), hit);
-        self.chain
-            .insert(id.to_string(), own_run.overlay(&parent_chain));
+        self.resolved.insert(id.to_string(), hit.clone());
+        self.chain.insert(id.to_string(), chain_run);
         hit
     }
 
@@ -718,7 +819,7 @@ impl StyleTable {
         if self.style_kind(id) != Some(StyleKind::Character) {
             return None;
         }
-        self.resolved.get(id).map(|hit| hit.0)
+        self.resolved.get(id).map(|hit| hit.0.clone())
     }
 
     /// 字元樣式（`w:rStyle`）的**純鏈**宣告：只沿 basedOn 合成、不含
@@ -731,7 +832,7 @@ impl StyleTable {
         if self.style_kind(id) != Some(StyleKind::Character) {
             return None;
         }
-        self.chain.get(id).copied()
+        self.chain.get(id).cloned()
     }
 
     /// 段落級級聯：段落樣式（未宣告 pStyle＝落預設段落樣式 Normal，再落
@@ -760,11 +861,11 @@ impl StyleTable {
                     Some(id)
                 };
                 target
-                    .and_then(|t| self.resolved.get(t).copied())
+                    .and_then(|t| self.resolved.get(t).cloned())
                     .or_else(|| {
                         self.default_para
                             .as_deref()
-                            .and_then(|d| self.resolved.get(d).copied())
+                            .and_then(|d| self.resolved.get(d).cloned())
                     })
                     .unwrap_or_else(|| self.doc_base())
             }
@@ -772,7 +873,7 @@ impl StyleTable {
                 Some(dp) => self
                     .resolved
                     .get(dp)
-                    .copied()
+                    .cloned()
                     .unwrap_or_else(|| self.doc_base()),
                 None => self.doc_base(),
             },
@@ -781,7 +882,7 @@ impl StyleTable {
         para.run = inline.run.overlay(&para.run);
         para.line = inline.line.or(para.line);
         para.align = inline.align.or(para.align);
-        let base = para.run;
+        let base = para.run.clone();
         (base, para)
     }
 
@@ -969,7 +1070,7 @@ mod tests {
             bold: Some(false),
             ..Default::default()
         };
-        let eff = StyleTable::resolve_run(base, direct);
+        let eff = StyleTable::resolve_run(base.clone(), direct);
         assert_eq!(eff.bold, Some(false)); // 直接格式熄滅樣式粗體。
         assert_eq!(eff.size_pt, Some(20.0)); // 未宣告→繼承樣式。
         assert_eq!(eff.color, Some(0xFFFF0000)); // 未宣告→繼承樣式色。
@@ -979,7 +1080,7 @@ mod tests {
             color: None,
             ..Default::default()
         };
-        let eff2 = StyleTable::resolve_run(base, direct_auto);
+        let eff2 = StyleTable::resolve_run(base.clone(), direct_auto);
         assert_eq!(eff2.color, None);
         assert!(eff2.color_set);
     }
@@ -1246,5 +1347,109 @@ mod tests {
         assert_eq!(base.bold, Some(false));
         let (base, _) = t.effective_para(Some("Plain2"), ParaStyle::default());
         assert_eq!(base.bold, Some(false));
+    }
+
+    // ---------------- 字型族宣告（w:rFonts；ECMA-376 §17.3.2.26） ----------------
+
+    /// 級聯優先序：docDefaults 宣告 Arial → 段落樣式宣告 Times → 直接格式
+    /// 宣告 Courier ＝ 有效 Courier（宣告即贏，逐層覆蓋）。
+    #[test]
+    fn rfonts_cascade_priority_direct_wins() {
+        let t = table(wrap(
+            r#"<w:docDefaults><w:rPrDefault><w:rPr>
+                 <w:rFonts w:ascii="Arial" w:eastAsia="標楷體"/>
+               </w:rPr></w:rPrDefault></w:docDefaults>
+               <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+                 <w:rPr><w:rFonts w:ascii="Times" w:eastAsia="新細明體"/></w:rPr>
+               </w:style>"#,
+        ));
+        // 段落樣式鏈：樣式宣告贏 docDefaults。
+        let (base, _) = t.effective_para(None, ParaStyle::default());
+        let base_fonts = base.fonts.as_ref().expect("樣式鏈必須合成出字型族");
+        assert_eq!(
+            base_fonts.ascii.as_deref(),
+            Some("Times"),
+            "段落樣式贏 docDefaults"
+        );
+        assert_eq!(
+            base_fonts.east_asia.as_deref(),
+            Some("新細明體"),
+            "east_asia 亦由段落樣式覆蓋"
+        );
+        // 直接格式宣告 Courier → 有效值 Courier。
+        let direct = RunStyle {
+            fonts: Some(RunFonts {
+                ascii: Some("Courier".to_string()),
+                east_asia: Some("微軟正黑體".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let eff = StyleTable::resolve_run(base, direct);
+        let eff_fonts = eff.fonts.as_ref().expect("直接格式須帶字型族");
+        assert_eq!(eff_fonts.ascii.as_deref(), Some("Courier"), "直接格式贏");
+        assert_eq!(
+            eff_fonts.east_asia.as_deref(),
+            Some("微軟正黑體"),
+            "east_asia 同樣由直接格式覆蓋"
+        );
+    }
+
+    /// 逐欄繼承（不是整包覆蓋）：直接格式**只**宣告 `w:ascii` 時，
+    /// `w:eastAsia` 落到上層的值（ECMA-376 §17.3.2.26 的族別各自獨立）。
+    #[test]
+    fn rfonts_inherits_per_field_not_whole_package() {
+        let t = table(wrap(
+            r#"<w:docDefaults><w:rPrDefault><w:rPr>
+                 <w:rFonts w:ascii="Arial" w:eastAsia="標楷體"/>
+               </w:rPr></w:rPrDefault></w:docDefaults>
+               <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+                 <w:rPr><w:rFonts w:ascii="Times"/></w:rPr>
+               </w:style>"#,
+        ));
+        let (base, _) = t.effective_para(None, ParaStyle::default());
+        let base_fonts = base.fonts.as_ref().expect("樣式鏈必須合成出字型族");
+        assert_eq!(
+            base_fonts.ascii.as_deref(),
+            Some("Times"),
+            "ascii 由段落樣式覆蓋"
+        );
+        assert_eq!(
+            base_fonts.east_asia.as_deref(),
+            Some("標楷體"),
+            "east_asia 未宣告 → 逐欄繼承 docDefaults"
+        );
+        // 直接格式只宣告 ascii：east_asia 仍落到上層（不得被整包覆蓋成 None）。
+        let direct = RunStyle {
+            fonts: Some(RunFonts {
+                ascii: Some("Courier".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let eff = StyleTable::resolve_run(base, direct);
+        let eff_fonts = eff.fonts.as_ref().expect("直接格式須帶字型族");
+        assert_eq!(
+            eff_fonts.ascii.as_deref(),
+            Some("Courier"),
+            "ascii 由直接格式覆蓋"
+        );
+        assert_eq!(
+            eff_fonts.east_asia.as_deref(),
+            Some("標楷體"),
+            "east_asia 未宣告 → 逐欄繼承上層（不是整包覆蓋）"
+        );
+    }
+
+    /// 全鏈未宣告字型族 ＝ None（不虛構字型）。
+    #[test]
+    fn rfonts_absent_stays_none() {
+        let t = table(wrap(
+            r#"<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:rPr><w:b/></w:rPr></w:style>"#,
+        ));
+        let (base, _) = t.effective_para(None, ParaStyle::default());
+        assert_eq!(base.fonts, None, "全鏈未宣告 → None");
+        let eff = StyleTable::resolve_run(base, RunStyle::default());
+        assert_eq!(eff.fonts, None, "直接格式未宣告 → 仍為 None");
     }
 }

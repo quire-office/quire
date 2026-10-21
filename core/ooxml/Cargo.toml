@@ -13,3 +13,7 @@ thiserror = { workspace = true }
 # 不再依賴 zip crate，wasm 體積與攻擊面都更小。
 flate2 = { workspace = true }
 crc32fast = { workspace = true }
+
+[dev-dependencies]
+# 序列化相容測試（舊版 JSON 反序列化／新欄位不外露）需要 JSON 格式。
+serde_json = { workspace = true }
