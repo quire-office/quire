@@ -39,7 +39,7 @@ pub(crate) const EOL_CONTROLS: [char; 6] =
 /// engine 會逐 section 解析 `pgSz`／`pgMar` 覆寫此處的頁面欄位。本 struct 的
 /// `Default`（A4、1 吋邊界）**只在檔案完全沒有任何 sectPr 時**生效——是後備，
 /// 不是硬編碼斷言。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct LayoutParams {
     pub page_w_pt: f32,
     pub page_h_pt: f32,
@@ -48,6 +48,15 @@ pub struct LayoutParams {
     pub margins_pt: [f32; 4],
     pub font_size_pt: f32,
     pub line_spacing: f32,
+    /// 頁底預留高（pt）：正文可用區底部要讓給頁底註腳區的空間。
+    /// 0＝無預留（現況行為，逐位元組零變化）；負值／NaN 一律視同 0（防呆）。
+    ///
+    /// 出處：Word 把正文區（text body）壓縮給頁底註腳區讓位（ECMA-376
+    /// §17.11 註腳 ＋ §17.6.10 頁邊距同層），正文可用高變矮、分頁隨之前移。
+    /// 取捨：本卡只做**機制**（分頁參數化）——「每頁該預留多少」由引擎端
+    /// 依實際註腳量算出再灌進本欄（下一張卡 F2b 接線）。既有構造語義一律
+    /// 不變：`Default` 與 `from_section` 皆給 0，故全倉庫渲染輸出零變化。
+    pub footnote_reserve_pt: f32,
 }
 
 /// 頁面幾何（來自 section；pt）。型別定義在 layout 層——版面是唯一消費者，
@@ -95,6 +104,9 @@ impl LayoutParams {
             ],
             font_size_pt,
             line_spacing,
+            // 頁底預留恆 0：預留是**文件層級**旋鈕，由上層算好後灌進 params
+            // （F2b 接線）；`from_section` 只負責頁面幾何，既有構造語義不變。
+            footnote_reserve_pt: 0.0,
         }
     }
 
@@ -114,10 +126,29 @@ impl LayoutParams {
     }
 
     /// 以本參數（＝文件首 section／後備值）計算每頁行數容量。
+    ///
+    /// 頁底預留（`footnote_reserve_pt`）自版心底部扣除：Word 讓正文區壓縮給
+    /// 頁底註腳，正文可用高變矮，分頁容量隨之減少。
+    ///
+    /// 零變化守門：**預留 0 時逐位元組走舊算式**（`x - 0.0` 恆等於 `x`，但
+    /// 這裡直接跳過減法，舊版算式原封不動），故渲染輸出零位移。
     pub fn per_page_lines(&self) -> usize {
         let line_h = self.line_h_pt();
-        let content_h =
-            (self.page_h_pt - self.margin(MARGIN_TOP) - self.margin(MARGIN_BOTTOM)).max(line_h);
+        // 預留正規化：負值／NaN 一律視同 0（防呆）。NaN 與任何值比較皆 false，
+        // 故先判 isnan 再判正負——順序反了會讓 NaN 走進比較分支。
+        let reserve = if self.footnote_reserve_pt.is_nan() || self.footnote_reserve_pt <= 0.0 {
+            0.0
+        } else {
+            self.footnote_reserve_pt
+        };
+        // 舊版算式（預留 0 時逐位元組等價）：版心高＝頁高−上邊界−下邊界。
+        let mut content_h = self.page_h_pt - self.margin(MARGIN_TOP) - self.margin(MARGIN_BOTTOM);
+        if reserve > 0.0 {
+            content_h -= reserve;
+        }
+        // 兜底順序：扣預留 → 以 line_h 夾底（版心至少容一行）→ 量化後 `.max(1)`。
+        // 病態預留（超過可用高）時版心被夾到 1 帶，容量恆 ≥1，絕不 panic、絕不為 0。
+        let content_h = content_h.max(line_h);
         ((content_h / line_h).floor() as usize).max(1)
     }
 }
@@ -139,6 +170,8 @@ impl Default for LayoutParams {
             margins_pt: [72.0, 72.0, 72.0, 72.0],
             font_size_pt: 12.0,
             line_spacing: 1.4,
+            // 頁底預留：後備值無註腳預留需求＝0（現況行為，逐位元組零變化）。
+            footnote_reserve_pt: 0.0,
         }
     }
 }
@@ -350,6 +383,18 @@ fn section_params(p: &LayoutParams, sections: &[SectionSpec], para: usize) -> La
         Some(s) => LayoutParams::from_section(&s.geo, p.font_size_pt, p.line_spacing),
         None => *p,
     }
+}
+
+/// 逐 section 的每頁容量（帶）：頁面幾何取該頁所屬 section，字級/行距與
+/// **頁底預留**取文件層級 params。
+///
+/// `from_section` 恆給 0 預留（既有構造語義不變）；預留是**文件層級**旋鈕——
+/// 上層（引擎端依實際註腳量算「每頁該留多少」＝F2b 註腳接線）灌進 params，
+/// 此處再把它帶進「逐 section 幾何」的容量計算。預留 0 時兩者完全同值。
+fn section_capacity(p: &LayoutParams, geo: &SectionGeometry) -> usize {
+    let mut sp = LayoutParams::from_section(geo, p.font_size_pt, p.line_spacing);
+    sp.footnote_reserve_pt = p.footnote_reserve_pt;
+    sp.per_page_lines()
 }
 
 /// 錨點段落 para 的有效 section（無 section 清單時由 `p` 合成——單幾何文件，id=0）。
@@ -760,8 +805,7 @@ fn pack_run(
         let (fi, li, band) = st.cursor;
         let anchor = item_para(flow, tables, images, fi);
         let spec = effective_section(p, sections, anchor);
-        let cap =
-            LayoutParams::from_section(&spec.geo, p.font_size_pt, p.line_spacing).per_page_lines();
+        let cap = section_capacity(p, &spec.geo);
         // 圖片項（t_a1397522）：atomic block——本頁放不下整塊就整塊推到下一頁
         // （Word 同款）。bands>cap 的巨型圖只能頂格放（cur_used==0 時不換頁，
         // 容許溢出——否則無限換頁）。
@@ -2765,6 +2809,8 @@ mod tests {
             margins_pt: [40.0; 4],
             font_size_pt: 12.0,
             line_spacing: 1.4,
+            // 頁底預留 0：既有測試尺不預留（預留 0 逐位元組不變）。
+            footnote_reserve_pt: 0.0,
         };
         let input = tall_table_input(10);
         let mut texts = vec!["前段".to_string()];
@@ -2861,6 +2907,8 @@ mod tests {
             margins_pt: [40.0; 4],
             font_size_pt: 12.0,
             line_spacing: 1.4,
+            // 頁底預留 0：既有測試尺不預留（預留 0 逐位元組不變）。
+            footnote_reserve_pt: 0.0,
         };
         let inner = TableInput {
             grid_pt: vec![80.0],
@@ -2951,6 +2999,8 @@ mod tests {
             margins_pt: [40.0; 4],
             font_size_pt: 12.0,
             line_spacing: 1.4,
+            // 頁底預留 0：既有測試尺不預留（預留 0 逐位元組不變）。
+            footnote_reserve_pt: 0.0,
         }
     }
 
@@ -3196,6 +3246,8 @@ mod tests {
             margins_pt: [0.0; 4],
             font_size_pt: 10.0,
             line_spacing: 1.0,
+            // 頁底預留 0：既有測試尺不預留（預留 0 逐位元組不變）。
+            footnote_reserve_pt: 0.0,
         };
         // 容量＝4 行/頁；三段各 80 碼點＝2 行。無 br：6 行→2 頁（4＋2）。
         let texts: Vec<String> = (0..3).map(|_| "字".repeat(80)).collect();
@@ -3262,6 +3314,8 @@ mod tests {
             margins_pt: [0.0; 4],
             font_size_pt: 10.0,
             line_spacing: 1.0,
+            // 頁底預留 0：既有測試尺不預留（預留 0 逐位元組不變）。
+            footnote_reserve_pt: 0.0,
         };
         // 段內 20 碼點，行寬 400pt/字寬 10pt＝40 字/行 → 全段一行；br 放碼點
         // 8 → 斷行硬收：前 8 字一行、後 12 字另起一行，且該行落新頁。
@@ -3401,6 +3455,8 @@ mod tests {
             margins_pt: [40.0; 4],
             font_size_pt: 12.0,
             line_spacing: 1.4,
+            // 頁底預留 0：既有測試尺不預留（預留 0 逐位元組不變）。
+            footnote_reserve_pt: 0.0,
         };
         let texts = vec!["前段一行".to_string()];
         // 容量＝(200−80)/16.8＝7 帶：前段 1＋表 6 恰好同頁；段尾 br 後表格
@@ -3461,6 +3517,8 @@ mod tests {
             margins_pt: [40.0; 4],
             font_size_pt: 12.0,
             line_spacing: 1.4,
+            // 頁底預留 0：既有測試尺不預留（預留 0 逐位元組不變）。
+            footnote_reserve_pt: 0.0,
         };
         let texts: Vec<String> = (0..4).map(|i| format!("第{i}段內容")).collect();
 
@@ -3572,6 +3630,8 @@ mod tests {
             margins_pt: [0.0; 4],
             font_size_pt: 10.0,
             line_spacing: 1.0,
+            // 頁底預留 0：既有測試尺不預留（預留 0 逐位元組不變）。
+            footnote_reserve_pt: 0.0,
         }
     }
 
@@ -3889,5 +3949,154 @@ mod tests {
 
     fn text_only(t: &str) -> Vec<String> {
         vec![t.to_string()]
+    }
+
+    // ---------------- F2a：頁底預留帶（機制卡） ----------------
+    //
+    // 本區只驗「機制」：`LayoutParams::footnote_reserve_pt` 能讓每頁容量
+    // （帶）依預留高縮減，且預留 0 時逐位元組等於舊公式。
+    // 「每頁該預留多少」（引擎端依實際註腳量算）＝下一張卡 F2b，不在本區。
+
+    /// F2a 測試尺：頁高 842、上下邊界 72、字級 16pt、行距 1.0。
+    /// line_h＝16.0（二進制可精確表示）、版心高＝842−72−72＝698.0、
+    /// 容量＝floor(698/16)＝43 帶（698/16＝43.625）。全用可精確表示的值，
+    /// 預留 2×line_h 時的量化差**恰為 2**（不是近似值）。
+    fn f2a_params() -> LayoutParams {
+        LayoutParams {
+            page_w_pt: 595.0,
+            page_h_pt: 842.0,
+            margins_pt: [72.0; 4],
+            font_size_pt: 16.0,
+            line_spacing: 1.0,
+            footnote_reserve_pt: 0.0,
+        }
+    }
+
+    /// F2a 長文件：86 個單行段（＝86 帶）。預留 0 時 43＋43＝2 頁；
+    /// 預留 2 帶（2×line_h＝32pt）時容量 41，41＋41＋4＝3 頁。
+    fn f2a_long_texts() -> Vec<String> {
+        (0..86).map(|_| "字".to_string()).collect()
+    }
+
+    /// F2a(a)：同一份長文件輸入，reserve=0 vs reserve=2×line_h——
+    /// 後者首頁 `line_count` **恰少 2**（精確等式，不是 `<`）。
+    ///
+    /// 路徑：`page_breaks`（純函式分頁主入口）→ `paginate_per_section` →
+    /// `paginate_flow` → `pack_run`（容量取 `section_capacity`）。
+    #[test]
+    fn footnote_reserve_two_bands_shrinks_first_page_exactly_two_lines() {
+        let p0 = f2a_params();
+        let mut p2 = f2a_params();
+        p2.footnote_reserve_pt = 2.0 * p2.line_h_pt();
+        let texts = f2a_long_texts();
+
+        let brk0 = page_breaks(&texts, &p0);
+        let brk2 = page_breaks(&texts, &p2);
+        assert_eq!(brk0[0].line_count, 43, "預留 0：容量 43 帶");
+        assert_eq!(brk2[0].line_count, 41, "預留 2 帶：容量 41 帶");
+        assert_eq!(
+            brk0[0].line_count - brk2[0].line_count,
+            2,
+            "首頁行數恰少 2（精確等式，不是 <）"
+        );
+        assert!(
+            brk2.len() > brk0.len(),
+            "預留讓正文區變矮：總頁數必增（{} → {}）",
+            brk0.len(),
+            brk2.len()
+        );
+    }
+
+    /// F2a(b)：預留 0 時 `per_page_lines()` 與手算舊公式
+    /// `(content_h/line_h).floor()` **精確相等**（零變化守門）。
+    ///
+    /// 舊公式＝改碼前 `per_page_lines()` 的逐字複製（版心高不扣預留）。
+    #[test]
+    fn footnote_reserve_zero_matches_legacy_capacity_formula() {
+        let legacy = |p: &LayoutParams| -> usize {
+            let line_h = p.line_h_pt();
+            let content_h =
+                (p.page_h_pt - p.margin(MARGIN_TOP) - p.margin(MARGIN_BOTTOM)).max(line_h);
+            ((content_h / line_h).floor() as usize).max(1)
+        };
+        for p in [f2a_params(), LayoutParams::default()] {
+            let mut zero = p;
+            zero.footnote_reserve_pt = 0.0;
+            assert_eq!(
+                zero.per_page_lines(),
+                legacy(&p),
+                "預留 0 必與舊公式逐位元組等值"
+            );
+            assert_eq!(zero.per_page_lines(), p.per_page_lines());
+        }
+        // A4 後備值：容量 41 帶（golden pagination.jsonl 的既有數字）。
+        assert_eq!(LayoutParams::default().per_page_lines(), 41);
+    }
+
+    /// F2a(c)：病態預留不得 panic、容量恆 ≥1；負值／NaN 一律視同 0
+    /// （與 reserve=0 等值）。
+    #[test]
+    fn footnote_reserve_pathological_values_are_clamped() {
+        let p0 = f2a_params();
+        let cap0 = p0.per_page_lines();
+
+        // 預留超過可用高（版心被壓成負）→ 兜底到 1 帶，不 panic。
+        let mut huge = f2a_params();
+        huge.footnote_reserve_pt = huge.page_h_pt;
+        assert_eq!(huge.per_page_lines(), 1, "病態預留：容量兜底 1 帶");
+        assert!(huge.per_page_lines() >= 1, "容量恆 ≥1 帶");
+
+        // 無窮大預留同樣兜底（不得 panic、不得為 0）。
+        let mut inf = f2a_params();
+        inf.footnote_reserve_pt = f32::INFINITY;
+        assert_eq!(inf.per_page_lines(), 1, "inf 預留：容量兜底 1 帶");
+
+        // 負值／NaN 一律視同 0（與 reserve=0 等值）。
+        let mut neg = f2a_params();
+        neg.footnote_reserve_pt = -50.0;
+        assert_eq!(neg.per_page_lines(), cap0, "負值視同 0");
+        let mut nan = f2a_params();
+        nan.footnote_reserve_pt = f32::NAN;
+        assert_eq!(nan.per_page_lines(), cap0, "NaN 視同 0");
+        assert!(nan.per_page_lines() >= 1, "容量恆 ≥1 帶");
+    }
+
+    /// F2a(d)：端到端——經**分頁主入口 `LayoutEngine::new` → `rebuild_full`
+    /// → `paginate_flow` → `pack_run`** 餵 reserve≠0 的 params：總頁數增加，
+    /// 且首頁末行不進頁底預留區。
+    ///
+    /// 預留區＝[頁高−下邊界−預留, 頁高−下邊界]；行頂 y＝上邊界＋帶序×行高。
+    #[test]
+    fn footnote_reserve_end_to_end_via_pagination_entry() {
+        let p0 = f2a_params();
+        let mut p2 = f2a_params();
+        let reserve = 2.0 * p2.line_h_pt();
+        p2.footnote_reserve_pt = reserve;
+        let texts = f2a_long_texts();
+
+        let eng0 = LayoutEngine::new(&texts, p0);
+        let eng2 = LayoutEngine::new(&texts, p2);
+        assert!(
+            eng2.page_count() > eng0.page_count(),
+            "預留 {}pt：總頁數必增（{} → {}）",
+            reserve,
+            eng0.page_count(),
+            eng2.page_count()
+        );
+
+        let pg = &eng2.pages()[0];
+        let band = *pg.line_bands.last().expect("首頁必有行") as f32;
+        let line_h = p2.line_h_pt();
+        let top = pg.margin_top_pt + band * line_h;
+        let zone_start = p2.page_h_pt - p2.margin(MARGIN_BOTTOM) - reserve;
+        assert!(
+            top < zone_start,
+            "首頁末行頂不得進預留區（top={top} zone_start={zone_start}）"
+        );
+        assert!(
+            top + line_h <= zone_start,
+            "首頁末行底也不得進預留區（bottom={} zone_start={zone_start}）",
+            top + line_h
+        );
     }
 }
