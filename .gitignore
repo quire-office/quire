@@ -8,3 +8,7 @@ build/
 __pycache__/
 .worktrees/
 scripts/corpus/xlsx-work/
+
+# PM 工作檔（任務卡/臨時腳本，本機保留不入庫）
+.task-cards/
+tmp/
