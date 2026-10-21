@@ -495,6 +495,9 @@ impl Engine {
                         .max(1.0),
                     content_bottom_pt: geo.margin_top_pt + cap as f32 * band,
                     band_pt: band,
+                    // F2c：拆分預算錨定「未扣預留的固定容量」——逐輪預留浮動
+                    // 不得進入拆分子（否則收斂自我震盪）。
+                    capacity_bands: cap as u32,
                 }
             })
             .collect();
@@ -534,6 +537,20 @@ impl Engine {
         };
         let mut items = Vec::new();
         if let (Some(y), Some(x1), Some(x2)) = (pf.separator_y, pf.separator_x1, pf.separator_x2) {
+            // F2c：全續段頁 ⇒ 續接線（置中短線，約 1/3 版心）；一般頁 ⇒
+            // 分隔線（左緣起 1/3 版心，F2b-2 原樣）。
+            let (x1, x2) = if pf.continuation_only {
+                // Word：續接線置中於版心、寬約 1/3 版心。分隔線跨度是
+                // 「左緣起 × SEP_WIDTH_RATIO」，由此反推版心寬再置中。
+                let left = x1;
+                let content_w = (x2 - x1) / footnotes::SEP_WIDTH_RATIO;
+                (
+                    left + content_w * (1.0 - footnotes::SEP_WIDTH_RATIO) / 2.0,
+                    left + content_w * (1.0 + footnotes::SEP_WIDTH_RATIO) / 2.0,
+                )
+            } else {
+                (x1, x2)
+            };
             items.push(DrawItem::Rule {
                 x1,
                 y1: y,

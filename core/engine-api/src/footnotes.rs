@@ -40,6 +40,10 @@ pub const NOTE_INDENT_PT: f32 = 18.0;
 pub const SUP_SCALE: f32 = 0.65;
 /// 上標基線上移比（乘條目行高；發射端把行頂上移本值 ⇒ 基線隨之上移）。
 pub const SUP_RISE: f32 = 0.45;
+/// F2c：有註腳的頁**正文至少保留的帶數**（與 layout 層容量兜底 `.max(1)`
+/// 同尺——頁不能整版被註腳吃掉，否則 `pack_run` 停滯）。註腳區預算＝
+/// 頁容量帶 − 本值 − 分隔線帶。
+pub const MIN_BODY_BANDS: u32 = 1;
 /// 分隔線寬＝版心寬 × 本比值（Word 預設）。
 pub const SEP_WIDTH_RATIO: f32 = 1.0 / 3.0;
 
@@ -98,6 +102,10 @@ pub struct NoteItem {
     pub bands: u32,
     /// 條目行高（pt；註腳自身尺度——發射端逐行累加本值）。
     pub line_h_pt: f32,
+    /// F2c：本條是某則註腳的**續排段**（該則註腳跨頁，本段是第二段的起）。
+    /// 首段（含編號前綴行）＝false。serde default＝false：舊構造點零改寫。
+    #[serde(default)]
+    pub continuation: bool,
 }
 
 /// 一頁的頁底註腳排布。
@@ -117,6 +125,10 @@ pub struct PageFoot {
     pub separator_x2: Option<f32>,
     /// 帶尺（pt；發射端累加條目 y 用）。
     pub band_pt: f32,
+    /// F2c：本頁註腳區**只有續排段**（無任何首段）⇒ 分隔線畫**續接線**
+    /// （置中短線；ECMA-376 §17.11.4 continuationSeparator 的排版語義）。
+    #[serde(default)]
+    pub continuation_only: bool,
 }
 
 /// 正文錨點上標記號（發在該 run 的行內終點）。
@@ -268,6 +280,8 @@ pub fn layout_entry(entry: &NoteEntry, band_pt: f32, avail_pt: f32) -> NoteItem 
         lines,
         bands,
         line_h_pt: st.line_h_pt.max(1.0),
+        // 本函式產出的是「整條」註腳（未拆分）⇒ 首段語義。
+        continuation: false,
     }
 }
 
@@ -323,12 +337,15 @@ pub fn page_foot(items: Vec<NoteItem>, g: &PageInfo) -> PageFoot {
     let reserve_pt = reserve_bands as f32 * band;
     let separator_y = g.content_bottom_pt - reserve_pt;
     let (x1, x2) = separator_span(g.content_left_pt, g.content_w_pt);
+    // F2c：全頁都是續排段 ⇒ 該頁分隔線是「續接線」（發射端據此改畫置中短線）。
+    let continuation_only = items.iter().all(|i| i.continuation);
     PageFoot {
         separator_y: Some(separator_y),
         items_top_y: Some(separator_y + sep_bands as f32 * band),
         separator_x1: Some(x1),
         separator_x2: Some(x2),
         band_pt: band,
+        continuation_only,
         reserve_bands,
         reserve_pt,
         items,
@@ -376,6 +393,10 @@ pub struct PageInfo {
     pub content_bottom_pt: f32,
     /// 帶尺（pt）。
     pub band_pt: f32,
+    /// F2c：本頁**未扣預留**的總容量帶數（engine 以 `section_capacity` 餵）。
+    /// 註腳跨頁拆分的預算基準——必須錨定固定容量，不能跟隨逐輪預留浮動，
+    /// 否則收斂迴圈自我震盪。0＝未知（拆分支路保守退化為不拆分）。
+    pub capacity_bands: u32,
 }
 
 /// 錨點記號的發射樣式（engine 由該 anchor run 的級聯有效值餵入）。
@@ -462,6 +483,8 @@ pub fn layout_notes(
             marks[page_idx].push(m);
         }
     }
+    // F2c：裝箱＋跨頁拆分（單頁可納的註腳走 `layout_entry` 原路徑，數值零變化）。
+    let banded = distribute_with_splits(&per_page, entries, info);
     let mut page_foots = Vec::with_capacity(pages.len());
     for (pi, page) in pages.iter().enumerate() {
         let g = info.get(pi).copied().unwrap_or(PageInfo {
@@ -469,11 +492,9 @@ pub fn layout_notes(
             content_w_pt: 1.0,
             content_bottom_pt: page.margin_top_pt,
             band_pt: 16.8,
+            capacity_bands: 0,
         });
-        let items: Vec<NoteItem> = per_page[pi]
-            .iter()
-            .map(|&ni| layout_entry(&entries[ni], g.band_pt, g.content_w_pt))
-            .collect();
+        let items: Vec<NoteItem> = banded[pi].iter().map(|(_, it)| it.clone()).collect();
         page_foots.push(page_foot(items, &g));
     }
     let reserves = reserves(&page_foots);
@@ -483,6 +504,123 @@ pub fn layout_notes(
         reserves,
         rounds,
     }
+}
+
+/// 一條註腳一行所佔帶數（ceil(行高/帶尺)，至少 1）。
+fn bands_per_line(line_h_pt: f32, band_pt: f32) -> u32 {
+    (line_h_pt.max(1.0) / band_pt.max(1.0)).ceil().max(1.0) as u32
+}
+
+/// F2c：該頁註腳區可占的帶預算（負值夾 0）。
+///
+/// `capacity`＝該頁未扣預留的總容量帶（`PageInfo::capacity_bands`）；
+/// `min_body`＝正文保底帶（`MIN_BODY_BANDS`，與 layout 層容量兜底同尺：
+/// 頁不能整版被註腳吃掉，否則 `pack_run` 停滯）；`sep_bands`＝該頁
+/// 分隔線／續接線帶。
+pub fn page_budget_bands(capacity: u32, min_body: u32, sep_bands: u32) -> u32 {
+    capacity.saturating_sub(min_body).saturating_sub(sep_bands)
+}
+
+/// F2c：把逐頁註腳按預算裝箱，超頁的註腳沿頁序**拆分續排**（Word 同款：
+/// 長註腳跨頁續排，編號前綴只屬於首段）。
+///
+/// 規則（測死）：
+/// - 每頁預算＝`page_budget_bands(capacity_bands, MIN_BODY_BANDS, sep)`；
+///   `capacity_bands == 0`（未知）⇒ 該頁不拆分（保守退化，零變化口徑）。
+/// - 先放來自前頁的**續排段**（閱讀序在前），再放本頁新註腳（錨點序）。
+/// - 整條放得下 ⇒ 原樣放（`layout_entry` 的原 bands——單頁可納路徑數值零變化）。
+/// - 放不下且本頁塞得下一行 ⇒ 切 `floor(room/每行帶)` 行（至少 1）作本頁段，
+///   其餘成續排段（`continuation=true`，行區間天然不含編號前綴行）推往後頁。
+/// - 本頁連一行都塞不下 ⇒ 整段（前綴保留在原段）推往後頁。
+/// - 走到最後仍有余段 ⇒ 誠實溢出：全部掛末頁（寧可溢出重疊，不靜默吞字；
+///   真·新增頁屬 F3 分頁回饋，本卡不做）。
+///
+/// 收斂性論證（給 F2b-2 收斂迴圈用）：預算錨定在**未扣預留的固定容量**
+/// （`PageInfo::capacity_bands`），拆分子對 per_page 決定性；預留變動不進
+/// 拆分子 ⇒ 不自我震盪。注意：拆分段的帶數用「逐行 ceil」刻度
+/// （`bands_per_line`×行數 ≥ `layout_entry` 的整體 ceil），與未拆分段可差
+/// 1 帶——只在溢出路徑出現，方向保守（多留不擠）。
+fn distribute_with_splits(
+    per_page: &[Vec<usize>],
+    entries: &[NoteEntry],
+    infos: &[PageInfo],
+) -> Vec<Vec<(usize, NoteItem)>> {
+    use std::collections::VecDeque;
+    let n = per_page.len();
+    let mut out: Vec<Vec<(usize, NoteItem)>> = vec![Vec::new(); n];
+    if n == 0 {
+        return out;
+    }
+    let sep_of = |p: usize| -> u32 {
+        let band = infos.get(p).map(|g| g.band_pt.max(1.0)).unwrap_or(16.8);
+        (SEP_GAP_PT / band).ceil().max(1.0) as u32
+    };
+    let room_of = |p: usize| -> u32 {
+        match infos.get(p) {
+            // 容量未知（0）⇒ 不拆分：給飽和預算。
+            Some(g) if g.capacity_bands == 0 => u32::MAX,
+            Some(g) => page_budget_bands(g.capacity_bands, MIN_BODY_BANDS, sep_of(p)),
+            None => u32::MAX,
+        }
+    };
+    let mut room: Vec<u32> = (0..n).map(room_of).collect();
+    let mut pending: VecDeque<(usize, NoteItem)> = VecDeque::new();
+    for p in 0..n {
+        let g = infos.get(p).copied().unwrap_or(PageInfo {
+            content_left_pt: 0.0,
+            content_w_pt: 1.0,
+            content_bottom_pt: 0.0,
+            band_pt: 16.8,
+            capacity_bands: 0,
+        });
+        let mut queue: VecDeque<(usize, NoteItem)> = VecDeque::new();
+        queue.append(&mut pending);
+        for &ni in &per_page[p] {
+            if ni < entries.len() {
+                queue.push_back((ni, layout_entry(&entries[ni], g.band_pt, g.content_w_pt)));
+            }
+        }
+        while let Some((ni, mut item)) = queue.pop_front() {
+            if item.bands <= room[p] {
+                room[p] = room[p].saturating_sub(item.bands);
+                out[p].push((ni, item));
+                continue;
+            }
+            let per = bands_per_line(item.line_h_pt, g.band_pt);
+            if room[p] < per {
+                // 連一行都塞不下：本段與其後全部推往後頁（序保持）。
+                pending.push_back((ni, item));
+                pending.append(&mut queue);
+                break;
+            }
+            let take = ((room[p] / per) as usize).max(1).min(item.lines.len());
+            let head: Vec<NoteLine> = item.lines.drain(..take).collect();
+            let head_bands = take as u32 * per;
+            room[p] = room[p].saturating_sub(head_bands);
+            out[p].push((
+                ni,
+                NoteItem {
+                    lines: head,
+                    bands: head_bands,
+                    line_h_pt: item.line_h_pt,
+                    continuation: item.continuation,
+                },
+            ));
+            if !item.lines.is_empty() {
+                // 其餘成續排段（前綴行已在首段，天然不含編號）。
+                item.bands = item.lines.len() as u32 * per;
+                item.continuation = true;
+                queue.push_front((ni, item));
+            }
+        }
+    }
+    // 誠實溢出：全頁耗盡仍有剩餘 ⇒ 掛末頁。
+    if n > 0 {
+        while let Some(x) = pending.pop_front() {
+            out[n - 1].push(x);
+        }
+    }
+    out
 }
 
 /// 找錨點落點：段內第 `cp` 碼點所在的 (頁序, 行序, 行內 cp)。
@@ -553,6 +691,7 @@ mod tests {
             content_w_pt: 450.0,
             content_bottom_pt: 770.0,
             band_pt: BAND,
+            capacity_bands: 43,
         }
     }
 
@@ -867,5 +1006,234 @@ mod tests {
         let (x1, x2) = separator_span(72.0, 450.0);
         assert_eq!(x1, 72.0);
         assert_eq!(x2, 72.0 + 150.0);
+    }
+
+    // ---------- F2c：跨頁註腳拆分 ----------
+
+    /// 長註腳在預算不足時拆成多頁續排：首段帶編號前綴、續段不帶；
+    /// 全行不遺失；每頁段帶數不超預算。
+    #[test]
+    fn long_note_splits_across_pages_with_continuation() {
+        // 4 頁、每頁容量 8 帶（預算＝8 − 1(min body) − 1(sep) = 6 帶）；
+        // 註腳 14pt 行高、16.8 帶尺 ⇒ 每行 1 帶 ⇒ 一條 10 行註腳需拆。
+        let e = entry(1, &"word ".repeat(220));
+        let full = layout_entry(&e, BAND, 450.0);
+        assert!(
+            full.lines.len() >= 10,
+            "本測前提：註腳至少 10 行，實得 {}",
+            full.lines.len()
+        );
+        let pages: Vec<quire_layout::Page> = (0..4).map(|i| page(i, &[(0, 0, "body")])).collect();
+        let infos: Vec<PageInfo> = (0..4)
+            .map(|_| PageInfo {
+                capacity_bands: 8,
+                ..info()
+            })
+            .collect();
+        let lay = layout_notes(
+            &pages,
+            &infos,
+            &[anchor(1, 0, 0, 0)],
+            std::slice::from_ref(&e),
+            &[0usize],
+            12.0,
+            &[],
+            1,
+        );
+        // 全行不遺失。
+        let total: usize = lay
+            .pages
+            .iter()
+            .flat_map(|p| p.items.iter())
+            .map(|i| i.lines.len())
+            .sum();
+        assert_eq!(total, full.lines.len(), "拆分不得吞行");
+        // 首段帶前綴、續段不帶前綴。
+        assert_eq!(lay.pages[0].items[0].lines[0].runs[0].text, "1.");
+        assert!(!lay.pages[0].items[0].continuation);
+        let cont_count = lay
+            .pages
+            .iter()
+            .flat_map(|p| p.items.iter())
+            .filter(|i| i.continuation)
+            .count();
+        assert!(cont_count >= 1, "必須出現續排段");
+        for pf in &lay.pages {
+            for it in pf.items.iter().filter(|i| i.continuation) {
+                assert!(
+                    it.lines
+                        .iter()
+                        .all(|l| l.runs.iter().all(|r| !r.superscript)),
+                    "續段不得帶編號前綴"
+                );
+            }
+        }
+        // 每頁保留帶 ≤ 容量帶（正文至少 1 帶）。
+        for pf in lay.pages.iter().filter(|p| !p.items.is_empty()) {
+            assert!(pf.reserve_bands + MIN_BODY_BANDS <= 8, "預留不得吃光正文");
+        }
+    }
+
+    /// 首頁預算不足一行 ⇒ 整條（含前綴）推到往後頁，不拆出零行首段。
+    #[test]
+    fn split_waits_for_a_page_that_fits_at_least_one_line() {
+        let e = entry(2, &"w ".repeat(300));
+        let full = layout_entry(&e, BAND, 450.0);
+        let pages: Vec<quire_layout::Page> = (0..3).map(|i| page(i, &[(0, 0, "body")])).collect();
+        // 頁0 容量 2（預算 0）；頁1/2 容量 30（預算 28，放得下整條或大半）。
+        let infos: Vec<PageInfo> = vec![
+            PageInfo {
+                capacity_bands: 2,
+                ..info()
+            },
+            PageInfo {
+                capacity_bands: 30,
+                ..info()
+            },
+            PageInfo {
+                capacity_bands: 30,
+                ..info()
+            },
+        ];
+        let lay = layout_notes(
+            &pages,
+            &infos,
+            &[anchor(1, 0, 0, 0)],
+            std::slice::from_ref(&e),
+            &[0usize],
+            12.0,
+            &[],
+            1,
+        );
+        assert!(lay.pages[0].items.is_empty(), "零預算頁不放");
+        let first = lay.pages.iter().find(|p| !p.items.is_empty()).unwrap();
+        assert!(
+            !first.items[0].continuation,
+            "首段仍應帶編號（整條推後頁，前綴不丟）"
+        );
+        let total: usize = lay
+            .pages
+            .iter()
+            .flat_map(|p| p.items.iter())
+            .map(|i| i.lines.len())
+            .sum();
+        assert_eq!(total, full.lines.len(), "不得吞行");
+    }
+
+    /// 註腳長過所有頁總預算 ⇒ 末頁誠實溢出（不靜默吞字、不 panic）。
+    #[test]
+    fn split_overflow_lands_on_last_page() {
+        let e = entry(3, &"x ".repeat(900));
+        let full = layout_entry(&e, BAND, 450.0);
+        let pages: Vec<quire_layout::Page> = (0..2).map(|i| page(i, &[(0, 0, "body")])).collect();
+        let infos: Vec<PageInfo> = vec![
+            PageInfo {
+                capacity_bands: 4,
+                ..info()
+            }, // 預算 2
+            PageInfo {
+                capacity_bands: 4,
+                ..info()
+            },
+        ];
+        let lay = layout_notes(
+            &pages,
+            &infos,
+            &[anchor(1, 0, 0, 0)],
+            std::slice::from_ref(&e),
+            &[0usize],
+            12.0,
+            &[],
+            1,
+        );
+        let total: usize = lay
+            .pages
+            .iter()
+            .flat_map(|p| p.items.iter())
+            .map(|i| i.lines.len())
+            .sum();
+        assert_eq!(total, full.lines.len(), "溢出必須留在末頁，不得吞行");
+        assert!(lay.pages[1].items.iter().any(|i| i.continuation));
+    }
+
+    /// `page_budget_bands`：容量 − 正文下限 − 分隔線帶；負值夾 0。
+    #[test]
+    fn page_budget_math() {
+        assert_eq!(page_budget_bands(43, 1, 1), 41);
+        assert_eq!(page_budget_bands(2, 1, 1), 0, "負值夾 0");
+        assert_eq!(page_budget_bands(0, 0, 0), 0);
+    }
+
+    /// 全續段頁 ⇒ continuation_only（發射端續接線）；混合頁 ⇒ false。
+    #[test]
+    fn continuation_only_flag_flows_to_page_foot() {
+        let mut it = layout_entry(&entry(1, "tail"), BAND, 450.0);
+        it.continuation = true;
+        it.lines[0].runs.retain(|r| !r.superscript);
+        let foot = page_foot(vec![it], &info());
+        assert!(foot.continuation_only);
+        let mixed = page_foot(
+            vec![layout_entry(&entry(2, "head"), BAND, 450.0), {
+                let mut t = layout_entry(&entry(1, "tail"), BAND, 450.0);
+                t.continuation = true;
+                t
+            }],
+            &info(),
+        );
+        assert!(!mixed.continuation_only);
+        let empty = page_foot(Vec::new(), &info());
+        assert!(!empty.continuation_only, "空頁預設 false（零變化）");
+    }
+
+    /// 零變化守門（F2c 版）：容量充足（capacity_bands 大）時單條註腳的
+    /// 帶數／預留與 F2b-2 完全同值、無拆分標記。
+    #[test]
+    fn single_page_note_is_untouched_by_splitting() {
+        let pages = vec![page(0, &[(0, 0, "hello")])];
+        let lay = layout_notes(
+            &pages,
+            &[info()],
+            &[anchor(1, 0, 1, 1)],
+            &[entry(1, "short")],
+            &[0],
+            12.0,
+            &[],
+            1,
+        );
+        let pf = &lay.pages[0];
+        assert_eq!(pf.items.len(), 1);
+        assert!(!pf.continuation_only);
+        assert!(!pf.items[0].continuation);
+        assert_eq!(pf.reserve_bands, 2, "1 分隔帶 + 1 條目帶（F2b-2 原值）");
+    }
+
+    /// 容量未知（capacity_bands=0，舊呼叫口徑）⇒ 保守不拆分（零退化）。
+    #[test]
+    fn unknown_capacity_never_splits() {
+        let e = entry(1, &"word ".repeat(400));
+        let pages: Vec<quire_layout::Page> = (0..2).map(|i| page(i, &[(0, 0, "body")])).collect();
+        let infos: Vec<PageInfo> = (0..2)
+            .map(|_| PageInfo {
+                capacity_bands: 0,
+                ..info()
+            })
+            .collect();
+        let lay = layout_notes(
+            &pages,
+            &infos,
+            &[anchor(1, 0, 0, 0)],
+            std::slice::from_ref(&e),
+            &[0usize],
+            12.0,
+            &[],
+            1,
+        );
+        assert_eq!(
+            lay.pages[0].items.len(),
+            1,
+            "容量未知 ⇒ 首頁整條照放（舊行為）"
+        );
+        assert!(lay.pages[1].items.is_empty());
+        assert!(!lay.pages[0].items[0].continuation);
     }
 }
