@@ -15,6 +15,7 @@ fn esc(s: &str, out: &mut String) {
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
             _ => out.push(c),
         }
     }
@@ -38,6 +39,7 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
                 size_pt,
                 flags,
                 color_argb,
+                family,
                 text,
             } => {
                 // baseline = y + 字級：讓 y 語義接近「行頂」，與 display list 座標系一致。
@@ -52,6 +54,12 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
                 );
                 if a < 255 {
                     let _ = write!(s, " fill-opacity=\"{:.3}\"", a as f64 / 255.0);
+                }
+                // 文件宣告了字型族才寫屬性；`None` 時輸出與舊版逐位元組相同。
+                if let Some(family) = family {
+                    s.push_str(" font-family=\"");
+                    esc(family, &mut s);
+                    s.push('"');
                 }
                 if flags & FLAG_BOLD != 0 {
                     s.push_str(" font-weight=\"bold\"");
@@ -200,6 +208,63 @@ mod tests {
             svg.contains("text-decoration=\"line-through\""),
             "SVG 刪除線段應含 text-decoration=\"line-through\"：{}",
             svg
+        );
+    }
+
+    /// (e) XML 轉義涵蓋 `& < > " '`（font-family 屬性值同用此函式）。
+    #[test]
+    fn svg_escapes_xml_special_characters() {
+        let mut out = String::new();
+        esc("A&B<C>D\"E'F", &mut out);
+        assert_eq!(out, "A&amp;B&lt;C&gt;D&quot;E&apos;F");
+    }
+
+    /// (c) 無字型宣告的文件：SVG 完全不寫 font-family。
+    #[test]
+    fn svg_omits_font_family_without_declaration() {
+        let engine = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx");
+        let svg = page_to_svg(&engine.page_display_list(0).unwrap());
+        assert!(
+            !svg.contains("font-family"),
+            "無 w:rFonts 宣告時不得輸出 font-family：{svg}"
+        );
+    }
+
+    /// 字型名含 XML 特殊字元時，font-family 屬性必須完整跳脫且不破壞標籤。
+    #[test]
+    fn svg_escapes_font_family_attribute() {
+        let mut base = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx");
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:rPr>
+          <w:rFonts w:ascii="A&amp;B&lt;C&gt;D&quot;E&apos;F"/>
+        </w:rPr>
+        <w:t>特殊字元字型名</w:t>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+        base.set_part("word/document.xml", xml.as_bytes().to_vec());
+        let docx = base.save_docx().expect("存回 docx 失敗");
+        let engine = Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗");
+        let svg = page_to_svg(&engine.page_display_list(0).unwrap());
+        assert!(
+            svg.contains("font-family=\"A&amp;B&lt;C&gt;D&quot;E&apos;F\""),
+            "font-family 屬性值必須跳脫 &<>\"'：{svg}"
+        );
+    }
+
+    /// 有字型宣告的文件：`<text>` 寫出 font-family 屬性。
+    #[test]
+    fn svg_emits_font_family_from_declaration() {
+        let engine = Engine::from_docx_bytes(INLINE_IMG).expect("開啟 inline_image.docx");
+        let svg = page_to_svg(&engine.page_display_list(0).unwrap());
+        assert!(
+            svg.contains("font-family=\"Calibri\""),
+            "docDefaults 宣告 w:ascii=Calibri → SVG 應寫 font-family：{svg}"
         );
     }
 }

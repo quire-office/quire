@@ -20,6 +20,10 @@ pub enum DrawItem {
         /// 文字顏色（0xAARRGGBB）；預設不透明黑（0xFF000000），保持舊顯示列表 JSON 向後相容。
         #[serde(default = "default_opaque_black")]
         color_argb: u32,
+        /// 字型族名（`w:rFonts` 級聯選取結果；ECMA-376 §17.3.2.26）。
+        /// `None`＝文件未宣告（渲染端用自身預設），舊顯示列表 JSON 照解析。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        family: Option<String>,
         text: String,
     },
     Rect {
@@ -77,5 +81,38 @@ mod tests {
         assert_eq!(FLAG_UNDERLINE, 4);
         assert_eq!(FLAG_STRIKE, 8);
         assert_eq!(default_opaque_black(), 0xFF00_0000);
+    }
+
+    /// (d) 舊顯示列表 JSON（無 family 欄）仍可解析，family 落回 None。
+    #[test]
+    fn legacy_text_json_without_family_deserializes_to_none() {
+        let json = r#"{"Text":{"x":1.0,"y":2.0,"size_pt":12.0,"flags":0,"text":"舊格式"}}"#;
+        let item: DrawItem = serde_json::from_str(json).expect("舊顯示列表 JSON 必須可解析");
+        match item {
+            DrawItem::Text { family, text, .. } => {
+                assert_eq!(family, None, "缺 family 欄必須落回 None");
+                assert_eq!(text, "舊格式");
+            }
+            other => panic!("應解析為 Text，實際 {other:?}"),
+        }
+    }
+
+    /// family=None 時序列化必須跳過欄位（與舊版 JSON 逐位元組相同）。
+    #[test]
+    fn text_without_family_serializes_without_field() {
+        let item = DrawItem::Text {
+            x: 1.0,
+            y: 2.0,
+            size_pt: 12.0,
+            flags: 0,
+            color_argb: default_opaque_black(),
+            family: None,
+            text: "舊格式".to_string(),
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        assert!(
+            !json.contains("family"),
+            "family=None 不得寫入 JSON：{json}"
+        );
     }
 }
