@@ -69,6 +69,9 @@ fn main() -> ExitCode {
             println!("頁數: {}", engine.page_count());
             println!("段落數: {}", engine.paragraph_count());
             println!("保留 zip part 數: {}", engine.preserved_part_count());
+            if engine.footnote_rounds() > 0 {
+                println!("頁底註腳: 收斂 {} 輪", engine.footnote_rounds());
+            }
             if let Some(lines) = engine.page_lines(0) {
                 println!("--- 第 0 頁預覽 ---");
                 for l in lines.iter().take(6) {
@@ -92,6 +95,10 @@ fn main() -> ExitCode {
         }
         "dump" => {
             println!("{}", dump_display_lists_json(&engine));
+            ExitCode::SUCCESS
+        }
+        "footnotes" => {
+            println!("{}", engine.footnotes_json());
             ExitCode::SUCCESS
         }
         other => {

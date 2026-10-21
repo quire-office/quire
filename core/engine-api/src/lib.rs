@@ -6,8 +6,8 @@
 //! - 型別全 serde 化，跨 wasm 邊界走 JSON 字串。
 
 use quire_layout::{
-    breaks_from_pages, CaretPos, LayoutEngine, LayoutParams, Page, ParaGrid, SectionGeometry,
-    SectionSpec, TableSlot, TextMeasurer, MARGIN_LEFT,
+    breaks_from_pages, section_capacity, CaretPos, LayoutEngine, LayoutParams, Page, ParaGrid,
+    SectionGeometry, SectionSpec, TableSlot, TextMeasurer, MARGIN_BOTTOM, MARGIN_LEFT, MARGIN_TOP,
 };
 use quire_ooxml::{
     diff_untouched, diff_zip_structure, parse, parse_header_footer_part_with_fonts,
@@ -38,6 +38,10 @@ pub use quire_ooxml::{
 // 表格映射層（Phase3-1b）：canonical 樹 → layout `TableInput`/`TableSlot`。
 mod table_map;
 pub use quire_layout::table::{Pen, RowFrag, TableFrag};
+
+// 頁底註腳層（F2b-2）：幾何與排布純函數（消費 F1 資料層＋F2a/F2b-1 預留機制）。
+pub mod footnotes;
+pub use footnotes::{AnchorMark, NoteLayout, NoteRun, PageFoot};
 #[derive(Error, Debug)]
 pub enum EngineError {
     #[error(transparent)]
@@ -72,6 +76,18 @@ pub struct Engine {
     even_odd: bool,
     /// section id → 頁面幾何（取首見值；頁首頁尾排版寬度與欄位換算用）。
     sec_geo: HashMap<u32, SectionGeometry>,
+    /// styles.xml 級聯表（F2b-2 註腳級聯取樣用；純讀取派生）。
+    style_table: StyleTable,
+    /// 頁底註腳發射層（F2b-2）：收斂定案後的逐頁排布＋正文錨點記號。
+    /// 純讀取派生資料——存檔路徑完全不經此層（round-trip 零影響）。
+    /// 文件無註腳 ⇒ `is_empty()`＝發射層零擾動快路徑。
+    foot: footnotes::NoteLayout,
+    /// 註腳條目（級聯烘焙後的發射級樣式；序＝`note_of_anchor` 的值域）。
+    note_entries: Vec<footnotes::NoteEntry>,
+    /// 正文錨點（發射投影序）與其到條目的映射、記號樣式。
+    note_anchors: Vec<footnotes::Anchor>,
+    note_of_anchor: Vec<usize>,
+    mark_styles: Vec<footnotes::MarkStyle>,
 }
 
 /// 頁首／頁尾 part 的已解析投影（開啟文件時一次性解析；純讀取）。
@@ -132,13 +148,16 @@ impl Engine {
         // `w:asciiTheme`／`w:eastAsiaTheme` 引用查表（ECMA-376 §17.3.2.26）。
         // 無 theme part → 四欄全 None＝老實退回直接值（既有行為不變）。
         let theme_fonts = ThemeFonts::from_parts(&doc.parts);
-        let style_table = Some(
-            doc.parts
-                .get("word/styles.xml")
-                .map(|s| StyleTable::parse_with_fonts(s.as_slice(), &theme, Some(&theme_fonts)))
-                .unwrap_or_else(|| StyleTable::parse_with_fonts(&[], &theme, Some(&theme_fonts))),
-        );
-        let (doc_size, doc_line) = style_table.as_ref().map_or((None, None), |t| t.doc_grid());
+        // 無 styles.xml part 時仍建一張空表而非 None：級聯層除了套用樣式，
+        // 還承載「超連結合成預設」的末端兜底（`RunStyle::with_hyperlink_default`）；
+        // 若此處短路，無 styles.xml 的檔案連結會失去預設藍／底線。空表一切
+        // 落後備值，與舊 None 路徑逐欄等價。
+        let style_table = doc
+            .parts
+            .get("word/styles.xml")
+            .map(|s| StyleTable::parse_with_fonts(s.as_slice(), &theme, Some(&theme_fonts)))
+            .unwrap_or_else(|| StyleTable::parse_with_fonts(&[], &theme, Some(&theme_fonts)));
+        let (doc_size, doc_line) = style_table.doc_grid();
         // 文件基準字級：docDefaults∪Normal 鏈的有效 sz（ECMA 無宣告時的
         // Word 預設 12pt 兜底）。無級聯層＝12（既有硬編碼後備）。
         let def_size = doc_size.unwrap_or(12.0);
@@ -195,33 +214,30 @@ impl Engine {
                 None => params.content_w_pt(),
             })
             .collect();
-        let mut grid_size_v: Vec<f32> = Vec::with_capacity(n_paras);
-        let mut grid_bands_v: Vec<u32> = Vec::with_capacity(n_paras);
         // 顯式分頁旗標（parser 直讀，任何檔案都收；全 false＝舊行為）。
         let grid_break_v: Vec<bool> = doc.paragraphs.iter().map(|p| p.page_break).collect();
-        // 發射投影：Some＝級聯有作用（run 樣式欄位已烘焙）；None＝發射層直讀
-        // `doc.paragraphs`（零級聯檔案逐位元組舊行為的快路徑）。
-        let mut paras_eff: Option<Vec<quire_ooxml::Paragraph>> = None;
-        if let Some(st) = style_table.as_ref() {
-            let (eff_all, metrics) = cascade_paragraphs(st, &doc.paragraphs, def_size, &widths);
-            grid_size_v = metrics.iter().map(|m| m.0).collect();
-            // 段行高量化到文件帶尺（至少 1 帶；帶尺＝12pt×1.4 且段行高不大於
-            // 帶尺時恆 1＝舊行為）。
-            grid_bands_v = metrics
-                .iter()
-                // 帶量化鉗上限（t_c1fb4c69 S1-4）：垃圾宣告行高不得量化出
-                // 天量帶數（正常段行高 ≤ 數帶，永不觸頂）。
-                .map(|m| {
-                    let b = (m.1 / grid_line_h).ceil();
-                    if !b.is_finite() {
-                        quire_layout::MAX_PAGE_BANDS
-                    } else {
-                        ((b.max(1.0)) as u32).min(quire_layout::MAX_PAGE_BANDS)
-                    }
-                })
-                .collect();
-            paras_eff = Some(eff_all);
-        }
+        // 發射投影：Some＝級聯有作用（run 樣式欄位已烘焙）。style_table 恆有
+        // （無 styles.xml＝空表兜底超連結預設，見上），故級聯恆執行——
+        // 空表一切落後備值，輸出與舊 None 路徑逐欄等價（t_5dfc8ac7 契約）。
+        let (eff_all, metrics) =
+            cascade_paragraphs(&style_table, &doc.paragraphs, def_size, &widths);
+        let grid_size_v: Vec<f32> = metrics.iter().map(|m| m.0).collect();
+        // 段行高量化到文件帶尺（至少 1 帶；帶尺＝12pt×1.4 且段行高不大於
+        // 帶尺時恆 1＝舊行為）。
+        let grid_bands_v: Vec<u32> = metrics
+            .iter()
+            // 帶量化鉗上限（t_c1fb4c69 S1-4）：垃圾宣告行高不得量化出
+            // 天量帶數（正常段行高 ≤ 數帶，永不觸頂）。
+            .map(|m| {
+                let b = (m.1 / grid_line_h).ceil();
+                if !b.is_finite() {
+                    quire_layout::MAX_PAGE_BANDS
+                } else {
+                    ((b.max(1.0)) as u32).min(quire_layout::MAX_PAGE_BANDS)
+                }
+            })
+            .collect();
+        let paras_eff: Option<Vec<quire_ooxml::Paragraph>> = Some(eff_all);
         // 版面文字：以發射投影為準（級聯路徑含點引填補——斷行與發射同源，
         // run↔line 碼點對齊不破）。無級聯＝原始串接（舊行為）。
         let texts: Vec<String> = match paras_eff.as_ref() {
@@ -276,8 +292,8 @@ impl Engine {
         // 頁首頁尾層（t_b39f108b）：sectPr 宣告＋rels 查表＋part 解析。
         // 全鏈純讀取派生——parts／bundle 一個位元組都不碰（round-trip 零影響）。
         let (hf, hf_parts, even_odd, sec_geo) =
-            build_hf_layer(&doc, &sections, style_table.as_ref(), &theme);
-        Ok(Self {
+            build_hf_layer(&doc, &sections, Some(&style_table), &theme);
+        let engine = Self {
             doc,
             layout,
             params,
@@ -288,7 +304,319 @@ impl Engine {
             hf_parts,
             even_odd,
             sec_geo,
-        })
+            style_table,
+            foot: footnotes::NoteLayout::default(),
+            note_entries: Vec::new(),
+            note_anchors: Vec::new(),
+            note_of_anchor: Vec::new(),
+            mark_styles: Vec::new(),
+        };
+        Ok(engine.with_footnotes())
+    }
+
+    // ---------------- 頁底註腳層（F2b-2）----------------
+
+    /// 開啟尾部：收斂迴圈「分頁→排註腳→新預留」直至逐頁預留穩定
+    /// （≤`MAX_CONVERGE_ROUNDS`+1 輪）。**無註腳文件在快路徑直接返回**：
+    /// entries/anchors 皆空 ⇒ 不進迴圈、params 與 layout 一個位元組不動。
+    fn with_footnotes(mut self) -> Self {
+        self.compute_footnotes();
+        self
+    }
+
+    /// 收斂主體。不變量（發射↔分頁自洽）：結束時
+    /// `self.params.footnote_reserves_pt == self.foot.reserves`——顯示用的
+    /// 排布與實際分頁扣的預留永遠同一份。
+    fn compute_footnotes(&mut self) {
+        self.build_note_entries();
+        if self.note_entries.is_empty() || self.note_anchors.is_empty() {
+            // 零擾動快路徑：無註腳（或註腳全未被引用）⇒ 現況逐位元組不變。
+            self.foot = footnotes::NoteLayout::default();
+            if self.params.footnote_reserves_pt.is_empty() {
+                return; // 預留表本就空：layout 無需重排。
+            }
+            // （理論不可達：只有註腳檔案才會灌過預留表）清表重排回現況。
+            let mut p = self.params.clone();
+            p.footnote_reserves_pt = Vec::new();
+            self.params = p.clone();
+            self.layout.update_params(p);
+            return;
+        }
+        let body_size = self.params.font_size_pt;
+        // `applied`＝本輪分頁實際套用的逐頁預留（起始＝空表＝現況）。
+        let mut applied: Vec<f32> = Vec::new();
+        let max_rounds = quire_layout::MAX_CONVERGE_ROUNDS;
+        for round in 1..=max_rounds {
+            let mut p = self.params.clone();
+            p.footnote_reserves_pt = applied.clone();
+            self.params = p.clone();
+            self.layout.update_params(p);
+            // lay.reserves＝本輪版面下「下一輪該套」的計算預留（純由排布算出）。
+            let lay = self.footnote_pass(body_size, round);
+            if footnotes::reserves_stable(&lay.reserves, &applied) {
+                // 計算值 == 實際套用值 ⇒ 分頁與排布自洽，定案返還。
+                self.foot = lay;
+                return;
+            }
+            self.foot = lay;
+            applied = self.foot.reserves.clone();
+        }
+        // 輪數用盡仍震盪（罕見；corpus 未見）：保留以 `applied` 分頁的版面，
+        // 發射排布錨定在**實際分頁扣的預留**上（不變量優先於末輪計算值），
+        // rounds 保持最大值＝誠實回報未收斂。
+        self.foot.reserves = applied;
+    }
+
+    /// 由 F1 資料層（`doc.notes`）＋級聯建構發射級條目與正文錨點。
+    ///
+    /// 編號＝正文引用序（1 起）；separator／continuationSeparator 型本體
+    /// 不進條目（Word 慣例 id=-1/0，非正文引用對象）。級聯取樣＝正文同款
+    /// `cascade_paragraphs`（註腳樣式鏈 footnoteReference 因此在 F1 已就位）。
+    fn build_note_entries(&mut self) {
+        self.note_entries.clear();
+        self.note_anchors.clear();
+        self.note_of_anchor.clear();
+        self.mark_styles.clear();
+        let notes = &self.doc.notes;
+        if notes.footnotes.is_empty() {
+            return;
+        }
+        // id → (級聯烘焙段落, 字級, 行高, 樣式) 表（一次級聯，全部註腳段同尺）。
+        let paras: Vec<quire_ooxml::Paragraph> = notes
+            .footnotes
+            .iter()
+            .filter(|n| n.kind == quire_ooxml::NoteKind::Regular)
+            .map(|n| n.paragraphs.first().cloned().unwrap_or_default())
+            .collect();
+        let ids: Vec<i64> = notes
+            .footnotes
+            .iter()
+            .filter(|n| n.kind == quire_ooxml::NoteKind::Regular)
+            .map(|n| n.id)
+            .collect();
+        let def_size = self.params.font_size_pt;
+        let widths: Vec<f32> = vec![self.params.content_w_pt(); paras.len()];
+        let (eff, metrics) = cascade_paragraphs(&self.style_table, &paras, def_size, &widths);
+        let mut by_id: HashMap<i64, footnotes::NoteEntry> = HashMap::new();
+        for (id, (p, (size, line_h))) in ids.iter().zip(eff.into_iter().zip(metrics)) {
+            let first = p.runs.first();
+            let style = footnotes::EntryStyle {
+                size_pt: first.and_then(|r| r.size_pt).unwrap_or(size).max(1.0),
+                line_h_pt: line_h.max(1.0),
+                color_argb: first
+                    .and_then(|r| r.color)
+                    .unwrap_or(DEFAULT_TEXT_COLOR_ARGB),
+                bold: first.is_some_and(|r| r.bold),
+                italic: first.is_some_and(|r| r.italic),
+                underline: first.is_some_and(|r| r.underline),
+                strike: first.is_some_and(|r| r.strike),
+                family: first
+                    .and_then(|r| select_text_family(r.effective_fonts.as_ref(), ""))
+                    .clone(),
+            };
+            let body: String = p.runs.iter().map(|r| r.text.as_str()).collect::<String>();
+            by_id.insert(
+                *id,
+                footnotes::NoteEntry {
+                    id: *id,
+                    number: 0,
+                    body: body.trim().to_string(),
+                    style,
+                },
+            );
+        }
+        // 正文錨點（發射投影序）＋編號（引用序）。
+        let paras_eff: Vec<quire_ooxml::Paragraph> = self.eff_paragraphs().to_vec();
+        let anchors = footnotes::collect_anchors(&paras_eff);
+        let mut order: HashMap<i64, usize> = HashMap::new();
+        for a in &anchors {
+            let Some(e) = by_id.get_mut(&a.note_id) else {
+                continue; // 引用指向不存在的註：老實跳過（不虛構條目）。
+            };
+            if e.number == 0 {
+                e.number = order.len() + 1;
+            }
+            order.insert(a.note_id, e.number);
+            let idx = self.note_entries.len();
+            self.note_entries.push(e.clone());
+            self.note_of_anchor.push(idx);
+            // 記號樣式：取該 anchor run 的級聯有效值（上標尺度/顏色/族）。
+            let run = paras_eff.get(a.para).and_then(|p| p.runs.get(a.run));
+            let color = run.and_then(|r| r.color).unwrap_or(DEFAULT_TEXT_COLOR_ARGB);
+            let size = run
+                .and_then(|r| r.size_pt)
+                .unwrap_or(self.params.font_size_pt);
+            let family = run
+                .and_then(|r| select_text_family(r.effective_fonts.as_ref(), ""))
+                .clone();
+            self.mark_styles.push(footnotes::MarkStyle {
+                size_pt: size,
+                color_argb: color,
+                family,
+            });
+            self.note_anchors.push(a.clone());
+        }
+    }
+
+    /// 收斂迴圈的單次求值：以「已套用預留＝`applied`」的當前版面算排布。
+    ///
+    /// 版心底用**未扣預留**的全容量（`section_capacity` 吃清空預留的 params）：
+    /// 註腳區固定貼版心底，正文可用區被預留往上擠——這正是整帶量化保證的
+    /// 幾何（末帶底恰與分隔線相切，見 `footnotes` 模組注）。
+    fn footnote_pass(&self, body_size: f32, rounds: usize) -> footnotes::NoteLayout {
+        let pages = self.layout.pages();
+        let band = self.params.line_h_pt();
+        // 全容量（無預留）基準 params：版心底以此折算，預留變動不動「底」。
+        let mut full = self.params.clone();
+        full.footnote_reserve_pt = 0.0;
+        full.footnote_reserves_pt = Vec::new();
+        let fallback_geo = SectionGeometry {
+            page_w_pt: self.params.page_w_pt,
+            page_h_pt: self.params.page_h_pt,
+            margin_top_pt: self.params.margin(MARGIN_TOP),
+            margin_bottom_pt: self.params.margin(MARGIN_BOTTOM),
+            margin_left_pt: self.params.margin(MARGIN_LEFT),
+            margin_right_pt: self.params.margin(quire_layout::MARGIN_RIGHT),
+            landscape: false,
+            continuous: false,
+        };
+        let info: Vec<footnotes::PageInfo> = pages
+            .iter()
+            .map(|pg| {
+                let geo = self
+                    .sec_geo
+                    .get(&pg.section_id)
+                    .copied()
+                    .unwrap_or(fallback_geo);
+                let cap = section_capacity(&full, &geo, pg.index);
+                footnotes::PageInfo {
+                    content_left_pt: pg.margin_left_pt,
+                    content_w_pt: (geo.page_w_pt - geo.margin_left_pt - geo.margin_right_pt)
+                        .max(1.0),
+                    content_bottom_pt: geo.margin_top_pt + cap as f32 * band,
+                    band_pt: band,
+                }
+            })
+            .collect();
+        let lay = footnotes::layout_notes(
+            pages,
+            &info,
+            &self.note_anchors,
+            &self.note_entries,
+            &self.note_of_anchor,
+            body_size,
+            &self.mark_styles,
+            rounds,
+        );
+        // 此處回傳的是**計算值**（下一輪該套的預留）——收斂判準就比這個值；
+        // 「發射↔分頁自洽」由呼叫端（compute_footnotes 定案點）保證。
+        lay
+    }
+
+    /// 註腳渲染資料 JSON（驗收/除錯口；逐頁條目、保留帶、記號、輪數）。
+    pub fn footnotes_json(&self) -> String {
+        serde_json::to_string_pretty(&self.foot).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// 收斂輪數（觀察用；無註腳＝0）。
+    pub fn footnote_rounds(&self) -> usize {
+        if self.foot.is_empty() {
+            0
+        } else {
+            self.foot.rounds
+        }
+    }
+
+    /// 第 `page` 頁的註腳發射項（分隔線＋條目＋錨點記號）。無註腳＝空。
+    fn footnote_items(&self, page: usize) -> Vec<DrawItem> {
+        let Some(pf) = self.foot.pages.get(page) else {
+            return Vec::new();
+        };
+        let mut items = Vec::new();
+        if let (Some(y), Some(x1), Some(x2)) = (pf.separator_y, pf.separator_x1, pf.separator_x2) {
+            items.push(DrawItem::Rule {
+                x1,
+                y1: y,
+                x2,
+                y2: y,
+                width_pt: 0.5,
+                color_argb: DEFAULT_TEXT_COLOR_ARGB,
+                dash: None,
+            });
+        }
+        let Some(top0) = pf.items_top_y else {
+            // 無條目：記號仍要發（錨點可能定位失敗前已收錄？——不會：記號與
+            // 條目同頁同則成對推入；此分支保底直接發記號）。
+            for m in self.foot.marks.get(page).map(Vec::as_slice).unwrap_or(&[]) {
+                items.push(DrawItem::Text {
+                    x: m.x_pt,
+                    y: m.y_pt,
+                    size_pt: m.size_pt,
+                    flags: 0,
+                    color_argb: m.color_argb,
+                    family: m.family.clone(),
+                    text: m.text.clone(),
+                });
+            }
+            return items;
+        };
+        // 條目由上而下堆疊：第 i 條行頂＝top0 + Σ(前 i-1 條帶數×帶尺)。
+        // NoteRun.x 是**相對版心左緣**（layout 層不知道頁邊界）；此處換算頁絕對。
+        let base_x = self
+            .layout
+            .pages()
+            .get(page)
+            .map(|pg| pg.margin_left_pt)
+            .unwrap_or(0.0);
+        let mut acc_bands = 0u32;
+        for item in &pf.items {
+            let mut yy = top0 + acc_bands as f32 * pf.band_pt;
+            for line in &item.lines {
+                for run in &line.runs {
+                    let y = if run.superscript {
+                        yy - pf.band_pt * footnotes::SUP_RISE
+                    } else {
+                        yy
+                    };
+                    let mut flags = 0u8;
+                    if run.bold {
+                        flags |= FLAG_BOLD;
+                    }
+                    if run.italic {
+                        flags |= FLAG_ITALIC;
+                    }
+                    if run.underline {
+                        flags |= FLAG_UNDERLINE;
+                    }
+                    if run.strike {
+                        flags |= FLAG_STRIKE;
+                    }
+                    items.push(DrawItem::Text {
+                        x: base_x + run.x_pt,
+                        y,
+                        size_pt: run.size_pt,
+                        flags,
+                        color_argb: run.color_argb,
+                        family: run.family.clone(),
+                        text: run.text.clone(),
+                    });
+                }
+                yy += item.line_h_pt;
+            }
+            acc_bands += item.bands;
+        }
+        for m in self.foot.marks.get(page).map(Vec::as_slice).unwrap_or(&[]) {
+            items.push(DrawItem::Text {
+                x: m.x_pt,
+                y: m.y_pt,
+                size_pt: m.size_pt,
+                flags: 0,
+                color_argb: m.color_argb,
+                family: m.family.clone(),
+                text: m.text.clone(),
+            });
+        }
+        items
     }
 
     pub fn page_count(&self) -> usize {
@@ -405,6 +733,11 @@ impl Engine {
             let para = paras.get(l.para_index);
             emit_line_run_items(&mut items, p.margin_left_pt, y, size, l, para);
         }
+        // 頁底註腳層（F2b-2）：分隔線（Rule）＋條目文字＋正文錨點記號。
+        // 文字項由下方穩定排序落進閱讀序（保留帶 y 最大 ⇒ 自然排最後）。
+        if !self.foot.is_empty() {
+            items.extend(self.footnote_items(page));
+        }
         // 穩定排序：非文字項（填色/框線）同鍵保持原序且恆在前；文字項依基線 y
         // 再依 x 排列，讓「正文→表格→正文」的閱讀序與 PDF 抽取端一致。
         items.sort_by(|a, b| {
@@ -480,6 +813,8 @@ impl Engine {
                 }
             }
         }
+        // 編輯落地後重算註腳排布（錨點所在段/頁可能移位；F2b-2 收斂）。
+        self.compute_footnotes();
         evs.into_iter().map(|ev| format!("{ev:?}")).collect()
     }
 
@@ -2944,6 +3279,121 @@ mod tests {
             plain.page_breaks_json(),
             themed.page_breaks_json(),
             "theme 字型引用不得移動任何分頁斷點"
+        );
+    }
+
+    // ---------------- 頁底註腳（F2b-2）----------------
+
+    const FOOT_DOC: &[u8] = include_bytes!("../../../corpus/poi/test-data_document_footnotes.docx");
+    const TABLE_FOOT_DOC: &[u8] =
+        include_bytes!("../../../corpus/poi/test-data_document_table_footnotes.docx");
+
+    /// 零變化守門（構造性）：無註腳文件 ⇒ 排布空、預留表空、存檔 byte-identical。
+    /// 本測在**所有**檔案上都該綠——實跑 corpus 代表檔確認快路徑真的零擾動。
+    #[test]
+    fn doc_without_notes_has_empty_foot_layer() {
+        let engine = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx 失敗");
+        assert!(engine.foot.is_empty(), "無註腳檔案的註腳層必須全空");
+        assert!(engine.foot.reserves.iter().all(|v| *v == 0.0));
+        assert_eq!(engine.footnote_rounds(), 0, "無註腳不計收斂輪數");
+        // 預留表空 ⇒ 分頁參數與現況同（零擾動的另一半：params 未被灌值）。
+        assert!(engine.params.footnote_reserves_pt.is_empty());
+    }
+
+    /// corpus 實檔：註腳發射三件套——錨點記號（上標數字）、分隔線（Rule）、
+    /// 條目文字（編號＋註腳內文）；幾何自洽（條目落在分隔線之下、版心底之上）。
+    #[test]
+    fn corpus_footnote_doc_emits_mark_separator_and_item() {
+        let engine = Engine::from_docx_bytes(FOOT_DOC).expect("開啟 footnotes.docx 失敗");
+        let dl = engine.page_display_list(0).expect("第 0 頁");
+        let mark = dl.items.iter().find_map(|it| match it {
+            DrawItem::Text { text, size_pt, .. } if text == "1" => Some(*size_pt),
+            _ => None,
+        });
+        assert!(mark.is_some(), "正文錨點記號「1」必須發射");
+        assert!(mark.unwrap() < 12.0, "記號必須上標化（字級小於正文）");
+        let sep = dl.items.iter().find_map(|it| match it {
+            DrawItem::Rule { x1, y1, x2, .. } => Some((*x1, *y1, *x2)),
+            _ => None,
+        });
+        let (x1, sy, x2) = sep.expect("頁底必須發射分隔線");
+        // 本檔正文行 x 起點＝85.05pt（版心左緣）；分隔線必須與之對齊。
+        assert!(
+            (x1 - 85.05).abs() < 0.6,
+            "分隔線必須自版心左緣起，實得 {x1}"
+        );
+        assert!(x2 - x1 > 10.0, "分隔線寬為版心 1/3，不得為零");
+        // 條目：編號「1.」與內文「snoska」皆為發射文字。
+        let texts: Vec<&str> = dl
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                DrawItem::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"1."), "條目編號前綴必須發射");
+        assert!(texts.contains(&"snoska"), "註腳內文必須發射");
+        // 幾何自洽：條目行頂 > 分隔線 y（條目在分隔線之下）。
+        let item_y = dl.items.iter().find_map(|it| match it {
+            DrawItem::Text { text, y, .. } if text == "snoska" => Some(*y),
+            _ => None,
+        });
+        assert!(item_y.unwrap() > sy, "註腳條目必須排在分隔線之下");
+        assert!(sy < dl.height_pt, "分隔線不得掉出頁外");
+        assert!(engine.footnote_rounds() >= 1, "有註腳必記錄收斂輪數");
+    }
+
+    /// 預留真的擠壓正文：同一份文件「灌預留 vs 不灌」頁數必增（端到端走
+    /// engine 的收斂迴圈 ⇒ `paginate` 實際扣了帶——F2a/F2b-1 機制被消費的證據）。
+    #[test]
+    fn footnote_reserve_actually_shrinks_text_area_via_engine() {
+        // bug65649：244 頁長文＋6 處註腳引用（多頁大檔，逐頁預留影響面可測）。
+        const BIG: &[u8] = include_bytes!("../../../corpus/poi/test-data_document_bug65649.docx");
+        let engine = Engine::from_docx_bytes(BIG).expect("開啟 bug65649.docx 失敗");
+        let with = engine.page_count();
+        assert!(with > 10, "本檔必須是多頁長文才有對照意義");
+        assert!(
+            engine.foot.pages.iter().any(|p| p.reserve_pt > 0.0),
+            "有註腳的頁必須有非零保留帶"
+        );
+        // 同檔以「清空預留」重建：頁數不得變少（預留只擠不鬆）。
+        let mut lean = Engine::from_docx_bytes(BIG).expect("重開失敗");
+        lean.params.footnote_reserves_pt = Vec::new();
+        let mut p = lean.params.clone();
+        p.footnote_reserves_pt = Vec::new();
+        lean.layout.update_params(p);
+        let without = lean.page_count();
+        assert!(
+            with >= without,
+            "灌預留後頁數 {with} 不得少於不灌 {without}"
+        );
+        assert!(
+            with > without,
+            "長文多註腳必須真的多出頁數（機制被消費的硬證據）"
+        );
+    }
+
+    /// 表格內錨點（corpus 實檔）：本體落末頁不遺失、記號不虛構（誠實劃界）。
+    #[test]
+    fn table_anchor_note_falls_back_without_fabricated_mark() {
+        let engine =
+            Engine::from_docx_bytes(TABLE_FOOT_DOC).expect("開啟 table_footnotes.docx 失敗");
+        let total_items: usize = engine.foot.pages.iter().map(|p| p.items.len()).sum();
+        let total_marks: usize = engine.foot.marks.iter().map(|m| m.len()).sum();
+        assert_eq!(total_items, 1, "表格內錨點的註腳本體必須照發（落末頁）");
+        assert_eq!(total_marks, 0, "表格內無流行程：記號不得虛構");
+    }
+
+    /// 存檔零影響（round-trip 鐵律）：註腳層是純讀取投影——含註腳的實檔
+    /// 未觸碰存檔必須 byte-identical。
+    #[test]
+    fn footnote_layer_does_not_touch_save_path() {
+        let engine = Engine::from_docx_bytes(FOOT_DOC).expect("開啟 footnotes.docx 失敗");
+        let diff = engine.roundtrip_check().expect("round-trip 對照失敗");
+        assert!(
+            diff.byte_identical,
+            "註腳發射層不得影響存檔位元組：{diff:?}"
         );
     }
 }

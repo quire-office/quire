@@ -433,7 +433,9 @@ fn section_params(p: &LayoutParams, sections: &[SectionSpec], para: usize) -> La
 ///
 /// 零變化守門：**逐頁表空時直接走舊單值路徑**（原樣帶入文件層級預留，
 /// 不做逐頁查表、也不做 max 運算），故渲染輸出逐位元組零變化。
-fn section_capacity(p: &LayoutParams, geo: &SectionGeometry, page_index: usize) -> usize {
+/// 該頁容量（帶數）：以該 section 的頁面幾何＋文件層級字級/行距/預留算。
+/// 公開（F2b-2：engine 要按「未扣預留的全容量」算版心底，故需本函式）。
+pub fn section_capacity(p: &LayoutParams, geo: &SectionGeometry, page_index: usize) -> usize {
     let mut sp = LayoutParams::from_section(geo, p.font_size_pt, p.line_spacing);
     sp.footnote_reserve_pt = if p.footnote_reserves_pt.is_empty() {
         p.footnote_reserve_pt
@@ -1774,6 +1776,16 @@ impl LayoutEngine {
             l.para_index = i;
         }
         pl
+    }
+
+    /// F2b-2：換分頁參數並整篇重排（註腳收斂迴圈用——逐頁預留表變動時，
+    /// 版面必須按新預留重排）。斷行快取保守清空：params 頁面欄位變動會
+    /// 改變逐段可用寬，留舊快取有錯斷行風險（正確性優先於增量速度；
+    /// 收斂迴圈最多 `MAX_CONVERGE_ROUNDS` 次，代價有界）。
+    pub fn update_params(&mut self, params: LayoutParams) {
+        self.params = params;
+        self.cache = vec![None; self.cache.len()];
+        self.rebuild_full();
     }
 
     /// 預算制軟分頁開關：`Some(n)` 時同步重排最多新增 n 頁（未定案尾段留給
