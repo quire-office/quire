@@ -11,9 +11,9 @@ use quire_layout::{
 };
 use quire_ooxml::{
     diff_untouched, diff_zip_structure, parse, parse_header_footer_part_with_fonts,
-    read_even_and_odd_headers, read_rels, read_sections_header_footer, read_sections_per_paragraph,
-    resolve_relationship, LineSpacing, OoxmlDoc, OoxmlError, ParaStyle, SlotRefs, StyleTable,
-    ThemeColors, ThemeFonts, ZipDiff,
+    read_even_and_odd_headers, read_rels, read_sections_header_footer, read_sections_note_pr,
+    read_sections_per_paragraph, resolve_relationship, LineSpacing, OoxmlDoc, OoxmlError,
+    ParaStyle, SlotRefs, StyleTable, ThemeColors, ThemeFonts, ZipDiff,
 };
 use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
@@ -431,12 +431,15 @@ impl Engine {
         let mut foot_by_id =
             self.cascade_note_entries(&self.doc.notes.footnotes, self.params.content_w_pt());
         let foot_anchors = footnotes::collect_anchors(&paras_eff);
+        // H2：編號字面表（`numFmt`／`numRestart` 消費結果）。十進位且無重啟
+        // ⇒ 空表 ⇒ 呼叫端走十進位兜底原路徑（渲染與 JSON 逐位元組不變）。
+        let foot_labels = self.footnote_number_labels(&foot_anchors);
         let (foot_anchors, foot_entries, foot_of_anchor, foot_marks) = note_chain(
             &foot_anchors,
             &mut foot_by_id,
             &paras_eff,
             def_size,
-            &HashMap::new(),
+            &foot_labels,
         );
 
         // ---- 尾註支路 ----
@@ -459,6 +462,60 @@ impl Engine {
         self.end_note_entries = end_entries;
         self.end_note_of_anchor = end_of_anchor;
         self.end_mark_styles = end_marks;
+    }
+
+    /// H2：頁底註腳的**編號字面表**（`numFmt`／`numRestart` 消費結果）。
+    ///
+    /// 兩層讀取（ECMA-376 §17.11.5 逐欄覆寫語義）：
+    /// 1. settings 層＝`doc.notes.settings.footnote`（`word/settings.xml` 的
+    ///    `w:footnotePr`＝文件預設）；
+    /// 2. 節層＝`read_sections_note_pr`（`word/document.xml` 逐節的
+    ///    `w:footnotePr`＝節覆寫）。
+    ///
+    /// **節 id ↔ 清單下標的對齊方式（已核對）**：`read_sections_note_pr`
+    /// 的回傳順序＝`scan_sections` 的 section 收束順序（段落 `w:pPr` 內的
+    /// `sectPr` 依序在前、檔尾 body 級 `sectPr` 在最後），其 section id 由
+    /// `next_id` 逐節遞增（0 起、連續、不跳號）⇒ **清單下標 == section id**。
+    /// 錨點段落所屬節由 `self.para_sec`（段落→section id 的逐段落表）查出
+    /// ⇒ 以該 id 直接索引本層清單。
+    ///
+    /// `pos`（`beneathText`／`pageBottom`）**不消費**：`beneathText`＝現行頁底
+    /// 語義（已是 F2b-2 的頁底實態＝現行行為）；`pageBottom` 未見 corpus 實檔
+    /// 故不實裝（本卡不做 pos 分支，不臆造）。
+    ///
+    /// 零變化守門：十進位且無重啟 ⇒ `numbering::assign` 回**空表** ⇒ 呼叫端
+    /// 走十進位兜底原路徑（渲染與 JSON 皆逐位元組不變）。
+    fn footnote_number_labels(&self, anchors: &[footnotes::Anchor]) -> HashMap<i64, String> {
+        if anchors.is_empty() {
+            // 無引用 ⇒ 無編號可言（空表＝十進位兜底；順帶省下一次 document.xml 掃描）。
+            return HashMap::new();
+        }
+        // settings 層（文件預設）。
+        let settings_pr = self.doc.notes.settings.footnote;
+        // 節層（逐節覆寫；索引＝section id，見上）。
+        let sect_pr: Vec<Option<quire_ooxml::NotePr>> = self
+            .doc
+            .parts
+            .get("word/document.xml")
+            .map(|xml| read_sections_note_pr(xml.as_slice()))
+            .unwrap_or_default();
+        let resolve = |sec: Option<u32>| -> numbering::ResolvedNumbering {
+            let section_pr = sec.and_then(|id| sect_pr.get(id as usize).copied().flatten());
+            let Some(pr) = numbering::merge_note_pr(settings_pr, section_pr) else {
+                // 兩層都無宣告 ⇒ 全預設（十進位、continuous、起點 1）。
+                return numbering::ResolvedNumbering {
+                    num_fmt: None,
+                    num_restart: None,
+                    num_start: None,
+                };
+            };
+            numbering::ResolvedNumbering {
+                num_fmt: pr.num_fmt,
+                num_restart: pr.num_restart,
+                num_start: pr.num_start,
+            }
+        };
+        numbering::assign(anchors, &self.para_sec, resolve)
     }
 
     /// 註本體（註腳或尾註）→ id → 發射級條目（級聯取樣與正文同款）。
@@ -4175,6 +4232,316 @@ mod tests {
             (dl.height_pt - 841.9).abs() < 0.5,
             "尾註頁必須用末節（A4）頁高，實得 {}",
             dl.height_pt
+        );
+    }
+
+    // ---------------- H2：頁底註腳編號消費（numFmt／numRestart）----------------
+
+    /// corpus 實檔：settings 層與節層各宣告 `w:footnotePr/numFmt=chicago`，
+    /// 但正文**零引用** ⇒ 有設定無引用 ⇒ 渲染零變化＋`footnotes_json` 空
+    /// （**不得虛構引用**）。
+    const CHICAGO_NO_REF_DOC: &[u8] =
+        include_bytes!("../../../corpus/ooxmlexport/tableCurrupt.docx");
+    /// corpus 實檔：12 節＋`numRestart=eachSect`，正文**零引用** ⇒ 同上零擾動
+    /// （eachSect 的「有引用重啟」實證只能靠自製 fixture，見下）。
+    const EACH_SECT_NO_REF_DOC: &[u8] = include_bytes!(
+        "../../../corpus/xopt/OpenXmlPowerToolsExamples_DocumentBuilder04_solar-system.docx"
+    );
+    /// corpus 實檔：單節＋`numRestart=eachSect`＋**一處引用** ⇒ 消費路徑
+    /// 走通；單節的 eachSect 與 continuous 同值 ⇒ 渲染不變。
+    const EACH_SECT_ONE_REF_DOC: &[u8] =
+        include_bytes!("../../../corpus/ooxmlexport/fdo77725.docx");
+
+    /// 移除 XML 中某元素（成對與自閉合兩形；字串層，A/B 基準檔用）。
+    fn strip_el(xml: &str, tag: &str) -> String {
+        let open = format!("<w:{tag}>");
+        let close = format!("</w:{tag}>");
+        let mut out = String::with_capacity(xml.len());
+        let mut rest = xml;
+        loop {
+            let Some(i) = rest.find(&open) else {
+                out.push_str(rest);
+                break;
+            };
+            let Some(j) = rest[i..].find(&close) else {
+                out.push_str(rest);
+                break;
+            };
+            out.push_str(&rest[..i]);
+            rest = &rest[i + j + close.len()..];
+        }
+        out.replace(&format!("<w:{tag}/>"), "")
+    }
+
+    /// 把 `word/settings.xml` 與 `word/document.xml` 裡的 `w:footnotePr`
+    /// 元素整段移除 ⇒ 得到「無註腳設定」的 A/B 基準檔（同一份其餘內容）。
+    fn engine_without_footnote_pr(bytes: &[u8]) -> Engine {
+        let mut doc = parse(bytes).expect("解析 docx 失敗");
+        for name in ["word/settings.xml", "word/document.xml"] {
+            if let Some(raw) = doc.parts.get(name) {
+                let text = String::from_utf8_lossy(raw).to_string();
+                doc.set_part(name, strip_el(&text, "footnotePr").into_bytes());
+            }
+        }
+        let docx = doc.save().expect("存回 docx 失敗");
+        Engine::from_docx_bytes(&docx).expect("開啟 A/B 基準檔失敗")
+    }
+
+    /// 全部頁的顯示列表 JSON（渲染逐位元組比較的口徑）。
+    fn all_pages_json(engine: &Engine) -> Vec<String> {
+        (0..engine.page_count())
+            .map(|p| engine.page_display_list_json(p).unwrap_or_default())
+            .collect()
+    }
+
+    /// 自 `footnotes_json` 取「逐條 (編號前綴, 註腳內文)」與「逐個記號字面」。
+    ///
+    /// 前綴經 `footnotes::note_number_text` 的同一出口（條目首 run 的文字
+    /// 即前綴字面）；記號的 `text` 欄同值（無尾點）。
+    fn footnote_json_items(engine: &Engine) -> (Vec<(String, String)>, Vec<String>) {
+        let v: serde_json::Value =
+            serde_json::from_str(&engine.footnotes_json()).expect("footnotes_json 必須是合法 JSON");
+        let mut items: Vec<(String, String)> = Vec::new();
+        for page in v["pages"].as_array().cloned().unwrap_or_default() {
+            for it in page["items"].as_array().cloned().unwrap_or_default() {
+                let runs = it["lines"][0]["runs"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let prefix = runs
+                    .first()
+                    .and_then(|r| r["text"].as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let body: String = runs
+                    .iter()
+                    .skip(1)
+                    .filter_map(|r| r["text"].as_str())
+                    .collect();
+                items.push((prefix, body));
+            }
+        }
+        let mut marks: Vec<String> = Vec::new();
+        for page in v["marks"].as_array().cloned().unwrap_or_default() {
+            for m in page.as_array().cloned().unwrap_or_default() {
+                if let Some(t) = m["text"].as_str() {
+                    marks.push(t.to_string());
+                }
+            }
+        }
+        (items, marks)
+    }
+
+    /// 自製 fixture：兩節 × 各 3 條被引用註腳。
+    ///
+    /// corpus 沒有「多節＋有引用＋非十進位」實檔（PM 已實掃），故本 fixture
+    /// 是 eachSect／numFmt 的主實證。仿既有 `build_theme_doc`／`set_part`
+    /// 手法：以 sample.docx 為容器灌入 document.xml（兩節）、footnotes.xml
+    /// （6 則）與 settings.xml（可選）。
+    ///
+    /// - `settings_pr`：寫進 `word/settings.xml` 的 `w:footnotePr` 內文
+    ///   （空字串＝不寫 settings 層）。
+    /// - `sect_prs`：逐節的 `w:footnotePr` 內文（索引＝**section id**；
+    ///   短於節數者以空字串補）。
+    fn build_two_section_footnote_doc(settings_pr: &str, sect_prs: &[&str]) -> Engine {
+        let sect = |i: usize| {
+            let inner = sect_prs.get(i).copied().unwrap_or("");
+            if inner.is_empty() {
+                "<w:sectPr/>".to_string()
+            } else {
+                format!("<w:sectPr><w:footnotePr>{inner}</w:footnotePr></w:sectPr>")
+            }
+        };
+        let mut body = String::new();
+        for i in 1..=3 {
+            body.push_str(&format!(
+                r#"<w:p><w:r><w:t>第一節第{i}段</w:t></w:r><w:r><w:footnoteReference w:id="{i}"/></w:r></w:p>"#
+            ));
+        }
+        // 第一節的節界：段落 pPr 內的 sectPr 收束本節（該段屬本節）。
+        body.push_str(&format!(
+            r#"<w:p><w:pPr>{}</w:pPr><w:r><w:t>第一節末段</w:t></w:r></w:p>"#,
+            sect(0)
+        ));
+        for i in 4..=6 {
+            body.push_str(&format!(
+                r#"<w:p><w:r><w:t>第二節第{i}段</w:t></w:r><w:r><w:footnoteReference w:id="{i}"/></w:r></w:p>"#
+            ));
+        }
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    {body}
+    {}
+  </w:body>
+</w:document>"#,
+            sect(1)
+        );
+        let mut notes = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+        );
+        for i in 1..=6 {
+            notes.push_str(&format!(
+                r#"<w:footnote w:id="{i}"><w:p><w:r><w:t>註腳內文{i}</w:t></w:r></w:p></w:footnote>"#
+            ));
+        }
+        notes.push_str("</w:footnotes>");
+        let mut base = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx 失敗");
+        base.set_part("word/document.xml", xml.into_bytes());
+        base.set_part("word/footnotes.xml", notes.into_bytes());
+        if !settings_pr.is_empty() {
+            let settings = format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{settings_pr}</w:settings>"#
+            );
+            base.set_part("word/settings.xml", settings.into_bytes());
+        }
+        let docx = base.save_docx().expect("存回 docx 失敗");
+        Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗")
+    }
+
+    /// (a) corpus 實檔（`tableCurrupt.docx`）：`numFmt=chicago` 有設定但正文
+    /// 零引用 ⇒ **渲染零變化＋`footnotes_json` 空**（不得虛構引用）。
+    #[test]
+    fn chicago_setting_without_reference_changes_nothing() {
+        let engine = Engine::from_docx_bytes(CHICAGO_NO_REF_DOC).expect("開啟 tableCurrupt 失敗");
+        let (items, marks) = footnote_json_items(&engine);
+        assert!(items.is_empty(), "零引用 ⇒ 不得有任何註腳條目：{items:?}");
+        assert!(marks.is_empty(), "零引用 ⇒ 不得有任何記號：{marks:?}");
+        assert!(engine.foot.is_empty(), "註腳層必須全空");
+        assert_eq!(engine.footnote_rounds(), 0, "零引用不計收斂輪數");
+        // A/B：與「移除 w:footnotePr」的同一檔逐位元組相同。
+        let stripped = engine_without_footnote_pr(CHICAGO_NO_REF_DOC);
+        assert_eq!(
+            all_pages_json(&engine),
+            all_pages_json(&stripped),
+            "chicago 設定但零引用 ⇒ 渲染必須與無設定逐位元組相同"
+        );
+    }
+
+    /// (b) corpus 實檔（solar-system.docx）：12 節＋`numRestart=eachSect`，
+    /// 正文零引用 ⇒ 同 (a) 零擾動（eachSect 的「有引用重啟」實證靠 fixture）。
+    #[test]
+    fn each_sect_setting_without_reference_changes_nothing() {
+        let engine = Engine::from_docx_bytes(EACH_SECT_NO_REF_DOC).expect("開啟 solar-system 失敗");
+        let (items, marks) = footnote_json_items(&engine);
+        assert!(items.is_empty(), "零引用 ⇒ 不得有任何註腳條目：{items:?}");
+        assert!(marks.is_empty(), "零引用 ⇒ 不得有任何記號：{marks:?}");
+        assert!(engine.foot.is_empty(), "註腳層必須全空");
+        let stripped = engine_without_footnote_pr(EACH_SECT_NO_REF_DOC);
+        assert_eq!(
+            all_pages_json(&engine),
+            all_pages_json(&stripped),
+            "eachSect 設定但零引用 ⇒ 渲染必須與無設定逐位元組相同"
+        );
+    }
+
+    /// (c) corpus 實檔（fdo77725.docx）：單節＋`numRestart=eachSect`＋**一處
+    /// 引用** ⇒ 消費路徑走通；單節的 eachSect 與 continuous 同值 ⇒ 編號仍是
+    /// 十進位「1」，渲染與「無設定」逐位元組相同。
+    #[test]
+    fn each_sect_single_section_reference_keeps_decimal_numbering() {
+        let engine = Engine::from_docx_bytes(EACH_SECT_ONE_REF_DOC).expect("開啟 fdo77725 失敗");
+        let (items, marks) = footnote_json_items(&engine);
+        assert_eq!(items.len(), 1, "一處引用 ⇒ 一條註腳：{items:?}");
+        assert_eq!(items[0].0, "1.", "單節 eachSect ⇒ 仍是十進位前綴「1.」");
+        assert_eq!(marks, vec!["1".to_string()], "記號字面與前綴同值（無尾點）");
+        let stripped = engine_without_footnote_pr(EACH_SECT_ONE_REF_DOC);
+        assert_eq!(
+            all_pages_json(&engine),
+            all_pages_json(&stripped),
+            "單節 eachSect ＝ continuous 同值 ⇒ 渲染零變化"
+        );
+    }
+
+    /// (d) 自製 fixture：settings 層 `numFmt=lowerRoman` ⇒ 兩節連續編號
+    /// `i. ii. iii. iv. v. vi.`（十進位不再出現）。
+    #[test]
+    fn lower_roman_num_fmt_is_consumed_from_settings() {
+        let engine = build_two_section_footnote_doc(
+            r#"<w:footnotePr><w:numFmt w:val="lowerRoman"/></w:footnotePr>"#,
+            &[],
+        );
+        let (items, marks) = footnote_json_items(&engine);
+        let prefixes: Vec<&str> = items.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            prefixes,
+            vec!["i.", "ii.", "iii.", "iv.", "v.", "vi."],
+            "settings 層 lowerRoman 必須被消費（連續編號）"
+        );
+        assert_eq!(
+            marks,
+            vec!["i", "ii", "iii", "iv", "v", "vi"],
+            "記號字面必須與前綴同值（經 note_number_text 同一出口）"
+        );
+    }
+
+    /// (e) 自製 fixture：加 `numRestart=eachSect` ⇒ 第二節從 `i.` 重啟
+    /// （節域計數器歸位）。
+    #[test]
+    fn each_sect_restarts_numbering_at_section_boundary() {
+        let engine = build_two_section_footnote_doc(
+            r#"<w:footnotePr><w:numFmt w:val="lowerRoman"/><w:numRestart w:val="eachSect"/></w:footnotePr>"#,
+            &[],
+        );
+        let (items, _) = footnote_json_items(&engine);
+        let prefixes: Vec<&str> = items.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            prefixes,
+            vec!["i.", "ii.", "iii.", "i.", "ii.", "iii."],
+            "eachSect ⇒ 第二節必須從 i. 重啟"
+        );
+    }
+
+    /// (f) 自製 fixture：節層 `numFmt` 只作用於**自己的節**（節 id ↔ 清單
+    /// 下標對齊的實證）：第一節 lowerRoman、第二節無 numFmt ⇒ 第二節回到
+    /// 十進位（＝十進位兜底原路徑）。
+    #[test]
+    fn section_level_num_fmt_applies_to_its_own_section_only() {
+        let engine = build_two_section_footnote_doc("", &[r#"<w:numFmt w:val="lowerRoman"/>"#, ""]);
+        let (items, _) = footnote_json_items(&engine);
+        let prefixes: Vec<&str> = items.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            prefixes,
+            vec!["i.", "ii.", "iii.", "4.", "5.", "6."],
+            "節層 numFmt 只作用於自己的節（節 id 索引不得錯位）"
+        );
+    }
+
+    /// (g) 自製 fixture：全十進位版 ⇒ 與「無 numFmt」版渲染逐位元組相同
+    /// （零變化守門：十進位不消費 ⇒ 編號表為空 ⇒ 十進位兜底原路徑）。
+    #[test]
+    fn decimal_num_fmt_changes_nothing_byte_for_byte() {
+        let dec = build_two_section_footnote_doc(
+            r#"<w:footnotePr><w:numFmt w:val="decimal"/></w:footnotePr>"#,
+            &[],
+        );
+        let none = build_two_section_footnote_doc(r#"<w:footnotePr/>"#, &[]);
+        assert_eq!(
+            all_pages_json(&dec),
+            all_pages_json(&none),
+            "十進位 numFmt 不得改動任何位元組"
+        );
+    }
+
+    /// (h) corpus 實檔（`test-data_document_footnotes.docx`）：**有註腳但無
+    /// numFmt**（十進位）⇒ 逐位元組不變——最關鍵的零變化組（有註腳卻不動
+    /// 一個位元組：十進位不消費 ⇒ 編號表為空 ⇒ 十進位兜底原路徑）。
+    #[test]
+    fn decimal_footnote_corpus_doc_changes_nothing_byte_for_byte() {
+        let engine = Engine::from_docx_bytes(FOOT_DOC).expect("開啟 footnotes.docx 失敗");
+        let (items, marks) = footnote_json_items(&engine);
+        assert_eq!(items.len(), 1, "一處引用 ⇒ 一條註腳：{items:?}");
+        assert_eq!(items[0].0, "1.", "十進位 ⇒ 前綴仍是「1.」");
+        assert_eq!(marks, vec!["1".to_string()], "記號字面仍是十進位「1」");
+        // A/B：與「移除 w:footnotePr」的同一檔逐位元組相同。
+        let stripped = engine_without_footnote_pr(FOOT_DOC);
+        assert_eq!(
+            all_pages_json(&engine),
+            all_pages_json(&stripped),
+            "十進位註腳 ⇒ 渲染必須與無設定逐位元組相同"
         );
     }
 }
