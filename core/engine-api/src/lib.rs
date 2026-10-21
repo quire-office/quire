@@ -41,6 +41,9 @@ pub use quire_layout::table::{Pen, RowFrag, TableFrag};
 
 // 頁底註腳層（F2b-2）：幾何與排布純函數（消費 F1 資料層＋F2a/F2b-1 預留機制）。
 pub mod footnotes;
+/// H2／F3b 共用的編號消費地基（純函式：numFmt 字面、numRestart 重啟、
+/// settings/sectPr 逐欄合併）。消費接线在註腳/尾註兩條鏈各自的卡。
+pub mod numbering;
 pub use footnotes::{AnchorMark, NoteLayout, NoteRun, PageFoot};
 #[derive(Error, Debug)]
 pub enum EngineError {
@@ -102,6 +105,10 @@ pub struct Engine {
     /// 宣告頁首頁尾時才有值**（無宣告＝空表），尾註頁的**末節**幾何不能靠
     /// 它——另存一份全表（純讀取派生，存檔路徑不經）。
     sec_geo_all: HashMap<u32, SectionGeometry>,
+    /// 段落 → 所屬 section id（`read_sections_per_paragraph` 的 id 投影；
+    /// 空表＝檔案無任何 sectPr，呼叫端退回「無節域」語義）。H2／F3b 的
+    /// 節域編號（numRestart=eachSect／節級 numFmt 覆寫）由此查錨點所在節。
+    para_sec: Vec<u32>,
 }
 
 /// 頁首／頁尾 part 的已解析投影（開啟文件時一次性解析；純讀取）。
@@ -337,6 +344,7 @@ impl Engine {
             end_note_of_anchor: Vec::new(),
             end_mark_styles: Vec::new(),
             sec_geo_all,
+            para_sec: sections.iter().map(|s| s.id).collect(),
         };
         Ok(engine.with_footnotes())
     }
@@ -423,15 +431,25 @@ impl Engine {
         let mut foot_by_id =
             self.cascade_note_entries(&self.doc.notes.footnotes, self.params.content_w_pt());
         let foot_anchors = footnotes::collect_anchors(&paras_eff);
-        let (foot_anchors, foot_entries, foot_of_anchor, foot_marks) =
-            note_chain(&foot_anchors, &mut foot_by_id, &paras_eff, def_size);
+        let (foot_anchors, foot_entries, foot_of_anchor, foot_marks) = note_chain(
+            &foot_anchors,
+            &mut foot_by_id,
+            &paras_eff,
+            def_size,
+            &HashMap::new(),
+        );
 
         // ---- 尾註支路 ----
         let end_w = self.end_content_w_pt();
         let mut end_by_id = self.cascade_note_entries(&self.doc.notes.endnotes, end_w);
         let end_anchors = footnotes::collect_endnote_anchors(&paras_eff);
-        let (end_anchors, end_entries, end_of_anchor, end_marks) =
-            note_chain(&end_anchors, &mut end_by_id, &paras_eff, def_size);
+        let (end_anchors, end_entries, end_of_anchor, end_marks) = note_chain(
+            &end_anchors,
+            &mut end_by_id,
+            &paras_eff,
+            def_size,
+            &HashMap::new(),
+        );
 
         self.note_anchors = foot_anchors;
         self.note_entries = foot_entries;
@@ -489,6 +507,7 @@ impl Engine {
                 footnotes::NoteEntry {
                     id: *id,
                     number: 0,
+                    number_label: String::new(),
                     body: body.trim().to_string(),
                     style,
                 },
@@ -648,6 +667,12 @@ impl Engine {
                 }
             })
             .collect()
+    }
+
+    /// 段落 → 所屬 section id 表（`para_sec` 的唯讀視圖；空表＝檔案無
+    /// sectPr）。節域編號（H2／F3b）與測試查錨點所在節用。
+    pub fn para_sections(&self) -> &[u32] {
+        &self.para_sec
     }
 
     /// 尾註發射層的唯讀視圖（逐頁條目＋正文錨點記號）。
@@ -2174,6 +2199,9 @@ fn note_chain(
     by_id: &mut HashMap<i64, footnotes::NoteEntry>,
     paras_eff: &[quire_ooxml::Paragraph],
     def_size: f32,
+    // 註 id → 編號字面（numFmt/numRestart 消費結果，`numbering::assign`
+    // 產出）。**空表＝零變化**：十進位 `number` 兜底路徑逐字原樣。
+    labels: &HashMap<i64, String>,
 ) -> (
     Vec<footnotes::Anchor>,
     Vec<footnotes::NoteEntry>,
@@ -2191,6 +2219,11 @@ fn note_chain(
         };
         if e.number == 0 {
             e.number = order.len() + 1;
+        }
+        // H2/F3b：有消費字面 ⇒ 蓋 number_label（前綴與記號經
+        // footnotes::note_number_text 統一取用）；無 ⇒ 空字串＝十進位原樣。
+        if let Some(lab) = labels.get(&a.note_id) {
+            e.number_label = lab.clone();
         }
         order.insert(a.note_id, e.number);
         let idx = entries.len();

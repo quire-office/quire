@@ -75,6 +75,12 @@ pub struct NoteEntry {
     pub number: usize,
     pub body: String,
     pub style: EntryStyle,
+    /// H2：編號的字面（numFmt 消費後的可能形：`i`／`iii`／`*`／`1`…）。
+    /// 空字串＝十進位 `number`（serde default ⇒ 舊快照／舊構造點零改寫，
+    /// 零變化守門：無 numFmt 檔案逐位元組走原路徑）。發射端（前綴與記號）
+    /// 一律經 [`note_number_label`] 取字面，不得直接 `number` 格式化。
+    #[serde(default)]
+    pub number_label: String,
 }
 
 /// 註腳條目內一段文字的發射屬性＋行內位移（發射端零判斷）。
@@ -228,6 +234,19 @@ fn collect_anchors_of(
     out
 }
 
+/// 註腳／尾註編號的發射字面（前綴與記號共用唯一出口）。
+///
+/// `number_label` 非空 ⇒ 用它（numFmt 消費形，如 `i`／`*`）；空 ⇒ `number`
+/// 的十進位——與 F2b-2／F3 原行為逐字元相同（零變化守門）。呼叫端一律經
+/// 本函式取字面，不得直接對 `number` 做格式化。
+pub fn note_number_text(e: &NoteEntry) -> String {
+    if e.number_label.is_empty() {
+        e.number.to_string()
+    } else {
+        e.number_label.clone()
+    }
+}
+
 /// 一條註腳的換行＋帶數。
 ///
 /// - `band_pt`＝該頁帶尺（全頁行網格尺度；帶數以此量化）
@@ -236,7 +255,7 @@ pub fn layout_entry(entry: &NoteEntry, band_pt: f32, avail_pt: f32) -> NoteItem 
     let st = &entry.style;
     let size = st.size_pt.max(1.0);
     let m = TextMeasurer::new(size);
-    let prefix = format!("{}.", entry.number);
+    let prefix = format!("{}.", note_number_text(entry));
     let prefix_w = m.text_width(&prefix);
     let space_w = m.text_width(" ");
     let indent = NOTE_INDENT_PT.max(0.0);
@@ -470,7 +489,7 @@ pub fn layout_notes(
             info,
             a,
             cp_end,
-            entries[ni].number,
+            &note_number_text(&entries[ni]),
             styles.get(ai),
             body_size_pt,
         );
@@ -640,7 +659,8 @@ pub fn anchor_mark(
     info: &[PageInfo],
     anchor: &Anchor,
     cp_end: usize,
-    number: usize,
+    // 編號的**發射字面**（前綴同款；十進位檔＝`number` 的十進位串）。
+    number: &str,
     style: Option<&MarkStyle>,
     body_size_pt: f32,
 ) -> Option<(usize, AnchorMark)> {
@@ -667,7 +687,7 @@ pub fn anchor_mark(
         AnchorMark {
             x_pt: page.margin_left_pt + x,
             y_pt: page.margin_top_pt + band_idx * band - band * SUP_RISE,
-            text: format!("{}", number),
+            text: number.to_string(),
             size_pt: (st.size_pt.max(1.0) * SUP_SCALE).max(1.0),
             color_argb: st.color_argb,
             family: st.family,
@@ -862,7 +882,7 @@ pub fn layout_endnotes(
             info,
             a,
             cp_end,
-            entries[ni].number,
+            &note_number_text(&entries[ni]),
             styles.get(ai),
             body_size_pt,
         ) else {
@@ -889,6 +909,7 @@ mod tests {
         NoteEntry {
             id: number as i64,
             number,
+            number_label: String::new(),
             body: body.to_string(),
             style: EntryStyle {
                 size_pt: 10.0,
