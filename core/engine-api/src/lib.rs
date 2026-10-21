@@ -726,7 +726,7 @@ fn cascade_paragraphs(
     let mut metrics: Vec<(f32, f32)> = Vec::with_capacity(paras.len());
     for (pi, p) in paras.iter().enumerate() {
         let inline = ParaStyle {
-            run: p.prun.unwrap_or_default(),
+            run: p.prun.clone().unwrap_or_default(),
             line: p.line,
             align: p.jc,
         };
@@ -734,13 +734,13 @@ fn cascade_paragraphs(
         let mut meas_size = base.size_pt.unwrap_or(def_size);
         let mut eff_runs: Vec<quire_ooxml::Run> = Vec::with_capacity(p.runs.len());
         for r in &p.runs {
-            let mut b = base;
+            let mut b = base.clone();
             if let Some(cid) = r.rstyle.as_deref() {
                 b = StyleTable::resolve_run(b, st.char_chain(cid).unwrap_or_default());
             }
             // 級聯末端兜底：只有整條鏈（直接格式／字元樣式／段落樣式／
             // docDefaults）都沒宣告顏色、底線時，超連結 run 才補合成預設。
-            let eff = StyleTable::resolve_run(b, r.direct.unwrap_or_default())
+            let eff = StyleTable::resolve_run(b, r.direct.clone().unwrap_or_default())
                 .with_hyperlink_default(r.hyperlink_default);
             // 斷行字級＝段內 run 有效字級最大值（Word 行高/斷行依段內最大
             // 字級成形；本引擎斷行用單一尺，取大者保守不切字）。
@@ -760,6 +760,10 @@ fn cascade_paragraphs(
                 r2.color = eff.color;
             }
             r2.size_pt = eff.size_pt;
+            // 有效字型族（w:rFonts 逐欄級聯結果）——**只存不讀**：本卡不改
+            // 任何測量／分頁／顯示列表／SVG 輸出（渲染逐位元組零變化），
+            // 僅把級聯結果烘焙進發射用投影，供後續選族卡消費。
+            r2.effective_fonts = eff.fonts;
             eff_runs.push(r2);
         }
         let line_h = resolve_line_h_pt(base.size_pt.unwrap_or(def_size), para.line);
@@ -1828,6 +1832,27 @@ mod tests {
     }
 
     // ---------------- 表格框線軸對齊（tbrl 修復：端點內縮誤掰斜水平/垂直線） ----------------
+
+    /// 字型族烘焙（ECMA-376 §17.3.2.26）：engine 開啟文件時把級聯後的有效
+    /// 字型族寫進發射用投影的 `Run::effective_fonts`（仿 `size_pt` 的做法）。
+    /// **只存不讀**——本卡不改任何測量／分頁／顯示列表／SVG 輸出（渲染
+    /// 逐位元組零變化）。
+    #[test]
+    fn engine_bakes_effective_fonts_into_projection() {
+        const DOC: &[u8] = include_bytes!("../../../fixtures/inline_image.docx");
+        // fixture 的 docDefaults 宣告 <w:rFonts w:ascii="Calibri" w:eastAsia="PMingLiU"/>。
+        let engine = Engine::from_docx_bytes(DOC).expect("開啟 inline_image.docx 失敗");
+        let fonts = engine
+            .eff_paragraphs()
+            .iter()
+            .flat_map(|p| p.runs.iter())
+            .find_map(|r| r.effective_fonts.clone())
+            .expect("docDefaults 宣告了 w:rFonts → 必須烘焙出有效字型族");
+        assert_eq!(fonts.ascii.as_deref(), Some("Calibri"));
+        assert_eq!(fonts.east_asia.as_deref(), Some("PMingLiU"));
+        // 渲染輸出不受影響（只存不讀）：存檔路徑位元組級不變。
+        assert_eq!(engine.save_docx().unwrap().as_slice(), DOC);
+    }
 
     /// Bug54771b（粗框線 sz=36 表格）實證返修。舊實作把框線四端各內縮半個
     /// 線寬：(a) 水平線 y1 下移 y2 上移 → 整條傾斜 ~2°（SVG 實測

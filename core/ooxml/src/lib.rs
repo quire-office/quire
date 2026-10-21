@@ -25,12 +25,12 @@ pub use sectpr::{
     read_even_and_odd_headers, read_sections_header_footer, read_sections_per_paragraph,
     SectionGeometry, SectionHeaderFooter, SectionSpec, SlotRefs,
 };
-pub use styles::{Align, LineSpacing, ParaStyle, RunStyle, StyleTable};
+pub use styles::{Align, LineSpacing, ParaStyle, RunFonts, RunStyle, StyleTable};
 pub use table::{
     Block, BodyTable, Border, Borders, CellProps, GridCol, Margins, RowProps, Shading, Table,
     TableCell, TableProps, TableRow, TblWidth,
 };
-pub use theme::{theme_slot_for, ThemeColors};
+pub use theme::{theme_slot_for, ThemeColors, ThemeFonts};
 pub use zip_struct::{Change, ZipBundle, ZipEntry, ZipError};
 
 use serde::{Deserialize, Serialize};
@@ -90,6 +90,13 @@ pub struct Run {
     /// engine 投影時以「前綴→點導引填補」展開（TOC 點引leads）。
     #[serde(default)]
     pub tab: bool,
+    /// 級聯合成的**有效字型族**（`w:rFonts` 逐欄級聯結果；engine 開啟文件
+    /// 時烘焙寫入，仿 `size_pt` 的做法）。`None`＝整鏈未宣告任何字型。
+    /// 純派生欄位——**本卡只存不讀**：任何測量／分頁／顯示列表／SVG 輸出都
+    /// 不消費它（渲染輸出逐位元組零變化）。存檔路徑完全不經它（parts
+    /// passthrough），serde default 保舊快照相容。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_fonts: Option<RunFonts>,
     /// 本 run 位於 `w:hyperlink` 內（解析期標記）。合成預設藍／底線**不再**
     /// 進 `direct`——那是直接格式，會依 ECMA-376 §17.7.2 越過用戶的
     /// Hyperlink 字元樣式；改由級聯末端（`RunStyle::with_hyperlink_default`）
@@ -379,7 +386,11 @@ fn apply_style_tag(
     // bool 欄位照舊寫（既有消費者不動），三態快照並行記錄給級聯層。只認
     // run 屬性標籤本身——catch-all 送來的無關標籤（noProof/lang…）不得把
     // direct 材料化成 Some（None＝「未見任何 rPr 宣告」的語義必須守住）。
-    if matches!(name, b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz") {
+    // `w:rFonts`（字型族）另有一道閘：空元素（無任何族別屬性）不材料化
+    // direct——否則「未見任何 rPr 宣告」的 None 語義會被一個空宣告破掉。
+    if matches!(name, b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz")
+        || (name == b"rFonts" && styles::rfonts_of(e).is_some())
+    {
         if let Some(r) = cur_run.as_mut() {
             styles::apply_run_tag(
                 name,
@@ -569,6 +580,21 @@ fn parse_document_xml(xml: &[u8], theme: &ThemeColors) -> Result<Vec<Paragraph>,
                             );
                         }
                     }
+                    // pPr/rPr 內的字型族宣告（w:rFonts；ECMA-376 §17.3.2.26）：
+                    // 收進段落棧頂的三態快照（段落級級聯輸入）。空元素不得
+                    // 物化 prun（守住「未見任何 rPr 宣告＝None」的語義）。
+                    b"rFonts" if ppr_rpr_depth > 0 => {
+                        if styles::rfonts_of(&e).is_some() {
+                            if let Some((_, p, _)) = stack.last_mut() {
+                                styles::apply_run_tag(
+                                    name.as_slice(),
+                                    &e,
+                                    p.prun.get_or_insert_with(RunStyle::default),
+                                    theme,
+                                );
+                            }
+                        }
+                    }
                     b"fldSimple" => {
                         // 簡單欄：w:instr 指令立即分類，其子樹 run 全標記。
                         let kind = attr_val(&e, "instr")
@@ -671,6 +697,19 @@ fn parse_document_xml(xml: &[u8], theme: &ThemeColors) -> Result<Vec<Paragraph>,
                             p.prun.get_or_insert_with(RunStyle::default),
                             theme,
                         );
+                    }
+                } else if name == b"rFonts" && ppr_rpr_depth > 0 {
+                    // pPr/rPr 內自閉合的字型族宣告（Start 臂的鏡像）。空元素
+                    // 不物化 prun（守住「未見任何 rPr 宣告＝None」的語義）。
+                    if styles::rfonts_of(&e).is_some() {
+                        if let Some((_, p, _)) = stack.last_mut() {
+                            styles::apply_run_tag(
+                                name.as_slice(),
+                                &e,
+                                p.prun.get_or_insert_with(RunStyle::default),
+                                theme,
+                            );
+                        }
                     }
                 } else if name == b"spacing" && ppr_depth == 1 && ppr_rpr_depth == 0 {
                     // 自閉合直接行距（Word 產出恆為自閉合）。
@@ -1390,7 +1429,7 @@ mod tests {
         if let Some(cid) = run.rstyle.as_deref() {
             b = StyleTable::resolve_run(b, st.char_chain(cid).unwrap_or_default());
         }
-        let eff = StyleTable::resolve_run(b, run.direct.unwrap_or_default())
+        let eff = StyleTable::resolve_run(b, run.direct.clone().unwrap_or_default())
             .with_hyperlink_default(run.hyperlink_default);
         assert_eq!(
             eff.color,
@@ -1434,7 +1473,7 @@ mod tests {
             Some(0xFF30_5090),
             "run 直接格式的有效色必須是主題 hlink（0x305090），非 w:val 純藍"
         );
-        let direct = run.direct.expect("run 直接格式快照必須存在");
+        let direct = run.direct.clone().expect("run 直接格式快照必須存在");
         assert_eq!(direct.color, Some(0xFF30_5090));
         assert!(direct.color_set, "宣告了顏色 → color_set 必真");
     }
@@ -1502,7 +1541,7 @@ mod tests {
         assert!(run.color.is_none(), "解析期不得再合成顏色");
         assert!(!run.underline, "解析期不得再合成底線");
         let (base, _) = st.effective_para(None, ParaStyle::default());
-        let eff = StyleTable::resolve_run(base, run.direct.unwrap_or_default())
+        let eff = StyleTable::resolve_run(base, run.direct.clone().unwrap_or_default())
             .with_hyperlink_default(run.hyperlink_default);
         assert_eq!(eff.color, Some(HYPERLINK_DEFAULT_COLOR_ARGB));
         assert_eq!(eff.underline, Some(true));
@@ -1534,7 +1573,7 @@ mod tests {
         let paras = parse_doc(doc_xml.as_bytes()).expect("解析 document.xml");
         let run = &paras[0].runs[0];
         let (base, _) = st.effective_para(None, ParaStyle::default());
-        let eff = StyleTable::resolve_run(base, run.direct.unwrap_or_default())
+        let eff = StyleTable::resolve_run(base, run.direct.clone().unwrap_or_default())
             .with_hyperlink_default(run.hyperlink_default);
         assert_eq!(eff.color, Some(0xFFFF_0000), "直接色贏過樣式與兜底");
         assert_eq!(eff.underline, Some(false), "直接 u=none 明確關閉底線");
@@ -1570,7 +1609,7 @@ mod tests {
         if let Some(cid) = run.rstyle.as_deref() {
             b = StyleTable::resolve_run(b, st.char_chain(cid).unwrap_or_default());
         }
-        let eff = StyleTable::resolve_run(b, run.direct.unwrap_or_default())
+        let eff = StyleTable::resolve_run(b, run.direct.clone().unwrap_or_default())
             .with_hyperlink_default(run.hyperlink_default);
         assert_eq!(eff.underline, Some(false), "樣式宣告 u=none 即不合成");
         assert_eq!(eff.color, Some(HYPERLINK_DEFAULT_COLOR_ARGB), "色仍兜底");
@@ -1598,6 +1637,7 @@ mod tests {
         let paras = parse_doc(xml).expect("解析");
         let prun = paras[0]
             .prun
+            .clone()
             .expect("自閉合標籤必須收進 p.prun（與成對寫法同義）");
         assert_eq!(prun.bold, Some(true));
         assert_eq!(prun.italic, Some(true));
@@ -1653,6 +1693,85 @@ mod tests {
         .expect("解析");
         assert!(paras[0].prun.is_none(), "rPr 外的 b 不得材料化 prun");
         assert!(!paras[0].runs[0].bold, "也不得灌給後續 run");
+    }
+
+    // ---------------- 字型族宣告（w:rFonts；ECMA-376 §17.3.2.26） ----------------
+
+    /// rFonts 直接格式解析：`w:ascii`／`w:eastAsia`／`w:cs` 與
+    /// `w:hint="eastAsia"` 各自入欄（`w:cs` 未宣告＝None，非空字串）。
+    #[test]
+    fn run_direct_rfonts_parsed() {
+        let xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body><w:p>
+            <w:r><w:rPr><w:rFonts w:ascii="Arial" w:eastAsia="標楷體" w:hint="eastAsia"/></w:rPr>
+              <w:t>字型</w:t></w:r>
+          </w:p></w:body>
+        </w:document>"#;
+        let paras = parse_doc(xml.as_bytes()).expect("解析 document.xml");
+        let direct = paras[0].runs[0]
+            .direct
+            .clone()
+            .expect("w:rFonts 必須物化 run 直接格式快照");
+        let fonts = direct.fonts.expect("w:rFonts 必須收進 direct.fonts");
+        assert_eq!(fonts.ascii.as_deref(), Some("Arial"), "w:ascii 入欄");
+        assert_eq!(
+            fonts.east_asia.as_deref(),
+            Some("標楷體"),
+            "w:eastAsia 入欄"
+        );
+        assert!(fonts.hint_east_asian, "w:hint=eastAsia 必須置位");
+        assert_eq!(fonts.cs, None, "未宣告 w:cs ＝ None（繼承）");
+    }
+
+    /// 空 `w:rFonts`（無任何族別屬性）**不得**物化直接格式快照——「未見任何
+    /// rPr 宣告＝None」的語義必須守住（否則 direct 會憑空變 Some）。
+    #[test]
+    fn empty_rfonts_does_not_materialize_direct() {
+        let xml = r#"<w:document xmlns:w="x"><w:body><w:p>
+          <w:r><w:rPr><w:rFonts/></w:rPr><w:t>空</w:t></w:r>
+        </w:p></w:body></w:document>"#;
+        let paras = parse_doc(xml.as_bytes()).expect("解析 document.xml");
+        assert!(
+            paras[0].runs[0].direct.is_none(),
+            "空 w:rFonts 不得物化 direct（保持未宣告語義）"
+        );
+    }
+
+    /// 序列化相容：舊版 JSON（不含 fonts 欄位）必須能反序列化（fonts＝None）；
+    /// 新欄位為 None 時**不得**出現在序列化輸出（否則既有快照會多出
+    /// `"fonts":null` 而變紅）。
+    #[test]
+    fn run_style_serde_is_backward_compatible() {
+        // 舊版 RunStyle 的序列化輸出（無 fonts 欄位）。
+        let old = r#"{"size_pt":12.0,"bold":true,"italic":null,"underline":null,"strike":null,"color":null,"color_set":false}"#;
+        let rs: RunStyle = serde_json::from_str(old).expect("舊版 JSON 必須能反序列化");
+        assert_eq!(rs.fonts, None, "舊版 JSON 不得帶出字型族");
+        assert_eq!(rs.size_pt, Some(12.0), "舊欄位語義不變");
+        // 新欄位 None 時不外露（skip_serializing_if）。
+        let json = serde_json::to_string(&RunStyle::default()).expect("序列化");
+        assert!(
+            !json.contains("fonts"),
+            "新欄位 None 時不得出現在序列化輸出：{json}"
+        );
+        // Run 的有效字型族欄位同口徑。
+        let run_json = serde_json::to_string(&Run::default()).expect("序列化 Run");
+        assert!(
+            !run_json.contains("effective_fonts"),
+            "Run 的新欄位 None 時不得外露：{run_json}"
+        );
+        // 帶宣告時必須可來回（serde round-trip）。
+        let with_fonts = RunStyle {
+            fonts: Some(RunFonts {
+                ascii: Some("Arial".to_string()),
+                east_asia: Some("標楷體".to_string()),
+                cs: None,
+                hint_east_asian: true,
+            }),
+            ..Default::default()
+        };
+        let back: RunStyle = serde_json::from_str(&serde_json::to_string(&with_fonts).unwrap())
+            .expect("往返反序列化");
+        assert_eq!(back.fonts, with_fonts.fonts, "字型族必須可往返");
     }
 
     // ---------------- 強制分頁 br-page（t_01fa57af） ----------------

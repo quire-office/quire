@@ -172,6 +172,7 @@ dependencies = [
  "flate2",
  "quick-xml",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
