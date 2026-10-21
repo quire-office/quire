@@ -11,6 +11,7 @@
 
 mod diff;
 mod drawing;
+mod notes;
 mod rels;
 mod sectpr;
 mod styles;
@@ -32,6 +33,8 @@ pub use table::{
 };
 pub use theme::{theme_slot_for, ThemeColors, ThemeFonts};
 pub use zip_struct::{Change, ZipBundle, ZipEntry, ZipError};
+
+pub use notes::{Note, NoteKind, NoteKind2, NoteRef, Notes};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -97,6 +100,13 @@ pub struct Run {
     /// passthrough），serde default 保舊快照相容。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_fonts: Option<RunFonts>,
+    /// 引用標記（`w:footnoteReference`／`w:endnoteReference`；ECMA-376
+    /// §17.11.2）：解析期把這個 run 標成註腳／尾註的**引用錨點**（Word
+    /// 產出恆為專屬空文字 run，語義仿 `field` 標記——發射層依標記放
+    /// 符號，同一 run 的型別／樣式欄位照舊）。本卡渲染零消費；存檔不
+    /// 經此欄（parts passthrough），serde default＋skip 保舊快照相容。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_ref: Option<NoteRef>,
     /// 本 run 位於 `w:hyperlink` 內（解析期標記）。合成預設藍／底線**不再**
     /// 進 `direct`——那是直接格式，會依 ECMA-376 §17.7.2 越過用戶的
     /// Hyperlink 字元樣式；改由級聯末端（`RunStyle::with_hyperlink_default`）
@@ -208,6 +218,12 @@ pub struct OoxmlDoc {
     /// body 級表格的 canonical 投影（只讀；寫回來源仍是 parts 明文，
     /// 見 [`table`] 模組頭「唯讀來源隔離」）。段落以索引引用 `paragraphs`。
     pub tables: Vec<BodyTable>,
+    /// 註腳／尾註本體彙總（`word/footnotes.xml`＋`word/endnotes.xml` 一次性
+    /// 解析；ECMA-376 §17.11）。純讀取投影，**本卡版面／顯示列表零消費**；
+    /// 缺 part＝空彙總（容錯口徑同 main 主題表）。存檔不經此欄（parts
+    /// passthrough），serde default 保舊快照相容。
+    #[serde(default)]
+    pub notes: Notes,
     /// 全部 zip part 的明文（解壓後）——編輯面的工作副本；save() 以此為準寫回。
     pub parts: BTreeMap<String, Vec<u8>>,
     /// zip 結構快照：存回時未觸碰 entry 原樣搬運的依據。
@@ -285,9 +301,12 @@ pub fn parse(bytes: &[u8]) -> Result<OoxmlDoc, OoxmlError> {
     let paragraphs = parse_document_xml(xml, &theme)?;
     // 表格投影：純讀入（PM 補正 1——唯讀來源隔離；無損寫回路徑完全不經此处）。
     let tables = table::read_body_tables(xml);
+    // 註腳／尾註彙總（ECMA-376 §17.11）：純讀取；缺 part／壞 XML＝空彙總。
+    let notes = Notes::from_parts(&parts);
     Ok(OoxmlDoc {
         paragraphs,
         tables,
+        notes,
         parts,
         bundle,
     })
@@ -629,6 +648,12 @@ fn parse_document_xml(xml: &[u8], theme: &ThemeColors) -> Result<Vec<Paragraph>,
                     }
                     b"Fallback" => fb += 1,
                     b"AlternateContent" => ac_stack.push(fb),
+                    // 註引用標記（ECMA-376 §17.11.2）：成對寫法入口
+                    // （`<w:footnoteReference w:id="N"></w:footnoteReference>`
+                    // 合法但罕見；Word 產出恆為自閉合，由 Empty 臂收）。
+                    b"footnoteReference" | b"endnoteReference" => {
+                        record_note_ref(name.as_slice(), &e, &mut cur_run);
+                    }
                     other => apply_style_tag(other, &e, &mut cur_run, theme),
                 }
             }
@@ -739,6 +764,9 @@ fn parse_document_xml(xml: &[u8], theme: &ThemeColors) -> Result<Vec<Paragraph>,
                             ppr_rpr_depth,
                         );
                     }
+                } else if matches!(name.as_slice(), b"footnoteReference" | b"endnoteReference") {
+                    // 註引用標記（自閉合＝Word 常態寫法）：標進進行中的 run。
+                    record_note_ref(name.as_slice(), &e, &mut cur_run);
                 } else {
                     apply_style_tag(name.as_slice(), &e, &mut cur_run, theme);
                 }
@@ -830,6 +858,30 @@ fn parse_document_xml(xml: &[u8], theme: &ThemeColors) -> Result<Vec<Paragraph>,
         }
     }
     Ok(out)
+}
+
+/// 註引用標記（ECMA-376 §17.11.2）：`w:footnoteReference`／
+/// `w:endnoteReference` → 進行中 run 的 [`NoteRef`] 標記（語義仿 `field`
+/// 標記：run 本身不改動，只多一枚錨點印記）。取捨：
+/// - 缺 `@w:id`／非整數 → **老實跳過此標記**不 panic（無 id 的引用無法
+///   對應任何註本體，虛構 id／0 都比略過更錯——同 corpus 病態防護口徑）；
+/// - 無進行中 run（段落直下、畸形位置）→ 老實略：憑空造 run 會破壞
+///   「run 序＝w:r 序」的佔槽口徑，發射層（F2）也無從定位；
+/// - 同 run 多個引用 → **首見為準**（單一錨點語義，後見不覆蓋）；
+/// - 引用與 `w:t` 同 run（極罕見、非 Word 產出形態）：標記隨 run 保留、
+///   **不分裂 run**——run 序與文字流保持原樣，F2 發射符號時再裁決展開。
+fn record_note_ref(name: &[u8], e: &quick_xml::events::BytesStart, cur_run: &mut Option<Run>) {
+    let kind = if name == b"footnoteReference" {
+        NoteKind2::Footnote
+    } else {
+        NoteKind2::Endnote
+    };
+    let id = attr_val(e, "id")
+        .as_deref()
+        .and_then(|v| v.trim().parse::<i64>().ok());
+    if let (Some(id), true) = (id, matches!(cur_run, Some(r) if r.note_ref.is_none())) {
+        cur_run.as_mut().expect("剛查 some").note_ref = Some(NoteRef { kind, id });
+    }
 }
 
 fn attr_val(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
