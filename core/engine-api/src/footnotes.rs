@@ -26,8 +26,14 @@
 //!   故註腳字級與正文帶尺不同時，保留帶可能有 ≤1 帶的保守多留（多留不倒扣）。
 //! - 表格／文字框內的錨點不在正文流行程內 ⇒ 其註腳落到**最後一頁**（不靜默遺失）。
 //! - 分欄文件的註腳掛整頁版心下方（不逐欄分割）。
-//! - 尾註（endnote）本卡不發射（F3）；`separator`/`continuationSeparator` 型註
-//!   本體不進條目（Word 慣例 id=-1/0，非正文引用對象）。
+//! - `separator`／`continuationSeparator` 型註本體不進條目（Word 慣例
+//!   id=-1/0，非正文引用對象）。
+//!
+//! 尾註（endnote，F3）：**不掛頁底**——全部排在正文之後的專屬頁（追加頁，
+//! 不擠正文）。尾註支路與本模組的頁底註腳支路**並存且互不干擾**：兩條鏈
+//! 各自獨立（`note_ref` 是單欄位，同一個 run 不會同時掛兩者 ⇒ 無競態）。
+//! 尾註的編號是**十進位**；`endnotePr/numFmt`（lowerRoman 等）的消費屬
+//! F3b，本卡不做——老實記在模組注裡，不假裝支援。
 
 use quire_layout::TextMeasurer;
 use serde::{Deserialize, Serialize};
@@ -165,18 +171,36 @@ pub struct Anchor {
     pub cp_len: usize,
 }
 
-/// 掃描正文流的註腳錨點（只取 `w:footnoteReference`；尾註留 F3）。
+/// 掃描正文流的註腳錨點（只取 `w:footnoteReference`）。
 ///
 /// 輸入是 engine 的發射投影（`eff_paragraphs()`）——錨點序必須與發射端
 /// 讀到的段落/run 序一致，故不能用 doc 本體。
 pub fn collect_anchors(paras: &[quire_ooxml::Paragraph]) -> Vec<Anchor> {
+    collect_anchors_of(paras, quire_ooxml::NoteKind2::Footnote)
+}
+
+/// 掃描正文流的**尾註**錨點（只取 `w:endnoteReference`；F3 尾註支路）。
+///
+/// 與 [`collect_anchors`] 完全同構（同樣以發射投影為輸入、錨點序＝段落/
+/// run 序、cp 標尺同款），只是取另一種引用型別。既有函式簽名不動
+/// （既有呼叫點零改動）——兩條支路各自獨立跑：`note_ref` 是單欄位，
+/// 同一個 run 不會同時掛註腳與尾註 ⇒ 兩條鏈無競態。
+pub fn collect_endnote_anchors(paras: &[quire_ooxml::Paragraph]) -> Vec<Anchor> {
+    collect_anchors_of(paras, quire_ooxml::NoteKind2::Endnote)
+}
+
+/// 依引用型別掃描正文流的註錨點（兩條支路共用的實作）。
+fn collect_anchors_of(
+    paras: &[quire_ooxml::Paragraph],
+    kind: quire_ooxml::NoteKind2,
+) -> Vec<Anchor> {
     let mut out = Vec::new();
     for (pi, p) in paras.iter().enumerate() {
         let mut cp = 0usize;
         for (ri, r) in p.runs.iter().enumerate() {
             let len = r.text.chars().count();
             if let Some(nf) = r.note_ref.as_ref() {
-                if nf.kind == quire_ooxml::NoteKind2::Footnote {
+                if nf.kind == kind {
                     out.push(Anchor {
                         note_id: nf.id,
                         para: pi,
@@ -408,7 +432,6 @@ pub fn layout_notes(
     styles: &[MarkStyle],
     rounds: usize,
 ) -> NoteLayout {
-    let body = body_size_pt.max(1.0);
     let mut per_page: Vec<Vec<usize>> = vec![Vec::new(); pages.len()];
     let mut marks: Vec<Vec<AnchorMark>> = vec![Vec::new(); pages.len()];
     for (ai, a) in anchors.iter().enumerate() {
@@ -419,38 +442,19 @@ pub fn layout_notes(
             continue;
         }
         let cp_end = a.cp_before + a.cp_len;
-        // (1) 定位：段內 cp 終點落在哪一頁的哪一行。
-        let hit = find_anchor_line(pages, a.para, cp_end);
+        // (1) 定位：段內 cp 終點落在哪一頁的哪一行（記號口徑與尾註支路共用
+        //     `anchor_mark`——兩者規則必須逐位元組相同，故只有一份實作）。
+        let hit = anchor_mark(
+            pages,
+            info,
+            a,
+            cp_end,
+            entries[ni].number,
+            styles.get(ai),
+            body_size_pt,
+        );
         let (page_idx, mark) = match hit {
-            Some((pi, li, rel_cp)) => {
-                let page = &pages[pi];
-                let line = &page.lines[li];
-                let byte = line
-                    .text
-                    .char_indices()
-                    .nth(rel_cp)
-                    .map(|(b, _)| b)
-                    .unwrap_or(line.text.len());
-                let x = TextMeasurer::new(body).text_width(&line.text[..byte]);
-                let band_idx = page.line_bands.get(li).copied().unwrap_or(li as u32) as f32;
-                let band = info.get(pi).map(|g| g.band_pt.max(1.0)).unwrap_or(16.8);
-                let st = styles.get(ai).cloned().unwrap_or(MarkStyle {
-                    size_pt: body,
-                    color_argb: 0xFF00_0000,
-                    family: None,
-                });
-                (
-                    pi,
-                    Some(AnchorMark {
-                        x_pt: page.margin_left_pt + x,
-                        y_pt: page.margin_top_pt + band_idx * band - band * SUP_RISE,
-                        text: format!("{}", entries[ni].number),
-                        size_pt: (st.size_pt.max(1.0) * SUP_SCALE).max(1.0),
-                        color_argb: st.color_argb,
-                        family: st.family,
-                    }),
-                )
-            }
+            Some((pi, m)) => (pi, Some(m)),
             // (2) 定位失敗：註腳落末頁、記號不發。
             None => (pages.len().saturating_sub(1), None),
         };
@@ -485,12 +489,60 @@ pub fn layout_notes(
     }
 }
 
+/// 錨點記號（發在該 anchor run 的行內終點）：回 (正文頁序, 記號)。
+///
+/// 定位口徑同 [`find_anchor_line`]：段落跨頁時以**記號實際落點**為準；
+/// 定位失敗 ⇒ `None`（老實留白，不虛構記號）。座標口徑與顯示列表一致
+/// （`y` 為行頂，本欄已含上標上移）。
+///
+/// 註腳與尾註**共用**本函式——兩者的記號規則必須逐位元組相同（PM 契約：
+/// 「規則與 F2b-2 註腳記號完全相同」），故只有一份實作。
+pub fn anchor_mark(
+    pages: &[quire_layout::Page],
+    info: &[PageInfo],
+    anchor: &Anchor,
+    cp_end: usize,
+    number: usize,
+    style: Option<&MarkStyle>,
+    body_size_pt: f32,
+) -> Option<(usize, AnchorMark)> {
+    let body = body_size_pt.max(1.0);
+    let (pi, li, rel_cp) = find_anchor_line(pages, anchor.para, cp_end)?;
+    let page = &pages[pi];
+    let line = &page.lines[li];
+    let byte = line
+        .text
+        .char_indices()
+        .nth(rel_cp)
+        .map(|(b, _)| b)
+        .unwrap_or(line.text.len());
+    let x = TextMeasurer::new(body).text_width(&line.text[..byte]);
+    let band_idx = page.line_bands.get(li).copied().unwrap_or(li as u32) as f32;
+    let band = info.get(pi).map(|g| g.band_pt.max(1.0)).unwrap_or(16.8);
+    let st = style.cloned().unwrap_or(MarkStyle {
+        size_pt: body,
+        color_argb: 0xFF00_0000,
+        family: None,
+    });
+    Some((
+        pi,
+        AnchorMark {
+            x_pt: page.margin_left_pt + x,
+            y_pt: page.margin_top_pt + band_idx * band - band * SUP_RISE,
+            text: format!("{}", number),
+            size_pt: (st.size_pt.max(1.0) * SUP_SCALE).max(1.0),
+            color_argb: st.color_argb,
+            family: st.family,
+        },
+    ))
+}
+
 /// 找錨點落點：段內第 `cp` 碼點所在的 (頁序, 行序, 行內 cp)。
 ///
 /// 行的 `char_offset` 是段內碼點標尺（Card A 契約），直接比較即可。落在行尾
 /// 邊界時歸**前一行**（記號貼在前文之後，與 Word 的「上標跟引用文字」一致）；
 /// `cp == 0`（段首即錨點，例：段落以註腳引用開頭）歸本行行首。無任何行回 None。
-fn find_anchor_line(
+pub fn find_anchor_line(
     pages: &[quire_layout::Page],
     para: usize,
     cp: usize,
@@ -511,6 +563,182 @@ fn find_anchor_line(
         }
     }
     None
+}
+
+// ---------------- 尾註（F3）----------------
+//
+// 尾註**不掛頁底**：全部排在正文之後的**專屬頁**（ECMA-376 §17.11.10；
+// Word 預設 `endnotePr/pos=documentEnd`）。本段只消費 F1 資料層
+// （`word/endnotes.xml` ＋ 正文 `w:endnoteReference`）與既有條目尺
+// （`layout_entry`），**不重寫**頁底註腳機制。
+//
+// 三條幾何鐵律（PM 定案）：
+// 1. **正文頁零位移**：尾註只在正文分頁定案後**追加頁**；正文每一頁的
+//    內容與分頁斷點與無尾註時逐位元組相同（尾註不預留、不擠正文——
+//    這正是它與頁底註腳的根本差異）。
+// 2. **尾註頁幾何＝末節**（正文末頁的 section）。
+// 3. **條目整條不跨頁**：一條裝不下就整條去下一頁（註腳跨頁切分屬 F2c，
+//    尾註同款延後——本卡老實不切條）。
+
+/// 尾註首頁分隔線佔帶數：1 帶畫線 ＋ `SEP_GAP_PT` 量化帶留白。
+///
+/// 條目區自 `margin_top ＋ 本值×帶尺` 起（首頁容量也要扣掉這幾帶）。
+/// 整帶量化（與頁底註腳同款）：值域離散 ⇒ 幾何可重現。
+pub fn endnote_sep_bands(band_pt: f32) -> u32 {
+    let band = band_pt.max(1.0);
+    1 + (SEP_GAP_PT / band).ceil().max(1.0) as u32
+}
+
+/// 尾註頁的幾何輸入（末節幾何量化後的裝箱尺；純資料，無行為）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EndGeometry {
+    /// 帶尺（pt；條目帶數以此量化）。
+    pub band_pt: f32,
+    /// 版心寬（pt；條目換行尺）。
+    pub content_w_pt: f32,
+    /// 首頁容量（帶；已扣掉分隔線佔帶）。
+    pub capacity_first: usize,
+    /// 後續頁容量（帶；末節全容量）。
+    pub capacity_rest: usize,
+}
+
+/// 尾註的版面與發射（**追加頁**：正文分頁定案後才排）。
+///
+/// 幾何契約（PM 定案）：
+/// - 尾註頁＝追加頁，正文每頁內容與分頁斷點與無尾註時逐位元組相同；
+/// - 尾註頁幾何＝末節（正文末頁的 section）；
+/// - 首頁頂部有分隔線（版心左緣起、寬＝版心×1/3、y＝margin_top），
+///   條目區自 `margin_top ＋ (1＋SEP_GAP 量化帶)×帶尺` 起；
+/// - 後續頁**不畫**分隔線（Word 的 continuationSeparator 屬 F3b，
+///   本卡老實留白——不憑空畫一條沒有依據的線）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct EndLayout {
+    /// 逐尾註頁的條目（條目整條不跨頁——一條裝不下就整條去下一頁）。
+    pub pages: Vec<Vec<NoteItem>>,
+    /// 逐**正文頁**的錨點記號（記號發在正文錨點 run 的行內終點；
+    /// 索引＝正文頁序，長度＝正文頁數）。
+    pub marks: Vec<Vec<AnchorMark>>,
+    /// 首頁是否畫分隔線（true＝畫在頁頂）。
+    pub separator_top: bool,
+}
+
+impl EndLayout {
+    /// 文件是否有任何尾註發射（false ⇒ 發射層走零擾動快路徑）。
+    pub fn is_empty(&self) -> bool {
+        self.pages.iter().all(|p| p.is_empty()) && self.marks.iter().all(|m| m.is_empty())
+    }
+}
+
+/// 條目逐頁裝箱（純函式）：回每頁的**條目索引**（依序、不漏不重）。
+///
+/// 容量以「帶」計（與 `layout_entry` 的帶數同尺）。首頁容量與後續頁
+/// 容量分開給（首頁要扣掉分隔線佔帶）。
+///
+/// 邊界（樣樣不炸）：
+/// - 空輸入 ⇒ 空頁面清單；
+/// - 容量 ≤ 0 ⇒ 視同 1（不空迴圈、不吞條目）；
+/// - **單條帶數超過整頁容量 ⇒ 該條獨佔一頁**（不切條、不丟條）。
+pub fn flow_items_to_pages(
+    items: &[NoteItem],
+    capacity_first: usize,
+    capacity_rest: usize,
+) -> Vec<Vec<usize>> {
+    let cap_first = capacity_first.max(1) as u32;
+    let cap_rest = capacity_rest.max(1) as u32;
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let mut cur: Vec<usize> = Vec::new();
+    let mut cur_bands: u32 = 0;
+    let mut page_no = 0usize;
+    for (i, it) in items.iter().enumerate() {
+        let cap = if page_no == 0 { cap_first } else { cap_rest };
+        let bands = it.bands.max(1);
+        if !cur.is_empty() && cur_bands.saturating_add(bands) > cap {
+            out.push(std::mem::take(&mut cur));
+            cur_bands = 0;
+            page_no += 1;
+        }
+        cur.push(i);
+        cur_bands = cur_bands.saturating_add(bands);
+        if cur_bands >= cap {
+            // 單條自帶就超過整頁容量 ⇒ 獨佔一頁（不切條、不丟條）。
+            out.push(std::mem::take(&mut cur));
+            cur_bands = 0;
+            page_no += 1;
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// 尾註的排布：條目裝頁 ＋ 正文錨點記號。
+///
+/// 與 [`layout_notes`] 的關鍵差異（幾何契約）：
+/// - 條目**不掛頁底**：全部進尾註專屬頁（追加在正文之後）；
+/// - 條目**整條不跨頁**（一條裝不下就整條去下一頁）；
+/// - 記號仍在**正文頁**發（正文引用處的上標數字），口徑與註腳記號同款
+///   （共用 [`anchor_mark`]——只有一份實作）。
+///
+/// 同一則尾註被引用多次 ⇒ 條目只排**一條**（Word 慣例：尾註列一次），
+/// 但每個引用處仍各發一個記號（上標數字是引用點的記號，不是條目的記號）。
+#[allow(clippy::too_many_arguments)] // 版面事實/錨點/條目/映射/樣式/幾何皆必要輸入，同 layout_notes 口徑
+pub fn layout_endnotes(
+    pages: &[quire_layout::Page],
+    info: &[PageInfo],
+    anchors: &[Anchor],
+    entries: &[NoteEntry],
+    note_of_anchor: &[usize],
+    body_size_pt: f32,
+    styles: &[MarkStyle],
+    geo: &EndGeometry,
+) -> EndLayout {
+    // 條目：同一則尾註只排一條（依首次引用序＝編號序）。
+    let mut seen: Vec<i64> = Vec::new();
+    let mut items: Vec<NoteItem> = Vec::new();
+    for e in entries.iter() {
+        if seen.contains(&e.id) {
+            continue;
+        }
+        seen.push(e.id);
+        items.push(layout_entry(e, geo.band_pt, geo.content_w_pt));
+    }
+    // 裝頁（純函式；單條超容量 ⇒ 獨佔一頁）。
+    let assign = flow_items_to_pages(&items, geo.capacity_first, geo.capacity_rest);
+    let end_pages: Vec<Vec<NoteItem>> = assign
+        .iter()
+        .map(|idxs| idxs.iter().map(|&i| items[i].clone()).collect())
+        .collect();
+    // 記號（正文頁；口徑與註腳記號同款）。
+    let mut marks: Vec<Vec<AnchorMark>> = vec![Vec::new(); pages.len()];
+    for (ai, a) in anchors.iter().enumerate() {
+        let Some(&ni) = note_of_anchor.get(ai) else {
+            continue;
+        };
+        if ni >= entries.len() {
+            continue;
+        }
+        let cp_end = a.cp_before + a.cp_len;
+        let Some((pi, m)) = anchor_mark(
+            pages,
+            info,
+            a,
+            cp_end,
+            entries[ni].number,
+            styles.get(ai),
+            body_size_pt,
+        ) else {
+            continue; // 定位失敗：老實不發記號（不虛構座標）。
+        };
+        if let Some(slot) = marks.get_mut(pi) {
+            slot.push(m);
+        }
+    }
+    EndLayout {
+        separator_top: !end_pages.is_empty(),
+        pages: end_pages,
+        marks,
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -867,5 +1095,121 @@ mod tests {
         let (x1, x2) = separator_span(72.0, 450.0);
         assert_eq!(x1, 72.0);
         assert_eq!(x2, 72.0 + 150.0);
+    }
+
+    // ---------- 尾註（F3）----------
+
+    /// 測試用條目（只帶帶數；行內容與本組測試無關）。
+    fn item(bands: u32) -> NoteItem {
+        NoteItem {
+            lines: vec![NoteLine { runs: Vec::new() }],
+            bands,
+            line_h_pt: 14.0,
+        }
+    }
+
+    /// (f1) `flow_items_to_pages` 空輸入 ⇒ 空頁面清單（零擾動快路徑的判準）。
+    #[test]
+    fn flow_items_to_pages_empty_input_yields_no_pages() {
+        assert!(flow_items_to_pages(&[], 10, 10).is_empty());
+    }
+
+    /// (f2) 單條帶數超過整頁容量 ⇒ 該條**獨佔一頁**（不切條、不丟條、不 panic）。
+    #[test]
+    fn flow_items_to_pages_oversized_item_owns_its_page() {
+        let items = vec![item(1), item(99), item(1)];
+        let pages = flow_items_to_pages(&items, 2, 2);
+        assert_eq!(pages.len(), 3, "三條 ⇒ 三頁（超大條獨佔一頁）");
+        assert_eq!(pages[1], vec![1], "超大條必須獨佔一頁");
+        assert_eq!(
+            pages.iter().flatten().count(),
+            3,
+            "條目索引不得漏（逐條都得有落點）"
+        );
+    }
+
+    /// (f3) 逐頁裝箱：首頁容量與後續頁容量分別生效；索引按序、不漏不重。
+    #[test]
+    fn flow_items_to_pages_packs_by_capacity_in_order() {
+        let items: Vec<NoteItem> = (0..5).map(|_| item(1)).collect();
+        let pages = flow_items_to_pages(&items, 2, 3);
+        assert_eq!(pages, vec![vec![0, 1], vec![2, 3, 4]]);
+    }
+
+    /// (f4) 容量 ≤ 0 ⇒ 視同 1（不空迴圈、不 panic、不吞條目）。
+    #[test]
+    fn flow_items_to_pages_zero_capacity_degrades_to_one() {
+        let items: Vec<NoteItem> = (0..3).map(|_| item(1)).collect();
+        let pages = flow_items_to_pages(&items, 0, 0);
+        assert_eq!(pages, vec![vec![0], vec![1], vec![2]]);
+    }
+
+    /// (f5) 尾註錨點掃描：只取 `w:endnoteReference`；cp 標尺與註腳支路同款
+    /// （空 run 不位移 cp）。兩條支路互不撈對方的錨點。
+    #[test]
+    fn collect_endnote_anchors_takes_only_endnote_refs() {
+        let paras: Vec<quire_ooxml::Paragraph> = vec![quire_ooxml::Paragraph {
+            style: None,
+            runs: vec![
+                quire_ooxml::Run {
+                    text: "ab".into(),
+                    ..Default::default()
+                },
+                quire_ooxml::Run {
+                    text: String::new(),
+                    note_ref: Some(quire_ooxml::NoteRef {
+                        kind: NoteKind2::Footnote,
+                        id: 7,
+                    }),
+                    ..Default::default()
+                },
+                quire_ooxml::Run {
+                    text: "cd".into(),
+                    ..Default::default()
+                },
+                quire_ooxml::Run {
+                    text: String::new(),
+                    note_ref: Some(quire_ooxml::NoteRef {
+                        kind: NoteKind2::Endnote,
+                        id: 8,
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }];
+        let got = collect_endnote_anchors(&paras);
+        assert_eq!(got.len(), 1, "尾註支路只取尾註型");
+        assert_eq!(got[0].note_id, 8);
+        assert_eq!(got[0].cp_before, 4, "cp 標尺＝前文碼點數（空 run 不位移）");
+        assert!(
+            collect_anchors(&paras).iter().all(|a| a.note_id != 8),
+            "註腳支路不得撈到尾註錨點"
+        );
+    }
+
+    /// (f6) 尾註首頁分隔線佔帶：1 帶畫線 ＋ SEP_GAP 量化帶（條目區自此帶起）。
+    #[test]
+    fn endnote_sep_bands_covers_rule_band_and_gap() {
+        // SEP_GAP_PT=8、帶尺 16.8 ⇒ 8pt 量化成 1 帶；再加畫線的 1 帶。
+        assert_eq!(endnote_sep_bands(BAND), 2);
+        // 帶尺極小時量化帶變多（離散值域，仍是整帶）。
+        assert!(endnote_sep_bands(4.0) > endnote_sep_bands(BAND));
+    }
+
+    /// (f7) 空尾註層 ⇒ `is_empty()`（發射層零擾動快路徑的判準）。
+    #[test]
+    fn empty_end_layout_is_empty() {
+        assert!(EndLayout::default().is_empty());
+        let mut lay = EndLayout {
+            pages: vec![Vec::new()],
+            marks: vec![Vec::new()],
+            separator_top: false,
+        };
+        assert!(lay.is_empty());
+        lay.separator_top = true;
+        assert!(lay.is_empty(), "只有分隔線旗標不算有內容");
+        lay.pages.push(vec![item(1)]);
+        assert!(!lay.is_empty(), "有條目 ⇒ 不是空層");
     }
 }
