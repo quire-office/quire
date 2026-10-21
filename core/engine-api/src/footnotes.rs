@@ -767,8 +767,13 @@ pub struct EndGeometry {
 /// - 尾註頁幾何＝末節（正文末頁的 section）；
 /// - 首頁頂部有分隔線（版心左緣起、寬＝版心×1/3、y＝margin_top），
 ///   條目區自 `margin_top ＋ (1＋SEP_GAP 量化帶)×帶尺` 起；
-/// - 後續頁**不畫**分隔線（Word 的 continuationSeparator 屬 F3b，
-///   本卡老實留白——不憑空畫一條沒有依據的線）。
+/// - **續頁頂部畫續接線**（置中短線；寬＝版心×1/3，ECMA-376 §17.11.4
+///   `continuationSeparator` 的排版語義）。續頁語義寫死：`pages[0]`＝首頁
+///   （畫分隔線），`pages[1..]`＝續頁（各畫置中續接線）——由 `separator_top`
+///   ＋頁序推得（`pages.len() > 1` 即有續頁），不另存欄位。
+/// - **分隔線註本體不解析不渲染**：`separator`／`continuationSeparator`
+///   指向的註（Word 慣例 id=-1／0）圖形內容屬後續卡，H1 只存 id；此處
+///   只按 `continuationSeparator` 的排版語義畫幾何短線，不讀註內容。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct EndLayout {
     /// 逐尾註頁的條目（條目整條不跨頁——一條裝不下就整條去下一頁）。

@@ -443,12 +443,16 @@ impl Engine {
         let end_w = self.end_content_w_pt();
         let mut end_by_id = self.cascade_note_entries(&self.doc.notes.endnotes, end_w);
         let end_anchors = footnotes::collect_endnote_anchors(&paras_eff);
+        // F3b：尾註編號消費（鏡像 H2 頁底支路）——settings.endnote ＋逐節
+        // sectPr endnotePr 逐欄合併 ⇒ 沿錨點引用序計數 ⇒ 註 id → 字面。
+        // 十進位無重啟 ⇒ 空表 ⇒ 零變化（`assign` 不寫十進位 label）。
+        let end_labels = self.assign_endnote_labels(&end_anchors);
         let (end_anchors, end_entries, end_of_anchor, end_marks) = note_chain(
             &end_anchors,
             &mut end_by_id,
             &paras_eff,
             def_size,
-            &HashMap::new(),
+            &end_labels,
         );
 
         self.note_anchors = foot_anchors;
@@ -459,6 +463,42 @@ impl Engine {
         self.end_note_entries = end_entries;
         self.end_note_of_anchor = end_of_anchor;
         self.end_mark_styles = end_marks;
+    }
+
+    /// 尾註編號消費：`settings.endnote` ＋逐節 `sectPr/w:endnotePr` 逐欄合併
+    /// （[`numbering::merge_note_pr`]）後，沿錨點引用序計數 ⇒「註 id → 字面」
+    /// （[`numbering::assign`]）。呼叫端 [`note_chain`] 據此蓋 `number_label`，
+    /// 前綴與記號再經 [`footnotes::note_number_text`] 統一取用。
+    ///
+    /// **零變化守門**：`numbering::assign` 對「十進位且無重啟／無 numStart≠1」
+    /// **不寫** label ⇒ 本函式回空表 ⇒ `number_label` 維持空字串 ⇒ 十進位
+    /// `number` 兜底路徑逐字原樣（JSON／渲染皆然）。
+    ///
+    /// **老實邊界（pos 未消費）**：`w:endnotePr/@w:pos` 的 `sectEnd`／`pageEnd`
+    /// **不消費、不實裝分支**——corpus Saturn.docx 實見 `pos=sectEnd`（單節），
+    /// 本卡仍按 F3 現行 `documentEnd`（文件末頁）渲染；節末尾註頁屬後續卡。
+    /// `pos` 只決定尾註頁摆放位置、與編號無關，故此處不讀 `pos`。分隔線註
+    /// （`separator`／`continuationSeparator`）的 id 亦**不解析不渲染**——其
+    /// 圖形內容屬後續卡，H1 只存 id（見 [`footnotes::EndLayout`] 注）。
+    fn assign_endnote_labels(&self, anchors: &[footnotes::Anchor]) -> HashMap<i64, String> {
+        let settings = self.doc.notes.settings.endnote;
+        // 逐節 endnotePr（與 `para_sec` 的 section id 同序：兩者皆來自
+        // `scan_sections` 的邊界＋body 序，見 sectpr 模組）。無 part ⇒ 空表。
+        let sec_prs = self
+            .doc
+            .parts
+            .get("word/document.xml")
+            .map(|xml| quire_ooxml::read_sections_endnote_pr(xml))
+            .unwrap_or_default();
+        numbering::assign(anchors, &self.para_sec, |sec| {
+            let sec_pr = sec.and_then(|s| sec_prs.get(s as usize).copied().flatten());
+            let pr = numbering::merge_note_pr(settings, sec_pr).unwrap_or_default();
+            numbering::ResolvedNumbering {
+                num_fmt: pr.num_fmt,
+                num_restart: pr.num_restart,
+                num_start: pr.num_start,
+            }
+        })
     }
 
     /// 註本體（註腳或尾註）→ id → 發射級條目（級聯取樣與正文同款）。
@@ -555,8 +595,8 @@ impl Engine {
     ///    這正是它與頁底註腳的根本差異）。
     /// 2. 尾註頁幾何＝**末節**（正文末頁的 section）。
     /// 3. 首頁頂部有分隔線（版心左緣起、寬＝版心×1/3、y＝margin_top），
-    ///    條目區自分隔線佔帶之後起；後續頁不畫分隔線（continuationSeparator
-    ///    屬 F3b，老實留白）。
+    ///    條目區自分隔線佔帶之後起；續頁頂部畫續接線（置中短線，
+    ///    `continuationSeparator` 語義；F3b）。
     /// 4. 條目整條不跨頁：一條裝不下就整條去下一頁。
     ///
     /// **無尾註檔在快路徑直接返回**：`end` 保持空 ⇒ 頁數不變、顯示列表
@@ -878,8 +918,22 @@ impl Engine {
         };
         self.push_header_footer_items(&mut out, &synth);
         // 分隔線：版心左緣起、寬＝版心×1/3、y＝margin_top（僅首頁）。
-        if idx == 0 && self.end.separator_top {
+        // F3b：續頁頂部改畫**續接線**（置中短線；Word continuationSeparator
+        // 的排版語義）——同 F2c 頁底註腳的置中算式（不改 F2c 那段碼）。
+        if self.end.separator_top {
             let (x1, x2) = footnotes::separator_span(geo.margin_left_pt, content_w);
+            let (x1, x2) = if idx == 0 {
+                (x1, x2)
+            } else {
+                // 續接線：分隔線跨度是「左緣起 × SEP_WIDTH_RATIO」，由此反推
+                // 版心寬再置中（寬＝版心×1/3）。
+                let left = x1;
+                let cw = (x2 - x1) / footnotes::SEP_WIDTH_RATIO;
+                (
+                    left + cw * (1.0 - footnotes::SEP_WIDTH_RATIO) / 2.0,
+                    left + cw * (1.0 + footnotes::SEP_WIDTH_RATIO) / 2.0,
+                )
+            };
             out.push(DrawItem::Rule {
                 x1,
                 y1: geo.margin_top_pt,
@@ -3871,7 +3925,83 @@ mod tests {
         Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗")
     }
 
-    /// 尾註頁的容量（帶）：首頁扣掉分隔線佔帶，後續頁用全容量。
+    /// 自製**兩節**尾註文件（F3b）：可注入 `word/settings.xml` 的 `endnotePr`
+    /// （`settings=None`＝不注入＝無尾註設定），第一／第二節各帶 `n_first`／
+    /// `n_rest` 條尾註引用（id 連續）。`sectPr` 用 A4 標準幾何。
+    fn build_endnote_settings_doc(
+        n_first: usize,
+        n_rest: usize,
+        body: &str,
+        settings: Option<&str>,
+    ) -> Engine {
+        let mut refs_first = String::new();
+        for i in 1..=n_first {
+            refs_first.push_str(&format!(r#"<w:r><w:endnoteReference w:id="{i}"/></w:r>"#));
+        }
+        let mut refs_rest = String::new();
+        for i in (n_first + 1)..=(n_first + n_rest) {
+            refs_rest.push_str(&format!(r#"<w:r><w:endnoteReference w:id="{i}"/></w:r>"#));
+        }
+        // 第一段內的 sectPr 收束第一節；body 級 sectPr 收尾第二節。
+        let sect = r#"<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:left="1134" w:right="1134" w:bottom="1134"/></w:sectPr>"#;
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>第一節</w:t></w:r>{refs_first}{sect}</w:p>
+    <w:p><w:r><w:t>第二節</w:t></w:r>{refs_rest}</w:p>
+    {sect}
+  </w:body>
+</w:document>"#
+        );
+        let mut notes = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:endnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+        );
+        for i in 1..=(n_first + n_rest) {
+            notes.push_str(&format!(
+                r#"<w:endnote w:id="{i}"><w:p><w:r><w:t xml:space="preserve">{body}</w:t></w:r></w:p></w:endnote>"#
+            ));
+        }
+        notes.push_str("</w:endnotes>");
+        let mut base = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx 失敗");
+        base.set_part("word/document.xml", xml.into_bytes());
+        base.set_part("word/endnotes.xml", notes.into_bytes());
+        if let Some(s) = settings {
+            base.set_part("word/settings.xml", s.as_bytes().to_vec());
+        }
+        let docx = base.save_docx().expect("存回 docx 失敗");
+        Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗")
+    }
+
+    /// 尾註條目編號前綴（`layout_entry` 的 superscript run，如 `i.`／`1.`）。
+    fn endnote_prefixes(engine: &Engine) -> Vec<String> {
+        let end = engine.endnote_layout();
+        let mut out = Vec::new();
+        for page in &end.pages {
+            for item in page {
+                for line in &item.lines {
+                    for run in &line.runs {
+                        if run.superscript {
+                            out.push(run.text.clone());
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// 全文渲染 JSON（逐頁顯示列表序列化；供逐位元組 A/B 比較）。
+    fn render_json(engine: &Engine) -> String {
+        let mut all = Vec::new();
+        for i in 0..engine.page_count() {
+            if let Some(dl) = engine.page_display_list(i) {
+                all.push(serde_json::to_string(&dl).expect("序列化顯示列表"));
+            }
+        }
+        all.join("\n")
+    }
     fn endnote_capacity_bands(engine: &Engine) -> (usize, usize) {
         let geo = engine.end_geo().expect("末節幾何");
         let band = engine.params.line_h_pt();
@@ -4003,7 +4133,7 @@ mod tests {
                 "第 {i} 個尾註頁用了 {used} 帶，容量 {limit} 帶——不得溢出"
             );
         }
-        // 分隔線只畫首頁（後續頁＝Word 的 continuationSeparator，屬 F3b，老實留白）。
+        // 分隔線：首頁畫左緣起分隔線；續頁畫置中續接線（F3b，各恰好一條）。
         for i in 0..engine.endnote_page_count() {
             let dl = engine.page_display_list(body + i).expect("尾註頁必須存在");
             let rules = dl
@@ -4011,11 +4141,7 @@ mod tests {
                 .iter()
                 .filter(|it| matches!(it, DrawItem::Rule { .. }))
                 .count();
-            if i == 0 {
-                assert_eq!(rules, 1, "尾註首頁必須有一條分隔線");
-            } else {
-                assert_eq!(rules, 0, "尾註後續頁不得畫分隔線");
-            }
+            assert_eq!(rules, 1, "尾註第 {i} 頁必須有恰好一條分隔／續接線");
         }
     }
 
@@ -4175,6 +4301,207 @@ mod tests {
             (dl.height_pt - 841.9).abs() < 0.5,
             "尾註頁必須用末節（A4）頁高，實得 {}",
             dl.height_pt
+        );
+    }
+
+    // ---------------- F3b：尾註編號消費＋續接線 ----------------
+
+    /// (F3b-1) reader-styles 實檔：settings `endnotePr numFmt=lowerRoman`
+    /// ⇒ 正文記號與條目前綴都應是 `i`（十進位對照由 fixture 測）。
+    #[test]
+    fn reader_styles_endnote_uses_lower_roman_label() {
+        const RS: &[u8] = include_bytes!(
+            "../../../corpus/phpword/tests_PhpWordTests__files_documents_reader-styles.docx"
+        );
+        let engine = Engine::from_docx_bytes(RS).expect("開啟 reader-styles.docx");
+        assert_eq!(engine.endnote_page_count(), 1, "一則尾註 ⇒ 一個尾註頁");
+        // 記號（正文頁）：lowerRoman ⇒ i。
+        let end = engine.endnote_layout();
+        let marks: Vec<String> = end.marks.iter().flatten().map(|m| m.text.clone()).collect();
+        assert_eq!(
+            marks,
+            vec!["i".to_string()],
+            "記號應為小寫羅馬 i：{marks:?}"
+        );
+        // 條目前綴：i.（layout_entry 的 superscript run）。
+        assert_eq!(
+            endnote_prefixes(&engine),
+            vec!["i.".to_string()],
+            "條目前綴應為 i."
+        );
+    }
+
+    /// (F3b-2) Saturn 實檔：`endnotePr pos=sectEnd`（單節）——**pos 未消費**
+    /// （老實邊界）：本卡不實裝 sectEnd/pageEnd 分支，渲染照 F3 現行
+    /// `documentEnd`（文件末頁）；此檔無 numFmt ⇒ 編號十進位。
+    #[test]
+    fn saturn_pos_sectend_renders_as_document_end_decimal() {
+        const SATURN: &[u8] = include_bytes!(
+            "../../../corpus/xopt/OpenXmlPowerToolsExamples_DocumentBuilder04_Saturn.docx"
+        );
+        let engine = Engine::from_docx_bytes(SATURN).expect("開啟 Saturn.docx");
+        // pos=sectEnd 未消費 ⇒ 仍按 documentEnd 收在文件末頁（單一尾註頁）。
+        assert_eq!(
+            engine.endnote_page_count(),
+            1,
+            "pos 未消費 ⇒ 仍按 documentEnd 渲染"
+        );
+        let end = engine.endnote_layout();
+        let marks: Vec<String> = end.marks.iter().flatten().map(|m| m.text.clone()).collect();
+        assert_eq!(
+            marks,
+            vec!["1".to_string(), "2".to_string()],
+            "無 numFmt ⇒ 十進位 1, 2（pos 不影響編號）：{marks:?}"
+        );
+        assert_eq!(
+            endnote_prefixes(&engine),
+            vec!["1.".to_string(), "2.".to_string()],
+            "條目前綴應為十進位"
+        );
+    }
+
+    /// (F3b-3) 單頁尾註零變化：首頁有分隔線、無續頁（⇒ 不畫續接線）。
+    #[test]
+    fn single_endnote_page_has_separator_no_continuation() {
+        let engine = build_endnote_doc(1, "尾註內容。");
+        assert_eq!(engine.endnote_page_count(), 1, "一則短尾註 ⇒ 一個尾註頁");
+        let body = engine.body_page_count();
+        let dl = engine.page_display_list(body).expect("尾註頁必須存在");
+        let rules = dl
+            .items
+            .iter()
+            .filter(|it| matches!(it, DrawItem::Rule { .. }))
+            .count();
+        assert_eq!(rules, 1, "首頁恰一條分隔線");
+        assert!(
+            engine.page_display_list(body + 1).is_none(),
+            "無續頁（不得越界）"
+        );
+    }
+
+    /// (F3b-4) ≥2 尾註頁：續頁頂部畫**置中短線**（寬＝版心×1/3、y＝margin_top）。
+    #[test]
+    fn endnote_continuation_page_draws_centered_short_rule() {
+        let engine = build_endnote_doc(40, "尾註內容。");
+        let body = engine.body_page_count();
+        assert!(
+            engine.endnote_page_count() >= 2,
+            "40 條尾註必須排到 ≥2 頁，實得 {}",
+            engine.endnote_page_count()
+        );
+        let geo = engine.end_geo().expect("末節幾何");
+        let content_w = engine.end_content_w_pt();
+        // 續頁（idx=1）的續接線。
+        let dl = engine.page_display_list(body + 1).expect("續頁必須存在");
+        let rule = dl
+            .items
+            .iter()
+            .find_map(|it| match it {
+                DrawItem::Rule { x1, y1, x2, y2, .. } => Some((*x1, *y1, *x2, *y2)),
+                _ => None,
+            })
+            .expect("續頁必須有續接線 Rule");
+        let (x1, y1, x2, y2) = rule;
+        assert_eq!(y1, y2, "續接線必須是水平線");
+        assert!(
+            (y1 - geo.margin_top_pt).abs() < 0.6,
+            "續接線 y＝margin_top，實得 {y1}"
+        );
+        assert!(
+            ((x2 - x1) - content_w * footnotes::SEP_WIDTH_RATIO).abs() < 1.0,
+            "續接線寬＝版心×1/3，實得 {}",
+            x2 - x1
+        );
+        let center = (x1 + x2) / 2.0;
+        let content_center = geo.margin_left_pt + content_w / 2.0;
+        assert!(
+            (center - content_center).abs() < 1.0,
+            "續接線必須置中於版心，實得 {center} vs {content_center}"
+        );
+        // 首頁仍是左緣起分隔線（非置中）。
+        let dl0 = engine.page_display_list(body).expect("首頁必須存在");
+        let sep = dl0
+            .items
+            .iter()
+            .find_map(|it| match it {
+                DrawItem::Rule { x1, y1, x2, y2, .. } => Some((*x1, *y1, *x2, *y2)),
+                _ => None,
+            })
+            .expect("首頁必須有分隔線 Rule");
+        assert!(
+            (sep.0 - geo.margin_left_pt).abs() < 0.6,
+            "首頁分隔線自版心左緣起，實得 {}",
+            sep.0
+        );
+    }
+
+    /// (F3b-5) 自製 fixture：settings `endnotePr numFmt=lowerRoman`
+    /// 兩節×各 2 條——continuous 得 `i. ii. iii. iv.`；eachSect 得節邊重啟
+    /// `i. ii. i. ii.`；記號與前綴一致。
+    #[test]
+    fn endnote_lower_roman_labels_and_section_restart() {
+        let cont = build_endnote_settings_doc(
+            2,
+            2,
+            "尾註內容。",
+            Some(
+                r#"<w:endnotePr><w:numFmt w:val="lowerRoman"/><w:numRestart w:val="continuous"/></w:endnotePr>"#,
+            ),
+        );
+        let prefixes = endnote_prefixes(&cont);
+        assert_eq!(
+            prefixes,
+            vec!["i.", "ii.", "iii.", "iv."],
+            "continuous：跨節連續 i..iv：{prefixes:?}"
+        );
+        let marks: Vec<String> = cont
+            .endnote_layout()
+            .marks
+            .iter()
+            .flatten()
+            .map(|m| m.text.clone())
+            .collect();
+        assert_eq!(marks, vec!["i", "ii", "iii", "iv"], "記號同字面：{marks:?}");
+
+        let sect = build_endnote_settings_doc(
+            2,
+            2,
+            "尾註內容。",
+            Some(
+                r#"<w:endnotePr><w:numFmt w:val="lowerRoman"/><w:numRestart w:val="eachSect"/></w:endnotePr>"#,
+            ),
+        );
+        let prefixes = endnote_prefixes(&sect);
+        assert_eq!(
+            prefixes,
+            vec!["i.", "ii.", "i.", "ii."],
+            "eachSect：第二節重啟 i..ii：{prefixes:?}"
+        );
+        let marks: Vec<String> = sect
+            .endnote_layout()
+            .marks
+            .iter()
+            .flatten()
+            .map(|m| m.text.clone())
+            .collect();
+        assert_eq!(marks, vec!["i", "ii", "i", "ii"], "記號同字面：{marks:?}");
+    }
+
+    /// (F3b-6) 零變化守門：十進位 settings 與無 settings 兩版渲染逐位元組相同
+    /// （`assign` 對十進位不寫 label ⇒ number_label 空 ⇒ 十進位兜底）。
+    #[test]
+    fn decimal_and_no_settings_endnote_render_byte_identical() {
+        let decimal = build_endnote_settings_doc(
+            2,
+            2,
+            "尾註內容。",
+            Some(r#"<w:endnotePr><w:numFmt w:val="decimal"/></w:endnotePr>"#),
+        );
+        let none = build_endnote_settings_doc(2, 2, "尾註內容。", None);
+        assert_eq!(
+            render_json(&decimal),
+            render_json(&none),
+            "十進位與無 settings 必須逐位元組相同"
         );
     }
 }
