@@ -47,7 +47,7 @@ fn type_samples(
 ) -> Vec<f64> {
     let p = LayoutParams::default();
     let mut work = texts.to_vec();
-    let mut eng = LayoutEngine::new(&work, p);
+    let mut eng = LayoutEngine::new(&work, p.clone());
     if let Some(b) = budget {
         eng.set_sync_budget(Some(b));
     }
@@ -58,7 +58,7 @@ fn type_samples(
         let t0 = Instant::now();
         if full_rebuild {
             // 對照組：整篇重建（含全部段落重新 shaping＋KP＋分頁）。
-            eng = LayoutEngine::new(&work, p);
+            eng = LayoutEngine::new(&work, p.clone());
             if let Some(b) = budget {
                 eng.set_sync_budget(Some(b));
             }
@@ -90,7 +90,7 @@ fn main() {
     // 湊齊 ~500 頁：先粗估段落數，再指數擴充到 ≥500 頁。
     let mut paras = 1200usize;
     loop {
-        let eng = LayoutEngine::new(&doc(paras), p);
+        let eng = LayoutEngine::new(&doc(paras), p.clone());
         if eng.page_count() >= 500 {
             break;
         }
@@ -104,7 +104,7 @@ fn main() {
     let mut hi = paras;
     while lo + 5 < hi {
         let mid = (lo + hi) / 2;
-        if LayoutEngine::new(&doc(mid), p).page_count() >= 500 {
+        if LayoutEngine::new(&doc(mid), p.clone()).page_count() >= 500 {
             hi = mid;
         } else {
             lo = mid;

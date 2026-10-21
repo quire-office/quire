@@ -367,6 +367,8 @@ fn snap_packer_cross_page() -> String {
         line_spacing: 1.4,
         // 頁底預留 0：golden 鎖的是「無預留」的既有版面（預留 0 逐位元組不變）。
         footnote_reserve_pt: 0.0,
+        // 逐頁預留空表：golden 鎖的是「無逐頁預留」的既有版面（空表逐位元組不變）。
+        footnote_reserves_pt: Vec::new(),
     };
     let input = TableInput {
         grid_pt: vec![100.0],
@@ -449,8 +451,8 @@ fn pagination_cases() -> Vec<(&'static str, Vec<String>, LayoutParams)> {
         .chain((0..6).map(|i| format!("尾段 {i}")))
         .collect();
     vec![
-        ("uniform25", long, p),
-        ("mixed_overflow", mixed, p),
+        ("uniform25", long, p.clone()),
+        ("mixed_overflow", mixed, p.clone()),
         (
             "narrow_page",
             (0..15)
@@ -463,7 +465,7 @@ fn pagination_cases() -> Vec<(&'static str, Vec<String>, LayoutParams)> {
                 ..LayoutParams::default()
             },
         ),
-        ("single_empty", vec![String::new()], p),
+        ("single_empty", vec![String::new()], p.clone()),
     ]
 }
 
