@@ -266,7 +266,7 @@ impl Engine {
         };
         let layout = LayoutEngine::with_breaks_grid(
             &texts,
-            params,
+            params.clone(),
             sections.clone(),
             slots,
             bands,

@@ -303,7 +303,7 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
 pub fn layout_pages(inputs: &DocInputs) -> Vec<Page> {
     let engine = LayoutEngine::with_breaks_grid(
         &inputs.texts,
-        inputs.params,
+        inputs.params.clone(),
         inputs.sections.clone(),
         inputs.tables.clone(),
         inputs.images.clone(),
@@ -328,7 +328,7 @@ pub fn para_line_char_offsets(inputs: &DocInputs) -> Vec<Vec<usize>> {
                     inputs.params.font_size_pt,
                     inputs.params.line_spacing,
                 ),
-                None => inputs.params,
+                None => inputs.params.clone(),
             }
             .content_w_pt();
             let size = inputs.grid.size_of(i, inputs.params.font_size_pt);
