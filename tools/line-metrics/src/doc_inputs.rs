@@ -84,7 +84,7 @@ fn cascade_paragraphs(
     let mut para_lines: Vec<Option<LineSpacing>> = Vec::with_capacity(paras.len());
     for (pi, p) in paras.iter().enumerate() {
         let inline = ParaStyle {
-            run: p.prun.unwrap_or_default(),
+            run: p.prun.clone().unwrap_or_default(),
             line: p.line,
             align: p.jc,
         };
@@ -92,13 +92,13 @@ fn cascade_paragraphs(
         let mut meas_size = base.size_pt.unwrap_or(def_size);
         let mut eff_runs: Vec<quire_ooxml::Run> = Vec::with_capacity(p.runs.len());
         for r in &p.runs {
-            let mut b = base;
+            let mut b = base.clone();
             if let Some(cid) = r.rstyle.as_deref() {
                 b = StyleTable::resolve_run(b, st.char_chain(cid).unwrap_or_default());
             }
             // 級聯末端兜底：只有整條鏈都沒宣告顏色、底線時，超連結 run 才
             // 補合成預設（ECMA-376 §17.7.2 級聯末端）。
-            let eff = StyleTable::resolve_run(b, r.direct.unwrap_or_default())
+            let eff = StyleTable::resolve_run(b, r.direct.clone().unwrap_or_default())
                 .with_hyperlink_default(r.hyperlink_default);
             // 斷行字級＝段內 run 有效字級最大值（Word 行高/斷行依段內最大
             // 字級成形；本引擎斷行用單一尺，取大者保守不切字）。
