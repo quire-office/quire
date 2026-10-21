@@ -5,9 +5,11 @@
 //! 映射（`TableInput` 即輸入契約）。layout 不依賴 ooxml。
 //!
 //! 行網格量化（v1 核心模型）：版面主幹以「行」為分頁容量單位
-//! （`LayoutParams::per_page_lines`），表格錨進同一網格——列高、儲存格邊距、
-//! 巢狀表高全部量化成**行帶（bands）**。無表格文件的分頁行為因此逐位元組
-//! 不變；有表格時，一個跨頁切片佔 ceil(切片高/行高) 個 bands。
+//! （`LayoutParams::per_page_lines`），表格錨進同一網格——列高與巢狀表高
+//! 量化成**行帶（bands）**，分頁容量仍以帶計。儲存格垂直邊距
+//! （`w:tblCellMar`／`w:tcMar` top/bottom）則以**精確 pt** 下推內容盒並
+//! 貢獻列高：ceil 帶數只作分頁容量，未滿帶的餘量留在列幾何（零邊距時與
+//! 舊帶化模型逐位元組相同）。無表格文件的分頁行為亦逐位元組不變。
 //!
 //! 對照 ECMA-376 §17.4 的 v1 取捨（皆刻意簡化，非漏實作）：
 //! - `w:tblW` dxa→pt 由 engine 換算完畢（`WidthSpec::Pt`）；pct 相對**可用寬**。
@@ -16,10 +18,13 @@
 //! - `cantSplit=false` 的列可在**行帶**邊界拆頁；`cantSplit=true` 整列搬下頁
 //!   （切片器一律給至少一整列，單列高於一頁時老實溢出——卡片明示）。
 //! - `w:trHeight`：atLeast→與自然高取大；exact→以宣告為準（內容超高溢出繪製）。
+//! - `w:tblCellMar`／`w:tcMar`：tc 宣告即贏（單側 `tc.or(tbl)`）；top/bottom
+//!   以精確 pt 下推內容盒與墊高列高（Word／LO 口徑），未滿帶餘量記在列上；
+//!   跨頁斷列時上邊距只隨列首切片出現（帶邊界與精確 pt 的錯位見 TODO）。
 //! - vMerge：merged block＝restart 格持有內容；continue 格內容在渲染時被忽略
 //!   （ECMA-376＋LO ground truth），自身 block 序列清空。格內 block（段落／
 //!   巢狀表）按文件序**垂直累加**堆疊（流式，非並列 max）；文字自 block
-//!   頂（restart 列帶 0＋pad_top）逐帶繪製；block 高於參加列總和時餘額補到
+//!   頂（restart 列帶 0＋精確 pad_top）逐帶繪製；block 高於參加列總和時餘額補到
 //!   continue 列。水平內邊界不畫框線，block 底邊由末參加格承擔（取 restart
 //!   格的底框——Word 語義）。
 //! - `w:tblHeader` 跨頁重複、`w:noWrap`、對角線框線、tblStylePr 條件底紋：
@@ -310,13 +315,18 @@ struct CellGeom {
     w: f32,
     /// 文字左緣偏移（表格本地：x＋左邊距）。
     text_x_off: f32,
-    /// 上邊距佔用的帶數（量化）。
+    /// 上邊距佔用的帶數（量化；分頁切片容量用）。
     pad_top_bands: u32,
-    /// 下邊距佔用的帶數（量化）。
+    /// 下邊距佔用的帶數（量化；分頁切片容量用）。
     pad_bottom_bands: u32,
+    /// 上邊距精確 pt（Word／LO 口徑）：內容起點不經帶量化，直接下推此值。
+    pad_top_pt: f32,
+    /// 下邊距精確 pt（Word／LO 口徑）：列高精確餘量的一部分。
+    pad_bottom_pt: f32,
     /// 格內 block 排版序列（文件序；vMerge continue 格渲染時內容被忽略→清空）。
     blocks: Vec<CellBlockGeom>,
-    /// 內容總帶高＝pad_top ＋ Σ block 帶 ＋ pad_bottom（vMerge 後重算）。
+    /// 內容總帶高＝pad_top ＋ Σ block 帶 ＋ pad_bottom（vMerge 後重算；
+    /// 帶化僅供分頁容量，精確高度見 [`CellGeom::extra_pt`]）。
     content_bands: u32,
     edges: [Option<Pen>; 4],
     fill_argb: Option<u32>,
@@ -331,10 +341,24 @@ struct CellGeom {
     block_tail: bool,
 }
 
+impl CellGeom {
+    /// 格的精確高度餘量：真實內容高減去 `content_bands × line_h`。
+    /// 上／下邊距各自量化成一整帶後，未滿整帶的部分（負值或 0）在此保留，
+    /// 讓列高維持精確 pt 而不是被 ceil 撐大。零邊距時恆為 0（舊幾何不變）。
+    fn extra_pt(&self, line_h: f32) -> f32 {
+        (self.pad_top_pt - self.pad_top_bands as f32 * line_h)
+            + (self.pad_bottom_pt - self.pad_bottom_bands as f32 * line_h)
+    }
+}
+
 /// 一個列的排版結果。
 #[derive(Debug, Clone, PartialEq)]
 struct RowGeom {
     bands: u32,
+    /// 列的精確高度餘量（pt）：列高＝`bands × line_h ＋ extra_pt`。
+    /// 零邊距時為 0，既有 golden／輸出逐位元組不變；非零垂直邊距時保留
+    /// 未滿一整帶的精確差值（≤0，因帶數一律 ceil）。
+    extra_pt: f32,
     cant_split: bool,
     cells: Vec<CellGeom>,
 }
@@ -413,9 +437,15 @@ impl TableLayout {
                 break;
             };
             let take = take.max(1);
-            let h = take as f32 * self.line_h;
             let starts_row = b == 0;
             let ends_row = b + take >= rg.bands;
+            // 列高精確化：帶高總和＋列餘量（垂直邊距未滿帶的部分）。餘量
+            // 集中在觸及列底的切片，確保跨頁各片高度和＝整列精確高度；
+            // 零邊距時 extra_pt=0，與舊行為逐位元組相同。
+            let mut h = take as f32 * self.line_h;
+            if ends_row {
+                h = (h + rg.extra_pt).max(0.0);
+            }
             let cells: Vec<CellFrag> = rg
                 .cells
                 .iter()
@@ -504,12 +534,23 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
         // 根因 6：valign 錨點＝整個 merge block 的列總高（非單頁切片高 w.h），
         // 且所有切片共用同一 shift——續頁不再錯位、不再重複疊加 pad_top。
         let block_bands = tl.row_base[cg.block_end_row] + tl.rows[cg.block_end_row].bands - block0;
-        let shift = valign_shift(
-            cg.valign,
-            block_bands as f32 * tl.line_h,
-            cg.content_bands,
-            tl.line_h,
-        );
+        // 精確高度口徑：帶高總和＋各列餘量（垂直邊距未滿帶的部分）。
+        let block_h_pt = block_bands as f32 * tl.line_h
+            + tl.rows[cg.block_head_row..=cg.block_end_row]
+                .iter()
+                .map(|r| r.extra_pt)
+                .sum::<f32>();
+        let content_h_pt = cg.content_bands as f32 * tl.line_h + cg.extra_pt(tl.line_h);
+        let shift = valign_shift(cg.valign, block_h_pt, content_h_pt);
+        // 垂直邊距精確位移：帶原點仍以 quant_bands(ceil) 定位，內容起點再
+        // 加回「精確 pt − 整帶 pt」的差（Δ≤0）。只在列首切片套用——跨頁
+        // 續片沿用舊帶原點口徑，避免把內容推離切片（上邊距只在首段出現；
+        // 這段帶邊界與精確 pt 的錯位待分頁器改精確座標時再收斂，TODO）。
+        let pad_delta = if w.starts_row {
+            cg.pad_top_pt - cg.pad_top_bands as f32 * tl.line_h
+        } else {
+            0.0
+        };
         // 流式掃描：內容原點＋逐 block 累加（根因 2/3/4：max 並列假設→累加）。
         let mut cur = block0 + cg.pad_top_bands;
         'blocks: for bg in &cg.blocks {
@@ -527,7 +568,8 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                         if cur >= win0 {
                             texts.push(CellText {
                                 x_pt: cg.x + cg.text_x_off,
-                                y_pt: (shift + (cur - win0) as f32 * tl.line_h).max(0.0),
+                                y_pt: (shift + pad_delta + (cur - win0) as f32 * tl.line_h)
+                                    .max(0.0),
                                 text: ln.text.clone(),
                                 size_pt: *size_pt,
                             });
@@ -556,7 +598,7 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                             false,
                             cg.x + cg.text_x_off,
                         );
-                        nested.push((shift + (vis0 - win0) as f32 * tl.line_h, f));
+                        nested.push((shift + pad_delta + (vis0 - win0) as f32 * tl.line_h, f));
                     }
                     cur = nb1;
                 }
@@ -573,7 +615,7 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                         let frac = (vis1 - vis0) as f32 / *bands as f32;
                         images.push(CellImage {
                             x_pt: cg.x + cg.text_x_off,
-                            y_pt: (shift + (vis0 - win0) as f32 * tl.line_h).max(0.0),
+                            y_pt: (shift + pad_delta + (vis0 - win0) as f32 * tl.line_h).max(0.0),
                             w_pt: *w_pt,
                             h_pt: full_h * frac,
                         });
@@ -594,8 +636,7 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
     }
 }
 
-fn valign_shift(v: Valign, frag_h: f32, content_bands: u32, line_h: f32) -> f32 {
-    let content_h = content_bands as f32 * line_h;
+fn valign_shift(v: Valign, frag_h: f32, content_h: f32) -> f32 {
     match v {
         Valign::Top => 0.0,
         Valign::Center => ((frag_h - content_h) * 0.5).max(0.0),
@@ -621,6 +662,16 @@ fn quant_bands(h_pt: f32, line_h: f32) -> u32 {
         return crate::MAX_PAGE_BANDS;
     }
     (b.max(0.0) as u32).min(crate::MAX_PAGE_BANDS)
+}
+
+/// 精確垂直邊距鉗制（S1-4 同口徑）：非有限值歸 0，負值歸 0，天量值鉗到
+/// [`MAX_PAGE_BANDS`] 個帶高——避免 `f32::MAX` 之類病態值讓列高／繪製
+/// 座標變成 inf，同時與 `quant_bands` 的帶數上限保持一致。
+fn clamp_margin_pt(v: f32, line_h: f32) -> f32 {
+    if !v.is_finite() {
+        return 0.0;
+    }
+    v.max(0.0).min(crate::MAX_PAGE_BANDS as f32 * line_h)
 }
 
 /// 排版一張表格。`avail_w`＝可用寬（pt；頂層＝版心寬，巢狀＝儲存格內寬）；
@@ -665,9 +716,12 @@ pub fn layout_table(
 
             let margins = resolve_margins(cell.margins.as_ref(), input.cell_margins.as_ref());
             let inner_w = (w - margins.left - margins.right).max(8.0);
-            // 帶量化鉗上限（S1-4）：垃圾 margin 不得量化出天量帶數。
-            let pad_top_bands = quant_bands(margins.top, line_h);
-            let pad_bottom_bands = quant_bands(margins.bottom, line_h);
+            // 垂直邊距雙軌：精確 pt 供內容起點與列高（Word／LO 口徑），
+            // 量化帶數供分頁容量；垃圾值一律先鉗上限（S1-4 同口徑）。
+            let pad_top_pt = clamp_margin_pt(margins.top, line_h);
+            let pad_bottom_pt = clamp_margin_pt(margins.bottom, line_h);
+            let pad_top_bands = quant_bands(pad_top_pt, line_h);
+            let pad_bottom_bands = quant_bands(pad_bottom_pt, line_h);
             // 級聯字級（t_5dfc8ac7）：有宣告→本格斷行按自身尺量測（None＝
             // 全域 m，既有檔案逐位元組不變）。
             let cell_m = match cell.text_size_pt {
@@ -732,9 +786,11 @@ pub fn layout_table(
                     }
                 }
             }
+            // 帶數總和也鉗上限：單邊 margin 已各自鉗制，但「上＋內容＋下」
+            // 相加仍可能越過 MAX_PAGE_BANDS（病態輸入），一併收斂。
             let content_bands =
                 (pad_top_bands + blocks.iter().map(|b| b.bands()).sum::<u32>() + pad_bottom_bands)
-                    .max(1);
+                    .clamp(1, crate::MAX_PAGE_BANDS);
 
             let edges = resolve_cell_edges(cell, input, ri, ci, n_rows, n_cells);
             cells.push(CellGeom {
@@ -745,6 +801,8 @@ pub fn layout_table(
                 text_x_off: margins.left,
                 pad_top_bands,
                 pad_bottom_bands,
+                pad_top_pt,
+                pad_bottom_pt,
                 blocks,
                 content_bands,
                 edges,
@@ -762,6 +820,7 @@ pub fn layout_table(
         }
         rows.push(RowGeom {
             bands: 1,
+            extra_pt: 0.0,
             cant_split: row.cant_split,
             cells,
         });
@@ -876,28 +935,43 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
 /// 列高分配：自然帶高＝非 continue 格的最大 content_bands；
 /// trHeight atLeast 取大、exact 以宣告為準；vMerge block 不足額平均分給 continue 列。
 fn compute_row_heights(tl: &mut TableLayout, input: &TableInput) {
+    let line_h = tl.line_h;
     for (ri, rg) in tl.rows.iter_mut().enumerate() {
-        let natural = rg
+        // 自然帶高仍取非 continue 格的最大 content_bands（分頁容量）；
+        // 精確高度另取「content_bands×line_h＋格餘量」的最大值，差額記在
+        // 列的 extra_pt——垂直邊距因此以 pt 貢獻列高，不再被 ceil 撐大。
+        let mut natural = 1u32;
+        let mut natural_pt = line_h;
+        for g in rg
             .cells
             .iter()
             .filter(|g| !matches!(g.merge, Some((_, false))))
-            .map(|g| g.content_bands)
-            .max()
-            .unwrap_or(1)
-            .max(1);
+        {
+            natural = natural.max(g.content_bands);
+            natural_pt = natural_pt.max(g.content_bands as f32 * line_h + g.extra_pt(line_h));
+        }
         let mut bands = natural;
+        let mut extra = natural_pt - natural as f32 * line_h;
         if let Some(row) = input.rows.get(ri) {
             if let Some(h) = row.height_pt {
                 // 帶量化鉗上限（S1-4）：垃圾 trHeight 不得量化出天量帶數。
-                let need = quant_bands(h, tl.line_h);
-                bands = if row.height_exact {
-                    need.max(1)
+                let need = quant_bands(h, line_h);
+                if row.height_exact {
+                    // exact 以宣告為準（沿用既有「ceil 後帶高」口徑）。
+                    bands = need.max(1);
+                    extra = 0.0;
+                } else if need > bands {
+                    bands = need;
+                    extra = 0.0;
                 } else {
-                    bands.max(need)
-                };
+                    // atLeast：精確列高不得低於宣告值（帶化後的下界）。
+                    let need_floor = need as f32 * line_h - bands as f32 * line_h;
+                    extra = extra.max(need_floor);
+                }
             }
         }
         rg.bands = bands;
+        rg.extra_pt = extra;
     }
     // vMerge 餘額：head 內容帶高 > 參加列帶高總和→餘額補到 continue 列。
     let n_rows = tl.rows.len();
@@ -2049,5 +2123,157 @@ mod tests {
         // 兩片帶數和＝圖全高，不重不跳。
         assert!((i1.h_pt + i2.h_pt - 100.0).abs() < 1.0);
         assert_eq!((next.0, next.1), (0, 3), "單列表續排游標＝同列帶 3");
+    }
+
+    // ---------------- 卡片 C：儲存格垂直邊距精確化（tblCellMar／tcMar） ----------------
+
+    /// 卡片 C(a)：tblCellMar top=288twip（14.4pt）＋bottom=4.2pt——文字起點
+    /// 精確下推 14.4pt；列高＝內容 1 帶 16.8＋14.4＋4.2＝35.4pt，而非把
+    /// 上下邊距各自 ceil 成整帶的 50.4pt。
+    #[test]
+    fn cell_margin_top_pushes_text_exactly_and_row_height_is_exact_pt() {
+        let mut inp = shell_table(cell("垂直邊距"));
+        inp.cell_margins = Some(CellMarginInput {
+            top: Some(14.4),
+            bottom: Some(4.2),
+            ..Default::default()
+        });
+        let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
+        let (f, _, _) = t.fragment(0, 0, u32::MAX, true, 0.0);
+        let cf = &f.rows[0].cells[0];
+        assert!(
+            (cf.texts[0].y_pt - 14.4).abs() < 0.01,
+            "首列文字起點應精確下推 14.4pt，實得 {}",
+            cf.texts[0].y_pt
+        );
+        assert!(
+            (f.rows[0].height_pt - 35.4).abs() < 0.01,
+            "列高應為 16.8＋14.4＋4.2＝35.4pt，實得 {}",
+            f.rows[0].height_pt
+        );
+    }
+
+    /// 卡片 C(b)：tcMar 宣告即贏——表格級 top=14.4pt、該格 top=7.2pt，
+    /// 只有該格下推 7.2pt（不是兩者相加、也不是表格級 14.4pt）。
+    #[test]
+    fn cell_mar_overrides_table_mar_for_vertical_margins() {
+        let mut c = cell("覆寫");
+        c.margins = Some(CellMarginInput {
+            top: Some(7.2),
+            ..Default::default()
+        });
+        let mut inp = shell_table(c);
+        inp.cell_margins = Some(CellMarginInput {
+            top: Some(14.4),
+            ..Default::default()
+        });
+        let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
+        let (f, _, _) = t.fragment(0, 0, u32::MAX, true, 0.0);
+        let cf = &f.rows[0].cells[0];
+        assert!(
+            (cf.texts[0].y_pt - 7.2).abs() < 0.01,
+            "tcMar top 應覆蓋 tblCellMar（下推 7.2pt），實得 {}",
+            cf.texts[0].y_pt
+        );
+        assert!(
+            (f.rows[0].height_pt - 24.0).abs() < 0.01,
+            "列高應為 16.8＋7.2＝24.0pt，實得 {}",
+            f.rows[0].height_pt
+        );
+    }
+
+    /// 卡片 C(c)：top/bottom 宣告 0 與完全未宣告的幾何必須完全相同（防回歸；
+    /// 搭配 render 前後輸出 diff 鎖住既有檔案逐位元組不變）。
+    #[test]
+    fn zero_vertical_margins_match_undeclared_geometry() {
+        let base = layout_table(&shell_table(cell("防回歸")), 400.0, 16.8, &measurer(), 0);
+        let mut inp = shell_table(cell("防回歸"));
+        inp.cell_margins = Some(CellMarginInput {
+            top: Some(0.0),
+            bottom: Some(0.0),
+            ..Default::default()
+        });
+        let zero = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
+        assert_eq!(base, zero, "top/bottom=0 與未宣告必須產出相同幾何");
+        let (f, _, _) = base.fragment(0, 0, u32::MAX, true, 0.0);
+        assert!((f.rows[0].height_pt - 16.8).abs() < 0.001);
+        assert!(f.rows[0].cells[0].texts[0].y_pt.abs() < 0.001);
+    }
+
+    /// 卡片 C(d)：巢狀表——外格 top=14.4pt 時子表起點隨內容盒精確下推。
+    #[test]
+    fn nested_table_start_shifts_by_outer_cell_top_margin() {
+        let c = CellInput {
+            blocks: vec![CellBlock::Table(Box::new(inner_table(1)))],
+            margins: Some(CellMarginInput {
+                top: Some(14.4),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let t = layout_table(&shell_table(c), 400.0, 16.8, &measurer(), 0);
+        let (f, _, _) = t.fragment(0, 0, u32::MAX, true, 0.0);
+        let cf = &f.rows[0].cells[0];
+        assert_eq!(cf.nested.len(), 1);
+        assert!(
+            (cf.nested[0].0 - 14.4).abs() < 0.01,
+            "子表起點應隨外格 top 下推 14.4pt，實得 {}",
+            cf.nested[0].0
+        );
+    }
+
+    /// 卡片 C（跨頁斷列）：上邊距只隨列首切片出現，續片不重複下推；
+    /// 兩片高度和＝整列精確高度（4 帶內容＋top 14.4＝81.6pt）。
+    #[test]
+    fn split_row_top_margin_only_on_first_slice() {
+        let c = CellInput {
+            blocks: vec![
+                CellBlock::Text("一".into()),
+                CellBlock::Text("二".into()),
+                CellBlock::Text("三".into()),
+                CellBlock::Text("四".into()),
+            ],
+            margins: Some(CellMarginInput {
+                top: Some(14.4),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let t = layout_table(&shell_table(c), 400.0, 16.8, &measurer(), 0);
+        assert_eq!(t.total_bands, 5, "上邊距 1 帶＋內容 4 帶");
+        let (f1, next, _) = t.fragment(0, 0, 3, false, 0.0);
+        let (f2, _, _) = t.fragment(next.0, next.1, u32::MAX, false, 0.0);
+        let y1 = f1.rows[0].cells[0].texts[0].y_pt;
+        assert!(
+            (y1 - 14.4).abs() < 0.01,
+            "首片首行應精確落在 top 14.4pt，實得 {y1}"
+        );
+        let y2 = f2.rows[0].cells[0].texts[0].y_pt;
+        assert!(y2.abs() < 0.01, "續片不得重複套用 top margin，實得 {y2}");
+        let h = f1.rows[0].height_pt + f2.rows[0].height_pt;
+        assert!(
+            (h - 81.6).abs() < 0.01,
+            "兩片高度和應＝14.4＋4×16.8＝81.6pt，實得 {h}"
+        );
+    }
+
+    /// 卡片 C(e)：病態巨大 top margin（9999pt）不得 panic、帶數必須鉗在上限內。
+    #[test]
+    fn giant_cell_vertical_margin_is_clamped_without_panic() {
+        let mut inp = shell_table(cell("巨邊距"));
+        inp.cell_margins = Some(CellMarginInput {
+            top: Some(9999.0),
+            ..Default::default()
+        });
+        let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
+        assert!(
+            t.total_bands <= crate::MAX_PAGE_BANDS,
+            "巨 margin 列帶數必鉗上限：{}",
+            t.total_bands
+        );
+        assert!(t.total_bands < 1000, "9999pt 不該量化成天量帶");
+        let (f, _next, used) = t.fragment(0, 0, 8, false, 0.0);
+        assert!(used > 0);
+        assert!(f.rows[0].height_pt.is_finite(), "列切片高必為有限值");
     }
 }
