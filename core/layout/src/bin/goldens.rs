@@ -365,6 +365,8 @@ fn snap_packer_cross_page() -> String {
         margins_pt: [40.0; 4],
         font_size_pt: SIZE_PT,
         line_spacing: 1.4,
+        // 頁底預留 0：golden 鎖的是「無預留」的既有版面（預留 0 逐位元組不變）。
+        footnote_reserve_pt: 0.0,
     };
     let input = TableInput {
         grid_pt: vec![100.0],
