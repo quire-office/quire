@@ -19,6 +19,8 @@ use crate::Paragraph;
 const FOOTNOTES_PART: &str = "word/footnotes.xml";
 /// 尾註 part 的慣例路徑。
 const ENDNOTES_PART: &str = "word/endnotes.xml";
+/// settings part 的慣例路徑（`w:footnotePr`／`w:endnotePr` 所在；ECMA-376 §17.11）。
+const SETTINGS_PART: &str = "word/settings.xml";
 
 /// 註的型別（`w:footnote`／`w:endnote` 的 `@w:type`；ECMA-376 §17.11.10/§17.11.11）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -41,6 +43,95 @@ pub enum NoteKind2 {
     Footnote,
     /// `w:endnoteReference` → `word/endnotes.xml`。
     Endnote,
+}
+
+/// 註腳／尾註的編號格式（`w:numFmt/@w:val`；ECMA-376 §17.11.17/§17.11.18）。
+///
+/// **僅收錄 corpus 實見值**（decimal／lowerRoman／chicago）；未見值於解析時
+/// 老實歸 [`NotePr::num_fmt`] 的 None，不憑 ECMA 全集臆造（見
+/// [`parse_num_fmt`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NoteNumberFormat {
+    /// `decimal`（阿拉伯數字）。
+    Decimal,
+    /// `lowerRoman`（小寫羅馬數字）。
+    LowerRoman,
+    /// `chicago`（Chicago 註腳符號序列）。
+    Chicago,
+}
+
+/// 註腳／尾註編號重啟時機（`w:numRestart/@w:val`；ECMA-376 §17.11.19）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NoteRestart {
+    /// `continuous`：整份文件連續編號。
+    Continuous,
+    /// `eachPage`：每頁重新編號。
+    EachPage,
+    /// `eachSect`：每節重新編號。
+    EachSect,
+}
+
+/// 註腳／尾註位置（`w:pos/@w:val`；ECMA-376 §17.11.14/§17.11.21）。
+///
+/// 值域分流：註腳為 `beneathText`／`pageBottom`；尾註為 `documentEnd`／
+/// `pageEnd`／`sectEnd`。解析層不強制 kind（同一枚舉共用），由消費端依所在
+/// 層（settings 或 sectPr）與 kind 判別；未見值老實歸 [`NotePr::pos`] 的 None。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NotePos {
+    /// `beneathText`：註緊接正文下方（註腳值域）。
+    BeneathText,
+    /// `pageBottom`：註在頁底（註腳值域）。
+    PageBottom,
+    /// `documentEnd`：尾註置於文件結尾（尾註值域）。
+    DocumentEnd,
+    /// `pageEnd`：尾註置於頁尾（尾註值域）。
+    PageEnd,
+    /// `sectEnd`：尾註置於節尾（尾註值域）。
+    SectEnd,
+}
+
+/// 註腳／尾註的編號與位置設定（ECMA-376 §17.11.5／§17.11.17）。
+///
+/// 兩個層級各帶一份：settings.xml 層＝文件預設；sectPr 層＝節覆寫（逐欄
+/// 覆寫，非整組替換——未宣告的欄沿用上層，合併是消費端的事）。解析層只
+/// 老實分層存，不做合併。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotePr {
+    /// `w:numFmt/@w:val`（§17.11.17/§17.11.18）。未見值老實歸 None
+    /// （不臆造 decimal）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_fmt: Option<NoteNumberFormat>,
+    /// `w:numRestart/@w:val`（§17.11.19）：continuous|eachPage|eachSect。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_restart: Option<NoteRestart>,
+    /// `w:numStart/@w:val`（§17.11.20；任務書寫作 `w:num`，兩者皆收）：
+    /// 起始編號；缺＝None（消費端用 1）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_start: Option<i32>,
+    /// `w:pos/@w:val`（§17.11.14/§17.11.21）：註腳 beneathText|pageBottom；
+    /// 尾註 documentEnd|pageEnd|sectEnd。共用一枚舉以值域分流。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<NotePos>,
+    /// `w:footnote/@w:id`／`w:endnote/@w:id` 中非特殊註的參考線 id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_id: Option<i64>,
+    /// 分隔線註的 id（Word 慣例 -1；或 `w:type="separator"`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub separator_id: Option<i64>,
+    /// 續接分隔線註的 id（Word 慣例 0；或 `w:type="continuationSeparator"`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_separator_id: Option<i64>,
+}
+
+/// 一份文件的 settings.xml 層註設定（文件預設；ECMA-376 §17.11.5/§17.11.17）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteSettings {
+    /// `w:footnotePr`（文件級腳註設定）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footnote: Option<NotePr>,
+    /// `w:endnotePr`（文件級尾註設定）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endnote: Option<NotePr>,
 }
 
 /// 一則註的本體（ECMA-376 §17.11.3 `w:footnote`／§17.11.8 `w:endnote` 同構）。
@@ -87,6 +178,12 @@ pub struct Notes {
     /// `word/endnotes.xml` 的全部 `w:endnote`。
     #[serde(default)]
     pub endnotes: Vec<Note>,
+    /// settings.xml 層的文件級註設定（`w:footnotePr`／`w:endnotePr`；
+    /// ECMA-376 §17.11.5/§17.11.17）。缺 settings part／元素＝None（容錯
+    /// 口徑同本檔）。純解析層，版面／顯示列表零消費；serde default 保舊快照
+    /// 相容。
+    #[serde(default)]
+    pub settings: NoteSettings,
 }
 
 impl Notes {
@@ -102,6 +199,11 @@ impl Notes {
         // ——此處仿單次注入取一份主題色表（theme part 數 KB，重取成本
         // 可忽略），讓本函式簽名維持「一包 parts 進、彙總出」的形態。
         let theme = crate::ThemeColors::from_parts(parts);
+        // settings.xml 層設定（缺 part／元素＝None；容錯口徑同本函式）。
+        let settings = parts
+            .get(SETTINGS_PART)
+            .map(|b| parse_note_settings(b))
+            .unwrap_or_default();
         Notes {
             footnotes: parts
                 .get(FOOTNOTES_PART)
@@ -111,6 +213,7 @@ impl Notes {
                 .get(ENDNOTES_PART)
                 .map(|b| parse_note_list(b, b"endnote", &theme))
                 .unwrap_or_default(),
+            settings,
         }
     }
 
@@ -124,6 +227,143 @@ impl Notes {
     /// 依 id 查尾註本體（同 [`Notes::footnote`] 口徑）。
     pub fn endnote(&self, id: i64) -> Option<&Note> {
         self.endnotes.iter().find(|n| n.id == id)
+    }
+}
+
+/// 解析 settings.xml 的 `w:footnotePr`／`w:endnotePr`（文件級設定）。
+///
+/// 缺 `word/settings.xml` 或無對應元素 → 該欄 None（容錯口徑同
+/// [`Notes::from_parts`]）。
+pub fn parse_note_settings(settings_xml: &[u8]) -> NoteSettings {
+    NoteSettings {
+        footnote: parse_note_pr(settings_xml, b"footnotePr", b"footnote"),
+        endnote: parse_note_pr(settings_xml, b"endnotePr", b"endnote"),
+    }
+}
+
+/// 解析一個 `w:footnotePr`／`w:endnotePr` 元素（ECMA-376 §17.11.5/§17.11.17）。
+///
+/// `pr_tag`＝`footnotePr`／`endnotePr`；`child_tag`＝`footnote`／`endnote`。
+/// 掃到第一个 `pr_tag` 元素（settings.xml 層恆唯一）；`<w:footnotePr/>`
+/// 空組 → `Some(NotePr::default())`；元素不存在 → None；壞 XML → 停在已收
+/// 部分（同 [`crate::ThemeColors`] 容錯口徑）。
+fn parse_note_pr(xml: &[u8], pr_tag: &[u8], child_tag: &[u8]) -> Option<NotePr> {
+    let text = String::from_utf8_lossy(xml);
+    let mut re = quick_xml::Reader::from_str(&text);
+    loop {
+        let ev = match re.read_event() {
+            Ok(ev) => ev,
+            Err(_) => return None,
+        };
+        match ev {
+            Event::Eof => return None,
+            Event::Empty(e) if e.local_name().as_ref() == pr_tag => {
+                return Some(NotePr::default());
+            }
+            Event::Start(e) if e.local_name().as_ref() == pr_tag => {
+                let mut pr = NotePr::default();
+                loop {
+                    match re.read_event() {
+                        Ok(Event::End(end)) if end.local_name().as_ref() == pr_tag => break,
+                        Ok(Event::Eof) => break,
+                        Ok(Event::Start(c)) | Ok(Event::Empty(c)) => {
+                            apply_note_pr_child(&mut pr, &c, child_tag);
+                        }
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+                return Some(pr);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 套用一個 `w:footnotePr`／`w:endnotePr` 子元素到 [`NotePr`]（編號格式、
+/// 重啟、起始值、位置、分隔線引用）。`pub(crate)`：sectpr 逐節掃描時重用
+/// 同一套分流口徑，不另造第二台狀態機。
+pub(crate) fn apply_note_pr_child(
+    pr: &mut NotePr,
+    e: &quick_xml::events::BytesStart,
+    child_tag: &[u8],
+) {
+    match e.local_name().as_ref() {
+        b"numFmt" => {
+            pr.num_fmt = crate::attr_val(e, "val").as_deref().and_then(parse_num_fmt);
+        }
+        b"numRestart" => {
+            pr.num_restart = crate::attr_val(e, "val")
+                .as_deref()
+                .and_then(parse_num_restart);
+        }
+        // ECMA-376 正名 `w:numStart`（§17.11.20）；任務書寫作 `w:num`，兩者皆收。
+        b"num" | b"numStart" => {
+            pr.num_start = crate::attr_val(e, "val")
+                .as_deref()
+                .and_then(|v| v.trim().parse::<i32>().ok());
+        }
+        b"pos" => {
+            pr.pos = crate::attr_val(e, "val").as_deref().and_then(parse_pos);
+        }
+        b"footnote" | b"endnote" if e.local_name().as_ref() == child_tag => {
+            if let Some(id) = crate::attr_val(e, "id")
+                .as_deref()
+                .and_then(|v| v.trim().parse::<i64>().ok())
+            {
+                apply_note_ref(pr, id, crate::attr_val(e, "type").as_deref());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `w:numFmt/@w:val` → [`NoteNumberFormat`]：僅 corpus 實見值；未見值 None。
+fn parse_num_fmt(v: &str) -> Option<NoteNumberFormat> {
+    match v.trim() {
+        "decimal" => Some(NoteNumberFormat::Decimal),
+        "lowerRoman" => Some(NoteNumberFormat::LowerRoman),
+        "chicago" => Some(NoteNumberFormat::Chicago),
+        _ => None,
+    }
+}
+
+/// `w:numRestart/@w:val` → [`NoteRestart`]：未見值 None。
+fn parse_num_restart(v: &str) -> Option<NoteRestart> {
+    match v.trim() {
+        "continuous" => Some(NoteRestart::Continuous),
+        "eachPage" => Some(NoteRestart::EachPage),
+        "eachSect" => Some(NoteRestart::EachSect),
+        _ => None,
+    }
+}
+
+/// `w:pos/@w:val` → [`NotePos`]：未見值 None。
+fn parse_pos(v: &str) -> Option<NotePos> {
+    match v.trim() {
+        "beneathText" => Some(NotePos::BeneathText),
+        "pageBottom" => Some(NotePos::PageBottom),
+        "documentEnd" => Some(NotePos::DocumentEnd),
+        "pageEnd" => Some(NotePos::PageEnd),
+        "sectEnd" => Some(NotePos::SectEnd),
+        _ => None,
+    }
+}
+
+/// 記錄一個 `w:footnote`／`w:endnote` 引用（ECMA-376 §17.11.9）。
+///
+/// `w:type` 存在時優先分流（`separator`／`continuationSeparator`）；無
+/// `w:type` 時依 Word 慣例：id=-1＝分隔線、id=0＝續接分隔線，其餘當參考線。
+/// （ECMA §17.11.9 的 `w:footnote` 只有 `w:id`，此處的 type 為容錯分支。）
+fn apply_note_ref(pr: &mut NotePr, id: i64, ty: Option<&str>) {
+    match ty.map(str::trim) {
+        Some("separator") => pr.separator_id = Some(id),
+        Some("continuationSeparator") => pr.continuation_separator_id = Some(id),
+        _ => match id {
+            -1 => pr.separator_id = Some(id),
+            0 => pr.continuation_separator_id = Some(id),
+            _ => pr.ref_id = Some(id),
+        },
     }
 }
 
@@ -250,7 +490,9 @@ fn kind_of(type_attr: Option<&str>) -> NoteKind {
 // - **`w:footnoteRef`／`w:endnoteRef`／`w:separator`（註內符號）**：
 //   不進 run 序；F2 發射符號時定義投影。
 // - **`w:footnotePr`／`w:endnotePr`**（settings/sectPr 上的編號格式、
-//   重啟、位置設定）：本卡不收，F2 需要時再依 corpus 實據擴充。
+//   重啟、位置設定）：H1 卡已收（見 [`NotePr`]／[`NoteSettings`]／
+//   [`parse_note_settings`]；sectPr 層由 `sectpr::read_sections_note_pr`
+//   讀），消費仍待 F2。
 // - **`w:continuousBookmarks`／`w:bookmarkStart` 內嵌**：註內書籤
 //   跑正文解析器自然落在 paragraphs；本卡不另行投影。
 
@@ -474,5 +716,113 @@ mod tests {
             &theme
         )
         .is_empty());
+    }
+
+    // ---------------- (H1) footnotePr／endnotePr 設定解析 ----------------
+
+    /// (a) HC031 settings 層：`w:footnotePr`／`w:endnotePr` 的分隔線／續接
+    /// 分隔線引用 id（Word 慣例 -1／0）落 `separator_id`／
+    /// `continuation_separator_id`；兩層各自成組，本卡不合併。
+    #[test]
+    fn hc031_settings_note_pr_ids() {
+        let doc = parse_corpus("xopt/TestFiles_HC031-Complicated-Document.docx");
+        let notes = Notes::from_parts(&doc.parts);
+        let f = notes
+            .settings
+            .footnote
+            .expect("HC031 settings 有 footnotePr");
+        assert_eq!(f.separator_id, Some(-1), "分隔線引用 id");
+        assert_eq!(f.continuation_separator_id, Some(0), "續接分隔線引用 id");
+        let e = notes.settings.endnote.expect("HC031 settings 有 endnotePr");
+        assert_eq!(e.separator_id, Some(-1));
+        assert_eq!(e.continuation_separator_id, Some(0));
+    }
+
+    /// (c) reader-styles.docx：`w:endnotePr` 的 `numFmt=lowerRoman` 落
+    /// `NoteNumberFormat::LowerRoman`（settings 層）；`footnotePr` 為
+    /// `decimal`。實檔值，不臆造。
+    #[test]
+    fn reader_styles_endnote_num_fmt() {
+        let doc = parse_corpus("phpword/tests_PhpWordTests__files_documents_reader-styles.docx");
+        let notes = Notes::from_parts(&doc.parts);
+        let e = notes.settings.endnote.expect("reader-styles 有 endnotePr");
+        assert_eq!(e.num_fmt, Some(NoteNumberFormat::LowerRoman));
+        let f = notes
+            .settings
+            .footnote
+            .expect("reader-styles 有 footnotePr");
+        assert_eq!(f.num_fmt, Some(NoteNumberFormat::Decimal));
+    }
+
+    /// (d) 病態輸入：未見過的 `w:numFmt` 值 → 老實 None 不 panic；
+    /// 空組 `<w:footnotePr/>` → Some(全 None)；壞 XML 不炸。
+    #[test]
+    fn note_pr_pathological_inputs() {
+        let xml = r#"<w:settings xmlns:w="x"><w:footnotePr><w:numFmt w:val="還來沒見過的格式"/></w:footnotePr></w:settings>"#;
+        let s = parse_note_settings(xml.as_bytes());
+        let f = s.footnote.expect("footnotePr 存在");
+        assert_eq!(f.num_fmt, None, "未見值不得臆造");
+        let empty = br#"<w:settings xmlns:w="x"><w:footnotePr/></w:settings>"#;
+        let s2 = parse_note_settings(empty);
+        assert_eq!(
+            s2.footnote,
+            Some(NotePr::default()),
+            "空組須為 Some(全 None)"
+        );
+        // 壞 XML（截斷）→ 不 panic（回 None 或已收部分）。
+        let bad = br#"<w:settings xmlns:w="x"><w:footnotePr><w:numFmt w:val="decimal""#;
+        let _ = parse_note_settings(bad);
+    }
+
+    /// (e) serde 相容：舊版 Notes JSON（無 `settings` 欄）可反序列化；
+    /// `NotePr` 全 None 時不外露任何欄位；帶值時可往返。
+    #[test]
+    fn note_pr_serde_backward_compatible() {
+        let old = r#"{"footnotes":[],"endnotes":[]}"#;
+        let notes: Notes = serde_json::from_str(old).expect("舊版 Notes JSON 必須能反序列化");
+        assert_eq!(
+            notes.settings,
+            NoteSettings::default(),
+            "缺 settings → 全 None"
+        );
+        let j = serde_json::to_string(&NotePr::default()).expect("序列化 NotePr");
+        assert_eq!(j, "{}", "NotePr 全 None 時須為空物件：{j}");
+        let pr = NotePr {
+            num_fmt: Some(NoteNumberFormat::LowerRoman),
+            num_restart: Some(NoteRestart::EachSect),
+            num_start: Some(3),
+            pos: Some(NotePos::BeneathText),
+            ref_id: Some(7),
+            separator_id: Some(-1),
+            continuation_separator_id: Some(0),
+        };
+        let back: NotePr =
+            serde_json::from_str(&serde_json::to_string(&pr).unwrap()).expect("往返");
+        assert_eq!(back, pr, "NotePr 必須可往返");
+    }
+
+    /// (f) 逐欄覆寫語意：settings 層 `numFmt=decimal` 與 sectPr 層
+    /// `pos=beneathText` 各自成組——解析層老實分層存，合併是消費端的事。
+    #[test]
+    fn settings_and_section_layers_stay_separate() {
+        let settings =
+            br#"<w:settings xmlns:w="x"><w:footnotePr><w:numFmt w:val="decimal"/></w:footnotePr></w:settings>"#;
+        let s = parse_note_settings(settings);
+        assert_eq!(
+            s.footnote.unwrap().num_fmt,
+            Some(NoteNumberFormat::Decimal),
+            "settings 層"
+        );
+        let doc_xml = br#"<w:document xmlns:w="x"><w:body>
+            <w:p><w:r><w:t>A</w:t></w:r></w:p>
+            <w:sectPr><w:footnotePr><w:pos w:val="beneathText"/></w:footnotePr></w:sectPr>
+          </w:body></w:document>"#;
+        let prs = crate::read_sections_note_pr(doc_xml);
+        assert_eq!(prs.len(), 1, "單節");
+        assert_eq!(
+            prs[0].as_ref().unwrap().pos,
+            Some(NotePos::BeneathText),
+            "sectPr 層"
+        );
     }
 }
