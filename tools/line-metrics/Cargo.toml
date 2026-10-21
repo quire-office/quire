@@ -1,0 +1,16 @@
+[package]
+name = "line-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "分頁行高分解診斷工具（純觀測：重放 engine 的分頁輸入管線，不改任何渲染/分頁行為）"
+
+[[bin]]
+name = "line_metrics"
+path = "src/main.rs"
+
+[dependencies]
+quire-ooxml = { workspace = true }
+quire-layout = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -8,6 +8,7 @@ members = [
     "core/crdt",
     "core/engine-api",
     "tools/scrub",
+    "tools/line-metrics",
     "shells/native",
     "shells/web",
     "shells/web-collab",
