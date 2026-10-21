@@ -1066,24 +1066,26 @@ fn push_frag_items(
                     fill_argb: argb,
                 });
             }
-            // 框線：邊界線往內收半個線寬（Word 框線畫在格內，不外溢）。
-            let line = |pen: &Pen, x1, y1, x2, y2, items: &mut Vec<DrawItem>| {
-                let (x1, y1, x2, y2) = (
-                    x1 + pen.width_pt / 2.0,
-                    y1 + pen.width_pt / 2.0,
-                    x2 - pen.width_pt / 2.0,
-                    y2 - pen.width_pt / 2.0,
-                );
-                items.push(DrawItem::Rule {
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    width_pt: pen.width_pt.max(0.25),
-                    color_argb: pen.color_argb,
-                    dash: pen.dash.clone(),
-                });
-            };
+            // 框線：筆畫居中畫在格線（cell 邊界）上——與 Word／LO 口徑一致。
+            // 舊實作把四端各自內縮半個線寬：水平線變成「上端下移＋下端上移」
+            // 的斜線（Bug54771b 實證 y1=74.25≠y2=69.75）；若只內縮又會讓
+            // 相鄰格共用邊各移各的→並排雙倍線寬＋角隅缺角。居中發射兩者皆免，
+            // 共用邊由相鄰格發出同座標重疊線（同色重繪＝視覺同條）。
+            let line =
+                |pen: &Pen, x1: f32, y1: f32, x2: f32, y2: f32, items: &mut Vec<DrawItem>| {
+                    if (x2 - x1).abs() <= 1e-3 && (y2 - y1).abs() <= 1e-3 {
+                        return; // 退化邊（零長度）不發射
+                    }
+                    items.push(DrawItem::Rule {
+                        x1,
+                        y1,
+                        x2,
+                        y2,
+                        width_pt: pen.width_pt.max(0.25),
+                        color_argb: pen.color_argb,
+                        dash: pen.dash.clone(),
+                    });
+                };
             if let Some(p) = &cell.edges[quire_layout::table::EDGE_TOP] {
                 line(p, x, y, x + cell.w_pt, y, items);
             }
@@ -1823,6 +1825,50 @@ mod tests {
         let _: &CanonicalTable = &typed[0].table;
         // 無損鐵律：開檔→不動→存檔位元組級相同（解析純讀入，不碰寫回來源）。
         assert_eq!(engine.save_docx().unwrap().as_slice(), TABLE_MIXED);
+    }
+
+    // ---------------- 表格框線軸對齊（tbrl 修復：端點內縮誤掰斜水平/垂直線） ----------------
+
+    /// Bug54771b（粗框線 sz=36 表格）實證返修。舊實作把框線四端各內縮半個
+    /// 線寬：(a) 水平線 y1 下移 y2 上移 → 整條傾斜 ~2°（SVG 實測
+    /// y1=74.25≠y2=69.75）；(b) 上下相鄰格的共用邊各往自家格心平移 → 同一條
+    /// 內框線分裂成兩條錯位線。修復＝筆畫居中畫在格線，不內縮。
+    /// 斷言強度：軸對齊（精確相等）＋共用邊座標完全重合（舊修復「只防斜不防
+    /// 分裂」亦會紅）。
+    #[test]
+    fn table_borders_are_axis_aligned() {
+        const B54771B: &[u8] =
+            include_bytes!("../../../corpus/poi/test-data_document_Bug54771b.docx");
+        let engine = Engine::from_docx_bytes(B54771B).expect("開啟 Bug54771b 失敗");
+        let dl = engine.page_display_list(0).expect("第 0 頁存在");
+        let mut rules: Vec<(f32, f32, f32, f32)> = dl
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                DrawItem::Rule { x1, y1, x2, y2, .. } => Some((*x1, *y1, *x2, *y2)),
+                _ => None,
+            })
+            .collect();
+        // 此檔 tblBorders 只宣告 top/bottom/insideH（無 left/right/insideV）
+        // → 3 列單格共 6 條水平線，其中 2 條為相鄰列共用邊（各畫兩遍）。
+        assert_eq!(rules.len(), 6, "3 列×上下各一 = 6 條框線");
+        for (x1, y1, x2, y2) in &rules {
+            assert!(
+                y1 == y2,
+                "水平框線 y 兩端必須精確相等：({x1},{y1})→({x2},{y2})"
+            );
+            assert!(x2 - x1 > 1.0, "框線不得退化為點：({x1},{y1})→({x2},{y2})");
+        }
+        // 共用邊＝座標完全重合（居中發射的充分證據；四端內縮或各格自移必分裂）。
+        rules.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1.total_cmp(&b.1))
+                .then(a.2.total_cmp(&b.2))
+                .then(a.3.total_cmp(&b.3))
+        });
+        let dup = rules.windows(2).filter(|w| w[0] == w[1]).count();
+        assert_eq!(dup, 2, "兩條共用邊各自重合（重疊線對）：{rules:?}");
     }
 
     // ---------------- t_a1397522：圖片幾何佔位框（end-to-end 投影） ----------------
