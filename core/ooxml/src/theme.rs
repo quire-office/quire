@@ -13,8 +13,9 @@
 //!
 //! fontScheme（DrawingML §20.1.8）同在本模組解析：`a:majorFont`（標題字型）
 //! 與 `a:minorFont`（本文字型）各帶 `a:latin`（西文）與 `a:ea`（東亞）
-//! 兩槽。`w:rFonts/@w:asciiTheme` 等「指向主題槽位」的寫法日後查此表；
-//! 本卡只解析存檔，**不讓任何測量／渲染消費**（渲染輸出逐位元組零變化）。
+//! 兩槽。`w:rFonts/@w:asciiTheme` 等「指向主題槽位」的寫法在 styles/document
+//! 解析當下即查此表落地成直接值（ECMA-376 §17.3.2.26）；純讀取，存檔路徑
+//! 零觸碰。
 //!
 //! 亮度變換（lumMod/lumOff/tint/shade/satMod）**本卡不做**——見模組末
 //! 「未做清單」。因此帶 `w:themeShade`／`w:themeTint` 的 `w:color` 一律
@@ -25,6 +26,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use quick_xml::events::{BytesStart, Event};
+use serde::{Deserialize, Serialize};
 
 /// theme part 的慣例路徑（OPC 關聯目標 `theme/theme1.xml` 的標準落點）。
 const THEME_PART: &str = "word/theme/theme1.xml";
@@ -161,6 +163,53 @@ fn theme_part_bytes(parts: &BTreeMap<String, Vec<u8>>) -> Option<&[u8]> {
     key.and_then(|k| parts.get(k)).map(|v| v.as_slice())
 }
 
+/// `w:rFonts` 主題字型引用所屬的 fontScheme 槽位
+/// （ECMA-376 §17.3.2.26 × DrawingML §20.1.8.22）。
+///
+/// 命名對照：`w:asciiTheme`／`w:hAnsiTheme` 的 `majorHAnsi`／`minorHAnsi`
+/// 指 fontScheme 的 `a:majorFont/a:latin`／`a:minorFont/a:latin`
+/// （HAnsi 槽即 latin；見 [`ascii_theme_slot`]）；`w:eastAsiaTheme` 的
+/// `majorEastAsia`／`minorEastAsia` 指 `a:ea`（見 [`east_asia_theme_slot`]）。
+/// `w:cstheme`（Bidi 系）**不建模**——引擎無複雜文字消費路徑，與 G1 選族
+/// 規則同款取捨。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FontSchemeSlot {
+    /// `a:majorFont/a:latin`（標題西文）。
+    MajorAscii,
+    /// `a:minorFont/a:latin`（本文西文）。
+    MinorAscii,
+    /// `a:majorFont/a:ea`（標題東亞）。
+    MajorEastAsia,
+    /// `a:minorFont/a:ea`（本文東亞）。
+    MinorEastAsia,
+}
+
+/// `w:asciiTheme`／`w:hAnsiTheme` 的值 → 西文 fontScheme 槽位。
+///
+/// ECMA-376 §17.3.2.26：`w:asciiTheme` 與 `w:hAnsiTheme` 的取值域中的
+/// HAnsi 兩值（`majorHAnsi`／`minorHAnsi`）對應 DrawingML 的 latin 槽；
+/// 無法識別的值（含 `majorEastAsia`／Bidi 系與自佔位名）→ None，不虛構。
+pub fn ascii_theme_slot(token: &str) -> Option<FontSchemeSlot> {
+    match token {
+        "majorHAnsi" => Some(FontSchemeSlot::MajorAscii),
+        "minorHAnsi" => Some(FontSchemeSlot::MinorAscii),
+        _ => None,
+    }
+}
+
+/// `w:eastAsiaTheme` 的值 → 東亞 fontScheme 槽位。
+///
+/// ECMA-376 §17.3.2.26 的 `ST_Theme`：`majorEastAsia`／`minorEastAsia` 對應
+/// `a:majorFont/a:ea`／`a:minorFont/a:ea`；其餘值（含 HAnsi 與 Bidi 系）→
+/// None，不虛構。
+pub fn east_asia_theme_slot(token: &str) -> Option<FontSchemeSlot> {
+    match token {
+        "majorEastAsia" => Some(FontSchemeSlot::MajorEastAsia),
+        "minorEastAsia" => Some(FontSchemeSlot::MinorEastAsia),
+        _ => None,
+    }
+}
+
 /// 主題字型表：`a:fontScheme` 的 major（標題）／minor（本文）字型族
 /// （DrawingML §20.1.8）。
 ///
@@ -273,6 +322,20 @@ impl ThemeFonts {
             && self.major_east_asia.is_none()
             && self.minor_ascii.is_none()
             && self.minor_east_asia.is_none()
+    }
+
+    /// 查 fontScheme 槽位的字型族名（`w:rFonts` 的 theme 引用查表入口）。
+    ///
+    /// 槽位未宣告／`@typeface` 空白 → None（`rfonts_of` 據此保留直接值，
+    /// 不拿空字串冒充字型族）。
+    pub fn resolve_slot(&self, slot: FontSchemeSlot) -> Option<&str> {
+        let name = match slot {
+            FontSchemeSlot::MajorAscii => &self.major_ascii,
+            FontSchemeSlot::MinorAscii => &self.minor_ascii,
+            FontSchemeSlot::MajorEastAsia => &self.major_east_asia,
+            FontSchemeSlot::MinorEastAsia => &self.minor_east_asia,
+        };
+        name.as_deref().filter(|s| !s.trim().is_empty())
     }
 
     /// 寫入西文槽（**首見為準**：同槽位後見者不覆蓋——畸形重複時以最先
