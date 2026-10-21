@@ -1147,16 +1147,20 @@ fn paginate_flow(
     (pages, starts)
 }
 
-/// 浮圖附掛全掃計數（debug 斷言用，t_c1fb4c69 S2-7）：「無鎖點圖也全頁
-/// clear＋全 flow 重掃」是退化路徑——計數器設在 para_fi 全掃起點，早退
-/// 修好後純內嵌圖檔案的重排不得再推進它。
+// 浮圖附掛全掃計數（debug 斷言用，t_c1fb4c69 S2-7）：「無鎖點圖也全頁
+// clear＋全 flow 重掃」是退化路徑——計數器設在 para_fi 全掃起點，早退
+// 修好後純內嵌圖檔案的重排不得再推進它。
+// 必須 thread_local：cargo test 同 process 平行跑，全域計數器會被其他
+// 執行緒（含鎖點圖檔案的測試）推進，讀 before/after 差值的斷言即偶發紅
+// （跨執行緒汙染，非被測行為退化）。編輯與斷言同執行緒，thread_local 語義正確。
 #[cfg(debug_assertions)]
-pub(crate) static FLOATING_ATTACH_SCANS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    pub(crate) static FLOATING_ATTACH_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[cfg(all(test, debug_assertions))]
 fn floating_attach_scans() -> usize {
-    FLOATING_ATTACH_SCANS.load(std::sync::atomic::Ordering::Relaxed)
+    FLOATING_ATTACH_SCANS.with(|c| c.get())
 }
 
 /// 浮動圖片附掛（t_a1397522）：鎖點項不進流，分頁完成後按錨定段落所在頁
@@ -1179,7 +1183,7 @@ fn attach_floating_images(
         return;
     }
     #[cfg(debug_assertions)]
-    FLOATING_ATTACH_SCANS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    FLOATING_ATTACH_SCANS.with(|c| c.set(c.get() + 1));
     for pg in pages.iter_mut() {
         pg.floating_images.clear();
     }
