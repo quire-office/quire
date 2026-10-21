@@ -856,6 +856,52 @@ fn emit_image_placeholder(items: &mut Vec<DrawItem>, x: f32, y: f32, w: f32, h: 
     rule(x + w, y, x + w, y + h, items);
 }
 
+/// 是否為 CJK 碼點（供「只有 eastAsia 宣告」時的全中文判斷）。
+/// 涵蓋 CJK 部首／標點、假名、統一漢字（含擴充 A）、相容漢字與諺文；
+/// 範圍取自 Unicode 區塊配置，非語言學完備分類。
+fn is_cjk(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x2E80..=0x2EFF
+            | 0x3000..=0x303F
+            | 0x3040..=0x30FF
+            | 0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0xAC00..=0xD7AF
+    )
+}
+
+/// 依 run 的有效字型宣告選出顯示列表要用的字型族名（v1 規則）。
+///
+/// 選取順序：
+/// 1. `hint_east_asian == true` 且 `east_asia` 有值 → `east_asia`；
+/// 2. 否則 `ascii` 有值 → `ascii`；
+/// 3. 否則 `east_asia` 有值且 `text` 非空且全為 CJK 碼點 → `east_asia`；
+/// 4. 皆無 → `None`（渲染端沿用自身預設，即舊行為）。
+///
+/// `cs`（複雜文字）本版不消費（引擎尚無 RTL 路徑）；`asciiTheme`／
+/// `eastAsiaTheme` 等 theme 字型引用也不消費（theme 查表另卡），遇到只有
+/// theme 引用的 run 會老實回 `None`。表格格內文字（CellText）目前不帶
+/// run 級字型（layout 層限制），發射時傳 `None`，格內選族待後續卡。
+fn select_text_family(fonts: Option<&quire_ooxml::RunFonts>, text: &str) -> Option<String> {
+    let f = fonts?;
+    if f.hint_east_asian {
+        if let Some(ea) = &f.east_asia {
+            return Some(ea.clone());
+        }
+    }
+    if let Some(ascii) = &f.ascii {
+        return Some(ascii.clone());
+    }
+    if let Some(ea) = &f.east_asia {
+        if !text.is_empty() && text.chars().all(is_cjk) {
+            return Some(ea.clone());
+        }
+    }
+    None
+}
+
 /// 將 OOXML `Run` 樣式換算為 `(flags, color_argb, size_pt)`。
 /// `size_pt`＝級聯烘焙的有效字級（None＝未宣告，發射層退回段落／文件級尺）。
 fn run_style(r: &quire_ooxml::Run) -> (u8, u32, Option<f32>) {
@@ -876,6 +922,16 @@ fn run_style(r: &quire_ooxml::Run) -> (u8, u32, Option<f32>) {
     (flags, color_argb, r.size_pt)
 }
 
+/// 行內同質段：(起始碼點, 結束碼點, flags, color_argb, 級聯字級, 級聯字型族)。
+type LineSegment = (
+    usize,
+    usize,
+    u8,
+    u32,
+    Option<f32>,
+    Option<quire_ooxml::RunFonts>,
+);
+
 /// 將單行文字與所屬段落的 `Run` 邊界（依 char offset 累積）求交集，
 /// 每個樣式同質段發射一個 `DrawItem::Text`；段 x 偏移以**該段發射字級**的
 /// `TextMeasurer` 累加前段寬度——全行無字級宣告時量測尺恆等 `size_pt`，
@@ -892,17 +948,21 @@ fn emit_line_run_items(
     let char_indices: Vec<(usize, char)> = line.text.char_indices().collect();
     let line_len_cp = char_indices.len();
     if line_len_cp == 0 {
-        let (flags, color_argb, sz) = para.and_then(|p| p.runs.first()).map(run_style).unwrap_or((
-            0,
-            DEFAULT_TEXT_COLOR_ARGB,
-            None,
-        ));
+        let first = para.and_then(|p| p.runs.first());
+        let (flags, color_argb, sz, family) = match first {
+            Some(r) => {
+                let (f, c, s) = run_style(r);
+                (f, c, s, select_text_family(r.effective_fonts.as_ref(), ""))
+            }
+            None => (0, DEFAULT_TEXT_COLOR_ARGB, None, None),
+        };
         items.push(DrawItem::Text {
             x: base_x,
             y,
             size_pt: sz.unwrap_or(size_pt),
             flags,
             color_argb,
+            family,
             text: String::new(),
         });
         return;
@@ -910,20 +970,28 @@ fn emit_line_run_items(
 
     let line_start = line.char_offset;
     let line_end = line_start + line_len_cp;
-    // (行內起始碼點, 行內結束碼點, flags, color_argb, 級聯字級)
-    let mut segments: Vec<(usize, usize, u8, u32, Option<f32>)> = Vec::new();
-    let mut push_seg = |s: usize, e: usize, flags: u8, color: u32, size: Option<f32>| {
+    // (行內起始碼點, 行內結束碼點, flags, color_argb, 級聯字級, 級聯字型族)
+    let mut segments: Vec<LineSegment> = Vec::new();
+    let mut push_seg = |s: usize,
+                        e: usize,
+                        flags: u8,
+                        color: u32,
+                        size: Option<f32>,
+                        fonts: Option<quire_ooxml::RunFonts>| {
         if s >= e {
             return;
         }
         if let Some(last) = segments.last_mut() {
-            // 相鄰且樣式相同時合併為單一可繪段。
+            // 相鄰且樣式相同時合併為單一可繪段（沿用舊版鍵：字型宣告不參與
+            // 合併，否則相鄰同款式 run 只因字型不同就被拆成多個 `<text>`，
+            // 會破壞「SVG 僅新增 font-family 屬性」的零版面變動契約）。
+            // 合併段的選族採**首個 run** 的宣告（見下方發射處）。
             if last.1 == s && last.2 == flags && last.3 == color && last.4 == size {
                 last.1 = e;
                 return;
             }
         }
-        segments.push((s, e, flags, color, size));
+        segments.push((s, e, flags, color, size, fonts));
     };
 
     let mut covered = 0usize;
@@ -940,16 +1008,16 @@ fn emit_line_run_items(
                 let rel_s = inter_s - line_start;
                 let rel_e = inter_e - line_start;
                 if rel_s > covered {
-                    push_seg(covered, rel_s, 0, DEFAULT_TEXT_COLOR_ARGB, None);
+                    push_seg(covered, rel_s, 0, DEFAULT_TEXT_COLOR_ARGB, None, None);
                 }
                 let (f, c, sz) = run_style(r);
-                push_seg(rel_s, rel_e, f, c, sz);
+                push_seg(rel_s, rel_e, f, c, sz, r.effective_fonts.clone());
                 covered = rel_e;
             }
         }
     }
     if covered < line_len_cp {
-        push_seg(covered, line_len_cp, 0, DEFAULT_TEXT_COLOR_ARGB, None);
+        push_seg(covered, line_len_cp, 0, DEFAULT_TEXT_COLOR_ARGB, None, None);
     }
 
     let byte_of = |cp: usize| -> usize {
@@ -959,7 +1027,7 @@ fn emit_line_run_items(
             .unwrap_or(line.text.len())
     };
     let mut x_off = 0.0f32;
-    for (rel_s, rel_e, flags, color_argb, run_size) in segments {
+    for (rel_s, rel_e, flags, color_argb, run_size, run_fonts) in segments {
         let seg_text = &line.text[byte_of(rel_s)..byte_of(rel_e)];
         let seg_size = run_size.unwrap_or(size_pt);
         items.push(DrawItem::Text {
@@ -968,6 +1036,7 @@ fn emit_line_run_items(
             size_pt: seg_size,
             flags,
             color_argb,
+            family: select_text_family(run_fonts.as_ref(), seg_text),
             text: seg_text.to_string(),
         });
         // 零漂移契約：無宣告段（seg_size==size_pt）與舊實作同尺；宣告段按自身尺。
@@ -1115,6 +1184,8 @@ fn push_frag_items(
                     size_pt: t.size_pt.unwrap_or(size),
                     flags,
                     color_argb,
+                    // 格內文字目前不帶 run 級字型（layout 層限制）；格內選族待後續卡。
+                    family: None,
                     text: t.text.clone(),
                 });
             }
@@ -2502,5 +2573,141 @@ mod tests {
         for p in 0..c.page_count() {
             assert!(c.page_display_list_json(p).is_some());
         }
+    }
+
+    // ---------------- 字型族選取管線（G1） ----------------
+
+    /// 顯示列表內某段文字的選族結果。
+    fn family_of(dl: &PageDisplayList, text: &str) -> String {
+        dl.items
+            .iter()
+            .find_map(|it| match it {
+                DrawItem::Text {
+                    text: t, family, ..
+                } if t == text => family.clone(),
+                _ => None,
+            })
+            .expect("測試文字必須存在於顯示列表")
+    }
+
+    /// (a) 直接宣告 `w:rFonts w:ascii` 的 run → `family=Some(ascii)`。
+    #[test]
+    fn display_list_selects_ascii_font_family() {
+        // inline_image.docx 的 docDefaults 宣告 w:ascii="Calibri"。
+        const DOC: &[u8] = include_bytes!("../../../fixtures/inline_image.docx");
+        let engine = Engine::from_docx_bytes(DOC).expect("開啟 inline_image.docx 失敗");
+        let dl = engine.page_display_list(0).unwrap();
+        assert_eq!(
+            family_of(&dl, "圖片前段：占位框登場之前的文字。"),
+            "Calibri".to_string(),
+            "未帶 hint 且有 ascii 宣告時應選 ascii 字型族"
+        );
+    }
+
+    /// (b) `w:hint="eastAsia"`＋`w:eastAsia` → 選 east_asia（即使 ascii 也有值）。
+    #[test]
+    fn display_list_prefers_east_asia_when_hinted() {
+        let mut base = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx 失敗");
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:rPr>
+          <w:rFonts w:ascii="Arial" w:eastAsia="標楷體" w:hint="eastAsia"/>
+        </w:rPr>
+        <w:t>東亞提示選族</w:t>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+        base.set_part("word/document.xml", xml.as_bytes().to_vec());
+        let docx = base.save_docx().expect("存回 docx 失敗");
+        let engine = Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗");
+        let dl = engine.page_display_list(0).unwrap();
+        assert_eq!(
+            family_of(&dl, "東亞提示選族"),
+            "標楷體".to_string(),
+            "hint=eastAsia 且 eastAsia 有宣告時必須優先選 east_asia"
+        );
+    }
+
+    /// (b2) 無 hint 但只有 east_asia 宣告，且文字全為 CJK → 選 east_asia。
+    #[test]
+    fn display_list_falls_back_to_east_asia_for_all_cjk_text() {
+        let mut base = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx 失敗");
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:rPr>
+          <w:rFonts w:eastAsia="新細明體"/>
+        </w:rPr>
+        <w:t>純中文段落</w:t>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>"#;
+        base.set_part("word/document.xml", xml.as_bytes().to_vec());
+        let docx = base.save_docx().expect("存回 docx 失敗");
+        let engine = Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗");
+        let dl = engine.page_display_list(0).unwrap();
+        assert_eq!(
+            family_of(&dl, "純中文段落"),
+            "新細明體".to_string(),
+            "無 ascii 宣告且文字全 CJK 時應退回 east_asia"
+        );
+    }
+
+    /// (c) 無任何 `w:rFonts` → 顯示列表不帶 family 欄位（serde 跳過）。
+    #[test]
+    fn display_list_omits_family_without_rfonts() {
+        let engine = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx 失敗");
+        let dl = engine.page_display_list(0).unwrap();
+        assert!(
+            dl.items.iter().all(|it| !matches!(
+                it,
+                DrawItem::Text {
+                    family: Some(_),
+                    ..
+                }
+            )),
+            "sample.docx 無字型宣告，所有文字項的 family 必須是 None"
+        );
+        let json = engine.page_display_list_json(0).unwrap();
+        assert!(
+            !json.contains("\"family\""),
+            "family=None 時 serde 必須跳過欄位（舊顯示列表格式）：{json}"
+        );
+    }
+
+    /// (f) 只宣告字型不改變任何分頁幾何——page_breaks JSON 逐位元組等值。
+    #[test]
+    fn font_declaration_does_not_change_page_breaks() {
+        let long_text = "字型宣告不得影響分頁。".repeat(400);
+        let doc = |rpr: &str| {
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r>{rpr}<w:t>{long_text}</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#
+            )
+        };
+        let build = |xml: String| {
+            let mut base = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx 失敗");
+            base.set_part("word/document.xml", xml.into_bytes());
+            let docx = base.save_docx().expect("存回 docx 失敗");
+            Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗")
+        };
+        let plain = build(doc(""));
+        let with_font = build(doc(r#"<w:rPr><w:rFonts w:ascii="Calibri"/></w:rPr>"#));
+        assert_eq!(
+            plain.page_breaks_json(),
+            with_font.page_breaks_json(),
+            "新增字型宣告不得移動任何分頁斷點"
+        );
     }
 }

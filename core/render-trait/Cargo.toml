@@ -7,3 +7,6 @@ description = "Platform-free display list + Renderer trait (native=wgpu, web=can
 
 [dependencies]
 serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
