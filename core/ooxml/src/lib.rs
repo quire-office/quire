@@ -23,8 +23,9 @@ pub use diff::{diff_untouched, diff_zip_structure, EntryDiff, ZipDiff, ZipStruct
 pub use drawing::{count_paras, origin_of, read_images, InlineImage};
 pub use rels::{read_rels, resolve_relationship, Relationship};
 pub use sectpr::{
-    read_even_and_odd_headers, read_sections_header_footer, read_sections_per_paragraph,
-    SectionGeometry, SectionHeaderFooter, SectionSpec, SlotRefs,
+    read_even_and_odd_headers, read_sections_endnote_pr, read_sections_header_footer,
+    read_sections_note_pr, read_sections_per_paragraph, SectionGeometry, SectionHeaderFooter,
+    SectionSpec, SlotRefs,
 };
 pub use styles::{Align, LineSpacing, ParaStyle, RunFonts, RunStyle, StyleTable};
 pub use table::{
@@ -34,7 +35,10 @@ pub use table::{
 pub use theme::{theme_slot_for, ThemeColors, ThemeFonts};
 pub use zip_struct::{Change, ZipBundle, ZipEntry, ZipError};
 
-pub use notes::{Note, NoteKind, NoteKind2, NoteRef, Notes};
+pub use notes::{
+    parse_note_settings, Note, NoteKind, NoteKind2, NoteNumberFormat, NotePos, NotePr, NoteRef,
+    NoteRestart, NoteSettings, Notes,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

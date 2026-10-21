@@ -34,6 +34,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::notes::NotePr;
+
 /// Word 省略 `w:pgSz` 時的頁面後備尺寸（twip）：A4 直式。
 const DEF_PG_W: i64 = 11906;
 const DEF_PG_H: i64 = 16838;
@@ -113,6 +115,10 @@ struct Accum {
     title_pg: bool,
     header: SlotRefs,
     footer: SlotRefs,
+    /// `w:footnotePr`（ECMA-376 §17.11.11 節範圍）；缺＝None。
+    note_footnote: Option<NotePr>,
+    /// `w:endnotePr`（ECMA-376 §17.11.4 節範圍）；缺＝None。
+    note_endnote: Option<NotePr>,
 }
 
 impl Accum {
@@ -131,6 +137,8 @@ impl Accum {
             title_pg: false,
             header: SlotRefs::default(),
             footer: SlotRefs::default(),
+            note_footnote: None,
+            note_endnote: None,
         }
     }
     fn into_geom(self) -> SectionGeometry {
@@ -234,6 +242,45 @@ pub fn read_sections_header_footer(xml: &[u8]) -> Vec<SectionHeaderFooter> {
     out
 }
 
+/// 由 `word/document.xml` 明文解析逐 section 的 `w:footnotePr`（ECMA-376
+/// §17.11.11 節範圍；文件級設定見 [`crate::parse_note_settings`]）。
+///
+/// 回傳依 section `id` 升序（同 [`read_sections_header_footer`]），每節一個
+/// `Option<NotePr>`：該節未宣告 `w:footnotePr` → `None`（逐欄覆寫語意——
+/// 缺＝不覆寫，沿用 settings；合併是消費端的事）。無任何 section → 空清單。
+/// 逐段對齊請以 [`read_sections_per_paragraph`] 的 section id 對應。
+pub fn read_sections_note_pr(xml: &[u8]) -> Vec<Option<NotePr>> {
+    read_sections_note_pr_of(xml, true)
+}
+
+/// 由 `word/document.xml` 明文解析逐 section 的 `w:endnotePr`（ECMA-376
+/// §17.11.4 節範圍；同 [`read_sections_note_pr`] 口徑）。
+pub fn read_sections_endnote_pr(xml: &[u8]) -> Vec<Option<NotePr>> {
+    read_sections_note_pr_of(xml, false)
+}
+
+/// [`read_sections_note_pr`]／[`read_sections_endnote_pr`] 共用：`footnote`
+/// 為 true 取 `w:footnotePr`，否則取 `w:endnotePr`。
+fn read_sections_note_pr_of(xml: &[u8], footnote: bool) -> Vec<Option<NotePr>> {
+    let scan = scan_sections(xml);
+    let mut out = Vec::new();
+    for (_, _, a) in &scan.boundaries {
+        out.push(if footnote {
+            a.note_footnote
+        } else {
+            a.note_endnote
+        });
+    }
+    if let Some((_, a)) = &scan.body_sect {
+        out.push(if footnote {
+            a.note_footnote
+        } else {
+            a.note_endnote
+        });
+    }
+    out
+}
+
 fn inherit(dst: &mut SlotRefs, src: &SlotRefs) {
     if dst.default.is_none() {
         dst.default = src.default.clone();
@@ -300,6 +347,11 @@ fn scan_sections(xml: &[u8]) -> Scan {
     let mut boundaries: Vec<(usize, u32, Accum)> = Vec::new();
     let mut body_sect: Option<(u32, Accum)> = None;
     let mut next_id: u32 = 0; // section 文件序號：依收束出現順序編號
+                              // 進行中的 notePr 子樹（sectPr 內 footnotePr／endnotePr；兩者互斥）。
+    let mut note_footnote: Option<NotePr> = None;
+    let mut note_endnote: Option<NotePr> = None;
+    let mut in_note_footnote = false;
+    let mut in_note_endnote = false;
 
     // pgSz／pgMar／type／headerReference… 在真實文件一律自閉合（Event::Empty），
     // 必須與 Start 同臂處理；Err＝尾部截斷，容忍並照常回報已解析的 section。
@@ -377,6 +429,35 @@ fn scan_sections(xml: &[u8]) -> Scan {
                             set_slot(&mut a.footer, &e);
                         }
                     }
+                    b"footnotePr" if in_sect && !in_note_endnote => {
+                        if ev_is_block_start {
+                            in_note_footnote = true;
+                            note_footnote = Some(NotePr::default());
+                        } else if let Some(a) = accum.as_mut() {
+                            // <w:footnotePr/> 空組：以全 None 收一個。
+                            a.note_footnote = Some(NotePr::default());
+                        }
+                    }
+                    b"endnotePr" if in_sect && !in_note_footnote => {
+                        if ev_is_block_start {
+                            in_note_endnote = true;
+                            note_endnote = Some(NotePr::default());
+                        } else if let Some(a) = accum.as_mut() {
+                            a.note_endnote = Some(NotePr::default());
+                        }
+                    }
+                    // notePr 的子元素（numFmt／numRestart／num／pos／footnote）
+                    // 統一交给 notes 模組的分流口徑（不另造第二台狀態機）。
+                    _ if in_note_footnote => {
+                        if let Some(p) = note_footnote.as_mut() {
+                            crate::notes::apply_note_pr_child(p, &e, b"footnote");
+                        }
+                    }
+                    _ if in_note_endnote => {
+                        if let Some(p) = note_endnote.as_mut() {
+                            crate::notes::apply_note_pr_child(p, &e, b"endnote");
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -410,6 +491,18 @@ fn scan_sections(xml: &[u8]) -> Scan {
                                 boundaries.push((p_count, next_id, a));
                                 next_id += 1;
                             }
+                        }
+                    }
+                    b"footnotePr" if in_note_footnote => {
+                        in_note_footnote = false;
+                        if let (Some(a), Some(p)) = (accum.as_mut(), note_footnote.take()) {
+                            a.note_footnote = Some(p);
+                        }
+                    }
+                    b"endnotePr" if in_note_endnote => {
+                        in_note_endnote = false;
+                        if let (Some(a), Some(p)) = (accum.as_mut(), note_endnote.take()) {
+                            a.note_endnote = Some(p);
                         }
                     }
                     _ => {}
@@ -694,5 +787,60 @@ mod tests {
         assert!(!read_even_and_odd_headers(
             br#"<w:settings xmlns:w="x"><w:zoom w:val="100"/></w:settings>"#
         ));
+    }
+
+    // ---------------- (H1) sectPr 層 footnotePr／endnotePr ----------------
+
+    /// (b) fdo77725.docx：sectPr 的 `w:footnotePr/w:numRestart@w:val=eachSect`
+    /// 落 `NoteRestart::EachSect`（實檔值；settings 層另有同值，兩層各自成組）。
+    #[test]
+    fn fdo77725_section_note_restart() {
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../corpus/ooxmlexport/fdo77725.docx"),
+        )
+        .expect("讀 fdo77725.docx");
+        let doc = crate::parse(&bytes).expect("解析 fdo77725");
+        let xml = doc
+            .parts
+            .get("word/document.xml")
+            .expect("document.xml 必在 parts");
+        let prs = read_sections_note_pr(xml);
+        assert_eq!(prs.len(), 1, "fdo77725 單節");
+        let f = prs[0].as_ref().expect("sectPr footnotePr 存在");
+        assert_eq!(f.num_restart, Some(crate::NoteRestart::EachSect));
+    }
+
+    /// sectPr 層 endnotePr 獨立讀取（fdo77725：`numFmt=decimal`）。
+    #[test]
+    fn fdo77725_section_endnote_num_fmt() {
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../corpus/ooxmlexport/fdo77725.docx"),
+        )
+        .expect("讀 fdo77725.docx");
+        let doc = crate::parse(&bytes).expect("解析 fdo77725");
+        let xml = doc
+            .parts
+            .get("word/document.xml")
+            .expect("document.xml 必在 parts");
+        let prs = read_sections_endnote_pr(xml);
+        assert_eq!(prs.len(), 1);
+        assert_eq!(
+            prs[0].as_ref().unwrap().num_fmt,
+            Some(crate::NoteNumberFormat::Decimal)
+        );
+    }
+
+    /// sectPr 無 footnotePr／endnotePr → 該節回 None（逐欄覆寫語意：
+    /// 缺＝不覆寫，沿用 settings；本函式如實回報 None）。
+    #[test]
+    fn sectpr_without_note_pr_is_none() {
+        let x = xml(r#"<w:document xmlns:w="x"><w:body>
+               <w:p><w:r><w:t>A</w:t></w:r></w:p>
+               <w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr>
+             </w:body></w:document>"#);
+        assert_eq!(read_sections_note_pr(&x), vec![None]);
+        assert_eq!(read_sections_endnote_pr(&x), vec![None]);
     }
 }
