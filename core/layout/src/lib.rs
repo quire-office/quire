@@ -75,6 +75,16 @@ pub struct LayoutParams {
     /// serde default：舊快照（無此欄）反序列化時得空表＝舊行為。
     #[serde(default)]
     pub footnote_reserves_pt: Vec<f32>,
+    /// 逐頁**尾註接排區**預留（pt，索引＝頁序）：J1-fix 與頁底註腳預留分開記帳，
+    /// 分頁時兩者**相加**（同一頁底部由下而上：頁底註腳在最底、尾註接排區在其上）。
+    /// 空表＝無尾註接排預留（現況零變化）；負值／NaN 元素視同 0。
+    ///
+    /// 出處：尾註接排在文件末頁，需先讓正文分頁把這塊空間讓出來（比照 F2c
+    /// 的 `footnote_reserves_pt` 收斂）；尾註條目本身仍由 `EndLayout.inline`
+    /// 發射，本欄只影響分頁容量。
+    /// serde default：舊快照（無此欄）反序列化時得空表＝舊行為。
+    #[serde(default)]
+    pub endnote_reserves_pt: Vec<f32>,
 }
 
 /// 頁面幾何（來自 section；pt）。型別定義在 layout 層——版面是唯一消費者，
@@ -128,6 +138,8 @@ impl LayoutParams {
             // 逐頁預留恆空：逐頁表由引擎端按「哪頁有註腳」灌入
             // （F2b 接線）；`from_section` 只負責頁面幾何，既有構造語義不變。
             footnote_reserves_pt: Vec::new(),
+            // 尾註接排逐頁預留恆空：由引擎端在尾註支路收斂後灌入。
+            endnote_reserves_pt: Vec::new(),
         }
     }
 
@@ -207,6 +219,7 @@ impl Default for LayoutParams {
             footnote_reserve_pt: 0.0,
             // 逐頁預留：後備值無逐頁預留需求＝空表（現況行為，逐位元組零變化）。
             footnote_reserves_pt: Vec::new(),
+            endnote_reserves_pt: Vec::new(),
         }
     }
 }
@@ -437,17 +450,28 @@ fn section_params(p: &LayoutParams, sections: &[SectionSpec], para: usize) -> La
 /// 公開（F2b-2：engine 要按「未扣預留的全容量」算版心底，故需本函式）。
 pub fn section_capacity(p: &LayoutParams, geo: &SectionGeometry, page_index: usize) -> usize {
     let mut sp = LayoutParams::from_section(geo, p.font_size_pt, p.line_spacing);
-    sp.footnote_reserve_pt = if p.footnote_reserves_pt.is_empty() {
+    let foot_reserve = if p.footnote_reserves_pt.is_empty() {
         p.footnote_reserve_pt
     } else {
         effective_reserve_pt(p, page_index)
     };
+    // J1-fix：尾註接排區疊在頁底註腳區**之上**（同一頁底部兩塊不同區域），
+    // 故兩者相加；空表＝0（既有路徑逐位元組不變）。
+    sp.footnote_reserve_pt = foot_reserve + page_endnote_reserve_pt(p, page_index);
     sp.per_page_lines()
 }
 
 /// 逐頁預留（pt）：索引＝頁序，超出表長的頁視同 0；負值／NaN 元素視同 0。
 fn page_reserve_pt(p: &LayoutParams, page_index: usize) -> f32 {
     p.footnote_reserves_pt
+        .get(page_index)
+        .map(|v| reserve_or_zero(*v))
+        .unwrap_or(0.0)
+}
+
+/// 逐頁尾註接排預留（pt）：索引＝頁序，超出表長的頁視同 0；負值／NaN 視同 0。
+fn page_endnote_reserve_pt(p: &LayoutParams, page_index: usize) -> f32 {
+    p.endnote_reserves_pt
         .get(page_index)
         .map(|v| reserve_or_zero(*v))
         .unwrap_or(0.0)
@@ -3031,6 +3055,7 @@ mod tests {
             footnote_reserve_pt: 0.0,
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
+            endnote_reserves_pt: Vec::new(),
         };
         let input = tall_table_input(10);
         let mut texts = vec!["前段".to_string()];
@@ -3131,6 +3156,7 @@ mod tests {
             footnote_reserve_pt: 0.0,
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
+            endnote_reserves_pt: Vec::new(),
         };
         let inner = TableInput {
             grid_pt: vec![80.0],
@@ -3225,6 +3251,7 @@ mod tests {
             footnote_reserve_pt: 0.0,
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
+            endnote_reserves_pt: Vec::new(),
         }
     }
 
@@ -3475,6 +3502,7 @@ mod tests {
             footnote_reserve_pt: 0.0,
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
+            endnote_reserves_pt: Vec::new(),
         };
         // 容量＝4 行/頁；三段各 80 碼點＝2 行。無 br：6 行→2 頁（4＋2）。
         let texts: Vec<String> = (0..3).map(|_| "字".repeat(80)).collect();
@@ -3552,6 +3580,7 @@ mod tests {
             footnote_reserve_pt: 0.0,
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
+            endnote_reserves_pt: Vec::new(),
         };
         // 段內 20 碼點，行寬 400pt/字寬 10pt＝40 字/行 → 全段一行；br 放碼點
         // 8 → 斷行硬收：前 8 字一行、後 12 字另起一行，且該行落新頁。
@@ -3702,6 +3731,7 @@ mod tests {
             footnote_reserve_pt: 0.0,
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
+            endnote_reserves_pt: Vec::new(),
         };
         let texts = vec!["前段一行".to_string()];
         // 容量＝(200−80)/16.8＝7 帶：前段 1＋表 6 恰好同頁；段尾 br 後表格
@@ -3767,6 +3797,7 @@ mod tests {
             footnote_reserve_pt: 0.0,
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
+            endnote_reserves_pt: Vec::new(),
         };
         let texts: Vec<String> = (0..4).map(|i| format!("第{i}段內容")).collect();
 
@@ -3885,6 +3916,7 @@ mod tests {
             footnote_reserve_pt: 0.0,
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
+            endnote_reserves_pt: Vec::new(),
         }
     }
 
@@ -4224,6 +4256,7 @@ mod tests {
             footnote_reserve_pt: 0.0,
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
+            endnote_reserves_pt: Vec::new(),
         }
     }
 
@@ -4630,6 +4663,7 @@ mod tests {
             line_spacing: 1.4,
             footnote_reserve_pt: 0.0,
             footnote_reserves_pt: Vec::new(),
+            endnote_reserves_pt: Vec::new(),
         }
     }
 

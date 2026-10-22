@@ -29,11 +29,11 @@
 //! - `separator`／`continuationSeparator` 型註本體不進條目（Word 慣例
 //!   id=-1/0，非正文引用對象）。
 //!
-//! 尾註（endnote，F3）：**不掛頁底**——全部排在正文之後的專屬頁（追加頁，
-//! 不擠正文）。尾註支路與本模組的頁底註腳支路**並存且互不干擾**：兩條鏈
-//! 各自獨立（`note_ref` 是單欄位，同一個 run 不會同時掛兩者 ⇒ 無競態）。
-//! 尾註的編號是**十進位**；`endnotePr/numFmt`（lowerRoman 等）的消費屬
-//! F3b，本卡不做——老實記在模組注裡，不假裝支援。
+//! 尾註（endnote，F3／J1R）：**接排正文末頁**（分隔線在正文內容之後、
+//! 條目在下），末頁剩餘空間裝不下才溢出到純尾註續頁；接排不擠正文。
+//! 尾註支路與本模組的頁底註腳支路**並存且互不干擾**：兩條鏈各自獨立
+//! （`note_ref` 是單欄位，同一個 run 不會同時掛兩者 ⇒ 無競態）。
+//! 尾註的編號消費（`endnotePr/numFmt`、`numRestart`）屬 F3b；`pos` 仍不消費。
 
 use quire_layout::TextMeasurer;
 use serde::{Deserialize, Serialize};
@@ -725,16 +725,16 @@ pub fn find_anchor_line(
 
 // ---------------- 尾註（F3）----------------
 //
-// 尾註**不掛頁底**：全部排在正文之後的**專屬頁**（ECMA-376 §17.11.10；
-// Word 預設 `endnotePr/pos=documentEnd`）。本段只消費 F1 資料層
+// 尾註接排**正文末頁底部**（ECMA-376 §17.11.10；Word 預設
+// `endnotePr/pos=documentEnd`）：分隔線在正文內容之後，條目在其下；末頁
+// 剩餘空間裝不下才溢出到**純尾註續頁**。本段只消費 F1 資料層
 // （`word/endnotes.xml` ＋ 正文 `w:endnoteReference`）與既有條目尺
 // （`layout_entry`），**不重寫**頁底註腳機制。
 //
-// 三條幾何鐵律（PM 定案）：
-// 1. **正文頁零位移**：尾註只在正文分頁定案後**追加頁**；正文每一頁的
-//    內容與分頁斷點與無尾註時逐位元組相同（尾註不預留、不擠正文——
-//    這正是它與頁底註腳的根本差異）。
-// 2. **尾註頁幾何＝末節**（正文末頁的 section）。
+// 三條幾何鐵律（PM 定案，J1R 更新）：
+// 1. **正文頁零位移**：接排只用正文分頁定案後末頁的剩餘空白，不動
+//    `params`／分頁斷點（尾註不擠正文——與頁底註腳的預留相反）。
+// 2. **接排與尾註續頁幾何＝末節**（正文末頁的 section）。
 // 3. **條目整條不跨頁**：一條裝不下就整條去下一頁（註腳跨頁切分屬 F2c，
 //    尾註同款延後——本卡老實不切條）。
 
@@ -758,37 +758,59 @@ pub struct EndGeometry {
     pub capacity_first: usize,
     /// 後續頁容量（帶；末節全容量）。
     pub capacity_rest: usize,
+    /// J1R：正文末頁接排容量（帶；已扣掉該頁正文佔用與分隔線佔帶；
+    /// 0＝末頁無空間接排，全部走純尾註續頁）。
+    pub inline_capacity: usize,
+    /// J1R：正文末頁接排條目區頂（pt，頁絕對；分隔線在其上方
+    /// `endnote_sep_bands` 帶處）。
+    pub inline_top_y: f32,
 }
 
-/// 尾註的版面與發射（**追加頁**：正文分頁定案後才排）。
+/// 尾註的版面與發射（J1R：正文末頁接排＋純尾註續頁）。
 ///
 /// 幾何契約（PM 定案）：
-/// - 尾註頁＝追加頁，正文每頁內容與分頁斷點與無尾註時逐位元組相同；
-/// - 尾註頁幾何＝末節（正文末頁的 section）；
-/// - 首頁頂部有分隔線（版心左緣起、寬＝版心×1/3、y＝margin_top），
-///   條目區自 `margin_top ＋ (1＋SEP_GAP 量化帶)×帶尺` 起；
+/// - 接排區在正文末頁內容之後，正文每頁內容與分頁斷點與無尾註時逐位元組
+///   相同（不預留、不擠正文）；
+/// - 接排與續頁幾何＝末節（正文末頁的 section）；
+/// - 接排分隔線（版心左緣起、寬＝版心×1/3）在條目區上方
+///   `endnote_sep_bands` 帶處；接排條目區頂＝`inline_top_y`；
 /// - **續頁頂部畫續接線**（置中短線；寬＝版心×1/3，ECMA-376 §17.11.4
-///   `continuationSeparator` 的排版語義）。續頁語義寫死：`pages[0]`＝首頁
-///   （畫分隔線），`pages[1..]`＝續頁（各畫置中續接線）——由 `separator_top`
-///   ＋頁序推得（`pages.len() > 1` 即有續頁），不另存欄位。
+///   `continuationSeparator` 的排版語義）。有接排區 ⇒ `pages` 全是續頁
+///   （各畫置中續接線）；無接排區 ⇒ `pages[0]` 仍是傳統首頁分隔線，
+///   `pages[1..]` 為續接線——由 `inline.is_empty()`＋頁序推得。
 /// - **分隔線註本體不解析不渲染**：`separator`／`continuationSeparator`
 ///   指向的註（Word 慣例 id=-1／0）圖形內容屬後續卡，H1 只存 id；此處
 ///   只按 `continuationSeparator` 的排版語義畫幾何短線，不讀註內容。
+/// - **`pos=sectEnd`／`pageEnd` 仍不消費**：本卡維持 `documentEnd` 語義
+///   （文件末頁）；節末尾註頁屬後續卡。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct EndLayout {
-    /// 逐尾註頁的條目（條目整條不跨頁——一條裝不下就整條去下一頁）。
+    /// J1R：接排在**正文末頁底部**的條目（分隔線下方；不另計頁）。
+    /// `inline_top_y` 是其條目區頁絕對頂；空表 ⇒ 末頁無接排。
+    #[serde(default)]
+    pub inline: Vec<NoteItem>,
+    /// 接排區條目文字起點 y（頁絕對；`inline` 為空時無意義）。
+    ///
+    /// 為何不在此存分隔線 y：分隔線固定在條目區上方
+    /// `endnote_sep_bands(band)` 帶處，與尾註頁同款算式，存一份即夠。
+    #[serde(default)]
+    pub inline_top_y: Option<f32>,
+    /// 逐**純尾註續頁**的條目（接排裝不下的部分；條目整條不跨頁）。
+    /// J1R 起不再包含正文末頁的接排條目。
     pub pages: Vec<Vec<NoteItem>>,
     /// 逐**正文頁**的錨點記號（記號發在正文錨點 run 的行內終點；
     /// 索引＝正文頁序，長度＝正文頁數）。
     pub marks: Vec<Vec<AnchorMark>>,
-    /// 首頁是否畫分隔線（true＝畫在頁頂）。
+    /// 續頁是否畫線（true＝畫；有接排區時續頁一律畫**續接線**）。
     pub separator_top: bool,
 }
 
 impl EndLayout {
     /// 文件是否有任何尾註發射（false ⇒ 發射層走零擾動快路徑）。
     pub fn is_empty(&self) -> bool {
-        self.pages.iter().all(|p| p.is_empty()) && self.marks.iter().all(|m| m.is_empty())
+        self.inline.is_empty()
+            && self.pages.iter().all(|p| p.is_empty())
+            && self.marks.iter().all(|m| m.is_empty())
     }
 }
 
@@ -835,10 +857,10 @@ pub fn flow_items_to_pages(
     out
 }
 
-/// 尾註的排布：條目裝頁 ＋ 正文錨點記號。
+/// 尾註的排布：末頁接排 ＋ 溢出續頁裝箱 ＋ 正文錨點記號。
 ///
 /// 與 [`layout_notes`] 的關鍵差異（幾何契約）：
-/// - 條目**不掛頁底**：全部進尾註專屬頁（追加在正文之後）；
+/// - 條目**接排正文末頁**（不預留、不擠正文），裝不下才進純尾註續頁；
 /// - 條目**整條不跨頁**（一條裝不下就整條去下一頁）；
 /// - 記號仍在**正文頁**發（正文引用處的上標數字），口徑與註腳記號同款
 ///   （共用 [`anchor_mark`]——只有一份實作）。
@@ -866,11 +888,24 @@ pub fn layout_endnotes(
         seen.push(e.id);
         items.push(layout_entry(e, geo.band_pt, geo.content_w_pt));
     }
-    // 裝頁（純函式；單條超容量 ⇒ 獨佔一頁）。
-    let assign = flow_items_to_pages(&items, geo.capacity_first, geo.capacity_rest);
+    // J1R：先接排正文末頁（整條塞得進才收；裝不下整條留給續頁）。
+    let mut inline_bands = 0u32;
+    let mut split = 0usize;
+    let inline_cap = geo.inline_capacity as u32;
+    for (i, it) in items.iter().enumerate() {
+        let bands = it.bands.max(1);
+        if inline_bands.saturating_add(bands) > inline_cap {
+            break;
+        }
+        inline_bands = inline_bands.saturating_add(bands);
+        split = i + 1;
+    }
+    let inline: Vec<NoteItem> = items[..split].to_vec();
+    // 續頁裝箱（純函式；單條超容量 ⇒ 獨佔一頁）。
+    let assign = flow_items_to_pages(&items[split..], geo.capacity_first, geo.capacity_rest);
     let end_pages: Vec<Vec<NoteItem>> = assign
         .iter()
-        .map(|idxs| idxs.iter().map(|&i| items[i].clone()).collect())
+        .map(|idxs| idxs.iter().map(|&i| items[split + i].clone()).collect())
         .collect();
     // 記號（正文頁；口徑與註腳記號同款）。
     let mut marks: Vec<Vec<AnchorMark>> = vec![Vec::new(); pages.len()];
@@ -898,7 +933,9 @@ pub fn layout_endnotes(
         }
     }
     EndLayout {
-        separator_top: !end_pages.is_empty(),
+        inline_top_y: (!inline.is_empty()).then_some(geo.inline_top_y),
+        separator_top: !inline.is_empty() || !end_pages.is_empty(),
+        inline,
         pages: end_pages,
         marks,
     }
@@ -1597,6 +1634,8 @@ mod tests {
     fn empty_end_layout_is_empty() {
         assert!(EndLayout::default().is_empty());
         let mut lay = EndLayout {
+            inline: Vec::new(),
+            inline_top_y: None,
             pages: vec![Vec::new()],
             marks: vec![Vec::new()],
             separator_top: false,
