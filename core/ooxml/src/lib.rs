@@ -204,6 +204,13 @@ pub struct Paragraph {
     /// 段落直接行距宣告（`w:pPr/w:spacing/@w:line`＋`@w:lineRule`）。
     #[serde(default)]
     pub line: Option<LineSpacing>,
+    /// 段落直接段前距（pt，`w:pPr/w:spacing/@w:before`）；未宣告＝None。
+    /// `Some(0.0)`＝明確宣告零（與未宣告區分，零變化守門依據）。
+    #[serde(default)]
+    pub spacing_before_pt: Option<f32>,
+    /// 段落直接段後距（pt，`w:pPr/w:spacing/@w:after`）；未宣告＝None。
+    #[serde(default)]
+    pub spacing_after_pt: Option<f32>,
     /// 段落直接對齊宣告（`w:pPr/w:jc/@w:val`；本卡解析保留，發射不消費）。
     #[serde(default)]
     pub jc: Option<Align>,
@@ -599,6 +606,12 @@ fn parse_document_xml_with_fonts(
                                 attr_val(&e, "line").as_deref(),
                                 attr_val(&e, "lineRule").as_deref(),
                             );
+                            if let Some(b) = styles::space_pt(attr_val(&e, "before").as_deref()) {
+                                p.spacing_before_pt = Some(b);
+                            }
+                            if let Some(a) = styles::space_pt(attr_val(&e, "after").as_deref()) {
+                                p.spacing_after_pt = Some(a);
+                            }
                         }
                     }
                     b"jc" if ppr_depth == 1 && ppr_rpr_depth == 0 => {
@@ -783,6 +796,12 @@ fn parse_document_xml_with_fonts(
                             attr_val(&e, "line").as_deref(),
                             attr_val(&e, "lineRule").as_deref(),
                         );
+                        if let Some(b) = styles::space_pt(attr_val(&e, "before").as_deref()) {
+                            p.spacing_before_pt = Some(b);
+                        }
+                        if let Some(a) = styles::space_pt(attr_val(&e, "after").as_deref()) {
+                            p.spacing_after_pt = Some(a);
+                        }
                     }
                 } else if name == b"jc" && ppr_depth == 1 && ppr_rpr_depth == 0 {
                     if let Some((_, p, _)) = stack.last_mut() {
@@ -1785,6 +1804,26 @@ mod tests {
         .expect("解析");
         assert!(paras[0].prun.is_none(), "rPr 外的 b 不得材料化 prun");
         assert!(!paras[0].runs[0].bold, "也不得灌給後續 run");
+    }
+
+    /// K1(c)：段落 pPr 直接格式的 `w:before`／`w:after` 解析（twips→pt），
+    /// 未宣告＝None；`0` 是明確宣告（Some(0)），不得與未宣告混淆。
+    #[test]
+    fn paragraph_direct_spacing_before_after_parsed() {
+        let paras = parse_doc(
+            r#"<w:document xmlns:w="x"><w:body>
+              <w:p><w:pPr><w:spacing w:before="160" w:after="0"/></w:pPr>
+                <w:r><w:t>a</w:t></w:r></w:p>
+              <w:p><w:pPr><w:spacing w:line="240" w:lineRule="auto"/></w:pPr>
+                <w:r><w:t>b</w:t></w:r></w:p>
+            </w:body></w:document>"#
+                .as_bytes(),
+        )
+        .expect("解析");
+        assert_eq!(paras[0].spacing_before_pt, Some(8.0), "160 twips = 8pt");
+        assert_eq!(paras[0].spacing_after_pt, Some(0.0), "0 是明確宣告");
+        assert_eq!(paras[1].spacing_before_pt, None, "未宣告 = None");
+        assert_eq!(paras[1].spacing_after_pt, None, "未宣告 = None");
     }
 
     // ---------------- 字型族宣告（w:rFonts；ECMA-376 §17.3.2.26） ----------------

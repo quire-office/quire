@@ -516,6 +516,11 @@ pub struct ParaGrid {
     /// true＝該段錨點的流項前強制換頁（Word 語義；段內 br 粗化為整段推頁）。
     /// 缺＝false（全域無宣告＝舊行為）。純 (flow,fi) 函數——增量重排復入同樣成立。
     pub break_before: Vec<bool>,
+    /// 逐段段前距量化帶數（K1：engine 算 ceil(spacing_before_pt／文件帶尺)）：
+    /// 首行之前加這麼多帶（帶高＝全域 `line_h_pt`）。缺＝0（未宣告＝舊行為）。
+    pub before_bands: Vec<u32>,
+    /// 逐段段後距量化帶數（K1）：末行之後加這麼多帶。缺＝0（零變化守門）。
+    pub after_bands: Vec<u32>,
 }
 
 impl ParaGrid {
@@ -532,6 +537,16 @@ impl ParaGrid {
     /// 段落 i 每行佔用帶數（缺＝1；恆 ≥1，行至少佔一格）。
     pub fn bands_of(&self, para: usize) -> u32 {
         self.bands.get(para).copied().unwrap_or(1).max(1)
+    }
+
+    /// 段落 i 的段前距帶數（缺＝0；未宣告／顯式零皆不佔帶）。
+    pub fn before_of(&self, para: usize) -> u32 {
+        self.before_bands.get(para).copied().unwrap_or(0)
+    }
+
+    /// 段落 i 的段後距帶數（缺＝0；未宣告／顯式零皆不佔帶）。
+    pub fn after_of(&self, para: usize) -> u32 {
+        self.after_bands.get(para).copied().unwrap_or(0)
     }
 }
 
@@ -896,6 +911,21 @@ fn pack_run(
         // 段落佔帶（t_5dfc8ac7）：段落行按段行高量化（ceil(行高/帶尺)，至少 1）。
         // 全域尺（ParaGrid 空）時恆 1——既有行為逐位元組不變。
         let para_band = |para: usize| grid.bands_of(para);
+        // K1 段前／段後距帶：只在段落首行前／末行後各加一次（帶高＝line_h）。
+        // 全零（未宣告）時下列算式恆加 0，分頁路徑與舊版逐位元組等價。
+        let para_before = |para: usize, line: usize| -> u32 {
+            if line == 0 {
+                grid.before_of(para)
+            } else {
+                0
+            }
+        };
+        let para_after = |para: usize, line: usize| -> u32 {
+            match pls.get(para) {
+                Some(pl) if line + 1 == pl.lines.len() => grid.after_of(para),
+                _ => 0,
+            }
+        };
         let para_img_bands = |fi: usize| -> u32 {
             // Text 項前視：純圖段落（唯一空行＋下一流項即其流內圖）→ 整段帶數。
             let FlowItem::Text { para } = &flow[fi] else {
@@ -1008,6 +1038,11 @@ fn pack_run(
         let line_h = p.line_h_pt();
         match &flow[fi] {
             FlowItem::Text { para } => {
+                // K1：段前距帶落在首行之前（行帶索引＝已佔帶＋before），
+                // 段後距帶落在末行之後（影響後續流項起點）。零時恆等舊式。
+                let before_b = para_before(*para, li);
+                let after_b = para_after(*para, li);
+                st.cur_used = st.cur_used.saturating_add(before_b);
                 st.cur.push(pls[*para].lines[li].clone());
                 st.cur_bands.push(st.cur_used);
                 // 段落行按段行高量化佔帶（全域尺＝1，舊行為逐位元組不變）。
@@ -1016,7 +1051,10 @@ fn pack_run(
                 // 柵欄）量化出的巨型帶數不得 debug panic／release 繞回把分頁
                 // 狀態機打亂。飽和後 `cur_used >= cap` 恆真＝之後每項強換頁，
                 // 游標仍逐項前進、必然收斂，不觸斷點邏輯。
-                st.cur_used = st.cur_used.saturating_add(para_band(*para));
+                st.cur_used = st
+                    .cur_used
+                    .saturating_add(para_band(*para))
+                    .saturating_add(after_b);
                 st.cursor = if li + 1 < pls[*para].lines.len() {
                     (fi, li + 1, 0)
                 } else {
@@ -3702,6 +3740,7 @@ mod tests {
             size_pt: vec![14.0],
             bands: vec![3, 0],
             break_before: vec![false, true],
+            ..ParaGrid::default()
         };
         assert_eq!(g.bands_of(0), 3);
         assert_eq!(g.bands_of(1), 1, "0 帶視為 1（行至少佔一格）");
@@ -3737,6 +3776,7 @@ mod tests {
             size_pt: vec![],
             bands: vec![1, 1, 1, 1],
             break_before: vec![false, false, true, false],
+            ..ParaGrid::default()
         };
         let eng = LayoutEngine::with_breaks_grid(
             &texts,
@@ -3777,6 +3817,7 @@ mod tests {
             size_pt: vec![],
             bands: vec![1, 2, 1, 1],
             break_before: vec![],
+            ..ParaGrid::default()
         };
         let engb = LayoutEngine::with_breaks_grid(
             &texts,
@@ -3803,6 +3844,7 @@ mod tests {
             size_pt: vec![],
             bands: vec![1, u32::MAX, 1, u32::MAX],
             break_before: vec![],
+            ..ParaGrid::default()
         };
         let eng_h = LayoutEngine::with_breaks_grid(
             &texts,
@@ -4574,5 +4616,100 @@ mod tests {
         long.footnote_reserves_pt = vec![2.0 * line_h, 0.0, 0.0, 0.0, 0.0];
         let brk_long = page_breaks(&texts, &long);
         assert_breaks_field_equal(&brk_short, &brk_long, "表長於頁數：多餘項忽略");
+    }
+
+    // ---------------- K1：段前／段後距帶（w:before/w:after 消費） ----------------
+
+    /// K1 測試尺：版心高 220pt、行高 16.8pt → 容量 13 帶。
+    fn k1_params() -> LayoutParams {
+        LayoutParams {
+            page_w_pt: 400.0,
+            page_h_pt: 300.0,
+            margins_pt: [40.0; 4],
+            font_size_pt: 12.0,
+            line_spacing: 1.4,
+            footnote_reserve_pt: 0.0,
+            footnote_reserves_pt: Vec::new(),
+        }
+    }
+
+    /// (d)(e) 段前／段後帶：before 在首行前、after 在末行後各加量化帶，
+    /// 帶高仍＝line_h；顯式 0 帶與缺位同為零帶（不影響分頁）。
+    #[test]
+    fn spacing_bands_before_and_after_shift_line_positions() {
+        let p = k1_params();
+        let texts: Vec<String> = vec!["甲".into(), "乙".into(), "丙".into()];
+        let grid = ParaGrid {
+            bands: vec![1, 1, 1],
+            before_bands: vec![0, 2, 0],
+            after_bands: vec![0, 2, 0],
+            ..ParaGrid::default()
+        };
+        let eng = LayoutEngine::with_breaks_grid(
+            &texts,
+            p.clone(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            grid,
+        );
+        assert_eq!(eng.page_count(), 1, "7 帶 < 容量 13，全部同頁");
+        let pg = &eng.pages()[0];
+        assert_eq!(
+            pg.line_bands,
+            vec![0, 3, 6],
+            "段1：before 2 帶→行帶 3，after 2 帶→段2 行帶 6"
+        );
+
+        // 段前距把整段推到下一頁：容量 13，段 0 佔 13 帶（1 行＋after 12），
+        // 段 1 before 2 帶放不下 → 換頁後 before 仍在新頁首行之前。
+        let grid2 = ParaGrid {
+            bands: vec![1, 1],
+            before_bands: vec![0, 2],
+            after_bands: vec![12, 0],
+            ..ParaGrid::default()
+        };
+        let eng2 = LayoutEngine::with_breaks_grid(
+            &texts[..2],
+            p,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            grid2,
+        );
+        assert_eq!(eng2.page_count(), 2, "段前距放不下 → 段 1 起新頁");
+        assert_eq!(eng2.pages()[1].lines[0].para_index, 1);
+        assert_eq!(
+            eng2.pages()[1].line_bands[0],
+            2,
+            "新頁首行前仍保留 before 帶"
+        );
+    }
+
+    /// (e) 零變化守門：逐段 spacing 向量全空／全零時，分頁輸出與既有
+    /// `paginate`（無網格路徑）完全相同（`Page` 逐欄相等）。
+    #[test]
+    fn zero_spacing_bands_keep_pagination_identical() {
+        let p = k1_params();
+        let texts: Vec<String> = (0..40).map(|i| format!("第{i}段測試文字")).collect();
+        let pls = layout_paragraphs(&texts, &p);
+        let base = paginate(&pls, &p);
+
+        let zeros = LayoutEngine::with_breaks_grid(
+            &texts,
+            p,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            ParaGrid {
+                before_bands: vec![0; texts.len()],
+                after_bands: vec![0; texts.len()],
+                ..ParaGrid::default()
+            },
+        );
+        assert_eq!(zeros.pages(), base.as_slice(), "零帶必須逐欄等於舊分頁");
     }
 }

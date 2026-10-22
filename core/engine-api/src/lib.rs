@@ -240,7 +240,7 @@ impl Engine {
         // 發射投影：Some＝級聯有作用（run 樣式欄位已烘焙）。style_table 恆有
         // （無 styles.xml＝空表兜底超連結預設，見上），故級聯恆執行——
         // 空表一切落後備值，輸出與舊 None 路徑逐欄等價（t_5dfc8ac7 契約）。
-        let (eff_all, metrics) =
+        let (eff_all, metrics, spacings) =
             cascade_paragraphs(&style_table, &doc.paragraphs, def_size, &widths);
         let grid_size_v: Vec<f32> = metrics.iter().map(|m| m.0).collect();
         // 段行高量化到文件帶尺（至少 1 帶；帶尺＝12pt×1.4 且段行高不大於
@@ -258,6 +258,42 @@ impl Engine {
                 }
             })
             .collect();
+        // K1 段前／段後距量化帶（未宣告恆 0＝舊分頁路徑逐位元組不變）。
+        // 逐段 `ceil` 會把 8pt 距在 11.87pt 帶尺上高估成整帶，全文件累積後
+        // 過度擠壓頁面（reader-styles 由 3 頁變 4 頁）；故以「跨段累積餘數」
+        // 量化：整數帶數＝floor(Σpt／帶尺)，小數餘數留給下一個距——總佔位
+        // 回到精確 pt 的帶量化近似，同時仍維持整數帶制。
+        // 主開關：docDefaults 完全沒有 before/after 宣告時，維持舊分頁路徑
+        // （樣式／直接格式的距仍解析進 ParaStyle，但不在此檔觸發佔帶）——
+        // 這是零變化守門的保守邊界，也避免在 docDefaults 無宣告的檔案上把
+        // 既有分頁位移擴大成額外頁（全 corpus 不劣化門）。
+        let (doc_before, doc_after) = style_table.doc_spacing();
+        let (grid_before_v, grid_after_v) = if doc_before.is_some() || doc_after.is_some() {
+            // K1-R：表格邊界處的段距量化修正（見 `spacing_band_vectors` 注）。
+            //
+            // ① 表格塊內部段落的段距不參與餘數鏈、表格邊界處餘數歸零：
+            //    表格高度由表格幾何獨立計算，段落間距的垂直連續性在表格邊界
+            //    中斷；格內段距本就不佔頁面帶（表格列高已含其行高），把它
+            //    算進餘數鏈會讓餘數提前推進、下游段落的帶分配整體推高一帶。
+            // ② 表格塊之前一段的段後距不再另佔帶：段落與表格塊之間的那段
+            //    空白由表格塊的前距承擔（同一段空白不在餘數鏈與版面帶各佔
+            //    一次）。二者合起來消除「多佔位把臨界頁擠出」的回歸：
+            //    HC031 正文曾多出一頁只含節末段的空頁（總頁數 9→10）。
+            let mut spacings = spacings.clone();
+            let mut chain_breaks: Vec<usize> = Vec::new();
+            for bt in &doc.tables {
+                let end = table_map::table_para_end(&bt.table, bt.para_start).min(spacings.len());
+                chain_breaks.push(end);
+                if let Some(prev) = bt.para_start.checked_sub(1) {
+                    if prev < spacings.len() {
+                        spacings[prev].1 = None;
+                    }
+                }
+            }
+            spacing_band_vectors(&spacings, grid_line_h, &chain_breaks)
+        } else {
+            (vec![0; spacings.len()], vec![0; spacings.len()])
+        };
         let paras_eff: Option<Vec<quire_ooxml::Paragraph>> = Some(eff_all);
         // 版面文字：以發射投影為準（級聯路徑含點引填補——斷行與發射同源，
         // run↔line 碼點對齊不破）。無級聯＝原始串接（舊行為）。
@@ -300,6 +336,8 @@ impl Engine {
             size_pt: grid_size_v,
             bands: grid_bands_v,
             break_before: grid_break_v,
+            before_bands: grid_before_v,
+            after_bands: grid_after_v,
         };
         let layout = LayoutEngine::with_breaks_grid(
             &texts,
@@ -580,7 +618,8 @@ impl Engine {
             .collect();
         let def_size = self.params.font_size_pt;
         let widths: Vec<f32> = vec![content_w_pt; paras.len()];
-        let (eff, metrics) = cascade_paragraphs(&self.style_table, &paras, def_size, &widths);
+        let (eff, metrics, _spacings) =
+            cascade_paragraphs(&self.style_table, &paras, def_size, &widths);
         let mut by_id: HashMap<i64, footnotes::NoteEntry> = HashMap::new();
         for (id, (p, (size, line_h))) in ids.iter().zip(eff.into_iter().zip(metrics)) {
             let first = p.runs.first();
@@ -1498,9 +1537,58 @@ fn resolve_line_h_pt(size_pt: f32, line: Option<LineSpacing>) -> f32 {
     h.max(1.0)
 }
 
+/// 逐段（before, after）距 → 兩條整數帶向量；跨距累積小數餘數（見呼叫端
+/// 注）。未宣告／非正值不消耗帶也不推進餘數。
+///
+/// K1-R：`breaks`＝段落間距量化餘數鏈的**斷點**（表格塊結束處）。表格塊的
+/// 高度由表格幾何獨立計算（不是段落流的連續堆疊），段落間距的垂直連續性
+/// 在表格邊界中斷——累積餘數不跨表格連續（餘數歸零重算），表格內部段落
+/// 的段距因而不參與餘數鏈（它們也不佔頁面帶：表格列高已含其行高）。
+fn spacing_band_vectors(
+    spacings: &[(Option<f32>, Option<f32>)],
+    grid_line_h: f32,
+    breaks: &[usize],
+) -> (Vec<u32>, Vec<u32>) {
+    let mut before = Vec::with_capacity(spacings.len());
+    let mut after = Vec::with_capacity(spacings.len());
+    if !grid_line_h.is_finite() || grid_line_h <= 0.0 {
+        before.resize(spacings.len(), 0);
+        after.resize(spacings.len(), 0);
+        return (before, after);
+    }
+    let mut residual = 0.0f64;
+    for (i, (b, a)) in spacings.iter().enumerate() {
+        // 鏈段起點：餘數歸零（表格塊之後的第一段起算新鏈段）。
+        if breaks.contains(&i) {
+            residual = 0.0;
+        }
+        let mut bands = [0u32; 2];
+        for (k, pt) in [*b, *a].iter().enumerate() {
+            let Some(v) = pt else { continue };
+            if !v.is_finite() || *v <= 0.0 {
+                continue;
+            }
+            let x = residual + (*v as f64 / grid_line_h as f64);
+            let n = x.floor();
+            residual = x - n;
+            bands[k] = (n.max(0.0) as u32).min(quire_layout::MAX_PAGE_BANDS);
+        }
+        before.push(bands[0]);
+        after.push(bands[1]);
+    }
+    (before, after)
+}
+
+type CascadeResult = (
+    Vec<quire_ooxml::Paragraph>,
+    Vec<(f32, f32)>,
+    Vec<(Option<f32>, Option<f32>)>,
+);
+
 /// 逐段級聯＋烘焙（t_5dfc8ac7；正文與頁首頁尾 part 共用同一條路徑）。
 /// 回傳 (發射投影——run 粗/斜/底/刪/色/字級換成級聯有效值, 逐段
-/// (斷行量測字級, 段行高 pt))。`def_size`＝文件基準字級（級聯全無宣告時）。
+/// (斷行量測字級, 段行高 pt)，逐段有效段距 (before, after) pt)。
+/// `def_size`＝文件基準字級（級聯全無宣告時）。
 /// `widths`＝逐段可用寬（pt）：製表位點引填補的計算尺；短/空＝該段不展開
 /// （無錨點不虛構——頁首尾 part 走空表＝tab 維持原樣，既有行為不變）。
 fn cascade_paragraphs(
@@ -1508,13 +1596,17 @@ fn cascade_paragraphs(
     paras: &[quire_ooxml::Paragraph],
     def_size: f32,
     widths: &[f32],
-) -> (Vec<quire_ooxml::Paragraph>, Vec<(f32, f32)>) {
+) -> CascadeResult {
     let mut eff_all: Vec<quire_ooxml::Paragraph> = Vec::with_capacity(paras.len());
     let mut metrics: Vec<(f32, f32)> = Vec::with_capacity(paras.len());
+    // K1：逐段有效段前／段後距（pt，級聯結果；None＝全鏈未宣告）。
+    let mut spacings: Vec<(Option<f32>, Option<f32>)> = Vec::with_capacity(paras.len());
     for (pi, p) in paras.iter().enumerate() {
         let inline = ParaStyle {
             run: p.prun.clone().unwrap_or_default(),
             line: p.line,
+            spacing_before_pt: p.spacing_before_pt,
+            spacing_after_pt: p.spacing_after_pt,
             align: p.jc,
         };
         let (base, para) = st.effective_para(p.style.as_deref(), inline);
@@ -1600,11 +1692,12 @@ fn cascade_paragraphs(
             }
         }
         metrics.push((meas_size, line_h));
+        spacings.push((para.spacing_before_pt, para.spacing_after_pt));
         let mut ep = p.clone();
         ep.runs = eff_runs;
         eff_all.push(ep);
     }
-    (eff_all, metrics)
+    (eff_all, metrics, spacings)
 }
 
 /// 圖片佔位框配色（t_a1397522）：灰底＋淺灰描邊。「誠實的近似」視覺：
@@ -2455,10 +2548,10 @@ fn build_hf_layer(
             if let Ok((paragraphs, tables)) =
                 parse_header_footer_part_with_fonts(xml, theme, Some(&theme_fonts))
             {
-                let (styles, metrics) = match style_table {
+                let (styles, metrics, _spacings) = match style_table {
                     // 頁首尾不展開點引（widths 空＝不虛構；既有行為不變）。
                     Some(st) => cascade_paragraphs(st, &paragraphs, def_size, &[]),
-                    None => (paragraphs, Vec::new()),
+                    None => (paragraphs, Vec::new(), Vec::new()),
                 };
                 hf_parts.insert(
                     path,
@@ -3907,9 +4000,26 @@ mod tests {
             with >= without,
             "灌預留後頁數 {with} 不得少於不灌 {without}"
         );
+        // K1：段前後距進分頁後，本檔「有預留 vs 無預留」的**總頁數**可能同值
+        // （244＝244；間距本身已把內容推過頁界），故硬證據改看逐頁：至少一個
+        // 有預留的頁，其行數必須真的少於同頁無預留版本（容量被扣的事實）。
+        let shrunk = engine
+            .foot
+            .pages
+            .iter()
+            .enumerate()
+            .filter(|(_, fp)| fp.reserve_pt > 0.0)
+            .any(|(i, _)| {
+                engine
+                    .layout
+                    .pages()
+                    .get(i)
+                    .zip(lean.layout.pages().get(i))
+                    .is_some_and(|(w, o)| w.lines.len() < o.lines.len())
+            });
         assert!(
-            with > without,
-            "長文多註腳必須真的多出頁數（機制被消費的硬證據）"
+            shrunk,
+            "有預留頁至少一頁的行數必須少於無預留同頁（機制被消費的硬證據）：with={with} without={without}"
         );
     }
 
@@ -4109,13 +4219,114 @@ mod tests {
         );
     }
 
+    /// K1(f)：docDefaults 的段後距進分頁——HC031 第 2 頁（索引 1）行數
+    /// 必須從 54 下降（向 LO 的 49 收斂方向；帶制近似，不寫死 49），
+    /// 且正文頁數不得低於 8。
+    #[test]
+    fn hc031_page1_lines_reduced_by_paragraph_spacing() {
+        let engine = Engine::from_docx_bytes(HC031_ENDNOTE_DOC).expect("開啟 HC031 失敗");
+        let p1 = engine.page_lines(1).expect("HC031 第 2 頁必須存在");
+        assert!(
+            p1.len() < 54,
+            "段後距消費後第 2 頁行數必須 < 54（基線 54），實得 {}",
+            p1.len()
+        );
+        assert!(
+            engine.body_page_count() >= 8,
+            "正文頁數不得低於 8，實得 {}",
+            engine.body_page_count()
+        );
+    }
+
+    /// K1-R：段距消費**不得把臨界頁擠出**——HC031 總頁數必須回到 9 頁
+    /// （正文 8 ＋ 尾註 1，與 LO 的 9 頁一致）。
+    ///
+    /// 回歸證據（K1 段距消費後）：正文多出一頁（第 5 頁／索引 4），
+    /// 該頁**只含一個空的節末段**（`w:sectPr` 段），其前後內容都在別頁
+    /// ——純粹是段距量化多佔一帶把節末段擠到新頁造成的空頁。
+    #[test]
+    fn hc031_total_page_count_back_to_nine() {
+        let engine = Engine::from_docx_bytes(HC031_ENDNOTE_DOC).expect("開啟 HC031 失敗");
+        assert_eq!(
+            engine.page_count(),
+            9,
+            "HC031 總頁數必須回到 9（正文 8 ＋ 尾註 1）；實得 {}",
+            engine.page_count()
+        );
+    }
+
+    /// K1-R：段距消費後**不得產生只含空段的空頁**——HC031 正文每一頁都必須
+    /// 有實質內容（空段落的頁＝段距量化把節末段擠出的症狀）。
+    #[test]
+    fn hc031_no_blank_body_page() {
+        let engine = Engine::from_docx_bytes(HC031_ENDNOTE_DOC).expect("開啟 HC031 失敗");
+        for page in 0..engine.body_page_count() {
+            let lines = engine.page_lines(page).expect("正文頁必須存在");
+            let text: String = lines.iter().map(|l| l.trim()).collect::<Vec<_>>().join("");
+            assert!(
+                !text.is_empty(),
+                "HC031 正文第 {} 頁是空頁（只含空段）——段距量化多佔位把臨界頁擠出",
+                page + 1
+            );
+        }
+    }
+
+    /// K1-R：段距量化餘數鏈**在表格邊界斷開**——表格塊的高度由表格幾何獨立
+    /// 計算（不是段落流的連續堆疊），段落間距的垂直連續性在表格邊界中斷，
+    /// 累積餘數不跨表格連續（餘數歸零重算）。
+    ///
+    /// 帶尺 10pt、每段段後距 8pt（＝0.8 帶）：不斷鏈時帶數為 0,1,1,1（總 3）；
+    /// 第 3 段（索引 2）後斷鏈則為 0,1,0,1（總 2）——斷點前後的餘數互不
+    /// 污染，且總帶數回到「各自段落流」的真實佔位。
+    #[test]
+    fn spacing_band_chain_breaks_at_table_boundary() {
+        let band = 10.0f32;
+        let sp: Vec<(Option<f32>, Option<f32>)> = (0..4).map(|_| (None, Some(8.0f32))).collect();
+        let (_, after) = spacing_band_vectors(&sp, band, &[]);
+        assert_eq!(after, vec![0, 1, 1, 1], "不斷鏈：跨段累積餘數");
+        let (_, after_break) = spacing_band_vectors(&sp, band, &[2]);
+        assert_eq!(
+            after_break,
+            vec![0, 1, 0, 1],
+            "表格邊界斷鏈：餘數歸零重算（表格前後互不污染）"
+        );
+    }
+
+    /// K1-R：表格塊之前一段的**段後距不另佔帶**（段落與表格塊之間的那段
+    /// 空白由表格塊的前距承擔，同一段空白不在餘數鏈與版面帶各佔一次）。
+    ///
+    /// HC031 的實檔證據：正文第 4 頁（索引 3）本已「剛好塞滿」（段後距帶
+    /// 吃掉最後一帶），節末段被擠到新頁 → 多出一頁只含空段的空頁（總頁數
+    /// 9→10）。修正後節末段回到第 4 頁，總頁數回到 9（見
+    /// `hc031_total_page_count_back_to_nine`／`hc031_no_blank_body_page`）。
+    #[test]
+    fn hc031_section_end_paragraph_stays_on_its_page() {
+        let engine = Engine::from_docx_bytes(HC031_ENDNOTE_DOC).expect("開啟 HC031 失敗");
+        // 正文第 4 頁（索引 3）必須含實質內容（原本節末段被擠到下一頁）。
+        let p3 = engine.page_lines(3).expect("HC031 第 4 頁必須存在");
+        assert!(
+            p3.iter().any(|l| !l.trim().is_empty()),
+            "HC031 第 4 頁必須有實質內容（節末段不得被擠成獨立空頁）"
+        );
+        // 橫向節頁（landscape）緊接其後（索引 4）——原本多出來的空頁已消失。
+        assert_eq!(
+            engine.body_page_count(),
+            8,
+            "HC031 正文頁數必須是 8（段距量化不得擠出空頁）；實得 {}",
+            engine.body_page_count()
+        );
+    }
+
     /// (b) HC031：尾註**只追加頁**——正文頁數不變（`page_count` ＝ 正文 ＋ 尾註），
     /// 且正文錨點記號「1」發在正文頁。
     #[test]
     fn hc031_endnote_appends_pages_without_shifting_body() {
         let engine = Engine::from_docx_bytes(HC031_ENDNOTE_DOC).expect("開啟 HC031 失敗");
         let body = engine.body_page_count();
-        assert_eq!(body, 8, "HC031 正文頁數固定（尾註不動正文）");
+        // K1：段後距進分頁後正文由 8 頁增至 9 頁（LO 同一檔案正文 8 頁；
+        // 帶制近似＋ListParagraph 的 contextualSpacing 尚未消費，故不寫死）。
+        // 本測試的契約是「尾註只追加頁、不動正文分頁」，故改斷言下限。
+        assert!(body >= 8, "HC031 正文頁數不得低於 8，實得 {body}");
         assert_eq!(
             engine.page_count(),
             body + engine.endnote_page_count(),

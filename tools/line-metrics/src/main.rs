@@ -13,9 +13,8 @@
 //! "unknown"——本工具不 panic、不因缺欄位拒絕輸出（容錯鐵律）。
 //!
 //! 已知語義說明（都屬引擎現況的老實回報，不是工具缺陷）：
-//! - `spacing_before_pt`／`spacing_after_pt` 恆為 null——行帶模型沒有段落
-//!   前後距概念（styles.rs 未支援清單明列），分頁確實**沒有消費**它們；
-//!   這正是與 LO 分頁分歧的高嫌疑項目之一。
+//! - `spacing_before_pt`／`spacing_after_pt` 為級聯有效值（null＝全鏈未
+//!   宣告）；K1 起已進分頁佔帶，報告與 `grid.before_bands/after_bands` 同源。
 //! - 文字行的 `height_pt`＝該段行高的帶量化值（ceil(段行高／帶尺)×帶尺，
 //!   與 pack_run 扣帳同值）——如果我們與 LO 在某段差一帶，原因多半就
 //!   藏在量化前後的差值裡。
@@ -62,9 +61,9 @@ struct LineRecord {
     /// 行距規則（`w:spacing/@w:lineRule` 的級聯有效值）。
     /// 未宣告（含全鏈無宣告）＝"unknown"（引擎此時用 12pt×1.4 後備）。
     line_rule: &'static str,
-    /// 段前距（pt）。行帶模型無段前後距概念（引擎未實作）＝null。
+    /// 段前距（pt，級聯有效值；未宣告＝null）。
     spacing_before_pt: Option<f32>,
-    /// 段後距（pt）。同上＝null。
+    /// 段後距（pt，級聯有效值；未宣告＝null）。
     spacing_after_pt: Option<f32>,
     /// 行類別：text／table／empty-para／page-break／unknown。
     /// page-break＝行所屬段落宣布手動分頁（`w:br type="page"` 或
@@ -159,8 +158,8 @@ fn build_report(path: &str, inputs: &DocInputs, pages: &[quire_layout::Page]) ->
                 font_size_pt: Some(font_size),
                 line_h_prequant_pt: inputs.para_line_h.get(l.para_index).copied(),
                 line_rule: rule,
-                spacing_before_pt: None,
-                spacing_after_pt: None,
+                spacing_before_pt: inputs.spacings.get(l.para_index).and_then(|s| s.0),
+                spacing_after_pt: inputs.spacings.get(l.para_index).and_then(|s| s.1),
                 kind,
             };
             queued.push((band, 0, i, rec));
@@ -302,6 +301,7 @@ mod tests {
             grid: ParaGrid::default(),
             para_line: vec![None; texts.len()],
             para_line_h: vec![default_params().line_h_pt(); texts.len()],
+            spacings: vec![(None, None); texts.len()],
         }
     }
 
