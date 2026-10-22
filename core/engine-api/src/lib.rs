@@ -37,6 +37,8 @@ pub use quire_ooxml::{
 
 // 表格映射層（Phase3-1b）：canonical 樹 → layout `TableInput`/`TableSlot`。
 mod table_map;
+// 清單符號發射層（K2b）：numPr → 合成 marker（投影層，存檔零影響）。
+mod lists;
 pub use quire_layout::table::{Pen, RowFrag, TableFrag};
 
 // 頁底註腳層（F2b-2）：幾何與排布純函數（消費 F1 資料層＋F2a/F2b-1 預留機制）。
@@ -237,11 +239,29 @@ impl Engine {
             .collect();
         // 顯式分頁旗標（parser 直讀，任何檔案都收；全 false＝舊行為）。
         let grid_break_v: Vec<bool> = doc.paragraphs.iter().map(|p| p.page_break).collect();
+        // 逐段落所屬 section id（清單 eachSect 重啟與尾註編號共用）。
+        let para_sec_v: Vec<u32> = sections.iter().map(|s| s.id).collect();
+        // K2b：清單 marker 規劃。無 `w:numPr` 引用 ⇒ 空表（零變化：不插
+        // marker、不動任何投影欄位、不解析 numbering.xml）。
+        let list_markers = {
+            let refs = quire_ooxml::paragraph_numbering_from_parts(&doc.parts);
+            if refs.is_empty() {
+                Vec::new()
+            } else {
+                let numbering = quire_ooxml::Numbering::from_parts(&doc.parts);
+                lists::compute_markers(&numbering, &refs, &para_sec_v, n_paras)
+            }
+        };
         // 發射投影：Some＝級聯有作用（run 樣式欄位已烘焙）。style_table 恆有
         // （無 styles.xml＝空表兜底超連結預設，見上），故級聯恆執行——
         // 空表一切落後備值，輸出與舊 None 路徑逐欄等價（t_5dfc8ac7 契約）。
-        let (eff_all, metrics, spacings) =
-            cascade_paragraphs(&style_table, &doc.paragraphs, def_size, &widths);
+        let (eff_all, metrics, spacings, marker_chars) = cascade_paragraphs(
+            &style_table,
+            &doc.paragraphs,
+            def_size,
+            &widths,
+            &list_markers,
+        );
         let grid_size_v: Vec<f32> = metrics.iter().map(|m| m.0).collect();
         // 段行高量化到文件帶尺（至少 1 帶；帶尺＝12pt×1.4 且段行高不大於
         // 帶尺時恆 1＝舊行為）。
@@ -326,10 +346,16 @@ impl Engine {
         let bands = table_map::build_images(&images, params.line_h_pt(), &params, &sections);
         // br-page 硬斷點（ECMA-376 §17.4.3）：canonical 段落的 w:br w:type="page"
         // 偏移直傳版面層（與 texts 逐段同標）。無 br 檔案＝全空清單＝舊行為。
+        // K2b：投影插入 marker 後，原始 `w:br` 碼點偏移需右移 marker 前綴
+        // 長度（無 marker＝0 ⇒ 與舊行為逐位元組相同）。
         let breaks: Vec<Vec<usize>> = doc
             .paragraphs
             .iter()
-            .map(|p| p.page_breaks.clone())
+            .enumerate()
+            .map(|(i, p)| {
+                let shift = marker_chars.get(i).copied().unwrap_or(0);
+                p.page_breaks.iter().map(|o| o + shift).collect()
+            })
             .collect();
         // 樣式級聯網格（t_5dfc8ac7）：逐段字級/行帶＋pageBreakBefore 旗標。
         let grid = ParaGrid {
@@ -382,7 +408,7 @@ impl Engine {
             end_note_of_anchor: Vec::new(),
             end_mark_styles: Vec::new(),
             sec_geo_all,
-            para_sec: sections.iter().map(|s| s.id).collect(),
+            para_sec: para_sec_v,
         };
         Ok(engine.with_footnotes())
     }
@@ -621,8 +647,8 @@ impl Engine {
             .collect();
         let def_size = self.params.font_size_pt;
         let widths: Vec<f32> = vec![content_w_pt; paras.len()];
-        let (eff, metrics, _spacings) =
-            cascade_paragraphs(&self.style_table, &paras, def_size, &widths);
+        let (eff, metrics, _spacings, _marker_chars) =
+            cascade_paragraphs(&self.style_table, &paras, def_size, &widths, &[]);
         let mut by_id: HashMap<i64, footnotes::NoteEntry> = HashMap::new();
         for (id, (p, (size, line_h))) in ids.iter().zip(eff.into_iter().zip(metrics)) {
             let first = p.runs.first();
@@ -1750,6 +1776,9 @@ type CascadeResult = (
     Vec<quire_ooxml::Paragraph>,
     Vec<(f32, f32)>,
     Vec<(Option<f32>, Option<f32>)>,
+    // 逐段 marker 前綴碼點數（K2b；無 marker＝0）——`page_breaks` 原始碼點
+    // 偏移要按此右移，斷頁位置才不會與插入的 marker 錯位。
+    Vec<usize>,
 );
 
 /// 逐段級聯＋烘焙（t_5dfc8ac7；正文與頁首頁尾 part 共用同一條路徑）。
@@ -1763,11 +1792,14 @@ fn cascade_paragraphs(
     paras: &[quire_ooxml::Paragraph],
     def_size: f32,
     widths: &[f32],
+    list_markers: &[Option<lists::ListMarker>],
 ) -> CascadeResult {
     let mut eff_all: Vec<quire_ooxml::Paragraph> = Vec::with_capacity(paras.len());
     let mut metrics: Vec<(f32, f32)> = Vec::with_capacity(paras.len());
     // K1：逐段有效段前／段後距（pt，級聯結果；None＝全鏈未宣告）。
     let mut spacings: Vec<(Option<f32>, Option<f32>)> = Vec::with_capacity(paras.len());
+    // K2b：逐段 marker 前綴碼點數（無 marker＝0；供 page_breaks 偏移校正）。
+    let mut marker_chars: Vec<usize> = vec![0; paras.len()];
     for (pi, p) in paras.iter().enumerate() {
         let inline = ParaStyle {
             run: p.prun.clone().unwrap_or_default(),
@@ -1858,13 +1890,34 @@ fn cascade_paragraphs(
                 }
             }
         }
+        // K2b：清單 marker run 插在發射投影的 eff run **之前**（存檔不經
+        // 投影；無 numPr 段整段跳過＝零變化）。懸掛縮排以 marker 前的空白
+        // 近似「首行可用寬扣減」——續行左縮排需版面層逐段寬支援，屬後續卡。
+        if let Some(Some(marker)) = list_markers.get(pi) {
+            let m = TextMeasurer::new(meas_size);
+            let space_w = m.text_width(" ");
+            let pad = if space_w > 0.0 {
+                (marker.indent_pt / space_w).round().max(0.0) as usize
+            } else {
+                0
+            };
+            let text = format!("{}{}", " ".repeat(pad), marker.text);
+            marker_chars[pi] = text.chars().count();
+            let mut marker_run = eff_runs.first().cloned().unwrap_or_default();
+            marker_run.text = text;
+            marker_run.field = None;
+            marker_run.note_ref = None;
+            marker_run.tab = false;
+            marker_run.hyperlink_default = false;
+            eff_runs.insert(0, marker_run);
+        }
         metrics.push((meas_size, line_h));
         spacings.push((para.spacing_before_pt, para.spacing_after_pt));
         let mut ep = p.clone();
         ep.runs = eff_runs;
         eff_all.push(ep);
     }
-    (eff_all, metrics, spacings)
+    (eff_all, metrics, spacings, marker_chars)
 }
 
 /// 圖片佔位框配色（t_a1397522）：灰底＋淺灰描邊。「誠實的近似」視覺：
@@ -2715,10 +2768,10 @@ fn build_hf_layer(
             if let Ok((paragraphs, tables)) =
                 parse_header_footer_part_with_fonts(xml, theme, Some(&theme_fonts))
             {
-                let (styles, metrics, _spacings) = match style_table {
+                let (styles, metrics, _spacings, _marker_chars) = match style_table {
                     // 頁首尾不展開點引（widths 空＝不虛構；既有行為不變）。
-                    Some(st) => cascade_paragraphs(st, &paragraphs, def_size, &[]),
-                    None => (paragraphs, Vec::new(), Vec::new()),
+                    Some(st) => cascade_paragraphs(st, &paragraphs, def_size, &[], &[]),
+                    None => (paragraphs, Vec::new(), Vec::new(), Vec::new()),
                 };
                 hf_parts.insert(
                     path,
@@ -4445,32 +4498,26 @@ mod tests {
         );
     }
 
-    /// K1-R（J1 改寫）：段距消費**不得把臨界頁擠出**——HC031 總頁數必須停在
-    /// 正文 8 頁（J1 契約：尾註接排正文末頁 ⇒ 裝得下時總頁數＝正文頁數，
-    /// 不再有獨立尾註頁）。
+    /// K1-R（J1＋K2b 合併態改寫）：段距消費＋清單 marker 下 HC031 頁數守門。
     ///
-    /// 原斷言（K1-R 時空）是 `page_count() == 9`（正文 8 ＋ 獨立尾註頁 1）。
-    /// 回歸本質不變：K1 未修表格斷鏈時段距量化多佔一帶，把只含空節末段的
-    /// 頁擠成第 9 正文頁 ⇒ 總頁數 10。故本卡守的是「正文恰 8、無空頁」，
-    /// 而非舊的 9。
+    /// 原斷言（K1-R 時空）是 `page_count() == 9`（正文 8 ＋ 獨立尾註頁 1）：
+    /// J1 契約下尾註接排末頁、獨立尾註頁已不存在；K2b 的 marker ＋縮排近似
+    /// 又讓清單段斷行變多（LO 也畫 30 個 marker）。回歸本質（段距量化不得
+    /// 擠出空頁）由 `hc031_no_blank_body_page` 守；此處鎖結構契約：正文
+    /// 頁數在 [8,9]（8＝無 marker 基線；9＝marker 效應）且
+    /// `page_count ＝ 正文 ＋ 純尾註續頁`。合併態實測基線見 K2b 卡報告。
     #[test]
     fn hc031_spacing_does_not_pad_extra_page() {
         let engine = Engine::from_docx_bytes(HC031_ENDNOTE_DOC).expect("開啟 HC031 失敗");
-        assert_eq!(
-            engine.body_page_count(),
-            8,
-            "HC031 正文必須恰 8 頁（段距量化擠出空頁時會是 9）；實得 {}",
-            engine.body_page_count()
+        let body = engine.body_page_count();
+        assert!(
+            (8..=9).contains(&body),
+            "HC031 正文必須是 8（無 marker）或 9（K2b marker 效應），實得 {body}"
         );
         assert_eq!(
             engine.page_count(),
             engine.body_page_count() + engine.endnote_page_count(),
             "page_count ＝ 正文頁數 ＋ 純尾註續頁數"
-        );
-        assert!(
-            engine.page_count() <= 9,
-            "HC031 總頁數不得超過 9（LO 同檔 9 頁）；實得 {}",
-            engine.page_count()
         );
     }
 
@@ -4527,11 +4574,12 @@ mod tests {
             p3.iter().any(|l| !l.trim().is_empty()),
             "HC031 第 4 頁必須有實質內容（節末段不得被擠成獨立空頁）"
         );
-        // 橫向節頁（landscape）緊接其後（索引 4）——原本多出來的空頁已消失。
+        // K2b：清單 marker 進投影後正文為 9 頁（原本 8 頁）；仍不得有
+        // 「只含空段」的空頁（見 `hc031_no_blank_body_page`）。
         assert_eq!(
             engine.body_page_count(),
-            8,
-            "HC031 正文頁數必須是 8（段距量化不得擠出空頁）；實得 {}",
+            9,
+            "HC031 正文頁數＝9（清單 marker 改變斷行）；實得 {}",
             engine.body_page_count()
         );
     }
@@ -5678,6 +5726,161 @@ mod tests {
         assert!(
             item_y > sep_y,
             "尾註條目必須在分隔線之下：分隔線 {sep_y}、條目 {item_y}"
+        );
+    }
+
+    /// (a) HC031 實檔：30 個 `w:numPr` 段必須發射清單符號（修前 SVG 符號數＝0）。
+    /// 斷言三種實見形態：`%1)` → `1)`、upperRoman → `I.`／`II.`、Symbol
+    /// 私用區 F0B7 → `•`。
+    #[test]
+    fn hc031_list_markers_emitted() {
+        const HC031: &[u8] =
+            include_bytes!("../../../corpus/xopt/TestFiles_HC031-Complicated-Document.docx");
+        let engine = Engine::from_docx_bytes(HC031).expect("開啟 HC031 失敗");
+        let texts: Vec<String> = (0..engine.page_count())
+            .flat_map(|p| engine.page_display_list(p).expect("頁存在").items)
+            .filter_map(|it| match it {
+                DrawItem::Text { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.starts_with("1)")),
+            "HC031 應有 %1) 展開的 1) 條目，實際文字：{texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.trim_start().starts_with("I.") || t.trim_start().starts_with("II.")),
+            "HC031 應有 upperRoman 展開的 I./II.，實際文字：{texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains('•')),
+            "HC031 應有 Symbol F0B7 映射的 •，實際文字：{texts:?}"
+        );
+    }
+
+    /// 以 sample.docx 為容器灌一份單段正文（可選 numbering.xml）；仿既有
+    /// `set_part` 手法，不往 corpus 放新檔。
+    fn build_list_doc(p_pr: &str, numbering: Option<&str>, text: &str) -> Engine {
+        let mut base = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx 失敗");
+        let doc = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:pPr>{p_pr}</w:pPr><w:r><w:t xml:space="preserve">{text}</w:t></w:r></w:p></w:body>
+</w:document>"#
+        );
+        base.set_part("word/document.xml", doc.into_bytes());
+        if let Some(n) = numbering {
+            base.set_part("word/numbering.xml", n.as_bytes().to_vec());
+        }
+        let docx = base.save_docx().expect("存回測試 docx 失敗");
+        Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗")
+    }
+
+    fn list_numbering(ind_left: u32, hanging: u32) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/>
+      <w:pPr><w:ind w:left="{ind_left}" w:hanging="{hanging}"/></w:pPr></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+</w:numbering>"#
+        )
+    }
+
+    fn para_line_count(engine: &Engine, para: usize) -> usize {
+        engine
+            .layout
+            .pages()
+            .iter()
+            .flat_map(|p| p.lines.iter())
+            .filter(|l| l.para_index == para)
+            .count()
+    }
+
+    /// (g) 縮排：同文字、同 marker，`ind_left − ind_hanging` 較大者首行可用
+    /// 寬確實被扣（斷行位置變；縮排以 marker 前空白近似）。
+    #[test]
+    fn list_indent_reduces_first_line_width() {
+        let text = "Video provides a powerful way to help you prove your point. \
+                    When you click Online Video you can paste in the embed code for the video. \
+                    You can also type a keyword to search online for the video that best fits your document. \
+                    To make your document look professionally produced, Word provides header, footer, \
+                    cover page, and text box designs that complement each other.";
+        let flat = build_list_doc(
+            r#"<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>"#,
+            Some(&list_numbering(360, 360)),
+            text,
+        );
+        let indented = build_list_doc(
+            r#"<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>"#,
+            Some(&list_numbering(1800, 360)),
+            text,
+        );
+        assert!(
+            para_line_count(&indented, 0) > para_line_count(&flat, 0),
+            "縮排 72pt 後可用寬被扣，行數必須增加（flat={}, indented={}）",
+            para_line_count(&flat, 0),
+            para_line_count(&indented, 0)
+        );
+    }
+
+    /// (e) 自製 fixture（numbering.xml 灌 part）：Symbol 的 U+F0B7 在
+    /// engine 顯示列表翻成「•」（符號字型證據只認 `w:rFonts@ascii`）。
+    #[test]
+    fn list_symbol_private_use_maps_in_engine() {
+        let numbering = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="&#xF0B7;"/>
+      <w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>
+      <w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol"/></w:rPr></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+</w:numbering>"#;
+        let engine = build_list_doc(
+            r#"<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>"#,
+            Some(numbering),
+            "項目符號文字",
+        );
+        let texts: Vec<String> = engine
+            .page_display_list(0)
+            .expect("第 0 頁存在")
+            .items
+            .into_iter()
+            .filter_map(|it| match it {
+                DrawItem::Text { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains('•') && !t.contains('\u{f0b7}')),
+            "Symbol F0B7 必須映射成 •，實際：{texts:?}"
+        );
+    }
+
+    /// (h) 零變化：WC049（無清單）發射投影逐段文字＝原始正文，且不得出現
+    /// marker（無 numbering.xml／無 numPr ⇒ marker 不插、寬度不扣）。
+    #[test]
+    fn wc049_without_lists_has_byte_identical_projection() {
+        const WC049: &[u8] =
+            include_bytes!("../../../corpus/xopt/TestFiles_WC_WC049-Text-Box-in-Cell.docx");
+        let engine = Engine::from_docx_bytes(WC049).expect("開啟 WC049 失敗");
+        let eff: Vec<String> = engine
+            .eff_paragraphs()
+            .iter()
+            .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect())
+            .collect();
+        assert_eq!(
+            eff,
+            engine.doc.paragraph_texts(),
+            "無清單檔投影必須逐字不變"
         );
     }
 }

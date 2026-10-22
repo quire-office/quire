@@ -1,10 +1,10 @@
 //! 清單編號解析（`word/numbering.xml`；ECMA-376 §17.9）。
 //!
 //! 背景：LO 渲染出 `I.`／`a.`／`b.`／`•` 等清單符號，我方一個都沒發
-//! （見 `docs/j3-hc031-pagination-diagnosis.md` (c)）。本卡**只做解析、零
-//! 消費**——鏡像 H1（[`crate::notes`] 的 notePr 打法）：先建忠實資料模型，
-//! 渲染接線另卡（K3）。本模組對版面／顯示列表／存檔路徑**零影響**
-//! （渲染輸出逐位元組零變化）。
+//! （見 `docs/j3-hc031-pagination-diagnosis.md` (c)）。K2a 建忠實資料模型
+//! （本模組）；K2b 由 engine 的 `lists.rs` 消費成發射投影的 marker run。
+//! 本模組本身仍是純解析、**對版面／存檔路徑零影響**（投影另存，part 明文
+//! 不動）。
 //!
 //! ## 資料模型三層（ECMA-376 §17.9）
 //!
@@ -42,16 +42,14 @@
 //!
 //! ## 未做清單（老實記下能力邊界，非漏實作）
 //!
-//! - **計數器語意不在解析層**：編號如何隨段落遞增、何時重啟（`w:lvlRestart`）、
-//!   `%1.%2` 佔位如何展開——全是消費端（K3）的事，本卡只提供忠實素材。
-//! - **`w:lvl/w:rPr` 的字級／字型不收**（`w:sz`／`w:rFonts`）：項目符號的
-//!   符號字型（Symbol／Wingdings）與字級要等消費端決策——U+F0B7 這類私用區
-//!   字元得靠字型資訊才翻得出「•」。
-//! - `w:lvl/w:pStyle`（層級↔段落樣式連結）、`w:isLgl`（數字轉字母）、
-//!   `w:suff`（編號與文字間的後綴）、`w:lvlRestart` 不收。
+//! - **計數器語意不在解析層**：本模組只提供忠實素材；遞增／重啟／展開由
+//!   engine 的清單發射層（K2b `lists.rs`）消費。
+//! - **`w:lvl/w:rPr` 只收 `w:rFonts@ascii`**：字級（`w:sz`）與 hAnsi／cs
+//!   等其餘字型欄不收——符號映射目前只吃 `@ascii`（K2b 實見值）。
+//! - `w:lvl/w:pStyle`（層級↔段落樣式連結）、`w:isLgl`（數字轉字母）不收。
 //! - `w:ind@firstLine`／`@right` 不收（只收 `left`／`hanging`）。
 //! - `w:nsid`／`w:tmpl`／`w:tentative`／`w:tplc`（識別碼與試探旗標）不收。
-//! - **樣式繼承而來的編號不追**：本卡只認段落**直接宣告**的 `w:pPr/w:numPr`；
+//! - **樣式繼承而來的編號不追**：本模組只認段落**直接宣告**的 `w:pPr/w:numPr`；
 //!   styles.xml 裡的 `w:style`（type=numbering）及其 `w:numPr` 屬樣式鏈解析
 //!   （`styles.rs` 的管線），不在本卡範圍。
 //! - `w:num` 的 `w:numIdMacAtCleanup`（舊版 Word 的相容旗標）不收。
@@ -145,6 +143,19 @@ pub struct Level {
     /// 要等消費端決策（見模組末未做清單）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpr_num_fmt: Option<NumberFormat>,
+    /// `w:rPr/w:rFonts/@w:ascii`：層級符號字型（K2b）。項目符號 `w:lvlText`
+    /// 的私用區字元（U+F0B7 等）要靠它才翻得出「•」（Symbol／Wingdings）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rpr_font_ascii: Option<String>,
+    /// `w:numRestart/@w:val`：清單重啟時機（K2b 消費 `eachSect`＝節邊界重啟）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_restart: Option<String>,
+    /// `w:lvlRestart/@w:val`：本層在第幾層前進時重啟（0＝永不重啟）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lvl_restart: Option<u32>,
+    /// `w:suff/@w:val`：編號與文字間的後綴（`tab`／`space`／`nothing`；缺＝None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suff: Option<String>,
 }
 
 /// 抽象編號定義（`w:abstractNum`；ECMA-376 §17.9.1）。
@@ -396,6 +407,21 @@ impl NumberingParser {
                     l.jc = crate::styles::align_of(attr_val(e, "val").as_deref());
                 }
             }
+            (Some(b"lvl"), b"numRestart") => {
+                if let Some(l) = self.cur_lvl.as_mut() {
+                    l.num_restart = attr_val(e, "val");
+                }
+            }
+            (Some(b"lvl"), b"lvlRestart") => {
+                if let Some(l) = self.cur_lvl.as_mut() {
+                    l.lvl_restart = attr_u32(e, "val");
+                }
+            }
+            (Some(b"lvl"), b"suff") => {
+                if let Some(l) = self.cur_lvl.as_mut() {
+                    l.suff = attr_val(e, "val");
+                }
+            }
             // ---- w:lvl/w:pPr/w:ind（縮排；twips → pt）----
             (Some(b"pPr"), b"ind") if grand == Some(b"lvl") => {
                 if let Some(l) = self.cur_lvl.as_mut() {
@@ -407,6 +433,12 @@ impl NumberingParser {
             (Some(b"rPr"), b"numFmt") if grand == Some(b"lvl") => {
                 if let Some(l) = self.cur_lvl.as_mut() {
                     l.rpr_num_fmt = attr_val(e, "val").as_deref().and_then(parse_number_format);
+                }
+            }
+            // ---- w:lvl/w:rPr/w:rFonts（K2b：符號字型，只取 @w:ascii）----
+            (Some(b"rPr"), b"rFonts") if grand == Some(b"lvl") => {
+                if let Some(l) = self.cur_lvl.as_mut() {
+                    l.rpr_font_ascii = attr_val(e, "ascii");
                 }
             }
             // ---- w:abstractNum 的直接子元素（§17.9.1）----
@@ -1132,5 +1164,93 @@ mod tests {
             numbering.nums.iter().all(|n| n.abstract_num_id.is_some()),
             "w:num 仍各自指向抽象定義"
         );
+    }
+
+    // ---------------- (h) K2b 補收欄位 ----------------
+
+    /// 自製 numbering.xml：`w:rPr/w:rFonts@ascii`、`w:numRestart`、
+    /// `w:lvlRestart`、`w:suff` 四欄全收（皆 Option，缺＝None）。
+    #[test]
+    fn k2b_level_extra_fields_parsed() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="7">
+    <w:lvl w:ilvl="0">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="bullet"/>
+      <w:numRestart w:val="eachSect"/>
+      <w:lvlRestart w:val="0"/>
+      <w:suff w:val="nothing"/>
+      <w:lvlText w:val="&#xF0B7;"/>
+      <w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol"/></w:rPr>
+    </w:lvl>
+    <w:lvl w:ilvl="1">
+      <w:numFmt w:val="decimal"/>
+      <w:lvlText w:val="%2."/>
+    </w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="3"><w:abstractNumId w:val="7"/></w:num>
+</w:numbering>"#;
+        let n = parse_numbering(xml);
+        let lv0 = n
+            .effective_levels(3)
+            .expect("有效層級")
+            .into_iter()
+            .find(|l| l.ilvl == 0)
+            .expect("lvl0");
+        assert_eq!(lv0.rpr_font_ascii.as_deref(), Some("Symbol"));
+        assert_eq!(lv0.num_restart.as_deref(), Some("eachSect"));
+        assert_eq!(lv0.lvl_restart, Some(0));
+        assert_eq!(lv0.suff.as_deref(), Some("nothing"));
+        let lv1 = n
+            .effective_levels(3)
+            .expect("有效層級")
+            .into_iter()
+            .find(|l| l.ilvl == 1)
+            .expect("lvl1");
+        assert_eq!(lv1.rpr_font_ascii, None, "未宣告＝None");
+        assert_eq!(lv1.num_restart, None);
+        assert_eq!(lv1.lvl_restart, None);
+        assert_eq!(lv1.suff, None);
+    }
+
+    /// corpus 實檔：HC031 的 Symbol 字型、HC061 的 suff、RP052 的 lvlRestart=0
+    /// 都必須原樣收進 [`Level`]。
+    #[test]
+    fn k2b_corpus_extra_fields_parsed() {
+        let hc031 = parse_corpus("xopt/TestFiles_HC031-Complicated-Document.docx");
+        let n = Numbering::from_parts(&hc031.parts);
+        let bullet = n
+            .effective_levels(2)
+            .expect("numId=2")
+            .into_iter()
+            .find(|l| l.ilvl == 0)
+            .expect("lvl0");
+        assert_eq!(bullet.rpr_font_ascii.as_deref(), Some("Symbol"));
+
+        let hc061 = parse_corpus("xopt/TestFiles_HC061-Hyperlink-in-Field.docx");
+        let n = Numbering::from_parts(&hc061.parts);
+        let suffs: Vec<&str> = n
+            .abstract_nums
+            .iter()
+            .flat_map(|a| a.levels.iter())
+            .filter_map(|l| l.suff.as_deref())
+            .collect();
+        assert!(suffs.contains(&"space"), "HC061 實見 suff=space：{suffs:?}");
+        assert!(
+            suffs.contains(&"nothing"),
+            "HC061 實見 suff=nothing：{suffs:?}"
+        );
+
+        let rp052 = parse_corpus("xopt/TestFiles_RP_RP052-Deleted-Para-Mark-Rejected.docx");
+        let n = Numbering::from_parts(&rp052.parts);
+        let restarts: Vec<u32> = n
+            .abstract_nums
+            .iter()
+            .flat_map(|a| a.levels.iter())
+            .filter_map(|l| l.lvl_restart)
+            .collect();
+        assert!(!restarts.is_empty(), "RP052 實見 lvlRestart");
+        assert!(restarts.iter().all(|v| *v == 0), "本檔全為 0＝永不重啟");
     }
 }
