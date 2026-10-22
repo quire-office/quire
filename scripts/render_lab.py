@@ -198,26 +198,68 @@ def run_quire(docx: pathlib.Path, out_dir: pathlib.Path) -> dict:
     return {"pages": pages, "breaks": brks, "n_svg": len(pages)}
 
 
+def _bullet_slot(line: str) -> str:
+    """整行若只是清單符號（LO 常吐私有区 \uf0b7／o／•／◦，我方吐 o／•／無），
+    正規化成統一佔位 `[B]`——符號字型差異不該污染**內容**相似度（J2）。
+    只處理「整行即符號」的情形，避免吃掉內文中的字母 o。"""
+    t = line.strip()
+    if t in ("\uf0b7", "\u2022", "\u25e6", "o", "O", "◦", "", "[B]"):
+        return "[B]"
+    return line
+
+
+def content_key(lines: list[str]) -> str:
+    """整頁內容鍵（J2）：正規化＋符號佔位＋casefold＋忽略換行位置。
+    這是「內容是否一致」的口徑——換行/斷行位置差異不計入。"""
+    toks = [t for l in lines if (t := _bullet_slot(norm(l))) not in ("", None)]
+    key = " ".join(toks).casefold()
+    # SequenceMatcher 對超長字串退化為 O(n²)：截斷保護（單頁 6000 字元遠夠）。
+    return key[:6000]
+
+
+def layout_key(lines: list[str]) -> str:
+    """版面鍵：保留「前 8 行逐行拼接」的舊口徑（含換行位置）。"""
+    return " | ".join(norm(l) for l in lines[:8])
+
+
 def compare(name: str, lo: list[dict], ow: dict) -> dict:
-    """逐頁比對 LO vs quire，回傳該檔的差異摘要。"""
+    """逐頁比對 LO vs quire，回傳該檔的差異摘要。
+
+    J2 校正：**內容相似度**（忽略換行、大小寫不敏感、符號佔位）與
+    **版面相似度**（含換行位置）分成兩個獨立指標。舊版只有逐行序列比，
+    把「同一句話換行位置不同」誤算成內容分歧（HC031 p1 實測兩邊文字
+    幾乎相同卻得 0.007），會誤導所有 A/B 判讀。
+    「首個分歧頁」判定改用 content_scores（<0.6）；換行差只進 notes。
+    """
     lo_pages, ow_pages = lo, ow["pages"]
     row = {
         "file": name,
         "lo_pages": len(lo_pages),
         "ow_pages": len(ow_pages),
         "page_count_match": len(lo_pages) == len(ow_pages),
-        "page_scores": [],       # 逐頁相似度 0..1
+        "content_scores": [],   # 內容相似度 0..1（忽略換行；分歧判定用這個）
+        "layout_scores": [],    # 版面相似度 0..1（含換行位置；僅供觀察）
         "first_divergence": None,
         "notes": [],
     }
     n = max(len(lo_pages), len(ow_pages))
     for i in range(n):
-        a = " | ".join(lo_pages[i]["lines"][:8]) if i < len(lo_pages) else ""
-        b = " | ".join(ow_pages[i]["lines"][:8]) if i < len(ow_pages) else ""
-        score = difflib.SequenceMatcher(None, a, b).ratio() if (a or b) else 0.0
-        row["page_scores"].append(round(score, 3))
-        if score < 0.6 and row["first_divergence"] is None:
+        a_lines = lo_pages[i]["lines"] if i < len(lo_pages) else []
+        b_lines = ow_pages[i]["lines"] if i < len(ow_pages) else []
+        ca, cb = content_key(a_lines), content_key(b_lines)
+        la, lb = layout_key(a_lines), layout_key(b_lines)
+        # autojunk=False：SequenceMatcher 預設對長字串把常見 2-char 塊當「垃圾」
+        # 剔除，頁面文字一長就崩（HC031 p1 實測 legacy=0.008、關掉=0.655）。
+        # 這是 0.007 假分歧的真正元兇，比換行/大小寫都是主因。
+        cs = difflib.SequenceMatcher(None, ca, cb, autojunk=False).ratio() if (ca or cb) else 0.0
+        ls = difflib.SequenceMatcher(None, la, lb, autojunk=False).ratio() if (la or lb) else 0.0
+        row["content_scores"].append(round(cs, 3))
+        row["layout_scores"].append(round(ls, 3))
+        if cs < 0.6 and row["first_divergence"] is None:
             row["first_divergence"] = i
+        # 內容近同但版面分數低 ⇒ 主要是換行位置差，記 notes 不記分歧。
+        if cs >= 0.85 and ls < 0.5:
+            row["notes"].append(f"第 {i + 1} 頁內容近同、僅換行位置不同")
     # 逐頁尺寸對照（Phase0-2b）：我方每頁尺寸如實取自檔案 sectPr（pagebreaks.json
     # 的 width_pt/height_pt），與 LO 逐頁比——只有真的不同才備註，不再拿固定
     # A4 當尺（舊備註「LO 頁尺寸 ≠ 我方固定 A4」自此退役）。
@@ -244,37 +286,114 @@ def render_report(rows: list[dict], meta: dict, out_md: pathlib.Path) -> None:
         f"- 對象：{meta['target']}（{len(rows)} 檔）",
         f"- 頁數一致：{ok}/{len(rows)}；LO 轉換失敗：{meta['lo_fail']}",
         "",
-        "| 檔案 | LO 頁 | OW 頁 | 頁數 | 逐頁相似度（首 6 頁） | 首個分歧頁 | 備註 |",
-        "|---|---|---|---|---|---|---|",
+        "| 檔案 | LO 頁 | OW 頁 | 頁數 | 內容相似度（首 6 頁） | 版面相似度（首 6 頁） | 首個內容分歧頁 | 備註 |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         if r.get("status") == "lo_fail":
-            lines.append(f"| {r['file']} | — | — | — | — | — | LO 轉換失敗/逾時 |")
+            lines.append(f"| {r['file']} | — | — | — | — | — | — | LO 轉換失敗/逾時 |")
             continue
-        scores = ", ".join(str(s) for s in r["page_scores"][:6])
+        cs = ", ".join(str(s) for s in r["content_scores"][:6])
+        ls = ", ".join(str(s) for s in r["layout_scores"][:6])
         div = "—" if r["first_divergence"] is None else f"第 {r['first_divergence'] + 1} 頁"
         note = "; ".join(r["notes"]) or "—"
         lines.append(
             f"| {r['file']} | {r['lo_pages']} | {r['ow_pages']} | "
-            f"{'✓' if r['page_count_match'] else '✗'} | {scores} | {div} | {note} |")
+            f"{'✓' if r['page_count_match'] else '✗'} | {cs} | {ls} | {div} | {note} |")
     lines += [
         "",
-        "說明：相似度＝每頁前 8 行文字序列的 SequenceMatcher 值（0=完全不同，1=一致）。",
-        "骨架階段我方無字型 shaping、無表格/頁首頁尾，分歧是預期；本報告追蹤的是",
-        "**頁數收斂速度**與**斷點位置**，作為 Phase 0 排版演進的量化基線。",
+        "說明（J2 校正）：**內容相似度**＝整頁全部行正規化後拼成單一詞序列、",
+        "casefold、清單符號正規化成統一佔位後跑 SequenceMatcher——忽略換行位置，",
+        "反映「內容是否一致」；**版面相似度**＝舊的逐行（前 8 行）序列比，含換行",
+        "位置，反映斷行/換行差異。「首個內容分歧頁」以內容分 <0.6 判定；內容近同",
+        "而版面分低只進備註（僅換行位置不同），不記分歧。",
+        "本報告追蹤的是**頁數收斂速度**與**斷點位置**，作為排版演進的量化基線。",
         "",
     ]
     out_md.write_text("\n".join(lines), encoding="utf-8")
 
 
+def selftest() -> int:
+    """J2 自測（驗收 4）：內容/版面兩指標必須真正分離，且分歧判定看內容分。
+    先紅後綠：舊實作只有一個逐行分，斷言 1/2 直接紅。"""
+    fails = 0
+
+    def check(name: str, cond: bool, detail: str = "") -> None:
+        nonlocal fails
+        print(f"  {'PASS' if cond else 'FAIL'} {name}" + (f"（{detail}）" if detail else ""))
+        if not cond:
+            fails += 1
+
+    # (1) 僅換行位置不同、詞序相同 ⇒ content 恒等 1.0（完全換行無關），
+    #     layout 因 "|" 斷點位置不同而 <1.0（換行可见）。兩指標分離的判準是
+    #     「content 完全不受換行影響」，不是「layout 必須很低」。
+    lo = {"lines": ["The quick brown fox jumps over", "the lazy dog and keeps running far",
+                    "away from the farm every single morning today and every morning"],
+          "w_pt": 612.0, "h_pt": 792.0}
+    ow = {"pages": [{"lines": ["The quick brown fox", "jumps over the lazy dog and keeps",
+                               "running far away from the farm every single morning today and every morning"]}],
+          "breaks": [{"width_pt": 612.0, "height_pt": 792.0}]}
+    r = compare("t1", [lo], ow)
+    check("1 換行位置差不算內容分歧",
+          r["content_scores"][0] >= 0.999 and r["layout_scores"][0] < 0.999,
+          f"content={r['content_scores'][0]} layout={r['layout_scores'][0]}")
+    check("1b 該頁不記 first_divergence", r["first_divergence"] is None)
+
+    # (2) HEADING1 vs Heading1：大小寫不掉內容分。
+    lo2 = {"lines": ["HEADING1", "Video provides a powerful way to help you prove your point."],
+           "w_pt": 612.0, "h_pt": 792.0}
+    ow2 = {"pages": [{"lines": ["Heading1", "Video provides a powerful way to help you prove",
+                                "your point."]}],
+           "breaks": [{"width_pt": 612.0, "height_pt": 792.0}]}
+    r2 = compare("t2", [lo2], ow2)
+    check("2 大小寫不敏感", r2["content_scores"][0] >= 0.99,
+          f"content={r2['content_scores'][0]}")
+
+    # (3) 真內容缺失（我方少一整段**互異**文字）⇒ content <0.6 且 first_divergence
+    #     命中。注意：填充文字必須互異，否則 SequenceMatcher 對高重複字串會到处
+    #     匹配、掩蓋缺失（實測同句×4 得 0.679 假高分）。
+    segs = [
+        "Alpha bravo charlie delta echo foxtrot golf hotel india juliett kilo lima mike. ",
+        "November oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee. ",
+        "Zulu one two three four five six seven eight nine ten eleven twelve thirteen. ",
+        "Fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo. ",
+    ]
+    lo3 = {"lines": segs, "w_pt": 612.0, "h_pt": 792.0}
+    ow3 = {"pages": [{"lines": segs[:1]}],
+           "breaks": [{"width_pt": 612.0, "height_pt": 792.0}]}
+    r3 = compare("t3", [lo3], ow3)
+    check("3 真缺段（互異填充）內容分如實掉",
+          r3["content_scores"][0] < 0.6 and r3["first_divergence"] == 0,
+          f"content={r3['content_scores'][0]} div={r3['first_divergence']}")
+
+    # (3b) 清單符號（LO \uf0b7/o vs 我方無符號）不污染內容分。
+    lo4 = {"lines": ["\uf0b7", "To make your document look professionally produced Word",
+                     "provides header footer and cover page designs."],
+           "w_pt": 612.0, "h_pt": 792.0}
+    ow4 = {"pages": [{"lines": ["To make your document look professionally produced Word",
+                                "provides header footer and cover page designs."]}],
+           "breaks": [{"width_pt": 612.0, "height_pt": 792.0}]}
+    r4 = compare("t4", [lo4], ow4)
+    check("3b 符號佔位不分歧", r4["content_scores"][0] >= 0.95,
+          f"content={r4['content_scores'][0]}")
+
+    print("SELFTEST", "ALL-PASS" if fails == 0 else f"{fails}-FAIL")
+    return 0 if fails == 0 else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("files", nargs="*", help="直接指定的 docx（預設取 corpus manifest 前 n 檔）")
+    ap.add_argument("--selftest", action="store_true",
+                    help="跑 J2 度量自測（不碰 LO/引擎，純函式驗證）後退出")
     ap.add_argument("--corpus", default=str(REPO / "corpus"))
     ap.add_argument("--n", type=int, default=10)
     ap.add_argument("--out", default=str(REPO / "out" / "render-lab"))
     ap.add_argument("--report", default=None, help="報告輸出路徑（預設 <out>/report.md）")
     a = ap.parse_args()
+
+    if a.selftest:
+        return selftest()
 
     out_dir = pathlib.Path(a.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -322,7 +441,7 @@ def main() -> int:
         rows.append(compare(rel, lo, ow))
         r = rows[-1]
         print(f"   LO {r['lo_pages']} 頁 / OW {r['ow_pages']} 頁，"
-              f"逐頁相似度 {r['page_scores'][:4]}")
+              f"內容相似度 {r['content_scores'][:4]}（版面 {r['layout_scores'][:4]}）")
 
     meta = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
             "soffice": str(soffice), "target": target_desc, "lo_fail": lo_fail}
