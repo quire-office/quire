@@ -211,6 +211,11 @@ pub struct ParaStyle {
     /// （run 直接格式／字元樣式再疊於其上）。
     pub run: RunStyle,
     pub line: Option<LineSpacing>,
+    /// 段前距（pt，`w:spacing/@w:before`；未宣告＝None——零變化守門的依據，
+    /// 不得以 `Some(0)` 冒充）。本卡由 layout 量化成段前帶消費。
+    pub spacing_before_pt: Option<f32>,
+    /// 段後距（pt，`w:spacing/@w:after`；未宣告＝None，同上）。
+    pub spacing_after_pt: Option<f32>,
     /// 對齊（本卡僅保留；未消費）。
     pub align: Option<Align>,
 }
@@ -225,6 +230,8 @@ struct OwnStyle {
     /// `w:pPr/w:rPr`（段落標記 run 屬性）：對段內 run 只補主 rPr 未宣告欄。
     ppr_run: RunStyle,
     line: Option<LineSpacing>,
+    spacing_before_pt: Option<f32>,
+    spacing_after_pt: Option<f32>,
     align: Option<Align>,
     based_on: Option<String>,
     /// `w:link`（字元樣式配對，UI/格式刷語義）：本卡只收不用。
@@ -260,6 +267,8 @@ pub struct StyleTable {
     run_default: RunStyle,
     /// docDefaults 的 `w:pPrDefault/w:pPr`（段落欄位）＋其內 `w:rPr`。
     para_default_line: Option<LineSpacing>,
+    para_default_spacing_before_pt: Option<f32>,
+    para_default_spacing_after_pt: Option<f32>,
     para_default_align: Option<Align>,
     para_default_run: RunStyle,
     /// styleId → 自帶宣告。
@@ -314,6 +323,16 @@ pub(crate) fn line_spacing(line: Option<&str>, rule: Option<&str>) -> Option<Lin
         // auto：240 = 單倍。
         LineSpacing::Auto((v / 240.0) as f32)
     })
+}
+
+/// `w:spacing/@w:before`／`@w:after`（twips）→ pt。未宣告＝None；非法／
+/// 負值／超大值同 [`half_point_pt`] 拒收（容錯鐵律：不猜）。**0 是合法
+/// 宣告**（`Some(0.0)`），與未宣告的 `None` 區分——呼叫端據此判斷有無
+/// 段落距宣告（零變化守門）。
+pub(crate) fn space_pt(raw: Option<&str>) -> Option<f32> {
+    raw.and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v >= 0.0 && *v <= MAX_OOXML_LONG)
+        .map(|v| (v / 20.0) as f32)
 }
 
 pub(crate) fn align_of(val: Option<&str>) -> Option<Align> {
@@ -469,8 +488,16 @@ fn parse_ppr(
     reader: &mut quick_xml::Reader<&[u8]>,
     theme: &ThemeColors,
     tf: Option<&ThemeFonts>,
-) -> (Option<LineSpacing>, Option<Align>, RunStyle) {
+) -> (
+    Option<LineSpacing>,
+    Option<f32>,
+    Option<f32>,
+    Option<Align>,
+    RunStyle,
+) {
     let mut line = None;
+    let mut before = None;
+    let mut after = None;
     let mut align = None;
     let mut run = RunStyle::default();
     let mut in_rpr = false;
@@ -498,6 +525,12 @@ fn parse_ppr(
                                 attr_val(&e, "lineRule").as_deref(),
                             );
                         }
+                        if before.is_none() {
+                            before = space_pt(attr_val(&e, "before").as_deref());
+                        }
+                        if after.is_none() {
+                            after = space_pt(attr_val(&e, "after").as_deref());
+                        }
                     }
                     b"jc" if align.is_none() => {
                         align = align_of(attr_val(&e, "val").as_deref());
@@ -522,6 +555,12 @@ fn parse_ppr(
                                 attr_val(&e, "lineRule").as_deref(),
                             );
                         }
+                        if before.is_none() {
+                            before = space_pt(attr_val(&e, "before").as_deref());
+                        }
+                        if after.is_none() {
+                            after = space_pt(attr_val(&e, "after").as_deref());
+                        }
                     }
                     b"jc" if align.is_none() => {
                         align = align_of(attr_val(&e, "val").as_deref());
@@ -532,7 +571,7 @@ fn parse_ppr(
             _ => {}
         }
     }
-    (line, align, run)
+    (line, before, after, align, run)
 }
 
 /// 在容器內向前掃到 `w:rPr` 起點並收其內容（呼叫端已消耗容器 Start；遇到
@@ -574,7 +613,13 @@ fn parse_ppr_default(
     reader: &mut quick_xml::Reader<&[u8]>,
     theme: &ThemeColors,
     tf: Option<&ThemeFonts>,
-) -> (Option<LineSpacing>, Option<Align>, RunStyle) {
+) -> (
+    Option<LineSpacing>,
+    Option<f32>,
+    Option<f32>,
+    Option<Align>,
+    RunStyle,
+) {
     loop {
         match reader.read_event() {
             Err(_) | Ok(Event::Eof) => return Default::default(),
@@ -650,8 +695,10 @@ impl StyleTable {
                             t.empty = false;
                         }
                         b"pPrDefault" if in_doc_defaults => {
-                            let (l, a, r) = parse_ppr_default(&mut reader, theme, tf);
+                            let (l, b, af, a, r) = parse_ppr_default(&mut reader, theme, tf);
                             t.para_default_line = l;
+                            t.para_default_spacing_before_pt = b;
+                            t.para_default_spacing_after_pt = af;
                             t.para_default_align = a;
                             t.para_default_run = r;
                             t.empty = false;
@@ -700,9 +747,15 @@ impl StyleTable {
                         }
                         b"pPr" => {
                             if let Some((_, own)) = cur.as_mut() {
-                                let (l, a, r) = parse_ppr(&mut reader, theme, tf);
+                                let (l, b, af, a, r) = parse_ppr(&mut reader, theme, tf);
                                 if own.line.is_none() {
                                     own.line = l;
+                                }
+                                if own.spacing_before_pt.is_none() {
+                                    own.spacing_before_pt = b;
+                                }
+                                if own.spacing_after_pt.is_none() {
+                                    own.spacing_after_pt = af;
                                 }
                                 if own.align.is_none() {
                                     own.align = a;
@@ -777,6 +830,15 @@ impl StyleTable {
         self.styles.get(id).map(|s| s.kind)
     }
 
+    /// docDefaults 宣告的段前／段後距（pt；未宣告＝None）。K1 的「主開關」：
+    /// 文件層級毫無段落距宣告時，呼叫端保持舊分頁路徑（零變化守門）。
+    pub fn doc_spacing(&self) -> (Option<f32>, Option<f32>) {
+        (
+            self.para_default_spacing_before_pt,
+            self.para_default_spacing_after_pt,
+        )
+    }
+
     /// 文件級行網格尺（呼叫端 fallback）：預設段落樣式（Normal，含其鏈與
     /// docDefaults）合成的（字級, 行距）。任一缺＝None（呼叫端自補 12pt／1.4）。
     pub fn doc_grid(&self) -> (Option<f32>, Option<LineSpacing>) {
@@ -798,6 +860,8 @@ impl StyleTable {
             ParaStyle {
                 run,
                 line: self.para_default_line,
+                spacing_before_pt: self.para_default_spacing_before_pt,
+                spacing_after_pt: self.para_default_spacing_after_pt,
                 align: self.para_default_align,
             },
         )
@@ -865,6 +929,8 @@ impl StyleTable {
         let para = ParaStyle {
             run: run.clone(),
             line: own.line.or(parent.1.line),
+            spacing_before_pt: own.spacing_before_pt.or(parent.1.spacing_before_pt),
+            spacing_after_pt: own.spacing_after_pt.or(parent.1.spacing_after_pt),
             align: own.align.or(parent.1.align),
         };
         let hit = (run, para);
@@ -942,6 +1008,8 @@ impl StyleTable {
         // 段落直接格式（直接 pPr ∪ 其內 rPr）蓋過樣式宣告。
         para.run = inline.run.overlay(&para.run);
         para.line = inline.line.or(para.line);
+        para.spacing_before_pt = inline.spacing_before_pt.or(para.spacing_before_pt);
+        para.spacing_after_pt = inline.spacing_after_pt.or(para.spacing_after_pt);
         para.align = inline.align.or(para.align);
         let base = para.run.clone();
         (base, para)
@@ -1245,6 +1313,8 @@ mod tests {
                 ..Default::default()
             },
             line: None,
+            spacing_before_pt: None,
+            spacing_after_pt: None,
             align: Some(Align::Center),
         };
         let (base, para) = t.effective_para(None, inline);
@@ -1573,5 +1643,86 @@ mod tests {
         assert_eq!(base.fonts, None, "全鏈未宣告 → None");
         let eff = StyleTable::resolve_run(base, RunStyle::default());
         assert_eq!(eff.fonts, None, "直接格式未宣告 → 仍為 None");
+    }
+
+    /// (a) docDefaults 的 `w:before`／`w:after`（twips）解析成 pt；未宣告
+    /// 必須是 `None`（不是 `Some(0)`）——零變化守門的依據。
+    #[test]
+    fn spacing_before_after_doc_defaults_twips_to_pt_and_none() {
+        let t = table(wrap(
+            r#"<w:docDefaults><w:pPrDefault><w:pPr>
+                 <w:spacing w:before="160" w:after="240" w:line="259" w:lineRule="auto"/>
+               </w:pPr></w:pPrDefault></w:docDefaults>"#,
+        ));
+        let (_, p) = t.effective_para(None, ParaStyle::default());
+        assert_eq!(p.spacing_before_pt, Some(8.0), "160 twips = 8pt");
+        assert_eq!(p.spacing_after_pt, Some(12.0), "240 twips = 12pt");
+
+        let t2 = table(wrap(
+            r#"<w:docDefaults><w:pPrDefault><w:pPr>
+                 <w:spacing w:line="259" w:lineRule="auto"/>
+               </w:pPr></w:pPrDefault></w:docDefaults>"#,
+        ));
+        let (_, p2) = t2.effective_para(None, ParaStyle::default());
+        assert_eq!(p2.spacing_before_pt, None, "未宣告 = None，不是 Some(0)");
+        assert_eq!(p2.spacing_after_pt, None, "未宣告 = None，不是 Some(0)");
+    }
+
+    /// (b) 樣式鏈繼承：basedOn 的 spacing 落地，子樣式只宣告一側時另一側
+    /// 仍沿鏈取得（與 `line` 同語義）。
+    #[test]
+    fn spacing_before_after_inherit_along_based_on_chain() {
+        let t = table(wrap(
+            r#"<w:style w:type="paragraph" w:styleId="Parent">
+                 <w:pPr><w:spacing w:before="200" w:after="160"/></w:pPr>
+               </w:style>
+               <w:style w:type="paragraph" w:styleId="Child">
+                 <w:basedOn w:val="Parent"/>
+                 <w:pPr><w:spacing w:after="40"/></w:pPr>
+               </w:style>"#,
+        ));
+        let (_, child) = t.effective_para(Some("Child"), ParaStyle::default());
+        assert_eq!(
+            child.spacing_before_pt,
+            Some(10.0),
+            "before 沿鏈繼承 200 twips"
+        );
+        assert_eq!(
+            child.spacing_after_pt,
+            Some(2.0),
+            "after 由子樣式覆寫 40 twips"
+        );
+    }
+
+    /// (c) 段落 pPr 直接格式覆寫樣式鏈（inline 優先）。
+    #[test]
+    fn paragraph_direct_spacing_overrides_style_chain() {
+        let t = table(wrap(
+            r#"<w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+                 <w:pPr><w:spacing w:before="200" w:after="200"/></w:pPr>
+               </w:style>"#,
+        ));
+        let inline = ParaStyle {
+            spacing_before_pt: Some(1.5),
+            spacing_after_pt: Some(2.5),
+            ..ParaStyle::default()
+        };
+        let (_, p) = t.effective_para(None, inline);
+        assert_eq!(p.spacing_before_pt, Some(1.5), "直接格式覆寫樣式 before");
+        assert_eq!(p.spacing_after_pt, Some(2.5), "直接格式覆寫樣式 after");
+    }
+
+    /// (d) 顯式 `w:before="0"` 必須是 `Some(0)`（有宣告），與未宣告的
+    /// `None` 區分；零值本身不產生任何佔帶（由 layout 守門）。
+    #[test]
+    fn explicit_zero_spacing_is_some_zero() {
+        let t = table(wrap(
+            r#"<w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+                 <w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>
+               </w:style>"#,
+        ));
+        let (_, p) = t.effective_para(None, ParaStyle::default());
+        assert_eq!(p.spacing_before_pt, Some(0.0));
+        assert_eq!(p.spacing_after_pt, Some(0.0));
     }
 }

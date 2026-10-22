@@ -320,7 +320,7 @@ pub fn table_input(
 }
 
 /// 表格（含全部巢狀表）覆蓋的段落上界（不含）＝最大段索引＋1；全無段落＝para_start。
-fn table_para_end(t: &Table, para_start: usize) -> usize {
+pub(crate) fn table_para_end(t: &Table, para_start: usize) -> usize {
     let mut end = para_start;
     t.walk(&mut |sub| {
         for row in &sub.rows {

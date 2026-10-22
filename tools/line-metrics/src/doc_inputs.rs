@@ -64,12 +64,15 @@ pub struct DocInputs {
     /// 逐段行高（pt，量化前原值）——帶數＝ceil(本值／帶尺)。報告的
     /// `line_h_prequant_pt` 取本欄（與量化後的 `height_pt` 併陳才有診斷力）。
     pub para_line_h: Vec<f32>,
+    /// 逐段級聯有效段前／段後距（pt；None＝全鏈未宣告）。
+    pub spacings: Vec<(Option<f32>, Option<f32>)>,
 }
 
 /// 逐段級聯＋烘焙（正文輸入共用路徑；移植自
 /// `core/engine-api/src/lib.rs::cascade_paragraphs`）。
 /// 回傳 (發射投影——run 樣式換成級聯有效值, 逐段 (量測字級, 段行高 pt)，
-/// 逐段有效 LineSpacing)。`def_size`＝文件基準字級；`widths`＝逐段可用寬
+/// 逐段有效 LineSpacing，逐段有效段距 (before, after) pt)。`def_size`＝
+/// 文件基準字級；`widths`＝逐段可用寬
 /// （點引填補的計算尺）。無 styles.xml 時仍給一張空表走級聯兜底
 /// （超連結合成預設），與引擎同徑。
 #[allow(clippy::type_complexity)]
@@ -78,14 +81,22 @@ fn cascade_paragraphs(
     paras: &[Paragraph],
     def_size: f32,
     widths: &[f32],
-) -> (Vec<Paragraph>, Vec<(f32, f32)>, Vec<Option<LineSpacing>>) {
+) -> (
+    Vec<Paragraph>,
+    Vec<(f32, f32)>,
+    Vec<Option<LineSpacing>>,
+    Vec<(Option<f32>, Option<f32>)>,
+) {
     let mut eff_all: Vec<Paragraph> = Vec::with_capacity(paras.len());
     let mut metrics: Vec<(f32, f32)> = Vec::with_capacity(paras.len());
     let mut para_lines: Vec<Option<LineSpacing>> = Vec::with_capacity(paras.len());
+    let mut spacings: Vec<(Option<f32>, Option<f32>)> = Vec::with_capacity(paras.len());
     for (pi, p) in paras.iter().enumerate() {
         let inline = ParaStyle {
             run: p.prun.clone().unwrap_or_default(),
             line: p.line,
+            spacing_before_pt: p.spacing_before_pt,
+            spacing_after_pt: p.spacing_after_pt,
             align: p.jc,
         };
         let (base, para) = st.effective_para(p.style.as_deref(), inline);
@@ -164,11 +175,12 @@ fn cascade_paragraphs(
         }
         metrics.push((meas_size, line_h));
         para_lines.push(para.line);
+        spacings.push((para.spacing_before_pt, para.spacing_after_pt));
         let mut ep = p.clone();
         ep.runs = eff_runs;
         eff_all.push(ep);
     }
-    (eff_all, metrics, para_lines)
+    (eff_all, metrics, para_lines, spacings)
 }
 
 /// DOCX 原始位元組 → 分頁輸入束（逐欄移植 engine `from_docx_bytes` 的
@@ -235,7 +247,7 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         })
         .collect();
     // 級聯烘焙。
-    let (eff_all, metrics, para_lines) =
+    let (eff_all, metrics, para_lines, spacings) =
         cascade_paragraphs(&style_table, &doc.paragraphs, def_size, &widths);
     let grid_size_v: Vec<f32> = metrics.iter().map(|m| m.0).collect();
     // 段行高量化到文件帶尺（至少 1 帶；鉗上限＝分頁帶累加溢出護欄同款）。
@@ -281,10 +293,64 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         .collect();
     // 顯式分頁旗標（`w:pageBreakBefore`；br-page 走 breaks 通道，不一欄兩用）。
     let grid_break_v: Vec<bool> = doc.paragraphs.iter().map(|p| p.page_break).collect();
+    // 段距佔帶：與 engine-api `spacing_band_vectors` 同式——跨段累積餘數
+    // 量化（逐段 ceil 會過度擠壓）；K1-R：餘數鏈在**表格邊界斷開**
+    // （表格高度由表格幾何獨立計算，段落間距的垂直連續性在表格邊界中斷），
+    // 且**表格塊之前一段的段後距不另佔帶**（段落與表格之間的空白由表格
+    // 塊的前距承擔，不重複佔位）——與 engine-api 完全同式。
+    let (grid_before_v, grid_after_v) = {
+        let (doc_before, doc_after) = style_table.doc_spacing();
+        if doc_before.is_some() || doc_after.is_some() {
+            let mut before = Vec::with_capacity(spacings.len());
+            let mut after = Vec::with_capacity(spacings.len());
+            let line_h = params.line_h_pt();
+            if !line_h.is_finite() || line_h <= 0.0 {
+                before.resize(spacings.len(), 0);
+                after.resize(spacings.len(), 0);
+            } else {
+                let mut sp = spacings.clone();
+                let mut chain_breaks: Vec<usize> = Vec::new();
+                for bt in &doc.tables {
+                    let end = tables::table_para_end(&bt.table, bt.para_start).min(sp.len());
+                    chain_breaks.push(end);
+                    if let Some(prev) = bt.para_start.checked_sub(1) {
+                        if prev < sp.len() {
+                            sp[prev].1 = None;
+                        }
+                    }
+                }
+                let mut residual = 0.0f64;
+                for (i, (b, a)) in sp.iter().enumerate() {
+                    // 鏈段起點：餘數歸零（表格塊之後的第一段起算新鏈段）。
+                    if chain_breaks.contains(&i) {
+                        residual = 0.0;
+                    }
+                    let mut bands = [0u32; 2];
+                    for (k, pt) in [*b, *a].iter().enumerate() {
+                        let Some(v) = pt else { continue };
+                        if !v.is_finite() || *v <= 0.0 {
+                            continue;
+                        }
+                        let x = residual + (*v as f64 / line_h as f64);
+                        let n = x.floor();
+                        residual = x - n;
+                        bands[k] = (n.max(0.0) as u32).min(quire_layout::MAX_PAGE_BANDS);
+                    }
+                    before.push(bands[0]);
+                    after.push(bands[1]);
+                }
+            }
+            (before, after)
+        } else {
+            (vec![0; spacings.len()], vec![0; spacings.len()])
+        }
+    };
     let grid = ParaGrid {
         size_pt: grid_size_v.clone(),
         bands: grid_bands_v,
         break_before: grid_break_v,
+        before_bands: grid_before_v,
+        after_bands: grid_after_v,
     };
     Ok(DocInputs {
         texts,
@@ -296,6 +362,7 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         grid,
         para_line: para_lines,
         para_line_h: metrics.iter().map(|m| m.1).collect(),
+        spacings,
     })
 }
 
