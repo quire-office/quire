@@ -12,6 +12,7 @@
 mod diff;
 mod drawing;
 mod notes;
+mod numbering;
 mod rels;
 mod sectpr;
 mod styles;
@@ -38,6 +39,11 @@ pub use zip_struct::{Change, ZipBundle, ZipEntry, ZipError};
 pub use notes::{
     parse_note_settings, Note, NoteKind, NoteKind2, NoteNumberFormat, NotePos, NotePr, NoteRef,
     NoteRestart, NoteSettings, Notes,
+};
+
+pub use numbering::{
+    paragraph_numbering_from_parts, parse_numbering, parse_paragraph_numbering, AbstractNum, Level,
+    LevelOverride, MultiLevelType, NumInstance, NumberFormat, Numbering, NumberingRef,
 };
 
 use serde::{Deserialize, Serialize};
