@@ -91,7 +91,7 @@ pub struct Engine {
     note_anchors: Vec<footnotes::Anchor>,
     note_of_anchor: Vec<usize>,
     mark_styles: Vec<footnotes::MarkStyle>,
-    /// 尾註發射層（F3）：尾註**專屬頁**的逐頁條目＋正文錨點記號。
+    /// 尾註發射層（F3／J1R）：正文末頁接排條目＋純尾註續頁＋正文錨點記號。
     /// 純讀取派生資料——存檔路徑完全不經此層（round-trip 零影響）。
     /// 文件無尾註 ⇒ `is_empty()`＝發射層零擾動快路徑。
     end: footnotes::EndLayout,
@@ -355,8 +355,9 @@ impl Engine {
     /// （≤`MAX_CONVERGE_ROUNDS`+1 輪）。**無註腳文件在快路徑直接返回**：
     /// entries/anchors 皆空 ⇒ 不進迴圈、params 與 layout 一個位元組不動。
     ///
-    /// 收斂定案後才排**尾註**（F3）：尾註是追加頁，必須知道正文分頁的
-    /// 最終結果（正文頁數、末節幾何）才能排——順序不可調換。
+    /// 收斂定案後才排**尾註**（F3／J1R）：尾註接排正文末頁、溢出才追加續頁，
+    /// 必須知道正文分頁的最終結果（正文頁數、末頁剩餘空間、末節幾何）才能排
+    /// ——順序不可調換。
     fn with_footnotes(mut self) -> Self {
         self.recompute_notes();
         self
@@ -365,7 +366,7 @@ impl Engine {
     /// 註腳＋尾註重算（開檔與編輯後同一路徑）。
     ///
     /// 順序：先讓頁底註腳收斂定案（它會動正文分頁），再用定案後的版面
-    /// 排尾註（尾註只追加頁，不回頭動正文）。
+    /// 排尾註（尾註只接排末頁／追加續頁，不回頭動正文分頁）。
     fn recompute_notes(&mut self) {
         self.compute_footnotes();
         self.compute_endnotes();
@@ -396,6 +397,8 @@ impl Engine {
         for round in 1..=max_rounds {
             let mut p = self.params.clone();
             p.footnote_reserves_pt = applied.clone();
+            // 尾註預留由 compute_endnotes 另行收斂；此處先清，避免舊值干擾註腳分頁。
+            p.endnote_reserves_pt = Vec::new();
             self.params = p.clone();
             self.layout.update_params(p);
             // lay.reserves＝本輪版面下「下一輪該套」的計算預留（純由排布算出）。
@@ -644,27 +647,35 @@ impl Engine {
 
     // ---------------- 尾註層（F3）----------------
 
-    /// 尾註支路：正文分頁**定案後**排尾註專屬頁。
+    /// 尾註支路（J1R）：正文分頁**定案後**，把尾註接排到正文末頁底部；
+    /// 末頁剩餘空間裝不下才溢出到純尾註續頁。
     ///
     /// 幾何契約（PM 定案，照做）：
-    /// 1. 尾註**只追加頁**：正文每頁的內容與分頁斷點與無尾註時逐位元組
-    ///    相同——本函式完全不動 `params`／`layout`（尾註不預留、不擠正文；
-    ///    這正是它與頁底註腳的根本差異）。
-    /// 2. 尾註頁幾何＝**末節**（正文末頁的 section）。
-    /// 3. 首頁頂部有分隔線（版心左緣起、寬＝版心×1/3、y＝margin_top），
-    ///    條目區自分隔線佔帶之後起；續頁頂部畫續接線（置中短線，
-    ///    `continuationSeparator` 語義；F3b）。
-    /// 4. 條目整條不跨頁：一條裝不下就整條去下一頁。
+    /// 1. **正文零位移**：本函式完全不動 `params`／`layout`；接排只用末頁
+    ///    既有內容之後的剩餘空白（不預留、不擠正文——與頁底註腳相反）。
+    /// 2. 接排與續頁幾何＝**末節**（正文末頁的 section）。
+    /// 3. 接排分隔線在末頁內容之後（版心左緣起、寬＝版心×1/3），條目在其
+    ///    下；續頁頂部畫續接線（置中短線，`continuationSeparator` 語義）。
+    /// 4. 條目整條不跨頁：一條裝不下就整條去續頁。
+    /// 5. `pos=sectEnd`／`pageEnd` **仍不消費**（維持 `documentEnd`），
+    ///    分隔線註本體圖形**不解析不渲染**（僅畫幾何短線）。
     ///
     /// **無尾註檔在快路徑直接返回**：`end` 保持空 ⇒ 頁數不變、顯示列表
     /// 逐位元組不變（構造性零擾動）。
     fn compute_endnotes(&mut self) {
         self.end = footnotes::EndLayout::default();
         if self.end_note_entries.is_empty() || self.end_note_anchors.is_empty() {
-            return; // 零擾動快路徑（無尾註，或尾註全未被引用）。
+            // 零擾動快路徑（無尾註，或尾註全未被引用）：清掉上一輪可能留下的
+            // 尾註預留，讓分頁回到無尾註現況（編輯刪光尾註時走此路）。
+            if !self.params.endnote_reserves_pt.is_empty() {
+                let mut p = self.params.clone();
+                p.endnote_reserves_pt = Vec::new();
+                self.params = p.clone();
+                self.layout.update_params(p);
+            }
+            return;
         }
-        let pages = self.layout.pages();
-        if pages.is_empty() {
+        if self.layout.pages().is_empty() {
             return;
         }
         let Some(geo) = self.end_geo() else {
@@ -672,30 +683,134 @@ impl Engine {
         };
         let band = self.params.line_h_pt();
         let content_w = self.end_content_w_pt();
-        // 容量：末節全容量（**無頁底預留**——尾註不擠正文）減首頁分隔線佔帶。
+        // 全容量（無頁底註腳／無尾註預留）：版心底與容量以此折算，預留不動「底」。
         let mut full = self.params.clone();
         full.footnote_reserve_pt = 0.0;
         full.footnote_reserves_pt = Vec::new();
-        let cap = section_capacity(&full, &geo, 0);
+        full.endnote_reserves_pt = Vec::new();
         let sep_bands = footnotes::endnote_sep_bands(band) as usize;
-        let spec = footnotes::EndGeometry {
-            band_pt: band,
-            content_w_pt: content_w,
-            capacity_first: cap.saturating_sub(sep_bands).max(1),
-            capacity_rest: cap.max(1),
-        };
-        // 逐頁版面事實（記號座標用；口徑與頁底註腳支路同款）。
-        let info = self.page_infos(&full);
-        self.end = footnotes::layout_endnotes(
-            pages,
-            &info,
-            &self.end_note_anchors,
-            &self.end_note_entries,
-            &self.end_note_of_anchor,
-            self.params.font_size_pt,
-            &self.end_mark_styles,
-            &spec,
-        );
+        // J1-fix：比照 F2c——「排一輪算出下輪該套的尾註預留」迭代至穩定。
+        // 預留＝分隔線佔帶＋實際接排條目帶數；餵回分頁後正文超過末頁容量
+        // 時**如實溢出多一頁**（不為頁數硬壓）。接排區頂由保留帶推得：
+        // content_bottom 往上扣「頁底註腳區＋尾註保留帶」。
+        let max_rounds = quire_layout::MAX_CONVERGE_ROUNDS;
+        let mut applied: Vec<f32> = Vec::new();
+        for _round in 1..=max_rounds {
+            let mut p = self.params.clone();
+            p.endnote_reserves_pt = applied.clone();
+            self.params = p.clone();
+            self.layout.update_params(p);
+            let pages = self.layout.pages();
+            if pages.is_empty() {
+                self.end = footnotes::EndLayout::default();
+                return;
+            }
+            let last_page = pages.len() - 1;
+            let cap = section_capacity(&full, &geo, pages[last_page].index);
+            // 正文末頁已用帶（body-only；呼叫端再扣頁底註腳與分隔線）。
+            let used = self.last_body_used_bands(&pages[last_page], &geo, band);
+            let foot_bands = self
+                .foot
+                .pages
+                .get(last_page)
+                .map(|p| p.reserve_bands)
+                .unwrap_or(0) as usize;
+            let avail = cap.saturating_sub(used).saturating_sub(foot_bands);
+            // 首輪以「整頁可用」估接排容量（不先扣正文佔用）：尾註區是
+            // 文件末尾的整塊內容，先算出它需要的保留帶再餵回分頁；正文若
+            // 因而超過末頁容量，就**如實溢出**到下一頁（比照 F2c 的
+            // reserve→重排語義）。次輪起改用實際末頁剩餘空間修正。
+            let inline_capacity = if applied.is_empty() {
+                cap.saturating_sub(foot_bands).saturating_sub(sep_bands)
+            } else {
+                avail.saturating_sub(sep_bands)
+            };
+            let spec = footnotes::EndGeometry {
+                band_pt: band,
+                content_w_pt: content_w,
+                capacity_first: cap.saturating_sub(sep_bands).max(1),
+                capacity_rest: cap.max(1),
+                inline_capacity,
+                // 先給 0；條目帶數定案後再依保留帶重算（見下）。
+                inline_top_y: 0.0,
+            };
+            // 逐頁版面事實（記號座標用；口徑與頁底註腳支路同款）。
+            let info = self.page_infos(&full);
+            let mut lay = footnotes::layout_endnotes(
+                pages,
+                &info,
+                &self.end_note_anchors,
+                &self.end_note_entries,
+                &self.end_note_of_anchor,
+                self.params.font_size_pt,
+                &self.end_mark_styles,
+                &spec,
+            );
+            let inline_bands: u32 = lay.inline.iter().map(|i| i.bands.max(1)).sum();
+            let content_bottom = geo.margin_top_pt + cap as f32 * band;
+            let inline_top_y = content_bottom - (foot_bands as f32 + inline_bands as f32) * band;
+            lay.inline_top_y = (!lay.inline.is_empty()).then_some(inline_top_y);
+            // 下一輪該套的預留（接排區＝分隔線＋條目帶）。
+            let next_bands = if lay.inline.is_empty() {
+                0
+            } else {
+                sep_bands as u32 + inline_bands
+            };
+            // 保留先前各輪已套用的預留（它們是造成／維持正文溢出的因），
+            // 只更新本輪末頁；頁數增長時補 0 後再寫入新末頁。單調累積
+            // （頁數不回頭）⇒ 溢出案例也能收斂，不會在「末頁搬到新頁」間震盪。
+            let mut next = applied.clone();
+            next.resize(pages.len(), 0.0);
+            next[last_page] = next_bands as f32 * band;
+            next.truncate(pages.len());
+            let stable = footnotes::reserves_stable(&next, &applied);
+            self.end = lay;
+            if stable {
+                // 定案：把「計算值」寫回 params（與顯示同一份），分頁不變。
+                let mut p = self.params.clone();
+                p.endnote_reserves_pt = next;
+                self.params = p.clone();
+                self.layout.update_params(p);
+                return;
+            }
+            applied = next;
+        }
+        // 輪數用盡仍震盪（罕見）：保留最後一輪的排布與實際套用的預留。
+    }
+
+    /// J1R：正文末頁已佔用的行網格帶數（供尾註接排找剩餘空白）。
+    ///
+    /// 取各行 `line_bands`、表格切片帶、行內／浮動圖片底緣的最大值。
+    /// 帶尺與 page 的節幾何同尺；呼叫端再扣頁底註腳預留。夾在 `capacity`
+    /// 內（病態幾何不讓接排容量變成負值）。
+    fn last_body_used_bands(&self, p: &Page, geo: &SectionGeometry, band: f32) -> usize {
+        let band = band.max(1.0);
+        // 全容量（清空頁底註腳預留）：呼叫端再自行扣掉該頁註腳區，
+        // 避免 `section_capacity` 與呼叫端重複扣同一塊。
+        let mut full = self.params.clone();
+        full.footnote_reserve_pt = 0.0;
+        full.footnote_reserves_pt = Vec::new();
+        full.endnote_reserves_pt = Vec::new();
+        let cap = section_capacity(&full, geo, p.index);
+        let mut used = 0u32;
+        for i in 0..p.lines.len() {
+            let b = p.line_bands.get(i).copied().unwrap_or(i as u32);
+            used = used.max(b.saturating_add(1));
+        }
+        for tp in &p.tables {
+            let h: f32 = tp.frag.rows.iter().map(|r| r.height_pt).sum();
+            let bands = (h / band).ceil().max(1.0) as u32;
+            used = used.max(tp.band.saturating_add(bands));
+        }
+        for im in &p.images {
+            let bands = (im.h_pt / band).ceil().max(1.0) as u32;
+            used = used.max(im.band.saturating_add(bands));
+        }
+        for fm in &p.floating_images {
+            let bands = ((fm.y_pt + fm.h_pt - geo.margin_top_pt).max(0.0) / band).ceil() as u32;
+            used = used.max(bands);
+        }
+        (used as usize).min(cap)
     }
 
     /// 尾註頁的頁面幾何＝**末節**（正文末頁的 section）。
@@ -785,20 +900,21 @@ impl Engine {
         serde_json::to_string_pretty(&self.end).unwrap_or_else(|_| "{}".to_string())
     }
 
-    /// 尾註頁數（追加在正文之後的頁數；無尾註＝0）。
+    /// 純尾註續頁數（接排裝不下而追加在正文之後；無續頁＝0）。
+    /// 接排進正文末頁的條目**不另計頁**。
     pub fn endnote_page_count(&self) -> usize {
         self.end.pages.len()
     }
 
-    /// 正文頁數（不含尾註頁；尾註是追加頁，不動正文分頁）。
+    /// 正文頁數（不含純尾註續頁；接排不動正文分頁）。
     pub fn body_page_count(&self) -> usize {
         self.layout.page_count()
     }
 
     /// 註腳渲染資料 JSON（驗收/除錯口；逐頁條目、保留帶、記號、輪數）。
     ///
-    /// **只含頁底註腳**。尾註是另一條支路、資料結構不同（追加頁、幾何取
-    /// 末節），故另開 [`Engine::endnotes_json`] 出口——兩者不混在一份 JSON
+    /// **只含頁底註腳**。尾註是另一條支路、資料結構不同（接排末頁＋溢出
+    /// 續頁、幾何取末節），故另開 [`Engine::endnotes_json`] 出口——兩者不混在一份 JSON
     /// 裡（混了會讓「哪個頁的哪條註」無從判讀）。
     pub fn footnotes_json(&self) -> String {
         serde_json::to_string_pretty(&self.foot).unwrap_or_else(|_| "{}".to_string())
@@ -942,10 +1058,91 @@ impl Engine {
             .collect()
     }
 
-    /// 尾註頁（追加頁）的顯示列表：頁首頁尾＋分隔線（僅首頁）＋條目文字。
+    /// 尾註條目文字發射（尾註頁與正文末頁接排共用；只有一份幾何算式）。
+    fn push_endnote_item_text(
+        &self,
+        out: &mut Vec<DrawItem>,
+        items: &[footnotes::NoteItem],
+        content_left: f32,
+        top0: f32,
+        band: f32,
+    ) {
+        let mut acc_bands = 0u32;
+        for item in items {
+            let mut yy = top0 + acc_bands as f32 * band;
+            for line in &item.lines {
+                for run in &line.runs {
+                    let y = if run.superscript {
+                        yy - band * footnotes::SUP_RISE
+                    } else {
+                        yy
+                    };
+                    let mut flags = 0u8;
+                    if run.bold {
+                        flags |= FLAG_BOLD;
+                    }
+                    if run.italic {
+                        flags |= FLAG_ITALIC;
+                    }
+                    if run.underline {
+                        flags |= FLAG_UNDERLINE;
+                    }
+                    if run.strike {
+                        flags |= FLAG_STRIKE;
+                    }
+                    out.push(DrawItem::Text {
+                        x: content_left + run.x_pt,
+                        y,
+                        size_pt: run.size_pt,
+                        flags,
+                        color_argb: run.color_argb,
+                        family: run.family.clone(),
+                        text: run.text.clone(),
+                    });
+                }
+                yy += item.line_h_pt;
+            }
+            acc_bands += item.bands;
+        }
+    }
+
+    /// J1R：正文末頁的尾註接排發射項（分隔線＋條目文字）。
     ///
-    /// `idx`＝尾註頁序（0 起；實體頁號＝正文頁數＋idx）。超出尾註頁數回
-    /// `None`（不越界 panic）。
+    /// 幾何由 [`footnotes::EndLayout::inline_top_y`] 決定（`compute_endnotes`
+    /// 已扣該頁正文與頁底註腳佔用）；分隔線固定在條目區上方
+    /// `endnote_sep_bands` 帶處，寬＝版心×1/3、版心左緣起。
+    fn endnote_inline_items(&self) -> Vec<DrawItem> {
+        if self.end.inline.is_empty() {
+            return Vec::new();
+        }
+        let Some(geo) = self.end_geo() else {
+            return Vec::new();
+        };
+        let Some(top0) = self.end.inline_top_y else {
+            return Vec::new();
+        };
+        let band = self.params.line_h_pt();
+        let content_w = self.end_content_w_pt();
+        let sep_y = top0 - footnotes::endnote_sep_bands(band) as f32 * band;
+        let (x1, x2) = footnotes::separator_span(geo.margin_left_pt, content_w);
+        let mut out = vec![DrawItem::Rule {
+            x1,
+            y1: sep_y,
+            x2,
+            y2: sep_y,
+            width_pt: 0.5,
+            color_argb: DEFAULT_TEXT_COLOR_ARGB,
+            dash: None,
+        }];
+        self.push_endnote_item_text(&mut out, &self.end.inline, geo.margin_left_pt, top0, band);
+        out
+    }
+
+    /// 純尾註續頁（接排裝不下的部分）的顯示列表：頁首頁尾＋續接線＋條目文字。
+    ///
+    /// `idx`＝續頁序（0 起；實體頁號＝正文頁數＋idx）。超出回 `None`。
+    /// 有接排區時所有續頁都是「續接線」（置中短線）；無接排區時第一頁仍是
+    /// 傳統左緣起分隔線（F3b 原口徑）。
     fn endnote_display_list(&self, idx: usize) -> Option<PageDisplayList> {
         let items = self.end.pages.get(idx)?;
         let geo = self.end_geo()?;
@@ -974,12 +1171,14 @@ impl Engine {
                 .unwrap_or(0),
         };
         self.push_header_footer_items(&mut out, &synth);
-        // 分隔線：版心左緣起、寬＝版心×1/3、y＝margin_top（僅首頁）。
+        // 分隔線：版心左緣起、寬＝版心×1/3、y＝margin_top（無接排區的首頁）。
         // F3b：續頁頂部改畫**續接線**（置中短線；Word continuationSeparator
         // 的排版語義）——同 F2c 頁底註腳的置中算式（不改 F2c 那段碼）。
+        // J1R：已有接排區 ⇒ 分隔線在正文末頁，續頁全部是續接線。
         if self.end.separator_top {
             let (x1, x2) = footnotes::separator_span(geo.margin_left_pt, content_w);
-            let (x1, x2) = if idx == 0 {
+            let continuation = !self.end.inline.is_empty() || idx > 0;
+            let (x1, x2) = if !continuation {
                 (x1, x2)
             } else {
                 // 續接線：分隔線跨度是「左緣起 × SEP_WIDTH_RATIO」，由此反推
@@ -1003,43 +1202,7 @@ impl Engine {
         }
         // 條目區：自分隔線佔帶之後起（margin_top ＋ 佔帶×帶尺）。
         let top0 = geo.margin_top_pt + footnotes::endnote_sep_bands(band) as f32 * band;
-        let mut acc_bands = 0u32;
-        for item in items {
-            let mut yy = top0 + acc_bands as f32 * band;
-            for line in &item.lines {
-                for run in &line.runs {
-                    let y = if run.superscript {
-                        yy - band * footnotes::SUP_RISE
-                    } else {
-                        yy
-                    };
-                    let mut flags = 0u8;
-                    if run.bold {
-                        flags |= FLAG_BOLD;
-                    }
-                    if run.italic {
-                        flags |= FLAG_ITALIC;
-                    }
-                    if run.underline {
-                        flags |= FLAG_UNDERLINE;
-                    }
-                    if run.strike {
-                        flags |= FLAG_STRIKE;
-                    }
-                    out.push(DrawItem::Text {
-                        x: geo.margin_left_pt + run.x_pt,
-                        y,
-                        size_pt: run.size_pt,
-                        flags,
-                        color_argb: run.color_argb,
-                        family: run.family.clone(),
-                        text: run.text.clone(),
-                    });
-                }
-                yy += item.line_h_pt;
-            }
-            acc_bands += item.bands;
-        }
+        self.push_endnote_item_text(&mut out, items, geo.margin_left_pt, top0, band);
         sort_display_items(&mut out);
         Some(PageDisplayList {
             page,
@@ -1049,7 +1212,7 @@ impl Engine {
         })
     }
 
-    /// 頁數＝**正文頁數 ＋ 尾註頁數**（尾註是追加頁）。
+    /// 頁數＝**正文頁數 ＋ 純尾註續頁數**（接排進正文末頁的部分不另計頁）。
     ///
     /// 無尾註檔 ⇒ 與改前逐位元組相同（尾註層的零擾動快路徑）。
     pub fn page_count(&self) -> usize {
@@ -1136,12 +1299,12 @@ impl Engine {
 
     /// 第 `page` 頁的顯示列表。
     ///
-    /// 頁碼域：**正文頁 0..body_page_count** ＋ **尾註頁 body_page_count..
-    /// page_count**（尾註是追加頁）。超出回 `None`（不越界 panic）。
+    /// 頁碼域：**正文頁 0..body_page_count**（末頁含尾註接排）＋
+    /// **純尾註續頁 body_page_count..page_count**。超出回 `None`。
     pub fn page_display_list(&self, page: usize) -> Option<PageDisplayList> {
         let body_pages = self.layout.page_count();
         if page >= body_pages {
-            // 尾註頁分支：正文發射碼原樣不動（尾註只追加頁）。
+            // 純尾註續頁分支：正文發射碼原樣不動（接排只加在正文末頁）。
             return self.endnote_display_list(page - body_pages);
         }
         let p: &Page = self.layout.pages().get(page)?;
@@ -1191,6 +1354,10 @@ impl Engine {
         // 尾註不預留、不擠正文——正文內容與分頁斷點與無尾註時逐位元組相同。
         if !self.end.is_empty() {
             items.extend(self.endnote_mark_items(page));
+        }
+        // J1R：尾註接排正文末頁（分隔線＋條目），不另計頁。
+        if page + 1 == body_pages && !self.end.inline.is_empty() {
+            items.extend(self.endnote_inline_items());
         }
         // 穩定排序：非文字項（填色/框線）同鍵保持原序且恆在前；文字項依基線 y
         // 再依 x 排列，讓「正文→表格→正文」的閱讀序與 PDF 抽取端一致。
@@ -1260,7 +1427,7 @@ impl Engine {
             }
         }
         // 編輯落地後重算註腳排布（錨點所在段/頁可能移位；F2b-2 收斂）
-        // 與尾註排布（F3 追加頁：正文頁數可能變，尾註頁要跟著重排）。
+        // 與尾註排布（F3／J1R：正文頁數／末頁剩餘空間可能變，要跟著重排）。
         self.recompute_notes();
         evs.into_iter().map(|ev| format!("{ev:?}")).collect()
     }
@@ -3130,10 +3297,9 @@ mod tests {
     /// corpus 回歸：reader-styles.docx（2 處 br-page＋3 sectPr）2 頁→3 頁，
     /// 第 3 頁以 br 後的「Images」段起頭（LO 3 頁對齊）。
     ///
-    /// 註（F3 尾註）：本檔正文確有一則尾註（`w:endnoteReference id=2`），
-    /// 尾註是**追加頁**——`page_count()` 依 F3 契約為「正文頁數＋尾註頁數」
-    /// ＝4，而與 LO 對齊的是**正文**的 3 頁。故本斷言改看 `body_page_count()`
-    /// （正文分頁斷點與 LO 逐位元組相同），並另斷言尾註頁已追加。
+    /// 註（F3／J1R 尾註）：本檔正文確有一則尾註（`w:endnoteReference id=2`），
+    /// J1R 起尾註**接排正文末頁**、不另計頁 ⇒ `page_count()` 與 LO 同為 3 頁
+    /// （正文分頁斷點仍與無尾註時逐位元組相同）。
     #[test]
     fn br_page_corpus_reader_styles_reaches_three_pages() {
         const RS: &[u8] = include_bytes!(
@@ -3147,10 +3313,14 @@ mod tests {
         );
         assert_eq!(
             engine.endnote_page_count(),
-            1,
-            "本檔一則尾註 ⇒ 追加一個尾註頁（F3 契約）"
+            0,
+            "J1R：本檔一則尾註接排正文末頁（LO 三頁）"
         );
-        assert_eq!(engine.page_count(), 4, "page_count ＝ 正文 3 ＋ 尾註 1");
+        assert_eq!(
+            engine.page_count(),
+            3,
+            "page_count ＝ 正文 3（尾註不另計頁）"
+        );
         let last: Vec<String> = engine.page_lines(2).expect("第 2 頁存在");
         assert!(
             last.iter().any(|l| l.contains("Images")),
@@ -4032,16 +4202,17 @@ mod tests {
     }
 
     /// 尾註條目編號前綴（`layout_entry` 的 superscript run，如 `i.`／`1.`）。
+    ///
+    /// J1R：接排正文末頁的條目（`inline`）在前，純尾註續頁依頁序在後——
+    /// 即尾註的閱讀序（＝編號序）。
     fn endnote_prefixes(engine: &Engine) -> Vec<String> {
         let end = engine.endnote_layout();
         let mut out = Vec::new();
-        for page in &end.pages {
-            for item in page {
-                for line in &item.lines {
-                    for run in &line.runs {
-                        if run.superscript {
-                            out.push(run.text.clone());
-                        }
+        for item in end.inline.iter().chain(end.pages.iter().flatten()) {
+            for line in &item.lines {
+                for run in &line.runs {
+                    if run.superscript {
+                        out.push(run.text.clone());
                     }
                 }
             }
@@ -4066,9 +4237,34 @@ mod tests {
         let mut full = engine.params.clone();
         full.footnote_reserve_pt = 0.0;
         full.footnote_reserves_pt = Vec::new();
+        full.endnote_reserves_pt = Vec::new();
         let cap = section_capacity(&full, &geo, 0);
         let sep = footnotes::endnote_sep_bands(band) as usize;
         (cap.saturating_sub(sep).max(1), cap.max(1))
+    }
+
+    /// J1R：正文末頁接排容量（帶）——與 `compute_endnotes` 同一算式。
+    fn endnote_inline_capacity_bands(engine: &Engine) -> usize {
+        let geo = engine.end_geo().expect("末節幾何");
+        let band = engine.params.line_h_pt();
+        let mut full = engine.params.clone();
+        full.footnote_reserve_pt = 0.0;
+        full.footnote_reserves_pt = Vec::new();
+        full.endnote_reserves_pt = Vec::new();
+        let last = engine.body_page_count() - 1;
+        let page = engine.layout.pages().get(last).expect("正文末頁");
+        let cap = section_capacity(&full, &geo, page.index);
+        let used = engine.last_body_used_bands(page, &geo, band);
+        let foot = engine
+            .foot
+            .pages
+            .get(last)
+            .map(|p| p.reserve_bands as usize)
+            .unwrap_or(0);
+        let sep = footnotes::endnote_sep_bands(band) as usize;
+        cap.saturating_sub(used)
+            .saturating_sub(foot)
+            .saturating_sub(sep)
     }
 
     /// 取顯示列表裡的全部文字（串接；空字串不計）。
@@ -4082,47 +4278,60 @@ mod tests {
             .collect()
     }
 
-    /// (a) HC031 實檔：末頁是**尾註頁**——含分隔線 Rule 與尾註文字
-    /// 「This is an endnote」（前導空白照級聯拍平結果斷言，不硬扣）。
+    /// (a) HC031 實檔（J1R 改寫）：尾註**接排正文末頁**——含分隔線 Rule 與
+    /// 尾註文字「This is an endnote」（前導空白照級聯拍平結果斷言，不硬扣）。
+    /// 意圖保留：尾註內容與分隔線仍必須出現在文件最後一頁；只是末頁不再是
+    /// 「獨立追加頁」，而是正文末頁本身。
     #[test]
-    fn hc031_last_page_is_endnote_page_with_separator_and_text() {
+    fn hc031_last_body_page_has_endnote_separator_and_text() {
         let engine = Engine::from_docx_bytes(HC031_ENDNOTE_DOC).expect("開啟 HC031 失敗");
-        assert_eq!(engine.endnote_page_count(), 1, "一則尾註 ⇒ 一個尾註頁");
+        assert_eq!(
+            engine.endnote_page_count(),
+            0,
+            "一則尾註接排正文末頁，不另開頁"
+        );
         let body = engine.body_page_count();
-        let dl = engine.page_display_list(body).expect("尾註頁必須存在");
-        assert_eq!(dl.page, body, "尾註頁是正文之後的追加頁");
-        // 分隔線：版心左緣起、寬＝版心×1/3、y＝margin_top（72pt）。
+        let dl = engine
+            .page_display_list(body - 1)
+            .expect("正文末頁必須存在");
+        assert_eq!(dl.page, body - 1, "尾註接排在正文末頁");
+        // 分隔線：版心左緣起、寬＝版心×1/3；y 在正文內容之後（不再是頁頂）。
         let sep = dl.items.iter().find_map(|it| match it {
             DrawItem::Rule { x1, y1, x2, y2, .. } => Some((*x1, *y1, *x2, *y2)),
             _ => None,
         });
-        let (x1, y1, x2, y2) = sep.expect("尾註頁必須有分隔線 Rule");
+        let (x1, y1, x2, y2) = sep.expect("正文末頁必須有尾註分隔線 Rule");
         assert_eq!(y1, y2, "分隔線是水平線");
-        assert!((y1 - 72.0).abs() < 0.6, "分隔線 y ＝ margin_top，實得 {y1}");
+        assert!(
+            y1 > engine.params.margin(MARGIN_TOP),
+            "分隔線在正文內容之後，實得 y={y1}"
+        );
         assert!((x1 - 72.0).abs() < 0.6, "分隔線自版心左緣起，實得 {x1}");
         assert!(x2 - x1 > 10.0, "分隔線寬為版心 1/3，不得為零");
-        // 尾註文字上頁。
+        // 尾註文字接排在末頁。
         let texts = display_texts(&dl);
         assert!(
             texts.iter().any(|t| t.contains("This is an endnote")),
-            "尾註文字必須發在尾註頁：{texts:?}"
+            "尾註文字必須接排正文末頁：{texts:?}"
         );
     }
 
-    /// (b) HC031：尾註**只追加頁**——正文頁數不變（`page_count` ＝ 正文 ＋ 尾註），
-    /// 且正文錨點記號「1」發在正文頁。
+    /// (b) HC031（J1R 改寫）：尾註接排正文末頁——正文頁數不變
+    /// （`page_count` ＝ 正文 ＋ 純尾註續頁），且正文錨點記號「1」發在正文頁。
     #[test]
-    fn hc031_endnote_appends_pages_without_shifting_body() {
+    fn hc031_endnote_joins_last_body_page_without_shifting_body() {
         let engine = Engine::from_docx_bytes(HC031_ENDNOTE_DOC).expect("開啟 HC031 失敗");
         let body = engine.body_page_count();
         assert_eq!(body, 8, "HC031 正文頁數固定（尾註不動正文）");
         assert_eq!(
             engine.page_count(),
             body + engine.endnote_page_count(),
-            "page_count ＝ 正文頁數 ＋ 尾註頁數"
+            "page_count ＝ 正文頁數 ＋ 純尾註續頁數"
         );
-        // 正文錨點記號：發在正文頁（不是尾註頁），編號自 1 起。
         let end = engine.endnote_layout();
+        assert_eq!(end.inline.len(), 1, "一則尾註接排正文末頁");
+        assert!(end.pages.is_empty(), "裝得下 ⇒ 無純尾註續頁");
+        // 正文錨點記號：發在正文頁（不是尾註頁），編號自 1 起。
         let mark_pages: Vec<usize> = end
             .marks
             .iter()
@@ -4165,21 +4374,30 @@ mod tests {
         );
     }
 
-    /// (d) 多條尾註（≥40）⇒ 尾註頁數 ≥2，且每頁條目帶數 ≤ 該頁容量。
+    /// (d) 多條尾註（40）⇒ 正文末頁接排一部分、其餘排到純尾註續頁；每頁
+    /// 條目帶數 ≤ 該頁容量（續頁頁數不寫死成 LO 常數）。
     #[test]
-    fn many_endnotes_flow_to_multiple_endnote_pages() {
+    fn many_endnotes_flow_to_inline_then_continuation_pages() {
         let engine = build_endnote_doc(40, "尾註內容。");
         let body = engine.body_page_count();
         let end = engine.endnote_layout();
+        assert!(!end.inline.is_empty(), "40 條尾註必須有部分接排正文末頁");
         assert!(
-            engine.endnote_page_count() >= 2,
-            "40 條尾註必須排到 ≥2 個尾註頁，實得 {}",
+            engine.endnote_page_count() >= 1,
+            "40 條尾註裝不下末頁 ⇒ 必須有純尾註續頁，實得 {}",
             engine.endnote_page_count()
         );
         assert_eq!(
-            end.pages.iter().map(|p| p.len()).sum::<usize>(),
+            end.inline.len() + end.pages.iter().map(|p| p.len()).sum::<usize>(),
             40,
-            "條目不得漏（每條尾註都要有落點）"
+            "條目不得漏（接排＋續頁都要有落點）"
+        );
+        // 接排容量：與 compute_endnotes 同一算式，接排帶數不得溢出。
+        let inline_used: u32 = end.inline.iter().map(|it| it.bands).sum();
+        let inline_cap = endnote_inline_capacity_bands(&engine);
+        assert!(
+            inline_used <= inline_cap as u32,
+            "正文末頁接排用了 {inline_used} 帶，容量 {inline_cap} 帶——不得溢出"
         );
         let (cap_first, cap_rest) = endnote_capacity_bands(&engine);
         for (i, page) in end.pages.iter().enumerate() {
@@ -4187,18 +4405,29 @@ mod tests {
             let used: u32 = page.iter().map(|it| it.bands).sum();
             assert!(
                 used <= limit as u32,
-                "第 {i} 個尾註頁用了 {used} 帶，容量 {limit} 帶——不得溢出"
+                "第 {i} 個續頁用了 {used} 帶，容量 {limit} 帶——不得溢出"
             );
         }
-        // 分隔線：首頁畫左緣起分隔線；續頁畫置中續接線（F3b，各恰好一條）。
+        // 分隔線：正文末頁畫左緣起分隔線；續頁畫置中續接線（各恰好一條）。
+        let last = engine
+            .page_display_list(body - 1)
+            .expect("正文末頁必須存在");
+        assert_eq!(
+            last.items
+                .iter()
+                .filter(|it| matches!(it, DrawItem::Rule { .. }))
+                .count(),
+            1,
+            "正文末頁接排區必須有恰好一條分隔線"
+        );
         for i in 0..engine.endnote_page_count() {
-            let dl = engine.page_display_list(body + i).expect("尾註頁必須存在");
+            let dl = engine.page_display_list(body + i).expect("續頁必須存在");
             let rules = dl
                 .items
                 .iter()
                 .filter(|it| matches!(it, DrawItem::Rule { .. }))
                 .count();
-            assert_eq!(rules, 1, "尾註第 {i} 頁必須有恰好一條分隔／續接線");
+            assert_eq!(rules, 1, "尾註續頁第 {i} 頁必須有恰好一條續接線");
         }
     }
 
@@ -4236,52 +4465,62 @@ mod tests {
         assert_eq!(pages, vec![vec![0]], "單條超容量 ⇒ 獨佔一頁");
     }
 
-    /// (g) RTL／中文尾註實檔：中文尾註文字上尾註頁、不 panic。
+    /// (g) RTL／中文尾註實檔（J1R 改寫）：中文尾註文字接排正文末頁、不 panic。
+    /// 意圖保留：尾註文字仍必須落在文件最後一頁（現在是最後正文頁）。
     #[test]
-    fn rtl_chinese_endnote_file_emits_text_on_endnote_page() {
+    fn rtl_chinese_endnote_file_emits_text_on_last_body_page() {
         let engine = Engine::from_docx_bytes(RTL_ENDNOTE_DOC).expect("開啟 arabic_rtl_notes 失敗");
-        assert_eq!(engine.endnote_page_count(), 1, "一則尾註 ⇒ 一個尾註頁");
+        assert_eq!(engine.endnote_page_count(), 0, "一則尾註接排正文末頁");
         let body = engine.body_page_count();
-        let dl = engine.page_display_list(body).expect("尾註頁必須存在");
+        let dl = engine
+            .page_display_list(body - 1)
+            .expect("正文末頁必須存在");
         let texts = display_texts(&dl);
         assert!(
             texts.iter().any(|t| t.contains("尾註一")),
-            "中文尾註文字必須上尾註頁：{texts:?}"
+            "中文尾註文字必須接排正文末頁：{texts:?}"
         );
     }
 
-    /// (h) POI 實檔（endnote id=2、separator 慣例 0/1）：尾註文字「XXX」上尾註頁。
+    /// (h) POI 實檔（J1R 改寫；endnote id=2、separator 慣例 0/1）：
+    /// 尾註文字「XXX」接排正文末頁。
     #[test]
-    fn poi_endnote_doc_emits_item_on_endnote_page() {
+    fn poi_endnote_doc_emits_item_on_last_body_page() {
         let engine = Engine::from_docx_bytes(POI_ENDNOTE_DOC).expect("開啟 POI endnotes 失敗");
-        assert_eq!(engine.endnote_page_count(), 1, "一則尾註 ⇒ 一個尾註頁");
+        assert_eq!(engine.endnote_page_count(), 0, "一則尾註接排正文末頁");
         let body = engine.body_page_count();
-        let dl = engine.page_display_list(body).expect("尾註頁必須存在");
+        let dl = engine
+            .page_display_list(body - 1)
+            .expect("正文末頁必須存在");
         let texts = display_texts(&dl);
         assert!(
             texts.iter().any(|t| t.contains("XXX")),
-            "尾註文字必須上尾註頁：{texts:?}"
+            "尾註文字必須接排正文末頁：{texts:?}"
         );
     }
 
-    /// (i) TextReplacer02 實檔：尾註文字「This is the endnote」上尾註頁。
+    /// (i) TextReplacer02 實檔（J1R 改寫）：尾註文字「This is the endnote」
+    /// 接排正文末頁。
     #[test]
-    fn text_replacer_endnote_doc_emits_item_on_endnote_page() {
+    fn text_replacer_endnote_doc_emits_item_on_last_body_page() {
         let engine = Engine::from_docx_bytes(TR02_ENDNOTE_DOC).expect("開啟 TextReplacer02 失敗");
-        assert_eq!(engine.endnote_page_count(), 1, "一則尾註 ⇒ 一個尾註頁");
+        assert_eq!(engine.endnote_page_count(), 0, "一則尾註接排正文末頁");
         let body = engine.body_page_count();
-        let dl = engine.page_display_list(body).expect("尾註頁必須存在");
+        let dl = engine
+            .page_display_list(body - 1)
+            .expect("正文末頁必須存在");
         let texts = display_texts(&dl);
         assert!(
             texts.iter().any(|t| t.contains("This is the endnote")),
-            "尾註文字必須上尾註頁：{texts:?}"
+            "尾註文字必須接排正文末頁：{texts:?}"
         );
     }
 
-    /// (j) 正文頁零位移（第一鐵律）：掛尾註與不掛尾註的**正文分頁斷點**
-    /// 逐位元組相同——尾註只追加頁，不擠正文（與頁底註腳的預留相反）。
+    /// (j) J1-fix 改寫：末頁**仍有餘裕**時，尾註預留不得位移正文分頁斷點
+    /// （單行正文＋少量尾註：reserve 遠小於末頁容量）。尾註預留若超過末頁
+    /// 容量，正文**如實溢出**多一頁（比照 F2c；見 (b)/(d) 的保留帶測試）。
     #[test]
-    fn endnote_does_not_shift_body_pagination() {
+    fn endnote_reserve_keeps_body_when_last_page_has_room() {
         let with_end = build_endnote_doc(3, "尾註內容。");
         let without_end = build_endnote_doc(0, "尾註內容。");
         assert_eq!(
@@ -4308,6 +4547,97 @@ mod tests {
         );
     }
 
+    /// J1R（紅燈）：reader-styles 實檔——尾註接排**正文末頁**（LO 3 頁）。
+    /// 修前我方把尾註放到獨立追加頁 ⇒ 4 頁。
+    #[test]
+    fn reader_styles_endnotes_join_last_body_page() {
+        const RS: &[u8] = include_bytes!(
+            "../../../corpus/phpword/tests_PhpWordTests__files_documents_reader-styles.docx"
+        );
+        let engine = Engine::from_docx_bytes(RS).expect("開啟 reader-styles.docx");
+        assert_eq!(engine.page_count(), 3, "LO 三頁：尾註接排正文末頁");
+        assert_eq!(engine.endnote_page_count(), 0, "裝得下 ⇒ 不應有純尾註續頁");
+        let last = engine.body_page_count() - 1;
+        let dl = engine.page_display_list(last).expect("正文末頁必須存在");
+        assert!(
+            dl.items
+                .iter()
+                .any(|it| matches!(it, DrawItem::Rule { .. })),
+            "正文末頁必須有尾註分隔線"
+        );
+        let texts = display_texts(&dl);
+        assert!(
+            texts.iter().any(|t| t.contains("End note")),
+            "正文末頁必須有尾註文字：{texts:?}"
+        );
+    }
+
+    /// J1R（紅燈）：POI 實檔——LO 1 頁（尾註接排正文末頁）。
+    #[test]
+    fn poi_endnotes_join_last_body_page() {
+        let engine = Engine::from_docx_bytes(POI_ENDNOTE_DOC).expect("開啟 POI endnotes 失敗");
+        assert_eq!(engine.page_count(), 1, "LO 一頁：尾註接排正文末頁");
+        assert_eq!(engine.endnote_page_count(), 0, "裝得下 ⇒ 不應有純尾註續頁");
+        let last = engine.body_page_count() - 1;
+        let dl = engine.page_display_list(last).expect("正文末頁必須存在");
+        assert!(
+            dl.items
+                .iter()
+                .any(|it| matches!(it, DrawItem::Rule { .. })),
+            "正文末頁必須有尾註分隔線"
+        );
+        let texts = display_texts(&dl);
+        assert!(
+            texts.iter().any(|t| t.contains("XXX")),
+            "正文末頁必須有尾註文字：{texts:?}"
+        );
+    }
+
+    /// J1R（紅燈）：單則短尾註接排正文末頁，不另開尾註頁。
+    #[test]
+    fn single_endnote_joins_last_body_page() {
+        let engine = build_endnote_doc(1, "尾註內容。");
+        assert_eq!(engine.endnote_page_count(), 0, "單則短尾註必須接排正文末頁");
+        let last = engine.body_page_count() - 1;
+        let dl = engine.page_display_list(last).expect("正文末頁必須存在");
+        let texts = display_texts(&dl);
+        assert!(
+            texts.iter().any(|t| t.contains("尾註內容。")),
+            "正文末頁必須有尾註文字：{texts:?}"
+        );
+    }
+
+    /// J1R（紅燈）：多條溢出——正文末頁接排一部分，其餘走純尾註續頁；
+    /// 續頁頁數不寫死（不得把 LO 頁數當常數）。
+    #[test]
+    fn many_endnotes_inline_then_continue_pages() {
+        let engine = build_endnote_doc(40, "尾註內容。");
+        let body = engine.body_page_count();
+        assert!(
+            engine.endnote_page_count() >= 1,
+            "40 條尾註必須有純尾註續頁，實得 {}",
+            engine.endnote_page_count()
+        );
+        let last = body - 1;
+        let dl = engine.page_display_list(last).expect("正文末頁必須存在");
+        let texts = display_texts(&dl);
+        assert!(
+            texts.iter().any(|t| t.contains("尾註內容。")),
+            "正文末頁必須接排至少一條尾註：{texts:?}"
+        );
+        assert!(
+            dl.items
+                .iter()
+                .any(|it| matches!(it, DrawItem::Rule { .. })),
+            "正文末頁尾註區必須有分隔線"
+        );
+        assert_eq!(
+            engine.page_count(),
+            body + engine.endnote_page_count(),
+            "page_count ＝正文頁＋純尾註續頁（接排部分不另計頁）"
+        );
+    }
+
     /// (l) 編輯面不觸尾註：尾註頁的 caret 命中回 None（編輯面只認正文頁）。
     #[test]
     fn caret_on_endnote_page_is_none() {
@@ -4323,10 +4653,11 @@ mod tests {
         );
     }
 
-    /// (m) 尾註頁幾何＝**末節**：兩節文件（第一節 Letter、第二節 A4）＋
-    /// 一則尾註 ⇒ 尾註頁必須是 A4（末節），不是第一節的 Letter。
+    /// (m) 尾註接排幾何＝**末節**（J1R 改寫）：兩節文件（第一節 Letter、
+    /// 第二節 A4）＋一則尾註 ⇒ 接排所在正文末頁必須是 A4（末節），不是
+    /// 第一節的 Letter。意圖保留：尾註永遠取末節紙張。
     #[test]
-    fn endnote_page_uses_last_section_geometry() {
+    fn endnote_inline_uses_last_section_geometry() {
         let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>
@@ -4344,19 +4675,22 @@ mod tests {
         base.set_part("word/endnotes.xml", notes.as_bytes().to_vec());
         let docx = base.save_docx().expect("存回 docx 失敗");
         let engine = Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗");
-        assert_eq!(engine.endnote_page_count(), 1, "一則尾註 ⇒ 一個尾註頁");
+        assert_eq!(engine.endnote_page_count(), 0, "一則尾註接排正文末頁");
         let body = engine.body_page_count();
         assert!(body >= 2, "兩節 ⇒ 正文至少兩頁");
-        let dl = engine.page_display_list(body).expect("尾註頁必須存在");
+        let dl = engine
+            .page_display_list(body - 1)
+            .expect("正文末頁必須存在");
+        assert_eq!(engine.endnote_layout().inline.len(), 1, "尾註接排末頁");
         // 末節＝A4（11906×16838 twips ＝ 595.3×841.9pt）；第一節是 Letter。
         assert!(
             (dl.width_pt - 595.3).abs() < 0.5,
-            "尾註頁必須用末節（A4）頁寬，實得 {}",
+            "尾註接排頁必須用末節（A4）頁寬，實得 {}",
             dl.width_pt
         );
         assert!(
             (dl.height_pt - 841.9).abs() < 0.5,
-            "尾註頁必須用末節（A4）頁高，實得 {}",
+            "尾註接排頁必須用末節（A4）頁高，實得 {}",
             dl.height_pt
         );
     }
@@ -4371,7 +4705,7 @@ mod tests {
             "../../../corpus/phpword/tests_PhpWordTests__files_documents_reader-styles.docx"
         );
         let engine = Engine::from_docx_bytes(RS).expect("開啟 reader-styles.docx");
-        assert_eq!(engine.endnote_page_count(), 1, "一則尾註 ⇒ 一個尾註頁");
+        assert_eq!(engine.endnote_page_count(), 0, "一則尾註接排正文末頁");
         // 記號（正文頁）：lowerRoman ⇒ i。
         let end = engine.endnote_layout();
         let marks: Vec<String> = end.marks.iter().flatten().map(|m| m.text.clone()).collect();
@@ -4397,11 +4731,11 @@ mod tests {
             "../../../corpus/xopt/OpenXmlPowerToolsExamples_DocumentBuilder04_Saturn.docx"
         );
         let engine = Engine::from_docx_bytes(SATURN).expect("開啟 Saturn.docx");
-        // pos=sectEnd 未消費 ⇒ 仍按 documentEnd 收在文件末頁（單一尾註頁）。
+        // pos=sectEnd 未消費 ⇒ 仍按 documentEnd 收在文件末頁（接排正文末頁）。
         assert_eq!(
             engine.endnote_page_count(),
-            1,
-            "pos 未消費 ⇒ 仍按 documentEnd 渲染"
+            0,
+            "pos 未消費 ⇒ 仍按 documentEnd 接排正文末頁"
         );
         let end = engine.endnote_layout();
         let marks: Vec<String> = end.marks.iter().flatten().map(|m| m.text.clone()).collect();
@@ -4417,39 +4751,48 @@ mod tests {
         );
     }
 
-    /// (F3b-3) 單頁尾註零變化：首頁有分隔線、無續頁（⇒ 不畫續接線）。
+    /// (F3b-3) 單則短尾註（J1R 改寫）：接排正文末頁有分隔線、無續頁
+    /// （⇒ 不畫續接線）。意圖保留：短尾註不得多佔一頁。
     #[test]
-    fn single_endnote_page_has_separator_no_continuation() {
+    fn single_endnote_inline_has_separator_no_continuation() {
         let engine = build_endnote_doc(1, "尾註內容。");
-        assert_eq!(engine.endnote_page_count(), 1, "一則短尾註 ⇒ 一個尾註頁");
+        assert_eq!(engine.endnote_page_count(), 0, "一則短尾註接排正文末頁");
         let body = engine.body_page_count();
-        let dl = engine.page_display_list(body).expect("尾註頁必須存在");
+        let dl = engine
+            .page_display_list(body - 1)
+            .expect("正文末頁必須存在");
         let rules = dl
             .items
             .iter()
             .filter(|it| matches!(it, DrawItem::Rule { .. }))
             .count();
-        assert_eq!(rules, 1, "首頁恰一條分隔線");
+        assert_eq!(rules, 1, "正文末頁接排區恰一條分隔線");
         assert!(
-            engine.page_display_list(body + 1).is_none(),
+            engine.page_display_list(body).is_none(),
             "無續頁（不得越界）"
         );
     }
 
-    /// (F3b-4) ≥2 尾註頁：續頁頂部畫**置中短線**（寬＝版心×1/3、y＝margin_top）。
+    /// (F3b-4) 有接排區時，溢出續頁頂部畫**置中短線**（寬＝版心×1/3、
+    /// y＝margin_top）；分隔線留在正文末頁（左緣起）。
     #[test]
     fn endnote_continuation_page_draws_centered_short_rule() {
-        let engine = build_endnote_doc(40, "尾註內容。");
+        // 120 條：確保接排區之後仍有溢出續頁（頁數不寫死）。
+        let engine = build_endnote_doc(120, "尾註內容。");
         let body = engine.body_page_count();
         assert!(
-            engine.endnote_page_count() >= 2,
-            "40 條尾註必須排到 ≥2 頁，實得 {}",
+            !engine.endnote_layout().inline.is_empty(),
+            "120 條尾註必須有部分接排正文末頁"
+        );
+        assert!(
+            engine.endnote_page_count() >= 1,
+            "120 條尾註必須有溢出續頁，實得 {}",
             engine.endnote_page_count()
         );
         let geo = engine.end_geo().expect("末節幾何");
         let content_w = engine.end_content_w_pt();
-        // 續頁（idx=1）的續接線。
-        let dl = engine.page_display_list(body + 1).expect("續頁必須存在");
+        // 第一個溢出續頁（有接排區 ⇒ 全部是置中續接線）。
+        let dl = engine.page_display_list(body).expect("續頁必須存在");
         let rule = dl
             .items
             .iter()
@@ -4475,8 +4818,10 @@ mod tests {
             (center - content_center).abs() < 1.0,
             "續接線必須置中於版心，實得 {center} vs {content_center}"
         );
-        // 首頁仍是左緣起分隔線（非置中）。
-        let dl0 = engine.page_display_list(body).expect("首頁必須存在");
+        // 接排區分隔線仍在正文末頁、左緣起（非置中），且在正文內容之後。
+        let dl0 = engine
+            .page_display_list(body - 1)
+            .expect("正文末頁必須存在");
         let sep = dl0
             .items
             .iter()
@@ -4484,11 +4829,16 @@ mod tests {
                 DrawItem::Rule { x1, y1, x2, y2, .. } => Some((*x1, *y1, *x2, *y2)),
                 _ => None,
             })
-            .expect("首頁必須有分隔線 Rule");
+            .expect("正文末頁必須有接排分隔線 Rule");
         assert!(
             (sep.0 - geo.margin_left_pt).abs() < 0.6,
-            "首頁分隔線自版心左緣起，實得 {}",
+            "接排分隔線自版心左緣起，實得 {}",
             sep.0
+        );
+        assert!(
+            sep.1 > geo.margin_top_pt,
+            "接排分隔線在正文內容之後，實得 y={}",
+            sep.1
         );
     }
 
@@ -4869,6 +5219,242 @@ mod tests {
             all_pages_json(&engine),
             all_pages_json(&stripped),
             "十進位註腳 ⇒ 渲染必須與無設定逐位元組相同"
+        );
+    }
+
+    /// J1-fix（紅燈）：reader-styles 末頁——尾註接排區必須落在**保留帶**內
+    /// （由 content_bottom 往上堆、貼在頁底註腳區上方），且 y 單調不重疊。
+    #[test]
+    fn reader_styles_endnote_zone_sits_in_reserved_bands() {
+        const RS: &[u8] = include_bytes!(
+            "../../../corpus/phpword/tests_PhpWordTests__files_documents_reader-styles.docx"
+        );
+        let engine = Engine::from_docx_bytes(RS).expect("開啟 reader-styles.docx");
+        let geo = engine.end_geo().expect("末節幾何");
+        let band = engine.params.line_h_pt();
+        let body = engine.body_page_count();
+        let last = body - 1;
+        let page = engine.layout.pages().get(last).expect("正文末頁");
+        let mut full = engine.params.clone();
+        full.footnote_reserve_pt = 0.0;
+        full.footnote_reserves_pt = Vec::new();
+        full.endnote_reserves_pt = Vec::new();
+        let cap = section_capacity(&full, &geo, page.index);
+        let content_bottom = geo.margin_top_pt + cap as f32 * band;
+        let foot_pt = engine
+            .foot
+            .pages
+            .get(last)
+            .map(|p| p.reserve_pt)
+            .unwrap_or(0.0);
+        let inline_bands: u32 = engine.end.inline.iter().map(|i| i.bands.max(1)).sum();
+        let sep_bands = footnotes::endnote_sep_bands(band);
+        let reserve_pt = (sep_bands + inline_bands) as f32 * band;
+        let expected_sep_y = content_bottom - foot_pt - reserve_pt;
+        let dl = engine.page_display_list(last).expect("正文末頁必須存在");
+        // 正文末行 y：取該頁行網格的最大帶（權威來源，不猜顯示列表）。
+        let body_y = page
+            .line_bands
+            .iter()
+            .copied()
+            .max()
+            .map(|b| page.margin_top_pt + b as f32 * band)
+            .expect("正文末頁必須有正文行");
+        let item_y = dl
+            .items
+            .iter()
+            .find_map(|it| match it {
+                DrawItem::Text { text, y, .. } if text == "End note" => Some(*y),
+                _ => None,
+            })
+            .expect("尾註條目文字必須存在");
+        // 尾註分隔線＝正文與條目之間那條 Rule（最靠下者）。
+        let sep_y = dl
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                DrawItem::Rule { y1, .. } if *y1 > body_y && *y1 < item_y => Some(*y1),
+                _ => None,
+            })
+            .fold(f32::MIN, f32::max);
+        let footer_y = dl
+            .items
+            .iter()
+            .find_map(|it| match it {
+                DrawItem::Text { text, y, .. } if text.starts_with("Page ") => Some(*y),
+                _ => None,
+            })
+            .expect("頁尾欄位必須存在");
+        assert!(
+            body_y < sep_y && sep_y < item_y && item_y < footer_y,
+            "y 必須單調（正文 {body_y} < 分隔線 {sep_y} < 條目 {item_y} < 頁尾 {footer_y}）"
+        );
+        assert!(
+            (sep_y - expected_sep_y).abs() <= band,
+            "尾註分隔線必須由保留帶推得：期望 {expected_sep_y}，實得 {sep_y}"
+        );
+    }
+
+    /// J1-fix (b)：尾註 reserve > 0 且與顯示幾何同一份（`reserves_stable` 語義）。
+    #[test]
+    fn endnote_reserve_is_positive_and_converged() {
+        const RS: &[u8] = include_bytes!(
+            "../../../corpus/phpword/tests_PhpWordTests__files_documents_reader-styles.docx"
+        );
+        let engine = Engine::from_docx_bytes(RS).expect("開啟 reader-styles.docx");
+        let band = engine.params.line_h_pt();
+        let last = engine.body_page_count() - 1;
+        let inline_bands: u32 = engine.end.inline.iter().map(|i| i.bands.max(1)).sum();
+        let expected = (footnotes::endnote_sep_bands(band) + inline_bands) as f32 * band;
+        let applied = engine
+            .params
+            .endnote_reserves_pt
+            .get(last)
+            .copied()
+            .unwrap_or(0.0);
+        assert!(applied > 0.0, "末頁尾註接排預留必須 > 0，實得 {applied}");
+        assert!(
+            (applied - expected).abs() < 0.01,
+            "預留須等於（分隔線＋接排條目）帶高：期望 {expected}，實得 {applied}"
+        );
+        // 收斂語義：把同值重算一輪，預留向量等價（不再變動）。
+        let mut recomputed = vec![0.0; last + 1];
+        recomputed[last] = expected;
+        assert!(
+            footnotes::reserves_stable(&engine.params.endnote_reserves_pt, &recomputed),
+            "尾註預留必須收斂（{:?} vs {:?}）",
+            engine.params.endnote_reserves_pt,
+            recomputed
+        );
+    }
+
+    /// J1-fix (c)：無尾註檔零擾動——尾註預留表為空、尾註層全空、頁數不變。
+    #[test]
+    fn no_endnote_docs_keep_empty_endnote_reserve() {
+        const XOPT_NO_NOTES: &[u8] =
+            include_bytes!("../../../corpus/xopt/TestFiles_WC_WC049-Text-Box-in-Cell.docx");
+        const POI_FOOT_ONLY: &[u8] =
+            include_bytes!("../../../corpus/poi/test-data_document_footnotes.docx");
+        for (name, bytes) in [
+            ("xopt/WC049", XOPT_NO_NOTES),
+            ("poi/footnotes", POI_FOOT_ONLY),
+        ] {
+            let engine = Engine::from_docx_bytes(bytes).expect("開啟對照檔");
+            assert!(
+                engine.params.endnote_reserves_pt.is_empty(),
+                "{name}：無尾註 ⇒ 尾註預留表必須為空"
+            );
+            assert!(
+                engine.endnote_layout().is_empty(),
+                "{name}：無尾註 ⇒ 尾註層必須全空"
+            );
+            assert_eq!(
+                engine.page_count(),
+                engine.body_page_count(),
+                "{name}：無尾註 ⇒ 頁數與正文頁數相同"
+            );
+        }
+    }
+
+    /// J1-fix (d)：多條溢出——接排帶裝滿後，續頁存在且**續接線在頁頂**
+    /// （置中短線）；接排區仍貼保留帶、與正文不重疊。
+    #[test]
+    fn endnote_inline_full_then_continuation_rule_at_page_top() {
+        let engine = build_endnote_doc(40, "尾註內容。");
+        let geo = engine.end_geo().expect("末節幾何");
+        let band = engine.params.line_h_pt();
+        assert!(
+            engine.endnote_page_count() >= 1,
+            "接排帶裝滿 ⇒ 必須有純尾註續頁"
+        );
+        assert!(!engine.end.inline.is_empty(), "末頁必須有接排條目");
+        let body = engine.body_page_count();
+        let last = body - 1;
+        let sep_bands = footnotes::endnote_sep_bands(band);
+        let inline_bands: u32 = engine.end.inline.iter().map(|i| i.bands.max(1)).sum();
+        let applied = engine
+            .params
+            .endnote_reserves_pt
+            .get(last)
+            .copied()
+            .unwrap_or(0.0);
+        assert!(
+            applied >= (sep_bands + inline_bands) as f32 * band - 0.01,
+            "接排保留帶不得小於（分隔線＋條目）帶高：{applied}"
+        );
+        // 續頁第 0 頁：續接線在頁頂（y＝margin_top），且置中（不從版心左緣起）。
+        let dl = engine.page_display_list(body).expect("純尾註續頁必須存在");
+        let rule = dl.items.iter().find_map(|it| match it {
+            DrawItem::Rule { x1, y1, .. } => Some((*x1, *y1)),
+            _ => None,
+        });
+        let (x1, y1) = rule.expect("續頁必須有續接線");
+        assert!(
+            (y1 - geo.margin_top_pt).abs() < 0.01,
+            "續接線必須在頁頂（margin_top={}），實得 {y1}",
+            geo.margin_top_pt
+        );
+        assert!(
+            x1 > geo.margin_left_pt,
+            "續接線必須置中（不得自版心左緣起），實得 x1={x1}"
+        );
+    }
+
+    /// J1-fix：末頁正文帶數超過「容量 − 尾註保留帶」時，正文**如實溢出**
+    /// 多一頁（比照 F2c）；尾註接排落新末頁，不與正文重疊。
+    #[test]
+    fn endnote_reserve_pushes_body_to_extra_page_when_last_page_is_full() {
+        // SAMPLE 幾何（A4、1 吋邊界、12pt×1.4）一頁容量 41 帶。
+        let mut paras = String::new();
+        for i in 0..40 {
+            paras.push_str(&format!(r#"<w:p><w:r><w:t>正文行 {i}</w:t></w:r></w:p>"#));
+        }
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>{paras}<w:p><w:r><w:t>末行</w:t></w:r><w:r><w:endnoteReference w:id="1"/></w:r></w:p></w:body>
+</w:document>"#
+        );
+        let notes = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:endnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:endnote w:id="1"><w:p><w:r><w:t xml:space="preserve">尾註內容。</w:t></w:r></w:p></w:endnote>
+</w:endnotes>"#;
+        let mut base = Engine::from_docx_bytes(SAMPLE).expect("開啟 sample.docx 失敗");
+        base.set_part("word/document.xml", xml.into_bytes());
+        base.set_part("word/endnotes.xml", notes.as_bytes().to_vec());
+        let docx = base.save_docx().expect("存回 docx 失敗");
+        let engine = Engine::from_docx_bytes(&docx).expect("開啟測試 docx 失敗");
+        let body = engine.body_page_count();
+        assert_eq!(
+            body, 2,
+            "正文 41 行＋尾註保留帶超過單頁容量 ⇒ 必須如實溢出為 2 頁，實得 {body}"
+        );
+        assert_eq!(engine.endnote_page_count(), 0, "一條短尾註接排新末頁");
+        assert!(!engine.end.inline.is_empty(), "尾註必須接排正文末頁");
+        let reserve = engine.params.endnote_reserves_pt.iter().sum::<f32>();
+        assert!(reserve > 0.0, "溢出案例也必須留下尾註預留，實得 {reserve}");
+        // 正文末頁（新頁）幾何：尾註分隔線在正文之後、頁尾之上。
+        let last = body - 1;
+        let dl = engine.page_display_list(last).expect("正文末頁必須存在");
+        let sep_y = dl
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                DrawItem::Rule { y1, .. } => Some(*y1),
+                _ => None,
+            })
+            .fold(f32::MIN, f32::max);
+        let item_y = dl
+            .items
+            .iter()
+            .find_map(|it| match it {
+                DrawItem::Text { text, y, .. } if text == "尾註內容。" => Some(*y),
+                _ => None,
+            })
+            .expect("尾註條目文字必須存在");
+        assert!(
+            item_y > sep_y,
+            "尾註條目必須在分隔線之下：分隔線 {sep_y}、條目 {item_y}"
         );
     }
 }
