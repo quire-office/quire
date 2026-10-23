@@ -26,6 +26,7 @@ import sys
 import tempfile
 import time
 import pathlib
+from collections import Counter
 
 try:
     import pymupdf
@@ -143,18 +144,24 @@ def _w2w(linux_path: pathlib.Path) -> str:
 
 
 def pdf_page_facts(pdf: pathlib.Path) -> list[dict]:
-    """PDF 每頁：文字行（幾何順序）、行數、頁尺寸（pt）、文字 span 數。"""
+    """PDF 每頁：文字行（幾何順序）、行數、頁尺寸（pt）、文字 span 數、圖形實據。"""
     d = pymupdf.open(pdf)
     pages = []
     for p in d:
         lines = [norm(t) for t in str(p.get_text("text")).splitlines() if norm(t)]
         words = len(p.get_text("words"))
+        imgs = p.get_images(full=True)
         pages.append({
             "lines": lines,
             "line_count": len(lines),
             "words": words,
             "w_pt": round(p.rect.width, 1),
             "h_pt": round(p.rect.height, 1),
+            # 0/0 度量偽影判準：LO 該頁是否真的有非文字內容（向量圖／點陣圖）。
+            # image_xrefs 供區分「內文圖」與「逐頁重複的頁首／頁尾圖」。
+            "drawings": len(p.get_drawings()),
+            "images": len(imgs),
+            "image_xrefs": [im[0] for im in imgs],
         })
     d.close()
     return pages
@@ -237,28 +244,61 @@ def compare(name: str, lo: list[dict], ow: dict) -> dict:
         "lo_pages": len(lo_pages),
         "ow_pages": len(ow_pages),
         "page_count_match": len(lo_pages) == len(ow_pages),
-        "content_scores": [],   # 內容相似度 0..1（忽略換行；分歧判定用這個）
-        "layout_scores": [],    # 版面相似度 0..1（含換行位置；僅供觀察）
+        "content_scores": [],   # 內容相似度 0..1（忽略換行；分歧判定用這個）；None＝量測不可比
+        "layout_scores": [],    # 版面相似度 0..1（含換行位置；僅供觀察）；None＝量測不可比
         "first_divergence": None,
         "notes": [],
+        "measurement_artifacts": [],  # 0/0 偽影頁的 LO 圖形實據（逐頁）
     }
+    # 跨頁重複出現的圖片＝頁首／頁尾浮水印或裝飾圖（非該頁真正內容）。
+    xref_pages = Counter(x for pg in lo_pages for x in (pg.get("image_xrefs") or []))
     n = max(len(lo_pages), len(ow_pages))
     for i in range(n):
-        a_lines = lo_pages[i]["lines"] if i < len(lo_pages) else []
+        lo_pg = lo_pages[i] if i < len(lo_pages) else None
+        a_lines = lo_pg["lines"] if lo_pg else []
         b_lines = ow_pages[i]["lines"] if i < len(ow_pages) else []
         ca, cb = content_key(a_lines), content_key(b_lines)
         la, lb = layout_key(a_lines), layout_key(b_lines)
-        # autojunk=False：SequenceMatcher 預設對長字串把常見 2-char 塊當「垃圾」
-        # 剔除，頁面文字一長就崩（HC031 p1 實測 legacy=0.008、關掉=0.655）。
-        # 這是 0.007 假分歧的真正元兇，比換行/大小寫都是主因。
-        cs = difflib.SequenceMatcher(None, ca, cb, autojunk=False).ratio() if (ca or cb) else 0.0
-        ls = difflib.SequenceMatcher(None, la, lb, autojunk=False).ratio() if (la or lb) else 0.0
-        row["content_scores"].append(round(cs, 3))
-        row["layout_scores"].append(round(ls, 3))
-        if cs < 0.6 and row["first_divergence"] is None:
+        if not ca and not cb:
+            drawings = (lo_pg or {}).get("drawings", 0)
+            images = (lo_pg or {}).get("images", 0)
+            # 只有「內文型」圖形才算偽影實據：向量 drawing，或不吃重複頁首/頁尾的點陣圖。
+            unique_images = sum(1 for x in ((lo_pg or {}).get("image_xrefs") or [])
+                                if xref_pages[x] == 1)
+            if drawings or unique_images:
+                # LO 該頁只剩圖形（VML pict／填色框／空矩形），雙方都抽不到文字：
+                # 0/0 不是「全錯」，是量測不可比——記 None，不進平均、不算分歧。
+                cs = ls = None
+                note = "measurement_artifact:LO有圖形無可抽文字"
+                if note not in row["notes"]:
+                    row["notes"].append(note)
+                row["measurement_artifacts"].append({
+                    "page": i,
+                    "drawings": drawings,
+                    "images": images,
+                    "unique_images": unique_images,
+                })
+            else:
+                # 兩邊皆空且 LO 只剩重複的頁首/頁尾圖（或無圖形）＝我方少了
+                # LO 的真內容（如 n751077 p2 我方多出的空白頁），仍記 0.0 真事故。
+                cs = ls = 0.0
+                if "empty_page_mismatch" not in row["notes"]:
+                    row["notes"].append("empty_page_mismatch")
+                if row["first_divergence"] is None:
+                    row["first_divergence"] = i
+        else:
+            # autojunk=False：SequenceMatcher 預設對長字串把常見 2-char 塊當「垃圾」
+            # 剔除，頁面文字一長就崩（HC031 p1 實測 legacy=0.008、關掉=0.655）。
+            # 這是 0.007 假分歧的真正元兇，比換行/大小寫都是主因。
+            # 單邊有字、另一邊空＝真事故（如 n751077 p2），ratio=0.0 照舊。
+            cs = difflib.SequenceMatcher(None, ca, cb, autojunk=False).ratio() if (ca or cb) else 0.0
+            ls = difflib.SequenceMatcher(None, la, lb, autojunk=False).ratio() if (la or lb) else 0.0
+        row["content_scores"].append(None if cs is None else round(cs, 3))
+        row["layout_scores"].append(None if ls is None else round(ls, 3))
+        if cs is not None and cs < 0.6 and row["first_divergence"] is None:
             row["first_divergence"] = i
         # 內容近同但版面分數低 ⇒ 主要是換行位置差，記 notes 不記分歧。
-        if cs >= 0.85 and ls < 0.5:
+        if cs is not None and ls is not None and cs >= 0.85 and ls < 0.5:
             row["notes"].append(f"第 {i + 1} 頁內容近同、僅換行位置不同")
     # 逐頁尺寸對照（Phase0-2b）：我方每頁尺寸如實取自檔案 sectPr（pagebreaks.json
     # 的 width_pt/height_pt），與 LO 逐頁比——只有真的不同才備註，不再拿固定
@@ -293,8 +333,8 @@ def render_report(rows: list[dict], meta: dict, out_md: pathlib.Path) -> None:
         if r.get("status") == "lo_fail":
             lines.append(f"| {r['file']} | — | — | — | — | — | — | LO 轉換失敗/逾時 |")
             continue
-        cs = ", ".join(str(s) for s in r["content_scores"][:6])
-        ls = ", ".join(str(s) for s in r["layout_scores"][:6])
+        cs = ", ".join("—" if s is None else str(s) for s in r["content_scores"][:6])
+        ls = ", ".join("—" if s is None else str(s) for s in r["layout_scores"][:6])
         div = "—" if r["first_divergence"] is None else f"第 {r['first_divergence'] + 1} 頁"
         note = "; ".join(r["notes"]) or "—"
         lines.append(
@@ -376,6 +416,58 @@ def selftest() -> int:
     r4 = compare("t4", [lo4], ow4)
     check("3b 符號佔位不分歧", r4["content_scores"][0] >= 0.95,
           f"content={r4['content_scores'][0]}")
+
+    # (4) 雙空頁且 LO 有圖形 ⇒ 量測偽影：分數 None、不記分歧、留圖形實據。
+    lo5 = {"lines": [], "drawings": 2, "images": 1, "w_pt": 612.0, "h_pt": 792.0}
+    ow5 = {"pages": [{"lines": []}],
+           "breaks": [{"width_pt": 612.0, "height_pt": 792.0}]}
+    r5 = compare("t5", [lo5], ow5)
+    check("4 雙空＋LO 有圖形＝None 偽影",
+          r5["content_scores"][0] is None and r5["layout_scores"][0] is None
+          and r5["first_divergence"] is None
+          and "measurement_artifact:LO有圖形無可抽文字" in r5["notes"]
+          and r5["measurement_artifacts"][0]["drawings"] == 2
+          and r5["measurement_artifacts"][0]["images"] == 1,
+          f"content={r5['content_scores'][0]} notes={r5['notes']}")
+
+    # (4b) 雙空且 LO 也無圖形 ⇒ 仍是 0.0 並標 empty_page_mismatch（不得放水）。
+    lo6 = {"lines": [], "drawings": 0, "images": 0, "w_pt": 612.0, "h_pt": 792.0}
+    ow6 = {"pages": [{"lines": []}],
+           "breaks": [{"width_pt": 612.0, "height_pt": 792.0}]}
+    r6 = compare("t6", [lo6], ow6)
+    check("4b 雙空且 LO 無圖形＝0.0 真事故",
+          r6["content_scores"][0] == 0.0 and r6["first_divergence"] == 0
+          and "empty_page_mismatch" in r6["notes"],
+          f"content={r6['content_scores'][0]} notes={r6['notes']}")
+
+    # (4c) 反向測試（n751077 p2 型）：LO 有文字、我方空 ⇒ 必須仍是 0.0，
+    #      artifact 邏輯只能修雙空偽影，不能把真缺陷修沒。
+    lo7 = {"lines": ["LO 這頁有真實文字內容", "第二行也是真實內容"],
+           "drawings": 3, "images": 2, "w_pt": 612.0, "h_pt": 792.0}
+    ow7 = {"pages": [{"lines": []}],
+           "breaks": [{"width_pt": 612.0, "height_pt": 792.0}]}
+    r7 = compare("t7", [lo7], ow7)
+    check("4c LO 有字我方空＝0.0（防過度修正）",
+          r7["content_scores"][0] == 0.0 and r7["first_divergence"] == 0
+          and not r7["measurement_artifacts"],
+          f"content={r7['content_scores'][0]} div={r7['first_divergence']}")
+
+    # (4d) n751077 p2 型（逐頁重複的頁首圖，非內文圖）：LO 該頁無文字、只有
+    #      重複圖片，我方空 ⇒ 仍必須是 0.0，不得因「有 image」而判偽影。
+    lo8 = [
+        {"lines": ["TEXT1", "TEXT2"], "drawings": 0, "images": 1,
+         "image_xrefs": [6], "w_pt": 612.0, "h_pt": 792.0},
+        {"lines": [], "drawings": 0, "images": 1,
+         "image_xrefs": [6], "w_pt": 612.0, "h_pt": 792.0},
+    ]
+    ow8 = {"pages": [{"lines": ["TEXT1", "TEXT2"]}, {"lines": []}],
+           "breaks": [{"width_pt": 612.0, "height_pt": 792.0},
+                      {"width_pt": 612.0, "height_pt": 792.0}]}
+    r8 = compare("t8", lo8, ow8)
+    check("4d 重複頁首圖頁仍 0.0（n751077 p2 防偽影放水）",
+          r8["content_scores"][1] == 0.0 and r8["content_scores"][0] == 1.0
+          and r8["first_divergence"] == 1 and not r8["measurement_artifacts"],
+          f"scores={r8['content_scores']} div={r8['first_divergence']}")
 
     print("SELFTEST", "ALL-PASS" if fails == 0 else f"{fails}-FAIL")
     return 0 if fails == 0 else 1

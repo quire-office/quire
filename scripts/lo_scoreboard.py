@@ -106,18 +106,46 @@ def sample_files(manifest, corpus_dir, n, seed):
     return selected[:n]
 
 
+def _scored(scores):
+    """只取有效頁分；None＝0/0 量測偽影，跳過不計（None-safe）。"""
+    return [s for s in (scores or []) if s is not None]
+
+
+def is_measurement_artifact(row):
+    """整檔所有頁皆 None ⇒ 量測不可比（不是 0 分事故）。"""
+    cs = row.get("content_scores")
+    return bool(cs) and all(s is None for s in cs)
+
+
 def file_score(row):
-    cs = row.get("content_scores") or []
-    if not cs:
-        return 0.0
-    return sum(cs) / len(cs)
+    cs = _scored(row.get("content_scores"))
+    if cs:
+        return sum(cs) / len(cs)
+    if is_measurement_artifact(row):
+        return None
+    return 0.0
 
 
 def layout_score(row):
-    ls = row.get("layout_scores") or []
-    if not ls:
-        return 0.0
-    return sum(ls) / len(ls)
+    ls = _scored(row.get("layout_scores"))
+    if ls:
+        return sum(ls) / len(ls)
+    if is_measurement_artifact(row):
+        return None
+    return 0.0
+
+
+def artifact_evidence(row):
+    ev = row.get("measurement_artifacts") or []
+    if not ev:
+        return "LO 圖形實據未記錄（舊版 scores）"
+    parts = []
+    for e in ev:
+        parts.append(
+            f"第 {e.get('page', 0) + 1} 頁 drawings={e.get('drawings', 0)}, "
+            f"images={e.get('images', 0)}"
+            + (f", 內文圖={e['unique_images']}" if "unique_images" in e else ""))
+    return "; ".join(parts)
 
 
 def run_pipeline(args):
@@ -181,6 +209,10 @@ def run_pipeline(args):
     baseline_path = out_dir / "baseline.md"
     write_baseline(baseline_path, rows, args, lo_fail, file_layer_map, out_dir)
     print(f"基線 → {baseline_path}", flush=True)
+    # 新值即後續 --check 的預設基線來源（write_baseline 已先對舊 prev 做 diff）。
+    prev_path = out_dir / "scores.prev.jsonl"
+    shutil.copyfile(scores_path, prev_path)
+    print(f"預設基線 → {prev_path}", flush=True)
     return 0
 
 
@@ -188,6 +220,8 @@ def build_layer_rows(rows, file_layer_map):
     out = {}
     for ln in LAYER_NAMES:
         members = [r for r in rows if (file_layer_map.get(r["file"], {}).get(ln, False))]
+        # 整檔量測不可比者不入分層平均（也不計入 n）。
+        members = [r for r in members if file_score(r) is not None]
         if not members:
             out[ln] = {"n": 0, "content": 0.0, "layout": 0.0, "page_match_rate": 0.0}
             continue
@@ -202,12 +236,13 @@ def build_layer_rows(rows, file_layer_map):
 
 def write_baseline(path, rows, args, lo_fail, file_layer_map, out_dir):
     layer_rows = build_layer_rows(rows, file_layer_map)
-    ok_rows = [r for r in rows if r.get("status") == "ok"]
-    overall_content = (sum(file_score(r) for r in rows) / len(rows)) if rows else 0.0
-    overall_layout = (sum(layout_score(r) for r in rows) / len(rows)) if rows else 0.0
+    scored_rows = [r for r in rows if file_score(r) is not None]
+    artifacts = [r for r in rows if is_measurement_artifact(r)]
+    overall_content = (sum(file_score(r) for r in scored_rows) / len(scored_rows)) if scored_rows else 0.0
+    overall_layout = (sum(layout_score(r) for r in scored_rows) / len(scored_rows)) if scored_rows else 0.0
     pmr = (sum(1 for r in rows if r.get("page_count_match")) / len(rows)) if rows else 0.0
     page_weighted_content = None
-    all_cs = [s for r in rows for s in (r.get("content_scores") or [])]
+    all_cs = [s for r in rows for s in _scored(r.get("content_scores"))]
     if all_cs:
         page_weighted_content = sum(all_cs) / len(all_cs)
 
@@ -216,7 +251,10 @@ def write_baseline(path, rows, args, lo_fail, file_layer_map, out_dir):
     lines.append("")
     lines.append(f"- 生成時間：{datetime.datetime.now().isoformat(timespec='seconds')}")
     lines.append(f"- seed：{args.seed}；n={len(rows)}；LO 轉換失敗：{lo_fail}")
-    lines.append(f"- 指標：每檔內容分 = 該檔各頁 content_scores 平均；分層平均 = 層內檔案等權平均。")
+    lines.append(f"- 指標：每檔內容分 = 該檔各頁 content_scores 有效值平均（None 頁跳過）；"
+                 f"分層平均 = 層內檔案等權平均。")
+    lines.append(f"- 量測不可比（整檔全 None）：{len(artifacts)} 檔，"
+                 f"不入總平均／分層平均／最差榜。")
     lines.append(f"- 總平均（檔案等權）內容：{overall_content:.3f}；版面：{overall_layout:.3f}；頁數一致率：{pmr:.1%}")
     if page_weighted_content is not None:
         lines.append(f"- 總平均（頁等權）內容：{page_weighted_content:.3f}（{len(all_cs)} 頁）")
@@ -230,8 +268,21 @@ def write_baseline(path, rows, args, lo_fail, file_layer_map, out_dir):
         lines.append(f"| {LAYER_LABELS[ln]} | {lr['n']} | {lr['content']:.3f} | {lr['layout']:.3f} | {lr['page_match_rate']:.1%} |")
     lines.append("")
 
-    # worst 10
-    worst = sorted(rows, key=lambda r: (file_score(r), r.get("file", "")))[:10]
+    # 量測不可比清單（整檔全 None）：獨立成表，不混進最差榜。
+    lines.append("## 量測不可比清單（measurement_artifact）")
+    lines.append("")
+    if artifacts:
+        lines.append("| 檔案 | 頁數（LO/OW） | LO 圖形實據 |")
+        lines.append("|---|---|---|")
+        for r in artifacts:
+            lines.append(f"| {r['file']} | {r.get('lo_pages', '—')}/{r.get('ow_pages', '—')} | "
+                         f"{artifact_evidence(r)} |")
+    else:
+        lines.append("（無）")
+    lines.append("")
+
+    # worst 10（排除整檔量測不可比者）
+    worst = sorted(scored_rows, key=lambda r: (file_score(r), r.get("file", "")))[:10]
     lines.append("## 最差 10 檔")
     lines.append("")
     lines.append("| # | 檔案 | 內容分 | 首個內容分歧頁 | 備註 |")
@@ -252,7 +303,10 @@ def write_baseline(path, rows, args, lo_fail, file_layer_map, out_dir):
             pr = prev_map.get(r["file"])
             if pr is None:
                 continue
-            deltas.append((r["file"], file_score(r) - file_score(pr)))
+            cur_s, prev_s = file_score(r), file_score(pr)
+            if cur_s is None or prev_s is None:
+                continue  # 量測不可比（None）不参与 diff
+            deltas.append((r["file"], cur_s - prev_s))
         improved = sorted([d for d in deltas if d[1] > 0.009], key=lambda x: -x[1])
         regressed = sorted([d for d in deltas if d[1] < -0.009], key=lambda x: x[1])
         lines.append("## 與上版基線 diff")
@@ -388,17 +442,23 @@ def check_mode(args):
         if delta < -0.02:
             fails.append(f"{LAYER_LABELS[ln]} 分層平均降 {abs(delta):.3f} > 0.02")
 
-    # individual regression
+    # individual regression（None＝量測不可比，兩邊任一 None 即跳過；None-safe）
     base_map = {r["file"]: r for r in base}
+    regressed = []
     for r in cur:
         br = base_map.get(r["file"])
         if br is None:
             continue
-        if file_score(r) < file_score(br) - 1e-12:
-            fails.append(f"{r['file']} 個別內容分劣化 {file_score(br):.3f} → {file_score(r):.3f}")
-    # new worst files
+        cur_s, base_s = file_score(r), file_score(br)
+        if cur_s is None or base_s is None:
+            continue
+        if cur_s < base_s - 1e-12:
+            regressed.append((r, br, cur_s, base_s))
+            fails.append(f"{r['file']} 個別內容分劣化 {base_s:.3f} → {cur_s:.3f}")
+    # new worst files（量測不可比檔不入榜）
     def worst_set(rows, k=10):
-        return set(r["file"] for r in sorted(rows, key=lambda x: (file_score(x), x.get("file", "")))[:k])
+        scored = [r for r in rows if file_score(r) is not None]
+        return set(r["file"] for r in sorted(scored, key=lambda x: (file_score(x), x.get("file", "")))[:k])
     base_worst = worst_set(base, 10)
     cur_worst = worst_set(cur, 10)
     new_worst = cur_worst - base_worst
@@ -406,7 +466,7 @@ def check_mode(args):
         for f in new_worst:
             fails.append(f"最差榜新增惡化檔：{f}")
     print("")
-    print(f"個別劣化檔數：{sum(1 for r in cur if r['file'] in base_map and file_score(r) < file_score(base_map[r['file']]) - 1e-12)}")
+    print(f"個別劣化檔數：{len(regressed)}")
     print(f"最差榜新增檔：{len(new_worst)}")
     if fails:
         print("\n--check 失敗：")
