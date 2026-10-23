@@ -1714,17 +1714,23 @@ const DEFAULT_TEXT_COLOR_ARGB: u32 = 0xFF00_0000;
 /// 的 12pt 同源，只準有一處定義）。
 const FALLBACK_SIZE_PT: f32 = 12.0;
 
-/// [`LineSpacing`] → 段行高（pt）。本引擎行高無內容自適應成分，三態換算：
+/// [`LineSpacing`] → 段行高（pt）。三態換算：
 /// - `Auto(m)`：字級×倍數（240＝單倍；與 fallback 12pt×1.4 同口徑）；
 /// - `Exact(v)`：固定 v pt（文字超出亦不撐高）；
-/// - `AtLeast(v)`：v 與「字級×單倍」取大（ECMA 語義：至少 v，行不低於字面高）；
+/// - `AtLeast(v)`：v 與「需求行高」取大（ECMA 語義：至少 v，行不低於字面高）。
+///   K5：需求行高＝呼叫端傳入的 `size_pt`×單倍（1.4）。呼叫點餵「段內最大
+///   有效 run 字級」（`meas_size`，與斷行量測同尺），故 atLeast 行高隨段內
+///   大字撐高（LO/Word 語義：行高=max(宣告下限, 該行字形需求)）；本引擎無
+///   字型 metrics 表，需求高以字級×1.4 近似（LO 吃 metrics≈1.2em，量化殘差
+///   屬精確 pt 垂直度量制範圍，老實記錄不謅精確）。
 /// - `None`：字級×1.4（既有硬編碼後備，零宣告檔案逐位元組不變）。
 fn resolve_line_h_pt(size_pt: f32, line: Option<LineSpacing>) -> f32 {
     let s = size_pt.max(1.0);
     let h = match line {
         Some(LineSpacing::Auto(m)) => s * m.max(0.1),
         Some(LineSpacing::Exact(v)) => v,
-        Some(LineSpacing::AtLeast(v)) => v.max(s),
+        // K5：單倍需求高（與 `None` 支路同尺）作下限比較基準。
+        Some(LineSpacing::AtLeast(v)) => v.max(s * 1.4),
         None => s * 1.4,
     };
     h.max(1.0)
@@ -1844,7 +1850,13 @@ fn cascade_paragraphs(
             r2.effective_fonts = eff.fonts;
             eff_runs.push(r2);
         }
-        let line_h = resolve_line_h_pt(base.size_pt.unwrap_or(def_size), para.line);
+        // K5：AtLeast 支路改吃 meas_size（段內最大有效 run 字級，與斷行
+        // 量測同尺）→ 行高隨段內大字撐高（LO/Word 語義）。Auto/Exact/None
+        // 維持段落字級 base.size_pt 不動（零連帶；Auto 的段內撐高屬後續卡）。
+        let line_h = match para.line {
+            Some(LineSpacing::AtLeast(_)) => resolve_line_h_pt(meas_size, para.line),
+            other => resolve_line_h_pt(base.size_pt.unwrap_or(def_size), other),
+        };
         // 點引 leads 展開（t_5dfc8ac7）：段落宣告右對齊製表位＋leader＋內含
         // w:tab run 時，於首個 tab run 前插入填充符串至「製表位 − 尾串寬」
         // （Word/LO 同款視覺 `Heading 1 ......... 2`）。填充是獨立 run——
@@ -5881,6 +5893,98 @@ mod tests {
             eff,
             engine.doc.paragraph_texts(),
             "無清單檔投影必須逐字不變"
+        );
+    }
+
+    // ---------------- K5：atLeast 行高自適應（宣告下限 ∨ 段內需求高） ----------------
+    //
+    // LO ground truth（scripts/render_lab 路徑實測，2026-10-23）：
+    // - k5_atleast_grow.docx：`line=240 atLeast`（12pt 下限）＋段內 40pt run
+    //   ⇒ LO 行距 48.85pt（40pt 字級主導，LO 吃字型 metrics≈1.22em），3 頁。
+    // - k5_exact_guard.docx：同文 `exact` 12pt ⇒ LO 行距恰 12pt、1 頁
+    //   （Exact 是硬值，K5 一個字不準動——本測試是防風暴樁）。
+    // - k5_atleast_floor.docx：`line=480 atLeast`（24pt 下限）＋ 12pt run
+    //   ⇒ LO 行距恰 24pt、1 頁（宣告主導，維持不變）。
+    // 架構實態（紅燈實測確立）：顯示層 y 步进＝文件帶尺 grid_line_h（無宣告
+    // ＝12×1.4＝16.8pt，本 fixtures 皆無 styles.xml），段行高只決定佔帶數
+    // bands＝ceil(段行高/帶尺)。本引擎單倍尺＝字級×1.4（全引擎口徑，字型
+    // metrics 表屬後續卡）：AtLeast 需求高＝段內最大有效 run 字級×1.4。
+    //   grow：需求 40×1.4＝56 ⇒ bands＝ceil(56/16.8)＝4 ⇒ 行距 4×16.8＝67.2
+    //         （LO 48.85；量化殘差 37%，屬精確 pt 垂直度量制範圍，老實記錄）
+    //   exact：Exact 12（硬值，不動）⇒ bands＝ceil(12/16.8)＝1 ⇒ 16.8（前後一致）
+    //   floor：max(24, 12×1.4)＝24 ⇒ bands＝2 ⇒ 33.6（前後一致）
+
+    const K5_GROW: &[u8] = include_bytes!("../../../fixtures/k5_atleast_grow.docx");
+    const K5_EXACT_GUARD: &[u8] = include_bytes!("../../../fixtures/k5_exact_guard.docx");
+    const K5_FLOOR: &[u8] = include_bytes!("../../../fixtures/k5_atleast_floor.docx");
+
+    /// 顯示列表 p0 相鄰兩行（同段）的 y 距（pt）；行數不足回 None。
+    fn k5_first_line_gap(engine: &Engine) -> Option<f32> {
+        let dl = engine.page_display_list(0)?;
+        let mut ys: Vec<f32> = dl
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                DrawItem::Text { y, text, .. } if !text.trim().is_empty() => Some(*y),
+                _ => None,
+            })
+            .collect();
+        ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        ys.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+        if ys.len() < 2 {
+            return None;
+        }
+        Some(ys[1] - ys[0])
+    }
+
+    #[test]
+    fn k5_atleast_grow_line_height_follows_large_run() {
+        // 紅燈核心：atLeast 12pt 下限＋40pt run ⇒ 段行高必須由大字需求主導
+        // （修前 1 帶＝16.8，修後 4 帶＝67.2；LO 48.85，量化殘差見上註）。
+        let engine = Engine::from_docx_bytes(K5_GROW).expect("開 k5_atleast_grow 失敗");
+        let gap = k5_first_line_gap(&engine).expect("p0 必須有至少兩行");
+        assert!(
+            (gap - 67.2).abs() < 0.01,
+            "atLeast＋40pt run 段行高應=max(12, 40×1.4)=56pt ⇒ ceil(56/16.8)=4 帶＝67.2，實得 {gap}"
+        );
+    }
+
+    #[test]
+    fn k5_atleast_grow_pagination_grows_with_demand() {
+        // 修前 1 頁（行高吃 12 的錯值）；修後行高 56pt ⇒ 頁數必須顯著增長
+        // （LO 實測 3 頁；我方帶量化下斷行尺與 LO 不同，鎖方向不鎖等值，
+        //  精確等值待垂直度量制——見上註量化殘差）。
+        let engine = Engine::from_docx_bytes(K5_GROW).expect("開 k5_atleast_grow 失敗");
+        assert!(
+            engine.page_count() >= 3,
+            "需求高 56pt/行、336 詞正文：頁數必須 ≥3（修前 1 頁，LO 3 頁），實得 {}",
+            engine.page_count()
+        );
+    }
+
+    #[test]
+    fn k5_exact_guard_unchanged() {
+        // Exact 防風暴樁（鎖現態）：Exact 支路 K5 不動 ⇒ 行高硬值 12 ⇒
+        // 1 帶、行距＝帶尺 16.8、1 頁——K5 前後必須逐位元組同行為。
+        let engine = Engine::from_docx_bytes(K5_EXACT_GUARD).expect("開 exact 失敗");
+        assert_eq!(engine.page_count(), 1, "exact 12pt 必須維持 1 頁");
+        let gap = k5_first_line_gap(&engine).expect("p0 必須有至少兩行");
+        assert!(
+            (gap - 16.8).abs() < 0.01,
+            "exact 段行高硬值 12 ⇒ 1 帶（帶尺 16.8），實得 {gap}"
+        );
+    }
+
+    #[test]
+    fn k5_atleast_floor_declared_value_wins() {
+        // 下限主導態：宣告 24pt > 需求 12×1.4=16.8 ⇒ 行高 24、2 帶＝33.6、
+        // 1 頁——K5 前後必須一致（鎖現態防回歸）。
+        let engine = Engine::from_docx_bytes(K5_FLOOR).expect("開 floor 失敗");
+        assert_eq!(engine.page_count(), 1, "atLeast 24pt 下限檔必須 1 頁");
+        let gap = k5_first_line_gap(&engine).expect("p0 必須有至少兩行");
+        assert!(
+            (gap - 33.6).abs() < 0.01,
+            "宣告下限 24pt 大於需求高 ⇒ ceil(24/16.8)=2 帶＝33.6，實得 {gap}"
         );
     }
 }
