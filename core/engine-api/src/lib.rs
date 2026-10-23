@@ -123,6 +123,9 @@ struct HfPart {
     styles: Vec<quire_ooxml::Paragraph>,
     metrics: Vec<(f32, f32)>,
     tables: Vec<quire_ooxml::BodyTable>,
+    /// 本 part 的圖片幾何投影（`quire_ooxml::read_images` 原樣複用）。
+    /// 空表＝無圖＝發射層零變化（K4a）；發射只做佔位框，不碰存檔路徑。
+    images: Vec<quire_ooxml::InlineImage>,
 }
 
 /// 一節的頁首頁尾發射資料：宣告（已繼承、rId 已換算為「確實在 parts 裡」
@@ -2605,6 +2608,17 @@ impl Engine {
             cursor_bands += slots_tbl[ti].layout.total_bands.max(1);
             ti += 1;
         }
+        // K4a：頁首／頁尾 part 的圖片佔位（`wp:drawing` inline；`read_images`
+        // 同一投影原樣複用）。y 起點＝slot 發射距，同 part 多圖按所屬段落
+        // 疊行帶；x＝版心左緣。格內圖由表格切片負責，本輪不重複發射。
+        // 無圖（空表）⇒ 迴圈零次 ⇒ 既有顯示列表逐位元組不變（零變化守門）。
+        for im in &part.images {
+            if im.in_cell {
+                continue;
+            }
+            let y = emit_y + im.para_index as f32 * line_h;
+            emit_image_placeholder(items, hf_params.margin(MARGIN_LEFT), y, im.w_pt, im.h_pt);
+        }
     }
 
     /// 頁首表格：整張切片（不跨頁）＋既有 push_frag_items 渲染路徑。
@@ -2830,6 +2844,9 @@ fn build_hf_layer(
             if let Ok((paragraphs, tables)) =
                 parse_header_footer_part_with_fonts(xml, theme, Some(&theme_fonts))
             {
+                // K4a：頁首／頁尾 part 的 `wp:drawing` 幾何（`read_images` 對
+                // 任意 XML part 通用；images 空＝零變化）。
+                let images = quire_ooxml::read_images(xml);
                 let (styles, metrics, _spacings, _marker_chars) = match style_table {
                     // 頁首尾不展開點引（widths 空＝不虛構；既有行為不變）。
                     Some(st) => cascade_paragraphs(st, &paragraphs, def_size, &[], &[]),
@@ -2841,6 +2858,7 @@ fn build_hf_layer(
                         styles,
                         metrics,
                         tables,
+                        images,
                     },
                 );
             }
@@ -3267,6 +3285,70 @@ mod tests {
             after_bands.iter().any(|&b| b > 0),
             "段後距帶向量不得全零（10pt／帶尺 {grid_line_h}）：{after_bands:?}"
         );
+    }
+
+    /// K4a（Bug51170）：頁首 part 的 `wp:inline` 圖必須投影成佔位框。
+    /// header1.xml 恰一張 1854200×990600 EMU（146×78pt）inline 圖；
+    /// sectPr 宣告 titlePg 但無 first 頁首 ⇒ 首頁依語義空白，其餘頁用
+    /// default 頁首——每頁都必須在 header 區（y < 正文首行 y）看到佔位 Rect。
+    /// A/B：無頁首圖的檔案不得冒出任何 header 區佔位（零變化守門）。
+    #[test]
+    fn bug51170_header_inline_image_emitted() {
+        const BUG51170: &[u8] =
+            include_bytes!("../../../corpus/poi/test-data_document_Bug51170.docx");
+        let engine = Engine::from_docx_bytes(BUG51170).expect("開啟 Bug51170 失敗");
+        assert!(engine.page_count() >= 2, "Bug51170 應有多頁");
+        // titlePg＋無 first 頁首：首頁空白，正文頁（1..）用 default 頁首。
+        for page in 1..engine.page_count() {
+            let top = engine.layout.pages()[page].margin_top_pt;
+            let dl = engine.page_display_list(page).expect("頁存在");
+            let header_rects: Vec<(f32, f32, f32, f32)> = dl
+                .items
+                .iter()
+                .filter_map(|it| match it {
+                    DrawItem::Rect {
+                        x,
+                        y,
+                        w,
+                        h,
+                        fill_argb,
+                    } if *fill_argb == IMAGE_PLACEHOLDER_FILL && *y < top => Some((*x, *y, *w, *h)),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                !header_rects.is_empty(),
+                "第 {page} 頁 header 區（y < {top}）必須有圖片佔位：{:?}",
+                dl.items
+                    .iter()
+                    .filter_map(|it| match it {
+                        DrawItem::Rect { y, .. } => Some(*y),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            );
+            let (_, _, w, h) = header_rects[0];
+            assert!(
+                (w - 1854200.0 / 12700.0).abs() < 0.1 && (h - 990600.0 / 12700.0).abs() < 0.1,
+                "extent 應為 146×78pt：{w}×{h}"
+            );
+        }
+        // A/B：無頁首圖的檔案——header 區不得冒出佔位（既有顯示列表零變化）。
+        const NO_HF_IMG: &[u8] =
+            include_bytes!("../../../corpus/xopt/TestFiles_WC_WC049-Text-Box-in-Cell.docx");
+        let ab = Engine::from_docx_bytes(NO_HF_IMG).expect("開啟 WC049 失敗");
+        for page in 0..ab.page_count() {
+            let top = ab.layout.pages()[page].margin_top_pt;
+            let dl = ab.page_display_list(page).expect("頁存在");
+            assert!(
+                !dl.items.iter().any(|it| matches!(
+                    it,
+                    DrawItem::Rect { y, fill_argb, .. }
+                        if *fill_argb == IMAGE_PLACEHOLDER_FILL && *y < top
+                )),
+                "無頁首圖的第 {page} 頁不得發射 header 佔位"
+            );
+        }
     }
 
     // ---------------- t_a1397522：圖片幾何佔位框（end-to-end 投影） ----------------
