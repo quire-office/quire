@@ -283,12 +283,22 @@ impl Engine {
         // 過度擠壓頁面（reader-styles 由 3 頁變 4 頁）；故以「跨段累積餘數」
         // 量化：整數帶數＝floor(Σpt／帶尺)，小數餘數留給下一個距——總佔位
         // 回到精確 pt 的帶量化近似，同時仍維持整數帶制。
-        // 主開關：docDefaults 完全沒有 before/after 宣告時，維持舊分頁路徑
-        // （樣式／直接格式的距仍解析進 ParaStyle，但不在此檔觸發佔帶）——
-        // 這是零變化守門的保守邊界，也避免在 docDefaults 無宣告的檔案上把
-        // 既有分頁位移擴大成額外頁（全 corpus 不劣化門）。
+        // 主開關（K4b）：docDefaults 有宣告 ⇒ 照 K1 舊徑開帶制（零變化）；
+        // docDefaults 無宣告但**預設段落樣式鏈**（Normal）有有效段距 ⇒ 也
+        // 開（Bug51170 的 10pt 段後距就只在 Normal）。唯一的額外守門是
+        // `w:docGrid/@w:charSpace` 非零的字元網格檔：本引擎未實作 CJK 網格
+        // 對齊，兩套垂直制疊加會把臨界頁擠出（reader-styles 3→4 頁實測），
+        // 這類檔案維持舊分頁路徑。
         let (doc_before, doc_after) = style_table.doc_spacing();
-        let (grid_before_v, grid_after_v) = if doc_before.is_some() || doc_after.is_some() {
+        let (default_before, default_after) = style_table.doc_default_spacing();
+        let default_declared = default_before.is_some() || default_after.is_some();
+        let merged_declared = doc_before.is_some() || doc_after.is_some();
+        let char_grid = doc
+            .parts
+            .get("word/document.xml")
+            .is_some_and(|xml| doc_grid_has_char_space(xml));
+        let bands_on = default_declared || (merged_declared && !char_grid);
+        let (grid_before_v, grid_after_v) = if bands_on {
             // K1-R：表格邊界處的段距量化修正（見 `spacing_band_vectors` 注）。
             //
             // ① 表格塊內部段落的段距不參與餘數鏈、表格邊界處餘數歸零：
@@ -1718,22 +1728,57 @@ const FALLBACK_SIZE_PT: f32 = 12.0;
 /// - `Auto(m)`：字級×倍數（240＝單倍；與 fallback 12pt×1.4 同口徑）；
 /// - `Exact(v)`：固定 v pt（文字超出亦不撐高）；
 /// - `AtLeast(v)`：v 與「需求行高」取大（ECMA 語義：至少 v，行不低於字面高）。
-///   K5：需求行高＝呼叫端傳入的 `size_pt`×單倍（1.4）。呼叫點餵「段內最大
-///   有效 run 字級」（`meas_size`，與斷行量測同尺），故 atLeast 行高隨段內
-///   大字撐高（LO/Word 語義：行高=max(宣告下限, 該行字形需求)）；本引擎無
-///   字型 metrics 表，需求高以字級×1.4 近似（LO 吃 metrics≈1.2em，量化殘差
-///   屬精確 pt 垂直度量制範圍，老實記錄不謅精確）。
+///   需求由呼叫端決定：段內有更大 run 時餵「最大 run 字級×1.4」（K5 的字形
+///   需求近似，與斷行量測同尺）；無更大 run 時餵段落基準字級（單倍下限就是
+///   字級本身，不再多乘 1.4——否則 11pt 正文會在 12.65pt 帶尺上虛佔兩帶）。
 /// - `None`：字級×1.4（既有硬編碼後備，零宣告檔案逐位元組不變）。
 fn resolve_line_h_pt(size_pt: f32, line: Option<LineSpacing>) -> f32 {
     let s = size_pt.max(1.0);
     let h = match line {
         Some(LineSpacing::Auto(m)) => s * m.max(0.1),
         Some(LineSpacing::Exact(v)) => v,
-        // K5：單倍需求高（與 `None` 支路同尺）作下限比較基準。
-        Some(LineSpacing::AtLeast(v)) => v.max(s * 1.4),
+        // AtLeast 的「需求」由呼叫端決定：段內有更大 run 時餵大字字級
+        // （K5 的 1.4 倍近似在呼叫端完成），無大字時餵段落基準字級。
+        Some(LineSpacing::AtLeast(v)) => v.max(s),
         None => s * 1.4,
     };
     h.max(1.0)
+}
+
+/// `word/document.xml` 的 `w:docGrid` 是否帶非零 `w:charSpace`（字元網格）。
+///
+/// 有＝文件要求 CJK 字元/行距對齊網格；本引擎未實作網格對齊。K4b 只在
+/// 「純靠預設段落樣式鏈」的段距上把這類檔案排除，避免段落帶制與網格行距
+/// 兩套垂直制疊加（reader-styles 3→4 頁的實測回歸）。docDefaults 有宣告
+/// 的檔案仍走 K1 舊徑，不受此守門影響。
+fn doc_grid_has_char_space(xml: &[u8]) -> bool {
+    let Ok(s) = std::str::from_utf8(xml) else {
+        return false;
+    };
+    let mut from = 0usize;
+    while let Some(rel) = s[from..].find("docGrid") {
+        let pos = from + rel;
+        let start = s[..pos].rfind('<').unwrap_or(0);
+        let end = s[pos..]
+            .find('>')
+            .map(|e| pos + e + 1)
+            .unwrap_or(s.len())
+            .min(s.len());
+        let tag = &s[start..end];
+        if tag.starts_with("<w:docGrid") || tag.starts_with("<docGrid") {
+            if let Some(cp) = tag.find("charSpace=\"") {
+                let val = &tag[cp + "charSpace=\"".len()..];
+                if let Some(q) = val.find('"') {
+                    let v = val[..q].trim();
+                    if !v.is_empty() && v.parse::<i64>().map(|n| n != 0).unwrap_or(true) {
+                        return true;
+                    }
+                }
+            }
+        }
+        from = end.max(pos + 1);
+    }
+    false
 }
 
 /// 逐段（before, after）距 → 兩條整數帶向量；跨距累積小數餘數（見呼叫端
@@ -1850,12 +1895,17 @@ fn cascade_paragraphs(
             r2.effective_fonts = eff.fonts;
             eff_runs.push(r2);
         }
-        // K5：AtLeast 支路改吃 meas_size（段內最大有效 run 字級，與斷行
-        // 量測同尺）→ 行高隨段內大字撐高（LO/Word 語義）。Auto/Exact/None
-        // 維持段落字級 base.size_pt 不動（零連帶；Auto 的段內撐高屬後續卡）。
+        // K5：AtLeast 支路在段內有**更大 run** 時吃 meas_size（段內最大有效
+        // run 字級×1.4，與斷行量測同尺）→ 行高隨大字撐高（LO/Word 語義）。
+        // 無大字 run 時維持段落字級本身（不把基準字級再放大 1.4 倍——那會
+        // 讓 11pt 正文在 12.65pt 帶尺上虛佔兩帶，Bug51170 由 5 頁膨脹到 9
+        // 頁）。Auto/Exact/None 維持段落字級 base.size_pt 不動。
+        let base_size = base.size_pt.unwrap_or(def_size);
         let line_h = match para.line {
-            Some(LineSpacing::AtLeast(_)) => resolve_line_h_pt(meas_size, para.line),
-            other => resolve_line_h_pt(base.size_pt.unwrap_or(def_size), other),
+            Some(LineSpacing::AtLeast(_)) if meas_size > base_size => {
+                resolve_line_h_pt(meas_size * 1.4, para.line)
+            }
+            other => resolve_line_h_pt(base_size, other),
         };
         // 點引 leads 展開（t_5dfc8ac7）：段落宣告右對齊製表位＋leader＋內含
         // w:tab run 時，於首個 tab run 前插入填充符串至「製表位 − 尾串寬」
@@ -3160,6 +3210,63 @@ mod tests {
         });
         let dup = rules.windows(2).filter(|w| w[0] == w[1]).count();
         assert_eq!(dup, 2, "兩條共用邊各自重合（重疊線對）：{rules:?}");
+    }
+
+    /// K4b：Bug51170 的段距宣告在 **Normal 樣式**（`w:spacing w:after="200"`
+    /// ＝10pt），docDefaults 完全沒有 spacing。K1 gate 若只看 docDefaults
+    /// 就會整關帶制（段後距全 0 帶）；本卡分支基底（含 K5）實測為 9 頁
+    /// （K4-diag 報告量測時為 5 頁），LO 為 7 頁（render_lab 實測）。
+    /// 本測試同時釘住兩件事：(a) 級聯後預設段落鏈的有效段後距＝10pt 且
+    /// 量化後帶向量非全零；(b) 分頁收斂到 LO 的 7 頁。
+    #[test]
+    fn bug51170_normal_style_spacing_lights_bands_and_seven_pages() {
+        const BUG51170: &[u8] =
+            include_bytes!("../../../corpus/poi/test-data_document_Bug51170.docx");
+        let doc = parse(BUG51170).expect("解析 Bug51170 失敗");
+        let theme = ThemeColors::from_parts(&doc.parts);
+        let theme_fonts = ThemeFonts::from_parts(&doc.parts);
+        let st = doc
+            .parts
+            .get("word/styles.xml")
+            .map(|s| StyleTable::parse_with_fonts(s.as_slice(), &theme, Some(&theme_fonts)))
+            .unwrap_or_else(|| StyleTable::parse_with_fonts(&[], &theme, Some(&theme_fonts)));
+        let (doc_size, doc_line) = st.doc_grid();
+        let def_size = doc_size.unwrap_or(12.0);
+        let grid_line_h = resolve_line_h_pt(def_size, doc_line);
+        // (b) 分頁收斂：LO ground truth 7 頁；gate 關著時為 5 頁。
+        let engine = Engine::from_docx_bytes(BUG51170).expect("開啟 Bug51170 失敗");
+        assert_eq!(
+            engine.page_count(),
+            7,
+            "Bug51170 段後距生效後應為 LO 的 7 頁"
+        );
+        // (a) 級聯後預設段落（Normal 鏈）的有效段後距＝200 twips＝10pt。
+        let (_, doc_after) = st.doc_spacing();
+        assert_eq!(
+            doc_after,
+            Some(10.0),
+            "doc_spacing 必須併入 Normal 樣式鏈的段後距（200 twips）"
+        );
+        let spacings: Vec<(Option<f32>, Option<f32>)> = doc
+            .paragraphs
+            .iter()
+            .map(|p| {
+                let inline = ParaStyle {
+                    run: p.prun.clone().unwrap_or_default(),
+                    line: p.line,
+                    spacing_before_pt: p.spacing_before_pt,
+                    spacing_after_pt: p.spacing_after_pt,
+                    align: p.jc,
+                };
+                let (_, eff) = st.effective_para(p.style.as_deref(), inline);
+                (eff.spacing_before_pt, eff.spacing_after_pt)
+            })
+            .collect();
+        let (_, after_bands) = spacing_band_vectors(&spacings, grid_line_h, &[]);
+        assert!(
+            after_bands.iter().any(|&b| b > 0),
+            "段後距帶向量不得全零（10pt／帶尺 {grid_line_h}）：{after_bands:?}"
+        );
     }
 
     // ---------------- t_a1397522：圖片幾何佔位框（end-to-end 投影） ----------------
