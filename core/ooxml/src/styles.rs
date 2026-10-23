@@ -830,13 +830,42 @@ impl StyleTable {
         self.styles.get(id).map(|s| s.kind)
     }
 
-    /// docDefaults 宣告的段前／段後距（pt；未宣告＝None）。K1 的「主開關」：
-    /// 文件層級毫無段落距宣告時，呼叫端保持舊分頁路徑（零變化守門）。
-    pub fn doc_spacing(&self) -> (Option<f32>, Option<f32>) {
+    /// docDefaults 自身的段前／段後距（pt；未宣告＝None）。K1 舊 gate 的
+    /// 判定值；K4b 保留它，讓「docDefaults 有宣告」的檔案維持原行為，
+    /// 只有「純靠預設段落樣式鏈」的檔案才走放寬後的新判定。
+    pub fn doc_default_spacing(&self) -> (Option<f32>, Option<f32>) {
         (
             self.para_default_spacing_before_pt,
             self.para_default_spacing_after_pt,
         )
+    }
+
+    /// 文件級預設段前／段後距（pt；未宣告＝None）。K1 的「主開關」：
+    /// 文件層級毫無段落距宣告時，呼叫端保持舊分頁路徑（零變化守門）。
+    ///
+    /// K4b：判定範圍從 docDefaults 放寬為 **docDefaults ∪ 預設段落樣式
+    /// （Normal）的 basedOn 級聯鏈**。真實檔常把段距只寫在 Normal（例如
+    /// Bug51170 的 `w:after="200"`＝10pt），docDefaults 完全空白；只看
+    /// docDefaults 會把整個帶制關掉。`resolved` 已是「樣式鏈疊在 docDefaults
+    /// 之上」的合成結果，故取其有效值即可（鏈走完、非法值已在解析期拒收）。
+    /// 沒有任何 `w:default="1"` 段落樣式時退回慣例 id `Normal`（ECMA-376
+    /// 的預設段落樣式；查無＝docDefaults，語義與舊版相同）。
+    pub fn doc_spacing(&self) -> (Option<f32>, Option<f32>) {
+        let default_chain = self
+            .default_para
+            .as_deref()
+            .or(Some("Normal"))
+            .and_then(|d| self.resolved.get(d));
+        match default_chain {
+            Some((_, p)) => (
+                p.spacing_before_pt.or(self.para_default_spacing_before_pt),
+                p.spacing_after_pt.or(self.para_default_spacing_after_pt),
+            ),
+            None => (
+                self.para_default_spacing_before_pt,
+                self.para_default_spacing_after_pt,
+            ),
+        }
     }
 
     /// 文件級行網格尺（呼叫端 fallback）：預設段落樣式（Normal，含其鏈與
