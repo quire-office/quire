@@ -1443,12 +1443,15 @@ impl Engine {
         }
         // 圖片佔位（t_a1397522）：正文流圖＝版心左緣＋行網格帶 y；浮動鎖點
         // 圖＝layout 已按各軸 relativeFrom 原點系換算成頁絕對座標，直接發射。
+        // K4c：先配對 shape 候補（真色版），配到→ emit_image_shape 吃真
+        // 填充／描邊／虛線／filled=f；配不到＝None＝舊灰底零擾動。
         for im in &p.images {
             let y = p.margin_top_pt + im.band as f32 * line_h;
-            emit_image_placeholder(&mut items, p.margin_left_pt, y, im.w_pt, im.h_pt);
             let hit = self.shape_boxes.iter().enumerate().find(|(i, (bp, b))| {
                 !box_used[*i] && *bp == im.para && (b.w_pt - im.w_pt).abs() < 0.01
             });
+            let box_im = hit.map(|(_, (_, b))| b);
+            emit_image_shape(&mut items, p.margin_left_pt, y, im.w_pt, im.h_pt, box_im);
             if let Some((bi, (_, box_im))) = hit {
                 box_used[bi] = true;
                 emit_txbx_texts(
@@ -1464,15 +1467,17 @@ impl Engine {
                         .unwrap_or(&[]),
                     size,
                     line_h,
+                    Some(box_im),
                 );
             }
         }
         for fm in &p.floating_images {
-            emit_image_placeholder(&mut items, fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt);
             // K4e2：浮動錨定文字框（DrawingML anchor）：框內文字落在換算後的鎖點。
             let hit = self.shape_boxes.iter().enumerate().find(|(i, (bp, b))| {
                 !box_used[*i] && *bp == fm.para && (b.w_pt - fm.w_pt).abs() < 0.01
             });
+            let box_b = hit.map(|(_, (_, b))| b);
+            emit_image_shape(&mut items, fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt, box_b);
             if let Some((bi, (_, b))) = hit {
                 box_used[bi] = true;
                 emit_txbx_texts(
@@ -1488,6 +1493,7 @@ impl Engine {
                         .unwrap_or(&[]),
                     size,
                     line_h,
+                    Some(b),
                 );
             }
         }
@@ -2095,22 +2101,112 @@ fn cascade_paragraphs(
 /// 也不丟字（比對指標要文字在，LO 對超高框同樣不裁字）。空框段（""）留
 /// 一行空白（段落分隔語義）。座標＝頁絕對（呼叫端已換算）。
 #[allow(clippy::too_many_arguments)] // 框座標/尺寸/文字/run/樣式基準皆必要輸入，不塞結構體轉運
+/// 框內幾何（K4c 契約 6/7）：`v:textbox/@inset` 四值（left,top,right,bottom
+/// pt）餵文字起點與可用寬高；`txbx_rect`（組映射後的框內矩形）優先於整框；
+/// `txbx_vertical`（layout-flow:vertical）→ 逐字堆疊；`txbx_table` → 框內
+/// 表格逐格填色 Rect（n780563 三色列）。全 None/false/空＝舊行為零擾動。
 fn emit_txbx_texts(
     items: &mut Vec<DrawItem>,
     x: f32,
     y: f32,
     w: f32,
-    _h: f32,
+    h: f32,
     texts: &[String],
     runs: &[Vec<quire_ooxml::Run>],
     size_pt: f32,
     line_h: f32,
+    shape: Option<&quire_ooxml::InlineImage>,
 ) {
-    if texts.is_empty() || w <= 0.0 {
+    if w <= 0.0 {
         return;
     }
-    let inner_w = (w - 6.0).max(10.0);
-    let mut yy = y + 4.0;
+    // 框內矩形：組映射（txbx_rect）缺 → 整框（老實退化，不虛構位置）。
+    let (bx, by, bw, bh) = match shape.and_then(|b| b.txbx_rect) {
+        Some([dx, dy, rw, rh]) if rw > 0.0 && rh > 0.0 => (x + dx, y + dy, rw, rh),
+        _ => (x, y, w, h),
+    };
+    // inset 吃成內邊界（契約 6）：缺宣告＝舊硬近（x+3、inner_w＝w−6）。
+    let inset = shape.and_then(|b| b.txbx_inset);
+    let [inset_l, inset_t, inset_r, inset_b] = inset.unwrap_or([3.0, 4.0, 3.0, 0.0]);
+    let old_style = inset.is_none();
+    let inner_x = bx + inset_l;
+    let inner_y = by + inset_t;
+    let inner_w = if old_style {
+        (bw - 6.0).max(10.0)
+    } else {
+        (bw - inset_l - inset_r).max(10.0)
+    };
+    let inner_h = (bh - inset_t - inset_b).max(0.0);
+
+    // ---- K4c：框內表格逐格填色（n780563 三色列表實據）：行按等分帶高、
+    // 列按等分寬（格寬宣告缺＝近似；只發有色的格，None 格不發）。----
+    if let Some(rows) = shape.map(|b| b.txbx_table.clone()).filter(|r| !r.is_empty()) {
+        let rh = (inner_h / rows.len() as f32).max(0.5);
+        for (ri, row) in rows.iter().enumerate() {
+            if row.is_empty() {
+                continue;
+            }
+            let cw = inner_w / row.len() as f32;
+            for (ci, cell) in row.iter().enumerate() {
+                if let Some(argb) = cell {
+                    items.push(DrawItem::Rect {
+                        x: inner_x + ci as f32 * cw,
+                        y: inner_y + ri as f32 * rh,
+                        w: cw,
+                        h: rh,
+                        fill_argb: *argb,
+                    });
+                }
+            }
+        }
+    }
+
+    // ---- K4c 契約 7：layout-flow:vertical → 逐字堆疊（y 單調、x 依框右緣
+    // 起欄；既有 DrawItem::Text 逐字發射，零新變體）。欄寬取段字級近似。----
+    let vertical = shape.map_or(false, |b| b.txbx_vertical);
+    if vertical {
+        for (ti, t) in texts.iter().enumerate() {
+            if t.is_empty() {
+                continue;
+            }
+            let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+            let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+            let (flags, color_argb, _) = own_runs
+                .first()
+                .map(run_style)
+                .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
+            let fam = own_runs
+                .first()
+                .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
+            let sz_eff = seg_size.max(1.0);
+            // 欄起點＝框右緣往內退 inset_r 再退一欄寬（一個字 Advance 近似）。
+            let col_w = TextMeasurer::new(sz_eff).text_width("n").max(sz_eff * 0.6);
+            let col_x = (bx + bw - inset_r - col_w).max(bx);
+            let step = (sz_eff * 1.2).max(1.0);
+            let mut yy = inner_y;
+            for c in t.chars() {
+                if yy > inner_y + inner_h + step {
+                    break; // 超出框高：老實停發（不溢出到別頁別框）
+                }
+                items.push(DrawItem::Text {
+                    x: col_x,
+                    y: yy,
+                    size_pt: sz_eff,
+                    flags,
+                    color_argb,
+                    family: fam.clone(),
+                    text: c.to_string(),
+                });
+                yy += step;
+            }
+        }
+        return;
+    }
+
+    if texts.is_empty() {
+        return;
+    }
+    let mut yy = inner_y;
     for (ti, t) in texts.iter().enumerate() {
         let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
         if t.trim().is_empty() {
@@ -2118,7 +2214,7 @@ fn emit_txbx_texts(
             // 樣式宣告是實內容；KP 斷行會 trim_end 吞掉純空白行，故繞過
             // break_lines 逐 run 直接發射一個佔位文字項），無 run＝純空白帶。
             if !own_runs0.is_empty() {
-                let mut xx = x + 3.0;
+                let mut xx = inner_x;
                 for r in own_runs0 {
                     let (flags, color_argb, sz) = run_style(r);
                     let fam = select_text_family(r.effective_fonts.as_ref(), &r.text);
@@ -2150,7 +2246,7 @@ fn emit_txbx_texts(
             ..Default::default()
         };
         for l in quire_layout::break_lines(t, inner_w, &m) {
-            emit_line_run_items(items, x + 3.0, yy, seg_size, &l, Some(&fake));
+            emit_line_run_items(items, inner_x, yy, seg_size, &l, Some(&fake));
             yy += line_h;
         }
     }
@@ -2158,32 +2254,64 @@ fn emit_txbx_texts(
 
 /// 圖片佔位框配色（t_a1397522）：灰底＋淺灰描邊。「誠實的近似」視覺：
 /// 用戶看得見這裡有圖、多大、在哪，點陣直出屬像素渲染卡。
-const IMAGE_PLACEHOLDER_FILL: u32 = 0xFFF0_F0F0;
-const IMAGE_PLACEHOLDER_EDGE: u32 = 0xFFCC_CCCC;
+pub(crate) const IMAGE_PLACEHOLDER_FILL: u32 = 0xFFF0_F0F0;
+pub(crate) const IMAGE_PLACEHOLDER_EDGE: u32 = 0xFFCC_CCCC;
 const IMAGE_PLACEHOLDER_RULE_PT: f32 = 0.75;
 
-/// 發射圖片佔位框：灰底 Rect＋四邊 Rule（尺寸＝extent）。不動 DrawItem
-/// 契約（零新增變體，卡片鐵律）；座標＝頁絕對。
-fn emit_image_placeholder(items: &mut Vec<DrawItem>, x: f32, y: f32, w: f32, h: f32) {
+/// K4c：VML 布林欄位「明确假」判讀（Some(false)＝宣告不發；None/Some(true)
+/// ＝照發）。
+fn deco_off(flag: Option<bool>) -> bool {
+    flag == Some(false)
+}
+
+/// 發射圖片佔位框（K4c 升級：真色版）。`shape`=None 或全欄未宣告＝舊行為
+/// （灰底 Rect＋四邊淺灰 Rule，零擾動守門）；有宣告時（卡片契約 2/3/4）：
+/// - 填充：`filled="f"` → 整個 Rect 不發（**別把無填充畫成灰底**）；否則
+///   `fill_argb`（已按 `v:fill/@color` > `o:fillcolor` 合併）優先、缺→佔位灰。
+/// - 框線：`stroked="f"` → 四條 Rule 不發；否則色 `stroke_argb` 缺→佔位邊、
+///   線寬 `stroke_width_pt` 缺→0.75pt、虛線 `stroke_dash`（SVG dasharray）透傳。
+fn emit_image_shape(
+    items: &mut Vec<DrawItem>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    shape: Option<&quire_ooxml::InlineImage>,
+) {
     if w <= 0.0 || h <= 0.0 {
         return; // 非法尺寸老實不發射（容錯鐵律）
     }
-    items.push(DrawItem::Rect {
-        x,
-        y,
-        w,
-        h,
-        fill_argb: IMAGE_PLACEHOLDER_FILL,
-    });
+    let fill = if shape.map_or(false, |b| deco_off(b.filled)) {
+        None
+    } else {
+        Some(shape.and_then(|b| b.fill_argb).unwrap_or(IMAGE_PLACEHOLDER_FILL))
+    };
+    if let Some(argb) = fill {
+        items.push(DrawItem::Rect {
+            x,
+            y,
+            w,
+            h,
+            fill_argb: argb,
+        });
+    }
+    if shape.map_or(false, |b| deco_off(b.stroked)) {
+        return;
+    }
+    let color = shape.and_then(|b| b.stroke_argb).unwrap_or(IMAGE_PLACEHOLDER_EDGE);
+    let width_pt = shape
+        .and_then(|b| b.stroke_width_pt)
+        .unwrap_or(IMAGE_PLACEHOLDER_RULE_PT);
+    let dash = shape.and_then(|b| b.stroke_dash.clone());
     let rule = |x1: f32, y1: f32, x2: f32, y2: f32, items: &mut Vec<DrawItem>| {
         items.push(DrawItem::Rule {
             x1,
             y1,
             x2,
             y2,
-            width_pt: IMAGE_PLACEHOLDER_RULE_PT,
-            color_argb: IMAGE_PLACEHOLDER_EDGE,
-            dash: None,
+            width_pt,
+            color_argb: color,
+            dash: dash.clone(),
         })
     };
     rule(x, y, x + w, y, items);
@@ -2536,37 +2664,40 @@ fn push_frag_items(
                     text: t.text.clone(),
                 });
             }
-            // 圖片佔位框（t_a1397522）：灰底 Rect＋四邊 Rule（誠實近似——
-            // 點陣直出屬像素渲染卡；分頁容量先對，像素後補）。
+            // 圖片佔位框（t_a1397522）＋ K4c 真色版（配到 shape 候補時吃
+            // 真填充／描邊／filled=f／stroked=f；配不到＝灰底零擾動）。
             for im in &cell.images {
                 let ix = base_x + im.x_pt;
                 let iy = base_y + ry + im.y_pt;
-                emit_image_placeholder(items, ix, iy, im.w_pt, im.h_pt);
-                // K4e2：格內文字框（tdf130120 實據——圖框錨在儲存格段落）。
-                if let Some((boxes, used)) = shape.as_mut() {
-                    let hit = boxes.iter().enumerate().find(|(i, (bp, b))| {
+                let hit = shape.as_mut().and_then(|(boxes, used)| {
+                    boxes.iter().enumerate().find(|(i, (bp, b))| {
                         !used[*i]
                             && *bp >= para_range.0
                             && *bp < para_range.1
                             && (b.w_pt - im.w_pt).abs() < 0.01
-                    });
-                    if let Some((bi, (bp, b))) = hit {
+                    })
+                });
+                emit_image_shape(items, ix, iy, im.w_pt, im.h_pt, hit.map(|(_, (_, b))| b));
+                // K4e2：格內文字框（tdf130120 實據——圖框錨在儲存格段落）。
+                if let Some((bi, (bp, b))) = hit {
+                    if let Some((_, used)) = shape.as_mut() {
                         used[bi] = true;
-                        emit_txbx_texts(
-                            items,
-                            ix,
-                            iy,
-                            im.w_pt,
-                            im.h_pt,
-                            &b.txbx_texts,
-                            paragraphs
-                                .get(*bp)
-                                .map(|pp| pp.txbx_runs.as_slice())
-                                .unwrap_or(&[]),
-                            size,
-                            line_h,
-                        );
                     }
+                    emit_txbx_texts(
+                        items,
+                        ix,
+                        iy,
+                        im.w_pt,
+                        im.h_pt,
+                        &b.txbx_texts,
+                        paragraphs
+                            .get(*bp)
+                            .map(|pp| pp.txbx_runs.as_slice())
+                            .unwrap_or(&[]),
+                        size,
+                        line_h,
+                        Some(b),
+                    );
                 }
             }
             let nested_tbls: Vec<&CanonicalTable> = canon_cell
@@ -2823,7 +2954,8 @@ impl Engine {
                 continue;
             }
             let y = emit_y + im.para_index as f32 * line_h;
-            emit_image_placeholder(items, hf_params.margin(MARGIN_LEFT), y, im.w_pt, im.h_pt);
+            // K4c：頁首尾候選本身就是 InlineImage——真色直走 shape 版。
+            emit_image_shape(items, hf_params.margin(MARGIN_LEFT), y, im.w_pt, im.h_pt, Some(im));
         }
     }
 
