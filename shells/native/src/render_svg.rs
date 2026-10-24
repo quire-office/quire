@@ -94,6 +94,35 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
 fill=\"#{r:02x}{g:02x}{b:02x}\" fill-opacity=\"{a:.3}\"/>"
                 );
             }
+            DrawItem::Image {
+                x,
+                y,
+                w,
+                h,
+                mime,
+                data_b64,
+                alt,
+            } => {
+                // K4c-image：真像素直出（取代同位灰底佔位框）。
+                // preserveAspectRatio="none"＝像素拉伸到 extent 框（LO 同款
+                // 近似：wp:extent 就是渲染框，不管源圖像素_aspect_）。
+                s.push_str("<image ");
+                let _ = write!(
+                    s,
+                    "x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" "
+                );
+                s.push_str("preserveAspectRatio=\"none\" href=\"data:");
+                s.push_str(mime);
+                s.push_str(";base64,");
+                s.push_str(data_b64);
+                s.push('"');
+                if let Some(a) = alt {
+                    s.push_str(" alt=\"");
+                    esc(a, &mut s);
+                    s.push('"');
+                }
+                s.push_str("/>\n");
+            }
             DrawItem::Rule {
                 x1,
                 y1,
@@ -133,25 +162,51 @@ mod tests {
     const SAMPLE: &[u8] = include_bytes!("../../../fixtures/sample.docx");
     const INLINE_IMG: &[u8] = include_bytes!("../../../fixtures/inline_image.docx");
 
-    /// t_a1397522：inline 圖佔位框落地 SVG——灰底 Rect（#f0f0f0）＋四邊
-    /// 淺灰 Rule（#cccccc），尺寸＝extent（200×100pt）。
+    /// K4c-image：inline 圖真像素落地 SVG——`<image href="data:image/png;
+    /// base64,…">`（PNG magic 前綴 iVBORw0KGgo）、尺寸＝extent（200×100pt）、
+    /// preserveAspectRatio="none"（extent 框拉伸口徑）。灰底佔位框退位。
     #[test]
-    fn svg_emits_image_placeholder_rect_and_rules() {
+    fn svg_emits_embedded_image_pixels() {
         let engine = Engine::from_docx_bytes(INLINE_IMG).unwrap();
         let svg = page_to_svg(&engine.page_display_list(0).unwrap());
+        assert!(svg.contains("<image "), "SVG 應含 <image> 真像素項：{svg}");
         assert!(
-            svg.contains("fill=\"#f0f0f0\""),
-            "SVG 應含灰底佔位 Rect：{svg}"
+            svg.contains("href=\"data:image/png;base64,iVBORw0KGgo"),
+            "data URI 帶 PNG magic 像素：{svg}"
         );
         assert!(
             svg.contains("width=\"200.0\" height=\"100.0\""),
-            "Rect 尺寸＝extent 200×100：{svg}"
+            "image 尺寸＝extent 200×100：{svg}"
         );
-        assert_eq!(
-            svg.split("stroke=\"#cccccc\"").count() - 1,
-            4,
-            "四邊各一條 #cccccc Rule：{svg}"
+        assert!(
+            svg.contains("preserveAspectRatio=\"none\""),
+            "extent 框拉伸口徑：{svg}"
         );
+        assert!(
+            !svg.contains("fill=\"#f0f0f0\""),
+            "真像素處不再發灰底佔位框：{svg}"
+        );
+    }
+
+    /// t_a1397522 負向臂（K4c 改掛 EMF 檔）：不可渲染格式（EMF 浮水印）仍
+    /// 走灰底 Rect（#f0f0f0）＋四邊淺灰 Rule（#cccccc）佔位——誠實近似。
+    #[test]
+    fn svg_emits_image_placeholder_rect_and_rules() {
+        const EMF: &[u8] = include_bytes!("../../../corpus/ooxmlexport/n779834.docx");
+        let engine = Engine::from_docx_bytes(EMF).unwrap();
+        let mut saw_rect = false;
+        let mut saw_rules = false;
+        for page in 0..engine.page_count() {
+            let svg = page_to_svg(&engine.page_display_list(page).unwrap());
+            saw_rect |= svg.contains("fill=\"#f0f0f0\"");
+            saw_rules |= svg.split("stroke=\"#cccccc\"").count() - 1 == 4;
+            assert!(
+                !svg.contains("<image "),
+                "EMF 不可渲染 ⇒ 第 {page} 頁不得發 <image>：{svg}"
+            );
+        }
+        assert!(saw_rect, "EMF 浮水印必須維持灰底佔位 Rect");
+        assert!(saw_rules, "佔位框四邊各一條 #cccccc Rule");
     }
 
     #[test]

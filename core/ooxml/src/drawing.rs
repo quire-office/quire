@@ -111,6 +111,14 @@ pub struct InlineImage {
     /// `a:blip/@r:embed`（VML 為 `v:imagedata/@r:id`）。本卡記錄不使用。
     #[serde(default)]
     pub embed_rid: Option<String>,
+    /// 同一候選的**全部** blip rId（文档序；`embed_rid`＝首見）。K4c-image：
+    /// `mc:AlternateContent`（含 `ve:` 變體）的 Choice 與 Fallback 各帶一個
+    /// `a:blip r:embed`，幾何相同、像素不同（Bug51170：Choice→pdf 不可渲染、
+    /// Fallback→png 可渲染）。解析層把 Fallback 的 rId 也記進本欄（不吞），
+    /// 像素可用性優先序由 engine 層依副檔名決定——解析器不判格式。
+    /// serde default＋空值不外露＝無此形態檔案的序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub embed_rids: Vec<String>,
 }
 
 impl InlineImage {
@@ -254,6 +262,9 @@ struct Pending {
     pct_axis: Option<bool>,
     overlap: Option<bool>,
     rid: Option<String>,
+    /// K4c-image：本候選見過的全部 blip rId（文档序去重；`rid`＝首見）。
+    /// Choice 走常規路徑收、Fallback 子樹破例只收 rId（幾何/段落一概不動）。
+    rids: Vec<String>,
     /// 產出目標是儲存格（建立時 tc 深度 > 0）而非正文段落。
     in_cell: bool,
     /// 候選出自 `wp:anchor`（浮動）。
@@ -277,6 +288,20 @@ struct Pending {
 }
 
 impl Pending {
+    /// K4c-image：blip／imagedata rId 記錄——首見進 `rid`（既有語義逐位不
+    /// 變），全部進 `rids`（文档序去重）。`AlternateContent` 的 Choice 與
+    /// Fallback 各帶一份 blip（幾何同、像素異）時兩條都留，engine 層依
+    /// 副檔名可渲染性擇優。
+    fn note_rid(&mut self, rid: Option<String>) {
+        let Some(rid) = rid else { return };
+        if self.rid.is_none() {
+            self.rid = Some(rid.clone());
+        }
+        if !self.rids.contains(&rid) {
+            self.rids.push(rid);
+        }
+    }
+
     fn new(para: usize, in_cell: bool) -> Self {
         Self {
             para,
@@ -296,6 +321,7 @@ impl Pending {
             pct_axis: None,
             overlap: None,
             rid: None,
+            rids: Vec::new(),
             floating: false,
             in_cell,
             vml_image: false,
@@ -378,6 +404,7 @@ impl DrawingParser {
             overlap: p.overlap,
             txbx_texts: p.txbx.clone(),
             embed_rid: p.rid.clone(),
+            embed_rids: p.rids.clone(),
         });
     }
 
@@ -396,11 +423,25 @@ impl DrawingParser {
     fn on_start(&mut self, name: &[u8], empty: bool, e: &quick_xml::events::BytesStart) {
         // ---- mc 雙份表示（先於一切：AC 透明、Fallback 吞沒——lib.rs 同構）----
         if self.fb > 0 {
-            // Fallback 子樹內：只維護巢狀深度與 AC 快照，其餘一概不看。
+            // Fallback 子樹內：只維護巢狀深度與 AC 快照＋K4c-image 破例——
+            // blip/imagedata 的 rId 一律記進進行中候選的 `rids`（像素備選；
+            // 幾何／段落／採納旗標一概不動，雙份去重語義不受影響）。
             if name == b"Fallback" && !empty {
                 self.fb += 1;
             } else if name == b"AlternateContent" && !empty {
                 self.ac_stack.push(self.fb);
+            }
+            let rid = match name {
+                b"blip" => attr_local(e, b"embed"),
+                b"imagedata" => attr_local(e, b"id"),
+                _ => None,
+            };
+            if let Some(rid) = rid {
+                if let Some(g) = self.graphic.as_mut() {
+                    g.note_rid(Some(rid));
+                } else if let Some(v) = self.vml.as_mut() {
+                    v.note_rid(Some(rid));
+                }
             }
             return;
         }
@@ -478,9 +519,9 @@ impl DrawingParser {
                 b"imagedata" => {
                     if let Some(v) = self.vml.as_mut() {
                         v.vml_image = true;
-                        if v.rid.is_none() {
-                            v.rid = attr_local(e, b"id");
-                        }
+                        // K4c-image：經 note_rid 統一記錄（首見進 rid＋全部進
+                        // rids）；語義與舊「首見才設 rid」逐位相同。
+                        v.note_rid(attr_local(e, b"id"));
                     }
                 }
                 b"gfxdata" => {
@@ -567,9 +608,9 @@ impl DrawingParser {
                     p.pct_axis = Some(true);
                 }
                 b"blip" => {
-                    if p.rid.is_none() {
-                        p.rid = attr_local(e, b"embed");
-                    }
+                    // K4c-image：經 note_rid 統一記錄（首見進 rid＋全部進
+                    // rids）；rid 語義與舊「首見才設」逐位相同。
+                    p.note_rid(attr_local(e, b"embed"));
                 }
                 b"drawing" | b"pict" if !empty => {
                     let close: &'static [u8] = if name == b"drawing" {
@@ -638,6 +679,21 @@ impl DrawingParser {
             return;
         }
         if self.fb > 0 {
+            // K4c-image 破例（同 Start 分支）：自閉合 blip／imagedata 才是
+            // **常態**（Bug51170 的 `<a:blip r:embed="rId2"/>` 就是自閉合），
+            // 只記 rId，其餘一概不動。
+            let rid = match name {
+                b"blip" => attr_local(e, b"embed"),
+                b"imagedata" => attr_local(e, b"id"),
+                _ => None,
+            };
+            if let Some(rid) = rid {
+                if let Some(g) = self.graphic.as_mut() {
+                    g.note_rid(Some(rid));
+                } else if let Some(v) = self.vml.as_mut() {
+                    v.note_rid(Some(rid));
+                }
+            }
             return;
         }
         if self.skip_tag.is_some() {
@@ -648,9 +704,8 @@ impl DrawingParser {
                 b"imagedata" => {
                     if let Some(v) = self.vml.as_mut() {
                         v.vml_image = true;
-                        if v.rid.is_none() {
-                            v.rid = attr_local(e, b"id");
-                        }
+                        // K4c-image：同 Start 分支，經 note_rid 統一記錄。
+                        v.note_rid(attr_local(e, b"id"));
                     }
                 }
                 b"gfxdata" => {
@@ -672,8 +727,9 @@ impl DrawingParser {
                         p.h = emu_to_pt(attr_local(e, b"cy").as_deref());
                     }
                 }
-                b"blip" if p.rid.is_none() => {
-                    p.rid = attr_local(e, b"embed");
+                b"blip" => {
+                    // K4c-image：同 Start 分支，經 note_rid 統一記錄。
+                    p.note_rid(attr_local(e, b"embed"));
                 }
                 _ => {}
             }
