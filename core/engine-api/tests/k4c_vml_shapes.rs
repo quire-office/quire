@@ -6,9 +6,7 @@ use quire_render_trait::DrawItem;
 const PLACEHOLDER_GRAY: u32 = 0xFFF0_F0F0;
 
 fn load(path: &str) -> Engine {
-    let full = concat!(env!("CARGO_MANIFEST_DIR"), "/../../corpus/")
-        .to_string()
-        + path;
+    let full = concat!(env!("CARGO_MANIFEST_DIR"), "/../../corpus/").to_string() + path;
     let bytes = std::fs::read(&full).unwrap_or_else(|e| panic!("讀 {full}: {e}"));
     Engine::from_docx_bytes(&bytes).expect("open")
 }
@@ -62,7 +60,11 @@ fn k4c_groupshape_sdt_vertical_text() {
         if joined.is_empty() && chars.is_empty() {
             continue;
         }
-        chars.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.partial_cmp(&b.1).unwrap()));
+        chars.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap()
+                .then(a.1.partial_cmp(&b.1).unwrap())
+        });
         let seq: String = chars.iter().map(|(_, _, c)| *c).collect();
         let has_word = seq.contains("placeholder");
         let strictly_down = chars.windows(2).all(|w| w[1].0 > w[0].0 + 0.5);

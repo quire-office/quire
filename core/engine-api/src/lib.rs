@@ -2140,7 +2140,10 @@ fn emit_txbx_texts(
 
     // ---- K4c：框內表格逐格填色（n780563 三色列表實據）：行按等分帶高、
     // 列按等分寬（格寬宣告缺＝近似；只發有色的格，None 格不發）。----
-    if let Some(rows) = shape.map(|b| b.txbx_table.clone()).filter(|r| !r.is_empty()) {
+    if let Some(rows) = shape
+        .map(|b| b.txbx_table.clone())
+        .filter(|r| !r.is_empty())
+    {
         let rh = (inner_h / rows.len() as f32).max(0.5);
         for (ri, row) in rows.iter().enumerate() {
             if row.is_empty() {
@@ -2163,7 +2166,7 @@ fn emit_txbx_texts(
 
     // ---- K4c 契約 7：layout-flow:vertical → 逐字堆疊（y 單調、x 依框右緣
     // 起欄；既有 DrawItem::Text 逐字發射，零新變體）。欄寬取段字級近似。----
-    let vertical = shape.map_or(false, |b| b.txbx_vertical);
+    let vertical = shape.is_some_and(|b| b.txbx_vertical);
     if vertical {
         for (ti, t) in texts.iter().enumerate() {
             if t.is_empty() {
@@ -2171,10 +2174,11 @@ fn emit_txbx_texts(
             }
             let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
             let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
-            let (flags, color_argb, _) = own_runs
-                .first()
-                .map(run_style)
-                .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
+            let (flags, color_argb, _) =
+                own_runs
+                    .first()
+                    .map(run_style)
+                    .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
             let fam = own_runs
                 .first()
                 .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
@@ -2281,10 +2285,14 @@ fn emit_image_shape(
     if w <= 0.0 || h <= 0.0 {
         return; // 非法尺寸老實不發射（容錯鐵律）
     }
-    let fill = if shape.map_or(false, |b| deco_off(b.filled)) {
+    let fill = if shape.is_some_and(|b| deco_off(b.filled)) {
         None
     } else {
-        Some(shape.and_then(|b| b.fill_argb).unwrap_or(IMAGE_PLACEHOLDER_FILL))
+        Some(
+            shape
+                .and_then(|b| b.fill_argb)
+                .unwrap_or(IMAGE_PLACEHOLDER_FILL),
+        )
     };
     if let Some(argb) = fill {
         items.push(DrawItem::Rect {
@@ -2295,10 +2303,12 @@ fn emit_image_shape(
             fill_argb: argb,
         });
     }
-    if shape.map_or(false, |b| deco_off(b.stroked)) {
+    if shape.is_some_and(|b| deco_off(b.stroked)) {
         return;
     }
-    let color = shape.and_then(|b| b.stroke_argb).unwrap_or(IMAGE_PLACEHOLDER_EDGE);
+    let color = shape
+        .and_then(|b| b.stroke_argb)
+        .unwrap_or(IMAGE_PLACEHOLDER_EDGE);
     let width_pt = shape
         .and_then(|b| b.stroke_width_pt)
         .unwrap_or(IMAGE_PLACEHOLDER_RULE_PT);
@@ -2955,7 +2965,14 @@ impl Engine {
             }
             let y = emit_y + im.para_index as f32 * line_h;
             // K4c：頁首尾候選本身就是 InlineImage——真色直走 shape 版。
-            emit_image_shape(items, hf_params.margin(MARGIN_LEFT), y, im.w_pt, im.h_pt, Some(im));
+            emit_image_shape(
+                items,
+                hf_params.margin(MARGIN_LEFT),
+                y,
+                im.w_pt,
+                im.h_pt,
+                Some(im),
+            );
         }
     }
 

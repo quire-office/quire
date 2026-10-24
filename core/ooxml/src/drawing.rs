@@ -263,7 +263,7 @@ pub fn vml_style_wh(style: Option<&str>) -> (Option<f32>, Option<f32>) {
 /// - **不認識 → None**（老實不發色，不冒充）；
 /// - 帶尾註的 Word 產出（`"white [3201]"`／`"#7f7f7f [1601]"`）只吃空格前
 ///   本體——尾註是主題索引註解，非颜色值的一部分。
-/// 名稱大小寫不敏感。
+///   名稱大小寫不敏感。
 pub fn parse_vml_color(raw: Option<&str>) -> Option<u32> {
     let s = raw?.trim();
     let s = s.split([' ', '\t']).next().unwrap_or("");
@@ -281,7 +281,7 @@ pub fn parse_vml_color(raw: Option<&str>) -> Option<u32> {
         "blue" => 0xFF00_00FF,
         "green" => 0xFF00_8000,
         "gray" | "grey" => 0xFF80_8080,
-        "yellow" => 0xFFFFFF_00,
+        "yellow" => 0xFFFF_FF00,
         "purple" => 0xFF80_0080,
         "olive" => 0xFF80_8000,
         "maroon" => 0xFF80_0000,
@@ -292,9 +292,7 @@ pub fn parse_vml_color(raw: Option<&str>) -> Option<u32> {
         _ => {
             // 十六進位：#RRGGBB／RRGGBB／AARRGGBB（ DrawingML 常用後者）。
             let hex = lower.strip_prefix('#').unwrap_or(&lower);
-            if !(hex.len() == 6 || hex.len() == 8)
-                || !hex.chars().all(|c| c.is_ascii_hexdigit())
-            {
+            if !(hex.len() == 6 || hex.len() == 8) || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
                 return None;
             }
             let v = u32::from_str_radix(hex, 16).ok()?;
@@ -315,7 +313,7 @@ pub fn parse_vml_color(raw: Option<&str>) -> Option<u32> {
 /// - `longDash` → `"12 3"`；`longDashDot` → `"12 3 1 3"`；
 /// - `longDashDotDot` → `"12 3 1 3 1 3"`；
 /// - 三數值自訂式 `"sd,sd,sd"`（VML 允許 `1 2 3` 形态）→ 直接透傳。
-/// 不認識 → None（實線近似，不虛構花樣）。
+///   不認識 → None（實線近似，不虛構花樣）。
 pub fn vml_dashstyle_to_dash(raw: Option<&str>) -> Option<String> {
     let s = raw?.trim();
     if s.is_empty() {
@@ -365,9 +363,7 @@ fn vml_style_map(style: Option<&str>) -> (Option<f32>, Option<f32>, Vec<(String,
 }
 
 fn style_lookup<'a>(kv: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    kv.iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| v.as_str())
+    kv.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 }
 
 /// `inset="3.6pt,54pt,3.6pt,180pt"` → (左,上,右,下) pt。只吃 `pt` 顯式
@@ -459,7 +455,9 @@ fn coord_style_rect(kv: &[(String, String)]) -> Option<[f64; 4]> {
             None => return None,
         };
         // 純數值（無單位）才是組座標系；帶 pt/cm/… 者交給 vml_len_to_pt 路徑。
-        if v.chars().any(|c| !(c.is_ascii_digit() || c == '.' || c == '-')) {
+        if v.chars()
+            .any(|c| !(c.is_ascii_digit() || c == '.' || c == '-'))
+        {
             return None;
         }
         let n = v.parse::<f64>().ok()?;
@@ -485,11 +483,13 @@ fn has_unit_suffix(v: &str) -> bool {
     let v = v.trim();
     match v.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+')) {
         Some(0) => false,
-        Some(i) => v[i..].trim().eq_ignore_ascii_case("pt")
-            || v[i..].trim().eq_ignore_ascii_case("cm")
-            || v[i..].trim().eq_ignore_ascii_case("in")
-            || v[i..].trim().eq_ignore_ascii_case("mm")
-            || v[i..].trim().eq_ignore_ascii_case("px"),
+        Some(i) => {
+            v[i..].trim().eq_ignore_ascii_case("pt")
+                || v[i..].trim().eq_ignore_ascii_case("cm")
+                || v[i..].trim().eq_ignore_ascii_case("in")
+                || v[i..].trim().eq_ignore_ascii_case("mm")
+                || v[i..].trim().eq_ignore_ascii_case("px")
+        }
         None => false,
     }
 }
@@ -864,61 +864,61 @@ impl DrawingParser {
 /// 缺 coordsize、子組 coord 矩形非法、或外框尺寸（pt）缺 → 壓 None
 /// 毒化層，其子件老實不映射（呼叫端退回整框，不發射怪異座標）。
 fn push_group_frame(v: &mut Pending, e: &quick_xml::events::BytesStart) {
-        let style = attr_local(e, b"style");
-        let frame: Option<CoordFrame> = (|| {
-            let (size_w, size_h) = parse_coord_pair(attr_local(e, b"coordsize")?.trim())?;
-            if size_w <= 0.0 || size_h <= 0.0 {
-                return None;
+    let style = attr_local(e, b"style");
+    let frame: Option<CoordFrame> = (|| {
+        let (size_w, size_h) = parse_coord_pair(attr_local(e, b"coordsize")?.trim())?;
+        if size_w <= 0.0 || size_h <= 0.0 {
+            return None;
+        }
+        let (origin_x, origin_y) = attr_local(e, b"coordorigin")
+            .as_deref()
+            .and_then(parse_coord_pair)
+            .unwrap_or((0.0, 0.0));
+        let (_, _, kv) = vml_style_map(style.as_deref());
+        let (dx0, dy0, w_pt, h_pt) = match v.coord_stack.last().copied().flatten() {
+            // 巢狀組：coord 矩形經父幀線性映射（映射不起 → 毒化）。
+            Some(parent) => {
+                let r = coord_style_rect(&kv)?;
+                (
+                    parent.map_x(r[0]),
+                    parent.map_y(r[1]),
+                    parent.scale_x(r[2]),
+                    parent.scale_y(r[3]),
+                )
             }
-            let (origin_x, origin_y) = attr_local(e, b"coordorigin")
-                .as_deref()
-                .and_then(parse_coord_pair)
-                .unwrap_or((0.0, 0.0));
-            let (_, _, kv) = vml_style_map(style.as_deref());
-            let (dx0, dy0, w_pt, h_pt) = match v.coord_stack.last().copied().flatten() {
-                // 巢狀組：coord 矩形經父幀線性映射（映射不起 → 毒化）。
-                Some(parent) => {
-                    let r = coord_style_rect(&kv)?;
-                    (
-                        parent.map_x(r[0]),
-                        parent.map_y(r[1]),
-                        parent.scale_x(r[2]),
-                        parent.scale_y(r[3]),
-                    )
-                }
-                // 最外層組：自身 style 即 extent。**只吃帶單位宣告**的
-                // width/height（pt/cm/…）——無單位純數值在組語境是 coord
-                // 單位而非 px，pict 直接子孫的 px 慣例不適用於組，缺父幀
-                // 無從映射 → 老實毒化（不虛構 extent）。
-                None => {
-                    let wv = style_lookup(&kv, "width").filter(|v| has_unit_suffix(v))?;
-                    let hv = style_lookup(&kv, "height").filter(|v| has_unit_suffix(v))?;
-                    let (w, h) = (
-                        vml_style_wh(Some(&format!("width:{wv}"))).0?,
-                        vml_style_wh(Some(&format!("height:{hv}"))).0?,
-                    );
-                    // 外層組即佔位框：把 extent 留給候補（呼叫端在 w/h 缺時採用）。
-                    v.w_from_group = Some(w);
-                    v.h_from_group = Some(h);
-                    (0.0, 0.0, w, h)
-                }
-            };
-            if !(w_pt.is_finite() && h_pt.is_finite()) || w_pt <= 0.0 || h_pt <= 0.0 {
-                return None;
+            // 最外層組：自身 style 即 extent。**只吃帶單位宣告**的
+            // width/height（pt/cm/…）——無單位純數值在組語境是 coord
+            // 單位而非 px，pict 直接子孫的 px 慣例不適用於組，缺父幀
+            // 無從映射 → 老實毒化（不虛構 extent）。
+            None => {
+                let wv = style_lookup(&kv, "width").filter(|v| has_unit_suffix(v))?;
+                let hv = style_lookup(&kv, "height").filter(|v| has_unit_suffix(v))?;
+                let (w, h) = (
+                    vml_style_wh(Some(&format!("width:{wv}"))).0?,
+                    vml_style_wh(Some(&format!("height:{hv}"))).0?,
+                );
+                // 外層組即佔位框：把 extent 留給候補（呼叫端在 w/h 缺時採用）。
+                v.w_from_group = Some(w);
+                v.h_from_group = Some(h);
+                (0.0, 0.0, w, h)
             }
-            Some(CoordFrame {
-                origin_x,
-                origin_y,
-                size_w,
-                size_h,
-                dx0,
-                dy0,
-                w_pt,
-                h_pt,
-            })
-        })();
-        v.coord_stack.push(frame);
-    }
+        };
+        if !(w_pt.is_finite() && h_pt.is_finite()) || w_pt <= 0.0 || h_pt <= 0.0 {
+            return None;
+        }
+        Some(CoordFrame {
+            origin_x,
+            origin_y,
+            size_w,
+            size_h,
+            dx0,
+            dy0,
+            w_pt,
+            h_pt,
+        })
+    })();
+    v.coord_stack.push(frame);
+}
 
 /// K4c：組內子件 Start → 若頂幀可用且子件 style 為純 coord 數值，
 /// 線性映射出組內矩形（pt，相對佔位框原點）；首見為準。映射條件不足
@@ -1079,9 +1079,7 @@ impl DrawingParser {
                             // 帶單位宣告）以自身 style 撐框尺寸。
                             push_group_frame(v, e);
                             if v.w.is_none() && v.h.is_none() {
-                                if let (Some(w), Some(h)) =
-                                    (v.w_from_group, v.h_from_group)
-                                {
+                                if let (Some(w), Some(h)) = (v.w_from_group, v.h_from_group) {
                                     v.w = Some(w);
                                     v.h = Some(h);
                                 }
@@ -1292,13 +1290,11 @@ impl DrawingParser {
                         apply_vml_deco(v, name, e);
                     }
                 }
-                b"shd" => {
+                b"shd" if self.txbx_depth > 0 => {
                     // 框內表格格填色（n780563 三色列實據）：Empty 形態同警。
-                    if self.txbx_depth > 0 {
-                        if let Some(v) = self.vml.as_mut() {
-                            if v.tc_in > 0 && v.cell_fill.is_none() {
-                                v.cell_fill = parse_vml_color(attr_local(e, b"fill").as_deref());
-                            }
+                    if let Some(v) = self.vml.as_mut() {
+                        if v.tc_in > 0 && v.cell_fill.is_none() {
+                            v.cell_fill = parse_vml_color(attr_local(e, b"fill").as_deref());
                         }
                     }
                 }
@@ -1468,10 +1464,8 @@ impl DrawingParser {
                             v.tbl_row.push(v.cell_fill.take());
                         }
                     }
-                    b"tr" => {
-                        if !v.tbl_row.is_empty() {
-                            v.tbl_rows.push(std::mem::take(&mut v.tbl_row));
-                        }
+                    b"tr" if !v.tbl_row.is_empty() => {
+                        v.tbl_rows.push(std::mem::take(&mut v.tbl_row));
                     }
                     _ => {}
                 }
