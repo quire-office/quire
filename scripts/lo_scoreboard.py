@@ -188,7 +188,7 @@ def run_pipeline(args):
             rows.append(row)
             print(f"   ✗ 比對異常：{e}", flush=True)
             continue
-        row = RL.compare(rel, lo, ow)
+        row = RL.compare(rel, lo, ow, sect_pr=RL.sect_pr_count(docx))
         row["status"] = "ok"
         row.setdefault("notes", row.get("notes", []))
         rows.append(row)
