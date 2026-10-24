@@ -169,10 +169,7 @@ mod tests {
     fn svg_emits_embedded_image_pixels() {
         let engine = Engine::from_docx_bytes(INLINE_IMG).unwrap();
         let svg = page_to_svg(&engine.page_display_list(0).unwrap());
-        assert!(
-            svg.contains("<image "),
-            "SVG 應含 <image> 真像素項：{svg}"
-        );
+        assert!(svg.contains("<image "), "SVG 應含 <image> 真像素項：{svg}");
         assert!(
             svg.contains("href=\"data:image/png;base64,iVBORw0KGgo"),
             "data URI 帶 PNG magic 像素：{svg}"
