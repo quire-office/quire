@@ -694,6 +694,9 @@ struct Pending {
     ln_ctx: usize,
     /// `a:solidFill` 深度（其內 srgbClr 才落色）。
     fill_ctx: usize,
+    /// `a:extLst`／`a:ext` 深度（>0 時 solidFill/srgbClr **一概不收**：
+    /// 擴充清單如 `a14:hiddenLine` 非真實填充／描邊，mce-nested 實據）。
+    ext_ctx: usize,
 }
 
 impl Pending {
@@ -747,6 +750,7 @@ impl Pending {
             sp_ctx: 0,
             ln_ctx: 0,
             fill_ctx: 0,
+            ext_ctx: 0,
         }
     }
 }
@@ -1113,15 +1117,20 @@ impl DrawingParser {
             // K4c：wps:spPr 樣式上下文深度（填充／描邊歸屬判別用）。
             match name {
                 b"spPr" => p.sp_ctx += 1,
+                // 擴充清單標記：`a:extLst` 與其子 `a:ext/@uri`（帶 uri 者
+                // 才是擴充清單節點；xfrm 內的幾何 `a:ext cx/cy` 同名不同物）。
+                b"extLst" => p.ext_ctx += 1,
+                b"ext" if attr_local(e, b"uri").is_some() => p.ext_ctx += 1,
                 b"ln" => {
                     p.ln_ctx += 1;
-                    // a:ln/@w（EMU）＝描邊線寬（首見為準）。
-                    if p.stroke_w.is_none() {
+                    // a:ln/@w（EMU）＝描邊線寬（首見為準；擴充清單內的
+                    // hiddenLine 不計——那不是真的可見描邊）。
+                    if p.stroke_w.is_none() && p.ext_ctx == 0 {
                         p.stroke_w = emu_to_pt(attr_local(e, b"w").as_deref());
                     }
                 }
                 b"solidFill" => p.fill_ctx += 1,
-                b"srgbClr" if p.fill_ctx > 0 => {
+                b"srgbClr" if p.fill_ctx > 0 && p.ext_ctx == 0 => {
                     // 卡片契約 2 優先序（DrawingML 路徑）：`a:ln` 內的
                     // solidFill 歸**描邊**，否則（spPr 直下）歸填充。首見為準。
                     let argb = parse_vml_color(attr_local(e, b"val").as_deref());
@@ -1313,7 +1322,7 @@ impl DrawingParser {
                 // K4c：`a:srgbClr` 幾乎總以自閉合形態出現（tdf152200 實據
                 // `<a:srgbClr val="000000"/>`）——Empty 事件同樣要落色，
                 // 歸屬判別與 Start 臂同口徑（ln 內→描邊、spPr 直下→填充）。
-                b"srgbClr" if p.fill_ctx > 0 => {
+                b"srgbClr" if p.fill_ctx > 0 && p.ext_ctx == 0 => {
                     if let Some(c) = parse_vml_color(attr_local(e, b"val").as_deref()) {
                         if p.ln_ctx > 0 {
                             if p.stroke.is_none() {
@@ -1541,6 +1550,15 @@ impl DrawingParser {
                 b"spPr" => {
                     if let Some(p) = self.graphic.as_mut() {
                         p.sp_ctx = p.sp_ctx.saturating_sub(1);
+                    }
+                    return;
+                }
+                b"extLst" | b"ext" => {
+                    // End 不辨屬性（閉合標籤無 attrs）：Ext/Start 的 uri 判別
+                    // 已保證計數配對（同一對開閉都算或都不算——xfrm 幾何 ext
+                    // 開標不計，閉標 saturating_sub 於 0 亦不改其義）。
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.ext_ctx = p.ext_ctx.saturating_sub(1);
                     }
                     return;
                 }
