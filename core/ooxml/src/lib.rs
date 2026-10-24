@@ -584,6 +584,17 @@ fn parse_document_xml_with_fonts(
     // 指令緩衝**逐層持有**（t_c1fb4c69 S2-6）：全域單緩衝在巢套域會串味——
     // 內層 begin 清空外層已累積指令、內層指令又混進外層 separate 的分類。
     let mut complex_stack: Vec<(Option<FieldKind>, bool, String)> = Vec::new();
+    // ---- K4e3：修訂標記容器（ECMA-376 §17.13；LO 默認視圖口徑＝變更照畫）----
+    // `w:ins`／`w:moveTo` 子樹＝插入側（照發＋底線）；`w:del`／`w:moveFrom`＝
+    // 刪除側（`w:delText` 照發＋刪除線——LO 默認視圖實據：RA001 p6 'Chromatpgrams'
+    // 照畫且帶 0.6pt 中帶刪除線，'Chromatograms' 帶底線）。舊實作把 delText 整段
+    // 丟棄（只有 `w:t` 進文字流），LO 卻照畫——K5-diag §2.3 判定的「delText 被
+    // ins 吞」不一致由來。只動 run 採集：不預位、不計段（五台 p_count 鐵律）。
+    let mut rev_ins_depth: usize = 0;
+    let mut rev_del_depth: usize = 0;
+    let mut rev_move_depth: usize = 0;
+    // `w:delText` 文字區間（`w:t` 的刪除側鏡像；两者永不重疊）。
+    let mut in_del_t = false;
     let mut instr_active = false;
 
     loop {
@@ -654,6 +665,22 @@ fn parse_document_xml_with_fonts(
                         // 一律歸零（同 hyperlink_depth 的防禦策略）。
                         ppr_depth = 0;
                         ppr_rpr_depth = 0;
+                    }
+                    b"ins" if ppr_depth == 0 => {
+                        // 插入容器（段落級；rPr 內的空 `<w:ins/>` 段落標記宣告走
+                        // Empty 臂、不進此臂）。默認視圖照發＋底線（LO 實據）。
+                        rev_ins_depth += 1;
+                    }
+                    b"del" if ppr_depth == 0 => {
+                        // 刪除容器（同上；其內 `w:delText` 默認視圖照發＋刪除線）。
+                        rev_del_depth += 1;
+                    }
+                    b"moveFrom" | b"moveTo" => {
+                        // 移動容器：LO 默認視圖整棵不畫（RA001 實測：moveFrom 的
+                        // 'der of injectio'/'n'/':' 與 moveTo 的 'Or'/'der of
+                        // injection:' 全部 ×0——LO 只畫目的地重打字 'Order of
+                        // injection:'）。整棵抑制文字採集（見 in_t/in_del_t 閘）。
+                        rev_move_depth += 1;
                     }
                     b"hyperlink" => {
                         hyperlink_depth += 1;
