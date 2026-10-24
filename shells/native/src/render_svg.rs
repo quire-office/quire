@@ -94,6 +94,35 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
 fill=\"#{r:02x}{g:02x}{b:02x}\" fill-opacity=\"{a:.3}\"/>"
                 );
             }
+            DrawItem::Image {
+                x,
+                y,
+                w,
+                h,
+                mime,
+                data_b64,
+                alt,
+            } => {
+                // K4c-image：真像素直出（取代同位灰底佔位框）。
+                // preserveAspectRatio="none"＝像素拉伸到 extent 框（LO 同款
+                // 近似：wp:extent 就是渲染框，不管源圖像素_aspect_）。
+                s.push_str("<image ");
+                let _ = write!(
+                    s,
+                    "x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" "
+                );
+                s.push_str("preserveAspectRatio=\"none\" href=\"data:");
+                s.push_str(mime);
+                s.push_str(";base64,");
+                s.push_str(data_b64);
+                s.push('"');
+                if let Some(a) = alt {
+                    s.push_str(" alt=\"");
+                    esc(a, &mut s);
+                    s.push('"');
+                }
+                s.push_str("/>\n");
+            }
             DrawItem::Rule {
                 x1,
                 y1,
