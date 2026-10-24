@@ -239,7 +239,13 @@ def main():
     for b in pagebreaks[:6]:
         # LO page same index if exists
         lo_idx = b["page"]
-        lo_hint = lo_texts[lo_idx].splitlines()[0][:40] if lo_idx < len(lo_texts) else ""
+        if lo_idx >= len(lo_texts):
+            lo_hint = "(LO 無此頁)"
+        else:
+            # 空 LO 頁（para-level sectPr 真空頁）splitlines() 為 []——直接 [0] 會
+            # IndexError（§4 懸#8）；取首個非空行，全空則明確標記跳過。
+            first = next((ln for ln in lo_texts[lo_idx].splitlines() if norm(ln)), "")
+            lo_hint = first[:40] if first else "(LO 本頁為空——跳過)"
         print(f"{b['page']:>3}  {b['first_para']:>16}  {b['last_para']:>15}  {lo_hint}")
 
     print()
