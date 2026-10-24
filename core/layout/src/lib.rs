@@ -643,6 +643,10 @@ pub struct PageImage {
     pub h_pt: f32,
 }
 
+fn usize_max() -> usize {
+    usize::MAX
+}
+
 /// 頁面上的浮動圖片鎖點（不佔行網格；座標＝頁絕對 pt，發射前已按各軸
 /// `relativeFrom` 原點系換算完成）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -651,6 +655,10 @@ pub struct PageFloatingImage {
     pub y_pt: f32,
     pub w_pt: f32,
     pub h_pt: f32,
+    /// 錨定段落（扁平 Start 序）：K4e2 文字框發射需按宿主段落取 txbx_texts；
+    /// serde default＝舊快照可解析（舊資料無此欄＝usize::MAX＝發射層跳過）。
+    #[serde(default = "usize_max")]
+    pub para: usize,
 }
 
 /// 頁面上的表格放置（pack_run flush 時蓋章）。
@@ -1423,6 +1431,7 @@ fn attach_floating_images(
             y_pt: y,
             w_pt: im.w_pt,
             h_pt: im.h_pt,
+            para: im.para,
         });
     }
 }

@@ -469,6 +469,11 @@ struct TableParser {
     /// `mc:Fallback` 巢狀深度（parser 級）：>0 時其內 `w:p` 不入扁平口徑
     /// （主解析器整棵吞沒 Fallback，只解析 Choice 一份）。
     fb: usize,
+    /// K4e2：`w:txbxContent` 文字框子樹深度。>0 時其內 `w:p` **不入扁平口徑**
+    /// （主解析器把框內段落掛進外層段落的 `txbx_texts`，不佔正文槽；四解析器
+    /// 同口徑鐵律的改寫點——見 `parse_document_xml`／`drawing::count_paras`／
+    /// `sectpr`）。
+    txbx_depth: usize,
     /// 已完成的 body 級表格（含開始錨點）。
     roots: Vec<BodyTable>,
 }
@@ -489,6 +494,7 @@ impl TableParser {
             frames: Vec::new(),
             p_count: 0,
             fb: 0,
+            txbx_depth: 0,
             roots: Vec::new(),
         }
     }
@@ -570,6 +576,11 @@ impl TableParser {
     }
 
     fn on_start(&mut self, name: &[u8], empty: bool, e: &quick_xml::events::BytesStart) {
+        // ---- K4e2：txbxContent 深度追蹤（先於 Skip 幀處理：Choice 路徑內的
+        // 文字框也要跟；Fallback 內不跟——主解析器整棵吞沒 Fallback）----
+        if self.fb == 0 && name == b"txbxContent" && !empty {
+            self.txbx_depth += 1;
+        }
         // 頂端是吞沒幀：只維護深度＋parser 級 Fallback 計數，其餘一概不看。
         // 段落計數：Choice 路徑（fb == 0）照計，Fallback 內不計——主解析器
         // 只解析 Choice 一份，扁平口徑三者必須一致（parse_document_xml／sectpr）。
@@ -581,7 +592,10 @@ impl TableParser {
                     self.fb += 1;
                 } else {
                     if name == b"p" && self.fb == 0 && close == b"AlternateContent" {
-                        self.p_count += 1;
+                        // K4e2：框內段落不佔正文槽（主解析器掛 txbx_texts）。
+                        if self.txbx_depth == 0 {
+                            self.p_count += 1;
+                        }
                     }
                     *depth += 1;
                 }
@@ -590,8 +604,9 @@ impl TableParser {
         }
         // 段落計數：任何 `w:p` Start 都算（口徑＝主解析器：Start 佔槽、自閉合
         // 不算、Fallback 內不計）；於 P 早退之前執行——巢狀段落（文字框
-        // `w:txbxContent` 內的 `w:p`）在主解析器各佔一槽，此處必須同步計入。
-        if name == b"p" && !empty && self.fb == 0 {
+        // `w:txbxContent` 內的 `w:p`）自 K4e2 起**不佔正文槽**（主解析器改掛
+        // `Paragraph::txbx_texts`），此處以 txbx_depth 同步跳過。
+        if name == b"p" && !empty && self.fb == 0 && self.txbx_depth == 0 {
             self.p_count += 1;
         }
         // 頂端是段落幀：段落內容（runs/pPr…）非本模組職責，深度包圍之。
@@ -925,8 +940,13 @@ impl TableParser {
     }
 
     fn on_end(&mut self, name: &[u8]) {
+        // ---- K4e2：txbxContent 完結（先於 Skip 幀處理，與主解析器同位：
+        // 主解析器在 fb>0 時整棵跳過，故此處也只在 fb==0 時遞減）----
+        if self.fb == 0 && name == b"txbxContent" {
+            self.txbx_depth = self.txbx_depth.saturating_sub(1);
+        }
         // Skip 頂端：parser 級 Fallback 計數優先（</mc:Fallback> 出棧）；
-        // 深度 0 時同名 End 才弹出 Skip 幀。
+        // 深度 0 時同名 End 才彈出 Skip 幀。
         if let Some(Frame::Skip { depth, close }) = self.frames.last() {
             let (d, close) = (*depth, *close);
             if name == b"Fallback" && self.fb > 0 {
@@ -943,10 +963,10 @@ impl TableParser {
             }
             return;
         }
-        // 常規：顶端配對→弹出完結；未配對則向下找同名幀（畸形容忍：
+        // 常規：顶端配對→彈出完結；未配對則向下找同名幀（畸形容忍：
         // 彈掉其上所有幀——未閉合結構老實丟棄，明文仍在 parts）。
         // Skip 幀已被錯置標籤提前彈出時，</mc:Fallback> 在此兜底降計，
-        // 避免 fb 卡死导致其後所有段落漏計（主解析器無幀、必然遞減）。
+        // 避免 fb 卡死導致其後所有段落漏計（主解析器無幀、必然遞減）。
         if name == b"Fallback" {
             self.fb = self.fb.saturating_sub(1);
         }
@@ -1360,17 +1380,17 @@ mod tests {
     fn nested_txbx_para_start_matches_main_parser() {
         let xml = "<w:document xmlns:w=\"x\" xmlns:mc=\"m\"><w:body>\n            <w:p><w:r><w:t>表前</w:t></w:r></w:p>\n            <w:tbl><w:tblGrid><w:gridCol w:w=\"100\"/></w:tblGrid><w:tr><w:tc>\n              <w:p><w:r><w:t>格內前</w:t></w:r>\n                <w:r><mc:AlternateContent><mc:Choice Requires=\"wps\">\n                  <w:txbxContent><w:p><w:r><w:t>框內</w:t></w:r></w:p></w:txbxContent>\n                </mc:Choice><mc:Fallback>\n                  <w:p><w:r><w:t>框內</w:t></w:r></w:p>\n                </mc:Fallback></mc:AlternateContent></w:r>\n              <w:r><w:t>格內後</w:t></w:r></w:p>\n            </w:tc></w:tr></w:tbl>\n            </w:body></w:document>"
             .as_bytes();
-        // 主解析器同口徑交叉驗證（Start 佔槽＋Fallback 吞沒）：
-        // 表前段、格內段、框內段（Choice 一份）＝3。
+        // 主解析器同口徑交叉驗證（Start 佔槽＋Fallback 吞沒＋K4e2 框內段
+        // 不佔槽）：表前段、格內段＝2（框內段掛宿主 txbx_texts）。
         assert_eq!(
             crate::parse_document_xml(xml, &crate::ThemeColors::default())
                 .expect("主解析")
                 .len(),
-            3
+            2
         );
         assert_eq!(
             crate::table::count_flat_paras(xml),
-            3,
+            2,
             "表格計數器與主解析器分岔"
         );
         let tables = read_body_tables(xml);
@@ -1385,7 +1405,7 @@ mod tests {
             })
             .collect();
         // 格內段 index＝1（Start 序無漂移）；框內段在 Skip 幀內不掛
-        // canonical block（雙份表示整棵不展開），但已入扁平計數。
+        // canonical block，且 K4e2 起連扁平計數也不入（掛宿主 txbx_texts）。
         assert_eq!(idx, vec![1], "格內段 index 直指主解析器扁平段落 1");
     }
 

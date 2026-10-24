@@ -339,6 +339,9 @@ fn scan_sections(xml: &[u8]) -> Scan {
     let mut p_count: usize = 0; // 與 parse_document_xml 同口徑：只算 w:p 的 Start（Fallback 內不計）
     let mut block_depth: i32 = 0; // w:p／w:tbl 巢狀深度（0＝body 級）
     let mut fb: usize = 0; // mc:Fallback 巢狀深度：>0 時其內 w:p 不入扁平口徑
+                           // K4e2：`w:txbxContent` 文字框子樹深度：>0 時其內 w:p **不入扁平口徑**
+                           // （主解析器改掛外層段落的 `txbx_texts`）——四解析器同口徑鐵律的改寫點。
+    let mut txbx_depth: usize = 0;
     let mut ac_stack: Vec<usize> = Vec::new(); // AC 開標的 fb 快照（錯置標籤不致卡死）
     let mut in_sect = false;
     let mut accum: Option<Accum> = None;
@@ -365,11 +368,17 @@ fn scan_sections(xml: &[u8]) -> Scan {
                     b"Fallback" if ev_is_block_start => fb += 1,
                     b"AlternateContent" if ev_is_block_start => ac_stack.push(fb),
                     b"p" if ev_is_block_start => {
-                        if fb == 0 {
+                        // K4e2：框內段落不計 p_count（主解析器改掛宿主段落的
+                        // txbx_texts，不佔正文槽）；block_depth 仍成對遞增——
+                        // 它只用於「body 級 block 是否完結」，跳過會讓框內
+                        // sectPr（畸形）誤判成 body 級邊界。
+                        if fb == 0 && txbx_depth == 0 {
                             p_count += 1;
                         }
                         block_depth += 1;
                     }
+                    // K4e2：文字框子樹深度（口徑同 p_count：Fallback 內不跟）。
+                    b"txbxContent" if ev_is_block_start && fb == 0 => txbx_depth += 1,
                     b"tbl" if ev_is_block_start => block_depth += 1,
                     b"sectPr" if fb == 0 => {
                         if ev_is_block_start {
@@ -466,6 +475,12 @@ fn scan_sections(xml: &[u8]) -> Scan {
                 match name.as_slice() {
                     b"AlternateContent" => {
                         fb = ac_stack.pop().unwrap_or(0);
+                    }
+                    // K4e2：文字框子樹完結（Start 只在 fb==0 時遞增；End 一律
+                    // 遞減——非驗證式解析器開閉各自跟隨，深層 Fallback 內的
+                    // 鏡像 txbxContent End 以 saturating 兜住，不致轉負）。
+                    b"txbxContent" => {
+                        txbx_depth = txbx_depth.saturating_sub(1);
                     }
                     b"Fallback" => {
                         fb = fb.saturating_sub(1);

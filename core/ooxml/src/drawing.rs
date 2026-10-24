@@ -102,6 +102,12 @@ pub struct InlineImage {
     /// `wp:anchor/@allowOverlap`（None＝元素不存在／非 anchor）。
     #[serde(default)]
     pub overlap: Option<bool>,
+    /// 文字框段落文字（子樹 `w:txbxContent` 各段，按框內段落序；K4e2）。
+    /// 非空＝本候選是文字框：VML 純文字框據此採納佔位（舊實作只認
+    /// imagedata/gfxdata，連框都不畫）；發射層把它們按框寬斷行畫進框內。
+    /// serde default＋空值不外露＝無框圖檔的序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub txbx_texts: Vec<String>,
     /// `a:blip/@r:embed`（VML 為 `v:imagedata/@r:id`）。本卡記錄不使用。
     #[serde(default)]
     pub embed_rid: Option<String>,
@@ -256,6 +262,18 @@ struct Pending {
     vml_image: bool,
     /// VML：o:gfxdata（OLE 圖示）出現過。
     vml_gfxdata: bool,
+    /// 子樹內見過 `w:txbxContent`（文字框）。VML 純文字框靠此採納佔位
+    /// （K4e2：其文字不再走正文流，改掛宿主段落 `txbx_texts`，發射層按此
+    /// Shape 落點繪製）；DrawingML 側同標記但採納條件本就看 extent，不動。
+    has_txbx: bool,
+    /// 框內段落文字（`w:txbxContent` 各段完結時推入）。
+    txbx: Vec<String>,
+    /// 進行中的框內段落文字。
+    txbx_cur: String,
+    /// 框內 `w:t` 文字區間旗標（Start/End 配對）。
+    txbx_in_t: bool,
+    /// 框內 `w:p` 開閉深度（完結時 flush txbx_cur）。
+    txbx_para_depth: usize,
 }
 
 impl Pending {
@@ -282,6 +300,11 @@ impl Pending {
             in_cell,
             vml_image: false,
             vml_gfxdata: false,
+            has_txbx: false,
+            txbx: Vec::new(),
+            txbx_cur: String::new(),
+            txbx_in_t: false,
+            txbx_para_depth: 0,
         }
     }
 }
@@ -304,6 +327,9 @@ struct DrawingParser {
     skip_tag: Option<(&'static [u8], usize)>,
     /// `mc:Fallback` 深度（parser 級）：>0 時圖片內容一概不看（雙份去重）。
     fb: usize,
+    /// K4e2：`w:txbxContent` 文字框子樹深度。>0 時其內 `w:p` **不入扁平口徑**
+    /// （主解析器改掛外層段落的 `txbx_texts`）——四解析器同口徑鐵律的改寫點。
+    txbx_depth: usize,
     /// `mc:AlternateContent` 巢狀快照（錯置標籤不致 fb 卡死，同主解析器）。
     ac_stack: Vec<usize>,
 }
@@ -321,6 +347,7 @@ impl DrawingParser {
             vml: None,
             skip_tag: None,
             fb: 0,
+            txbx_depth: 0,
             ac_stack: Vec::new(),
         }
     }
@@ -349,17 +376,19 @@ impl DrawingParser {
             pos_y_align: p.pos_y_align.clone(),
             pos_y_pct: p.pos_y_pct,
             overlap: p.overlap,
+            txbx_texts: p.txbx.clone(),
             embed_rid: p.rid.clone(),
         });
     }
 
-    /// VML 累積完結：有圖片（imagedata 或 OLE 圖示 gfxdata）才採納——
-    /// 純文字框/裝飾 shape 不撐位（其文字已由段落流表達）。
+    /// VML 累積完結：有圖片（imagedata 或 OLE 圖示 gfxdata）**或文字框**
+    /// （K4e2：txbxContent——其文字不再走正文流，無框連字都不剩，必須撐位）
+    /// 才採納；純裝飾 shape（無圖無框）仍不撐位。
     fn finalize_vml(&mut self) {
         let Some(v) = self.vml.take() else {
             return;
         };
-        if v.vml_image || v.vml_gfxdata {
+        if v.vml_image || v.vml_gfxdata || v.has_txbx {
             self.push_pending(&v);
         }
     }
@@ -388,10 +417,15 @@ impl DrawingParser {
             _ => {}
         }
 
+        // ---- K4e2：txbxContent 深度追蹤（先於一切分支；此處 fb 必為 0）----
+        if name == b"txbxContent" && !empty {
+            self.txbx_depth += 1;
+        }
+
         // ---- 吞沒幀（Graphic 內的巢狀 drawing/pict）：段落照計（口徑），
         // 雙份維護照常，其餘標記不看 ----
         if let Some((tag, depth)) = self.skip_tag {
-            if name == b"p" && !empty {
+            if name == b"p" && !empty && self.txbx_depth == 0 {
                 self.p_count += 1;
             }
             if name == tag && !empty {
@@ -400,9 +434,19 @@ impl DrawingParser {
             return;
         }
 
-        // ---- 段落計數（三解析器同口徑；自閉合 w:p 不算）----
+        // ---- 段落計數（三解析器同口徑；自閉合 w:p 不算；K4e2：框內段落不計）----
         if name == b"p" {
-            if !empty {
+            if self.txbx_depth > 0 {
+                // 框內段落：不計 p_count，宿主候補段落深度＋1（End 配對 flush）。
+                if !empty {
+                    if let Some(v) = self.vml.as_mut() {
+                        v.txbx_para_depth += 1;
+                    }
+                    if let Some(g) = self.graphic.as_mut() {
+                        g.txbx_para_depth += 1;
+                    }
+                }
+            } else if !empty {
                 self.p_count += 1;
             }
             return;
@@ -410,10 +454,25 @@ impl DrawingParser {
 
         // ---- VML 累積（pict 內或裸 shape）----
         if self.pict_depth > 0 || self.vml.is_some() {
-            // 文字框 w:txbxContent 段落照計（主解析器對 Choice 全透明——
-            // 口徑鐵律；drawinglayer-pic-pos.docx 實據：w:pict 內含 txbx 段落）。
-            if name == b"p" && !empty {
+            // 文字框 w:txbxContent 段落：K4e2 起**不佔正文槽**（主解析器改掛
+            // `Paragraph::txbx_texts`）；外層 pict/shape 的 w:p 仍照計。
+            if name == b"p" && !empty && self.txbx_depth == 0 {
                 self.p_count += 1;
+            }
+            if name == b"txbxContent" && !empty {
+                if let Some(v) = self.vml.as_mut() {
+                    v.has_txbx = true;
+                }
+            }
+            // 框內文字採集（K4e2）：p 開段、t 開文字區間。
+            if self.txbx_depth > 0 {
+                if let Some(v) = self.vml.as_mut() {
+                    match name {
+                        b"p" if !empty => v.txbx_para_depth += 1,
+                        b"t" => v.txbx_in_t = true,
+                        _ => {}
+                    }
+                }
             }
             match name {
                 b"imagedata" => {
@@ -452,12 +511,23 @@ impl DrawingParser {
         // ---- DrawingML 候選進行中：只收 extent／position／blip；
         // 巢狀 drawing/pict 整棵吞沒（內層 extent 不得竄位外框）----
         if self.graphic.is_some() {
-            // 群組圖形的 wps:txbx/w:txbxContent 段落照計（主解析器對 Choice
-            // 全透明——口徑鐵律：計數器不因候選進行而漏段）。
-            if name == b"p" && !empty {
+            // 群組圖形的 wps:txbx/w:txbxContent 段落：K4e2 起**不佔正文槽**
+            // （主解析器改掛 `Paragraph::txbx_texts`）；外層段落仍照計。
+            if name == b"p" && !empty && self.txbx_depth == 0 {
                 self.p_count += 1;
             }
             let mut p = self.graphic.take().expect("剛檢查過");
+            if name == b"txbxContent" && !empty {
+                p.has_txbx = true;
+            }
+            // 框內文字採集（K4e2；群組圖形 wps:txbx 路徑）。
+            if self.txbx_depth > 0 {
+                match name {
+                    b"p" if !empty => p.txbx_para_depth += 1,
+                    b"t" => p.txbx_in_t = true,
+                    _ => {}
+                }
+            }
             match name {
                 b"extent" => {
                     if p.w.is_none() {
@@ -614,6 +684,20 @@ impl DrawingParser {
         if self.fb > 0 || self.skip_tag.is_some() {
             return;
         }
+        // K4e2：框內文字採集（t 區間內；只進宿主候補的 txbx，不碰捕獲態）。
+        if self.txbx_depth > 0 {
+            if let Some(v) = self.vml.as_mut() {
+                if v.txbx_in_t {
+                    v.txbx_cur.push_str(text);
+                }
+            }
+            if let Some(g) = self.graphic.as_mut() {
+                if g.txbx_in_t {
+                    g.txbx_cur.push_str(text);
+                }
+            }
+            return;
+        }
         if let Some(p) = self.graphic.as_mut() {
             if let Some(vertical) = p.align_axis {
                 // `<wp:align>` 對齊枚舉：直存字串（trim 後），不解析數值
@@ -686,6 +770,34 @@ impl DrawingParser {
         }
         if self.fb > 0 {
             return;
+        }
+
+        // ---- K4e2：txbxContent 完結（先於各分支，與計數點同深度口徑）----
+        if name == b"txbxContent" {
+            self.txbx_depth = self.txbx_depth.saturating_sub(1);
+        }
+        // ---- K4e2：框內 p／t 完結——文字 flush 進宿主候補的 txbx ----
+        if self.txbx_depth > 0 && matches!(name, b"p" | b"t") {
+            if let Some(v) = self.vml.as_mut() {
+                if name == b"t" {
+                    v.txbx_in_t = false;
+                } else {
+                    v.txbx_para_depth = v.txbx_para_depth.saturating_sub(1);
+                    if v.txbx_para_depth == 0 {
+                        v.txbx.push(std::mem::take(&mut v.txbx_cur));
+                    }
+                }
+            }
+            if let Some(g) = self.graphic.as_mut() {
+                if name == b"t" {
+                    g.txbx_in_t = false;
+                } else {
+                    g.txbx_para_depth = g.txbx_para_depth.saturating_sub(1);
+                    if g.txbx_para_depth == 0 {
+                        g.txbx.push(std::mem::take(&mut g.txbx_cur));
+                    }
+                }
+            }
         }
 
         // ---- 吞沒幀 ----
@@ -1174,12 +1286,13 @@ mod tests {
 
     #[test]
     fn para_counting_matches_flat_start_convention() {
-        // 巢狀 w:p（txbxContent）照計、自閉合不算、Fallback 內不計。
+        // 巢狀 w:p（txbxContent）**不計**（K4e2：掛宿主段落 txbx_texts）、
+        // 自閉合不算、Fallback 內不計。
         let xml = doc(
             r##"<w:p/><w:p><w:r><w:pict><v:shape xmlns:v="v" style="width:9pt;height:9pt"><v:imagedata xmlns:r="r" r:id="rId1"/><v:textbox><w:txbxContent><w:p></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p><w:p><mc:AlternateContent xmlns:mc="mc"><mc:Fallback><w:p></w:p><w:p></w:p></mc:Fallback></mc:AlternateContent></w:p>"##,
         );
-        // w:p(自閉合不算) + w:p + txbx w:p + w:p = Start 計數 3。
-        assert_eq!(count_paras(xml.as_bytes()), 3);
+        // w:p(自閉合不算) + w:p + txbx w:p(不計) + w:p = Start 計數 2。
+        assert_eq!(count_paras(xml.as_bytes()), 2);
     }
 
     #[test]

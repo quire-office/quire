@@ -111,6 +111,9 @@ pub struct Engine {
     /// 空表＝檔案無任何 sectPr，呼叫端退回「無節域」語義）。H2／F3b 的
     /// 節域編號（numRestart=eachSect／節級 numFmt 覆寫）由此查錨點所在節。
     para_sec: Vec<u32>,
+    /// 文字框佔位投影（K4e2）：段落索引 → 該段掛著的 shape 框（含文字框）。
+    /// 純讀取派生（存檔路徑不經）；空表＝檔案無圖形＝發射層零擾動快路徑。
+    shape_boxes: Vec<(usize, quire_ooxml::InlineImage)>,
 }
 
 /// 頁首／頁尾 part 的已解析投影（開啟文件時一次性解析；純讀取）。
@@ -422,6 +425,14 @@ impl Engine {
             end_mark_styles: Vec::new(),
             sec_geo_all,
             para_sec: para_sec_v,
+            // K4e2：文字框佔位投影——read_images 標記 text_box 的候選按其
+            // 錨定段落索引暫存（發射層查宿主段落的 txbx_texts 落框繪字）。
+            // 空表（無文字框檔案）＝發射迴圈零次＝零擾動守門。
+            shape_boxes: images
+                .iter()
+                .filter(|im| !im.txbx_texts.is_empty())
+                .map(|im| (im.para_index, im.clone()))
+                .collect(),
         };
         Ok(engine.with_footnotes())
     }
@@ -1393,11 +1404,30 @@ impl Engine {
         // 頁首頁尾先發射（填色/框線在文字之前，與表格同一約定）——其文字項
         // 由下方統一幾何排序落到閱讀序應有位置（頁首 y 小排最前、頁尾最後）。
         self.push_header_footer_items(&mut items, p);
+        // K4e2 文字框配對：**消費式**逐一配對（每頁一份、用完即標記），池在
+        // 表格切片與正文流之間共用（同一框只允許一條路徑發射文字）。配對條件
+        // 取「宿主段落＋同寬」——不取高度：正文流／格內佔位框的高都被帶高
+        // 鉗過（tdf130120：14.2pt 框鉗到 7.1pt），拿原始 extent 高比對會永不
+        // 命中而吞字（實測：框內「7」整頁蒸發）。寬不经鉗制，是可靠鍵。
+        let mut box_used = vec![false; self.shape_boxes.len()];
         // 底層先畫表格（填色＋框線＋格內文字），再疊正文行；最後對「文字項」
         // 依 (y, x) 幾何閱讀序重排——跨表格/正文統一由上而下、由左而右。
         // 填色與框線保持推入序（穩定排序 key 同鍵，不互相顛倒遮蓋次序）。
         for tp in &p.tables {
             let canon_tbl = self.doc.tables.get(tp.slot).map(|bt| &bt.table);
+            // K4e2：格內文字框配對的段落區間＝本槽佔用的扁平段落範圍
+            // （含巢狀表；table_para_end 口徑）。
+            let pr = self
+                .doc
+                .tables
+                .get(tp.slot)
+                .map(|bt| {
+                    (
+                        bt.para_start,
+                        table_map::table_para_end(&bt.table, bt.para_start),
+                    )
+                })
+                .unwrap_or((0, 0));
             push_frag_items(
                 &mut items,
                 tp.frag.x_pt,
@@ -1406,6 +1436,9 @@ impl Engine {
                 size,
                 canon_tbl,
                 paras,
+                pr,
+                Some((self.shape_boxes.as_slice(), &mut box_used)),
+                line_h,
             );
         }
         // 圖片佔位（t_a1397522）：正文流圖＝版心左緣＋行網格帶 y；浮動鎖點
@@ -1413,9 +1446,50 @@ impl Engine {
         for im in &p.images {
             let y = p.margin_top_pt + im.band as f32 * line_h;
             emit_image_placeholder(&mut items, p.margin_left_pt, y, im.w_pt, im.h_pt);
+            let hit = self.shape_boxes.iter().enumerate().find(|(i, (bp, b))| {
+                !box_used[*i] && *bp == im.para && (b.w_pt - im.w_pt).abs() < 0.01
+            });
+            if let Some((bi, (_, box_im))) = hit {
+                box_used[bi] = true;
+                emit_txbx_texts(
+                    &mut items,
+                    p.margin_left_pt,
+                    y,
+                    im.w_pt,
+                    im.h_pt,
+                    &box_im.txbx_texts,
+                    paras
+                        .get(im.para)
+                        .map(|pp| pp.txbx_runs.as_slice())
+                        .unwrap_or(&[]),
+                    size,
+                    line_h,
+                );
+            }
         }
         for fm in &p.floating_images {
             emit_image_placeholder(&mut items, fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt);
+            // K4e2：浮動錨定文字框（DrawingML anchor）：框內文字落在換算後的鎖點。
+            let hit = self.shape_boxes.iter().enumerate().find(|(i, (bp, b))| {
+                !box_used[*i] && *bp == fm.para && (b.w_pt - fm.w_pt).abs() < 0.01
+            });
+            if let Some((bi, (_, b))) = hit {
+                box_used[bi] = true;
+                emit_txbx_texts(
+                    &mut items,
+                    fm.x_pt,
+                    fm.y_pt,
+                    fm.w_pt,
+                    fm.h_pt,
+                    &b.txbx_texts,
+                    paras
+                        .get(fm.para)
+                        .map(|pp| pp.txbx_runs.as_slice())
+                        .unwrap_or(&[]),
+                    size,
+                    line_h,
+                );
+            }
         }
         for (i, l) in p.lines.iter().enumerate() {
             let band = p.line_bands.get(i).copied().unwrap_or(i as u32) as f32;
@@ -1976,13 +2050,110 @@ fn cascade_paragraphs(
             marker_run.hyperlink_default = false;
             eff_runs.insert(0, marker_run);
         }
+        // K4e2：框內 run 走與正文**同一條**級聯（段落樣式基底→字元樣式鏈→
+        // 直接格式），烘焙進發射投影；發射層據此畫框內的粗/斜/色/字級/字型族
+        // （HC031 的 majorHAnsi 實據）。純發射資料——存檔路徑完全不經投影。
+        let mut baked_txbx: Vec<Vec<quire_ooxml::Run>> = Vec::new();
+        for grp in &p.txbx_runs {
+            let mut out_g: Vec<quire_ooxml::Run> = Vec::with_capacity(grp.len());
+            for r in grp {
+                let mut b = base.clone();
+                if let Some(cid) = r.rstyle.as_deref() {
+                    b = StyleTable::resolve_run(b, st.char_chain(cid).unwrap_or_default());
+                }
+                let eff = StyleTable::resolve_run(b, r.direct.clone().unwrap_or_default())
+                    .with_hyperlink_default(r.hyperlink_default);
+                let mut r2 = r.clone();
+                r2.bold = eff.bold.unwrap_or(false);
+                r2.italic = eff.italic.unwrap_or(false);
+                r2.underline = eff.underline.unwrap_or(false);
+                r2.strike = eff.strike.unwrap_or(false);
+                if eff.color_set {
+                    r2.color = eff.color;
+                }
+                r2.size_pt = eff.size_pt;
+                r2.effective_fonts = eff.fonts;
+                out_g.push(r2);
+            }
+            baked_txbx.push(out_g);
+        }
         metrics.push((meas_size, line_h));
         spacings.push((para.spacing_before_pt, para.spacing_after_pt));
         let mut ep = p.clone();
         ep.runs = eff_runs;
+        if !baked_txbx.is_empty() {
+            ep.txbx_runs = baked_txbx;
+        }
         eff_all.push(ep);
     }
     (eff_all, metrics, spacings, marker_chars)
+}
+
+/// K4e2：把宿主段落的 `txbx_texts` 發射進 shape 佔位框（LO 同款語義：
+/// 框內文字按框寬斷行、落在框內；框本身仍由 `emit_image_placeholder` 撐位）。
+/// 字級＝文件基準、x 內縮 3pt（內邊距近似）；**不做高度鉗**——寧可溢出框
+/// 也不丟字（比對指標要文字在，LO 對超高框同樣不裁字）。空框段（""）留
+/// 一行空白（段落分隔語義）。座標＝頁絕對（呼叫端已換算）。
+#[allow(clippy::too_many_arguments)] // 框座標/尺寸/文字/run/樣式基準皆必要輸入，不塞結構體轉運
+fn emit_txbx_texts(
+    items: &mut Vec<DrawItem>,
+    x: f32,
+    y: f32,
+    w: f32,
+    _h: f32,
+    texts: &[String],
+    runs: &[Vec<quire_ooxml::Run>],
+    size_pt: f32,
+    line_h: f32,
+) {
+    if texts.is_empty() || w <= 0.0 {
+        return;
+    }
+    let inner_w = (w - 6.0).max(10.0);
+    let mut yy = y + 4.0;
+    for (ti, t) in texts.iter().enumerate() {
+        let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+        if t.trim().is_empty() {
+            // 全空白／空段：有 run 就照發（HC031：框內只有大字号空白 run，
+            // 樣式宣告是實內容；KP 斷行會 trim_end 吞掉純空白行，故繞過
+            // break_lines 逐 run 直接發射一個佔位文字項），無 run＝純空白帶。
+            if !own_runs0.is_empty() {
+                let mut xx = x + 3.0;
+                for r in own_runs0 {
+                    let (flags, color_argb, sz) = run_style(r);
+                    let fam = select_text_family(r.effective_fonts.as_ref(), &r.text);
+                    let sz_eff = sz.unwrap_or(size_pt);
+                    items.push(DrawItem::Text {
+                        x: xx,
+                        y: yy,
+                        size_pt: sz_eff,
+                        flags,
+                        color_argb,
+                        family: fam,
+                        text: r.text.clone(),
+                    });
+                    xx += TextMeasurer::new(sz_eff).text_width(&r.text);
+                }
+            }
+            yy += line_h;
+            continue;
+        }
+        // 段級字級：本框段首個宣告字級的 run（無＝文件基準）。斷行尺與發射
+        // 尺同用本段字級（正文 cascade_paragraphs 同款思路的框內近似）。
+        let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+        let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+        let m = TextMeasurer::new(seg_size.max(size_pt));
+        // 行→run 邊界對位借用一個「假段落」（runs＝本框段 runs），讓
+        // emit_line_run_items 直接產出粗/斜/色/字級/字型族的同質段。
+        let fake = quire_ooxml::Paragraph {
+            runs: own_runs.to_vec(),
+            ..Default::default()
+        };
+        for l in quire_layout::break_lines(t, inner_w, &m) {
+            emit_line_run_items(items, x + 3.0, yy, seg_size, &l, Some(&fake));
+            yy += line_h;
+        }
+    }
 }
 
 /// 圖片佔位框配色（t_a1397522）：灰底＋淺灰描邊。「誠實的近似」視覺：
@@ -2276,6 +2447,10 @@ fn resolve_cell_line_style(
     (0, DEFAULT_TEXT_COLOR_ARGB)
 }
 
+/// K4e2 格內文字框配對池：(文字框候選, 消費旗標)。消費式配對——同一框只
+/// 允許被一條發射路徑（正文流／格內切片）取用一次，杜絕雙發。
+type ShapePool<'a> = (&'a [(usize, quire_ooxml::InlineImage)], &'a mut Vec<bool>);
+
 /// 表格切片 → 顯示列表項（遞迴巢狀表）。座標系：`base_*`＝本切片左上（頁絕對），
 /// CellFrag/RowFrag 內座標全為切片相對（layout 契約），此處一次性換算。
 #[allow(clippy::too_many_arguments)]
@@ -2287,6 +2462,12 @@ fn push_frag_items(
     size: f32,
     canon_tbl: Option<&CanonicalTable>,
     paragraphs: &[quire_ooxml::Paragraph],
+    // K4e2：格內文字框配對上下文——para_range＝本槽（含巢狀表）佔用的扁平
+    // 段落區間；shape＝(文字框池, 消費旗標)（與正文流共用一池，杜絕雙發）；
+    // 頁首尾表格無宿主段落＝傳 None（零擾動）。
+    para_range: (usize, usize),
+    mut shape: Option<ShapePool<'_>>,
+    line_h: f32,
 ) {
     let mut ry = 0.0f32; // 切片內列游標（累加列切片高）
     for row in &frag.rows {
@@ -2358,13 +2539,35 @@ fn push_frag_items(
             // 圖片佔位框（t_a1397522）：灰底 Rect＋四邊 Rule（誠實近似——
             // 點陣直出屬像素渲染卡；分頁容量先對，像素後補）。
             for im in &cell.images {
-                emit_image_placeholder(
-                    items,
-                    base_x + im.x_pt,
-                    base_y + ry + im.y_pt,
-                    im.w_pt,
-                    im.h_pt,
-                );
+                let ix = base_x + im.x_pt;
+                let iy = base_y + ry + im.y_pt;
+                emit_image_placeholder(items, ix, iy, im.w_pt, im.h_pt);
+                // K4e2：格內文字框（tdf130120 實據——圖框錨在儲存格段落）。
+                if let Some((boxes, used)) = shape.as_mut() {
+                    let hit = boxes.iter().enumerate().find(|(i, (bp, b))| {
+                        !used[*i]
+                            && *bp >= para_range.0
+                            && *bp < para_range.1
+                            && (b.w_pt - im.w_pt).abs() < 0.01
+                    });
+                    if let Some((bi, (bp, b))) = hit {
+                        used[bi] = true;
+                        emit_txbx_texts(
+                            items,
+                            ix,
+                            iy,
+                            im.w_pt,
+                            im.h_pt,
+                            &b.txbx_texts,
+                            paragraphs
+                                .get(*bp)
+                                .map(|pp| pp.txbx_runs.as_slice())
+                                .unwrap_or(&[]),
+                            size,
+                            line_h,
+                        );
+                    }
+                }
             }
             let nested_tbls: Vec<&CanonicalTable> = canon_cell
                 .map(|cc| {
@@ -2390,6 +2593,9 @@ fn push_frag_items(
                     size,
                     nested_tbls.get(ni).copied(),
                     paragraphs,
+                    para_range,
+                    shape.as_mut().map(|(b, u)| (*b, &mut **u)),
+                    line_h,
                 );
             }
         }
@@ -2653,6 +2859,10 @@ impl Engine {
             hf_params.font_size_pt,
             None,
             paragraphs,
+            // K4e2：頁首尾表格無宿主正文段落＝無文字框配對（零擾動）。
+            (0, 0),
+            None,
+            hf_params.line_h_pt(),
         );
     }
 }

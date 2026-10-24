@@ -227,6 +227,19 @@ pub struct Paragraph {
     /// 該製表位導引字元（`w:tab/@w:leader` 原值：dot/hyphen/underscore/…）。
     #[serde(default)]
     pub tab_leader: Option<String>,
+    /// 掛在本段落上的**文字框內容**（`w:drawing`／`w:pict` 內 `w:txbxContent`
+    /// 的各段落文字，按框內段落序）。K4e2：框內段落**不再佔正文槽位**（四
+    /// 解析器同步跳過，見 `table::count_flat_paras`／`drawing::count_paras`／
+    /// `sectpr`），改掛此附屬欄，由發射層落在 shape 佔位框座標上。存檔不經
+    /// 此欄（parts passthrough），serde default 保舊快照相容；空表不外露
+    /// （無框檔案的序列化位元組逐位不變）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub txbx_texts: Vec<String>,
+    /// 框內段落的 run 序列（與 `txbx_texts` 逐段對齊；保留 rPr 直接格式——
+    /// 發射層字級／粗斜／字型族要用，HC031 的 majorHAnsi 實據）。**不進
+    /// 序列化**（skip）：純派生附屬資料，存檔與舊快照位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub txbx_runs: Vec<Vec<Run>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -539,6 +552,29 @@ fn parse_document_xml_with_fonts(
     // mc:AlternateContent 巢狀棧：開標時快照 fb，閉標時還原——錯置標籤
     // （AC 先於 Fallback 閉合／Fallback 漏閉）不致 fb 卡死而吞掉檔尾。
     let mut ac_stack: Vec<usize> = Vec::new();
+    // ---- K4e2：`w:txbxContent` 文字框子樹（巢狀深度；框中框罕見但必須配對）----
+    // 深度 >0 時進入「附屬欄模式」：`w:p` **不預位**（口徑鐵律改寫點，四解析器
+    // 同步——見 table.rs／drawing.rs／sectpr.rs），框內段落只取文字收進
+    // `txbx_cur`，完結掛到外層段落的 `Paragraph::txbx_texts`；樣式／分頁／欄位
+    // 在框內一律不消費（發射層按 shape 佔位框繪製，見 engine-api）。
+    let mut txbx_depth: usize = 0;
+    // 外層段落槽位（首層進入時快照；巢狀框共用同一宿主）。
+    let mut txbx_owner: usize = usize::MAX;
+    // 本層已完結的框內段落文字（按框內段落序）。
+    let mut txbx_done: Vec<String> = Vec::new();
+    // 進行中的框內段落文字。
+    let mut txbx_cur: String = String::new();
+    // 框內 `w:p` 開閉深度（Start/End 配對；完結時 flush `txbx_cur`）。
+    let mut txbx_para_depth: usize = 0;
+    // 框內 `w:t` 文字區間旗標（獨立於正文 `in_t`：兩者永不重疊）。
+    let mut txbx_in_t = false;
+    // 框內 run 採集（保留 rPr 直接格式供發射層；序與 txbx_done/cur 對齊）。
+    let mut txbx_run: Option<Run> = None;
+    let mut txbx_para_runs: Vec<Run> = Vec::new();
+    let mut txbx_runs_done: Vec<Vec<Run>> = Vec::new();
+    // 框內 pPr 子樹（段落標記樣式：忽略，不灌 run）＋其內 rPr 深度。
+    let mut txbx_ppr_depth: usize = 0;
+    let mut txbx_rpr_depth: usize = 0;
     // ---- 欄位（ECMA-376 §17.5）：只標記 PAGE／NUMPAGES 結果 run ----
     // 簡單欄 `<w:fldSimple w:instr="…">` 巢狀棧（棧頂 None＝非頁碼欄位）。
     let mut fld_simple_stack: Vec<Option<FieldKind>> = Vec::new();
@@ -567,7 +603,47 @@ fn parse_document_xml_with_fonts(
                     }
                     continue;
                 }
+                // ---- K4e2：文字框子樹內的「附屬欄模式」（先於一切正文邏輯）----
+                // 框內只認三件事：巢狀 txbxContent 深度、`w:p` 開閉、`w:t` 文字。
+                // 正文槽位、樣式級聯、分頁、欄位一律不消費——框內段落由發射層
+                // 按 shape 佔位框繪製（engine-api），不進正文流。
+                if txbx_depth > 0 {
+                    match name.as_slice() {
+                        b"txbxContent" => txbx_depth += 1,
+                        b"p" => {
+                            txbx_para_depth += 1;
+                            // 框內段落起點：run 採集緩衝歸零（段內序）。
+                            txbx_run = None;
+                            txbx_para_runs.clear();
+                        }
+                        b"t" => txbx_in_t = true,
+                        // 框內 run：建採集緩衝（發射層的樣式來源）。
+                        b"r" => txbx_run = Some(Run::default()),
+                        // pPr 子樹（段落標記）與其內 rPr：只標深度、不消費。
+                        b"pPr" => txbx_ppr_depth += 1,
+                        b"rPr" => {
+                            if txbx_ppr_depth > 0 {
+                                txbx_ppr_depth += 1;
+                            } else {
+                                txbx_rpr_depth += 1;
+                            }
+                        }
+                        // run 直接格式標籤（rPr 內、非 pPr 內）→ 灌採集 run。
+                        _ if txbx_rpr_depth > 0 && txbx_ppr_depth == 0 => {
+                            apply_style_tag(&name, &e, &mut txbx_run, theme, tf);
+                        }
+                        // 其餘框內標籤（pStyle／lang／noProof…）一概不消費。
+                        _ => {}
+                    }
+                    continue;
+                }
                 match name.as_slice() {
+                    b"txbxContent" => {
+                        // 進入文字框：快照宿主段落（正文棧頂；無宿主＝body 級
+                        // 游离框，老實不收，正文零污染）。
+                        txbx_owner = stack.last().map(|(slot, _, _)| *slot).unwrap_or(usize::MAX);
+                        txbx_depth = 1;
+                    }
                     b"p" => {
                         // Start 即預位：扁平索引＝Start 序（口徑鐵律，見函式頭注）。
                         stack.push((out.len(), Paragraph::default(), 0));
@@ -712,6 +788,22 @@ fn parse_document_xml_with_fonts(
                 if fb > 0 {
                     continue;
                 }
+                if txbx_depth > 0 {
+                    // 框內自閉合標籤：只有 rPr 內的**字型族**（w:rFonts，Word
+                    // 產出恆自閉合）進採集 run（HC031 majorHAnsi 實據——它落在
+                    // 自閉合 rFonts 上，Start 臂看不到）。其餘（pStyle／br／
+                    // sz／color…）一概不消費：正文段落、run、分頁不受框內污染。
+                    if txbx_rpr_depth > 0 && txbx_ppr_depth == 0 {
+                        let name = e.local_name().as_ref().to_vec();
+                        if matches!(
+                            name.as_slice(),
+                            b"rFonts" | b"sz" | b"color" | b"b" | b"i" | b"u"
+                        ) {
+                            apply_style_tag(&name, &e, &mut txbx_run, theme, tf);
+                        }
+                    }
+                    continue;
+                }
                 let name = e.local_name().as_ref().to_vec();
                 if name == b"br" {
                     // 強制分頁（§17.4.3）：只認 w:type="page"；column／缺省
@@ -836,11 +928,100 @@ fn parse_document_xml_with_fonts(
                 // （AC 先於 Fallback 閉合）不致 fb 卡死而吞掉檔尾。
                 if name == b"AlternateContent" {
                     fb = ac_stack.pop().unwrap_or(0);
+                    // K4e2 防呆：畸形檔（AC 先於 txbxContent 閉合）若放任
+                    // txbx_depth 卡死，其後全文文字都會被吞進框內緩衝。老實
+                    // 完結當前框（已收文字照常掛到宿主段落），深度歸零。
+                    if txbx_depth > 0 {
+                        if !txbx_cur.is_empty() || !txbx_para_runs.is_empty() {
+                            txbx_done.push(std::mem::take(&mut txbx_cur));
+                            txbx_runs_done.push(std::mem::take(&mut txbx_para_runs));
+                        }
+                        if txbx_owner != usize::MAX {
+                            let (texts, runs) =
+                                (txbx_done.split_off(0), txbx_runs_done.split_off(0));
+                            match stack.iter_mut().find(|(s, _, _)| *s == txbx_owner) {
+                                Some((_, p, _)) => attach_txbx(p, texts, runs),
+                                None => {
+                                    if let Some(p) = out.get_mut(txbx_owner) {
+                                        attach_txbx(p, texts, runs);
+                                    }
+                                }
+                            }
+                        }
+                        txbx_done.clear();
+                        txbx_runs_done.clear();
+                        txbx_cur.clear();
+                        txbx_owner = usize::MAX;
+                        txbx_depth = 0;
+                        txbx_para_depth = 0;
+                    }
                     continue;
                 }
                 if fb > 0 {
                     if name == b"Fallback" {
                         fb = fb.saturating_sub(1);
+                    }
+                    continue;
+                }
+                // ---- K4e2：文字框子樹完結（先於正文邏輯）----
+                if txbx_depth > 0 {
+                    match name.as_slice() {
+                        b"txbxContent" => {
+                            txbx_depth -= 1;
+                            if txbx_depth == 0 {
+                                // 框收束：尾段 flush（框內無 w:p 的直接文字也收），
+                                // 整批掛到宿主段落的 txbx_texts。宿主越界（畸形）
+                                // ＝老實丟棄，正文零污染。
+                                if !txbx_cur.is_empty() || !txbx_para_runs.is_empty() {
+                                    txbx_done.push(std::mem::take(&mut txbx_cur));
+                                    txbx_runs_done.push(std::mem::take(&mut txbx_para_runs));
+                                }
+                                if txbx_owner != usize::MAX {
+                                    // 掛載目標＝棧上半成品（段落尚未 End 回填）；
+                                    // 段落已完結（畸形寫法：框跨段尾）才退到 out。
+                                    let (texts, runs) =
+                                        (txbx_done.split_off(0), txbx_runs_done.split_off(0));
+                                    match stack.iter_mut().find(|(s, _, _)| *s == txbx_owner) {
+                                        Some((_, p, _)) => attach_txbx(p, texts, runs),
+                                        None => {
+                                            if let Some(p) = out.get_mut(txbx_owner) {
+                                                attach_txbx(p, texts, runs);
+                                            }
+                                        }
+                                    }
+                                    txbx_done.clear();
+                                    txbx_runs_done.clear();
+                                }
+                                txbx_done.clear();
+                                txbx_runs_done.clear();
+                                txbx_cur.clear();
+                                txbx_owner = usize::MAX;
+                            }
+                        }
+                        b"p" => {
+                            txbx_para_depth = txbx_para_depth.saturating_sub(1);
+                            if txbx_para_depth == 0 {
+                                // 空段照推（""＋空 runs）：texts 與 runs 逐段對齊。
+                                txbx_done.push(std::mem::take(&mut txbx_cur));
+                                txbx_runs_done.push(std::mem::take(&mut txbx_para_runs));
+                            }
+                        }
+                        b"t" => txbx_in_t = false,
+                        // 框內 run 完結：連同 rPr 快照進段內 run 緩衝。
+                        b"r" => {
+                            if let Some(r) = txbx_run.take() {
+                                txbx_para_runs.push(r);
+                            }
+                        }
+                        b"pPr" => txbx_ppr_depth = txbx_ppr_depth.saturating_sub(1),
+                        b"rPr" => {
+                            if txbx_ppr_depth > 0 {
+                                txbx_ppr_depth = txbx_ppr_depth.saturating_sub(1);
+                            } else {
+                                txbx_rpr_depth = txbx_rpr_depth.saturating_sub(1);
+                            }
+                        }
+                        _ => {}
                     }
                     continue;
                 }
@@ -893,6 +1074,18 @@ fn parse_document_xml_with_fonts(
                 if fb > 0 {
                     continue;
                 }
+                if txbx_depth > 0 {
+                    // 框內文字：只收文字進 txbx_cur（不進正文 run、不動 cp_done）；
+                    // 同步進採集 run（發射層按 run 分段取樣式，K4e2）。
+                    if txbx_in_t {
+                        let s = t.unescape().map_err(|e| OoxmlError::Xml(e.to_string()))?;
+                        txbx_cur.push_str(&s);
+                        if let Some(r) = txbx_run.as_mut() {
+                            r.text.push_str(&s);
+                        }
+                    }
+                    continue;
+                }
                 if instr_active {
                     // 欄位指令文字（可能跨多個 Text 事件）：寫進**最內層**進行中
                     // 的複雜欄緩衝（instrText 必落在其所屬域的 begin..separate
@@ -941,6 +1134,15 @@ fn record_note_ref(name: &[u8], e: &quick_xml::events::BytesStart, cur_run: &mut
     if let (Some(id), true) = (id, matches!(cur_run, Some(r) if r.note_ref.is_none())) {
         cur_run.as_mut().expect("剛查 some").note_ref = Some(NoteRef { kind, id });
     }
+}
+
+/// K4e2：把框內段落批次掛到宿主段落（`txbx_texts`＋`txbx_runs` 同步附著，
+/// 兩者逐段對齊是發射層的取樣前提——段數不一致時多出的 run 老實丟棄、
+/// 缺 run 的段落退化为無樣式發射，絕不串段）。
+fn attach_txbx(p: &mut Paragraph, texts: Vec<String>, runs: Vec<Vec<Run>>) {
+    let n = texts.len();
+    p.txbx_texts.extend(texts);
+    p.txbx_runs.extend(runs.into_iter().take(n));
 }
 
 fn attr_val(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
@@ -1200,10 +1402,17 @@ mod tests {
             .iter()
             .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
             .collect();
+        // K4e2：框內段落不再佔正文槽——外層段文字完整、框內文掛 txbx_texts
+        // 附屬欄（Choice 一份、Fallback 去重口徑不變）。
         assert_eq!(
             texts,
-            vec!["框前文框後文", "框內文"],
-            "Start 序：外層先佔位且前後文完整；內層文字框段落另佔一槽（Choice 一份）"
+            vec!["框前文框後文"],
+            "正文只剩外層段（框內段不佔槽）"
+        );
+        assert_eq!(
+            paras[0].txbx_texts,
+            vec!["框內文".to_string()],
+            "框內段落文字掛進宿主段落的 txbx_texts（分離但不遺失）"
         );
     }
 
@@ -1227,8 +1436,10 @@ mod tests {
     }
 
     /// corpus 段落數回歸（缺陷 1＋2 實據檔）：修前 Choice/Fallback 雙份解析
-    /// ＋巢狀 w:p 覆寫吞字（舊口徑 LINKED 57 段雙份）；修後與獨立口徑
-    /// （start 佔槽＋Fallback 吞沒）逐檔一致的 30 段。
+    /// ＋巢狀 w:p 覆寫吞字（舊口徑 LINKED 57 段雙份）。K4e2 起框內段落**不再
+    /// 佔正文槽位**（口徑鐵律改寫點，四解析器同步），故各檔段數＝正文段數；
+    /// 「修後必須完整保留的文字」= 正文段文字（框內文字改由
+    /// `nested_txbx_paragraph_keeps_outer_text` 驗附屬欄）。
     #[test]
     fn corpus_txbx_paragraph_counts_regression() {
         let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
@@ -1236,25 +1447,29 @@ mod tests {
             // (檔案, 修後段落數, 修前被吞／雙份、修後必須完整保留的文字)
             (
                 "xopt/OpenXmlPowerToolsExamples_TextReplacer02_Test01.docx",
-                4,
+                3,
                 &["the on the Insert tab"],
             ),
             // WC049：修前段數同為 8 但外層段「You can also type…」整段被內層
             // 覆寫吞字（缺陷 2 吞字指紋）；修後必須完整保留。
             (
                 "xopt/TestFiles_WC_WC049-Text-Box-in-Cell.docx",
-                8,
+                7,
                 &["You can also type a keyword"],
             ),
             (
+                // K4e2：30 段全部是框內段（LINKED 正文只剩表頭/段 2 個）——
+                // 框內文字改由 txbx_texts 保留（must_keep 檢查連框內文字一起
+                // join，見迴圈內 joined）。
                 "ooxmlexport/LinkedTextBoxes.docx",
-                30,
+                2,
                 &["Congratulations", "IA Scholarship Program Nominations"],
             ),
-            // shapes-with-text：修前 10 段（VML 雙份），修後 6 段。
+            // shapes-with-text：修前 10 段（VML 雙份）→ 6 段 → K4e2 起 1 段
+            // （5 個框內段掛 txbx_texts）。
             (
                 "poi/test-data_document_shapes-with-text.docx",
-                6,
+                1,
                 &["Floating text box"],
             ),
         ];
@@ -1263,7 +1478,13 @@ mod tests {
             let doc = parse(&bytes).expect("parse");
             let texts = doc.paragraph_texts();
             assert_eq!(texts.len(), want_n, "{rel}：段落數偏離修後基準");
-            let joined = texts.join("\n");
+            // K4e2：框內文字不再混進正文段——「不被吞」檢查連 txbx_texts
+            // 附屬欄一起 join（分離後文字仍須完整存在，只是換了棲身之處）。
+            let mut all: Vec<String> = texts.clone();
+            for p in &doc.paragraphs {
+                all.extend(p.txbx_texts.iter().cloned());
+            }
+            let joined = all.join("\n");
             for frag in must_keep {
                 assert!(
                     joined.contains(frag),

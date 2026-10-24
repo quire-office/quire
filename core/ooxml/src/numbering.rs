@@ -557,6 +557,9 @@ pub fn parse_paragraph_numbering(document_xml: &[u8]) -> Vec<NumberingRef> {
     let mut ac_stack: Vec<usize> = Vec::new();
     // 已開段落數（下一個段落索引＝此值）。
     let mut p_count = 0usize;
+    // K4e2：`w:txbxContent` 文字框子樹深度：>0 時其內 `w:p` **不佔槽**（主
+    // 解析器改掛外層段落的 `txbx_texts`）——口徑鐵律同 drawing.rs。
+    let mut txbx_depth = 0usize;
     // 開啟中的段落索引堆疊（巢狀文字框段落時取最內層）。
     let mut para_stack: Vec<usize> = Vec::new();
     // 相對目前段落的 `w:pPr` 巢深（1＝段落直接子層；2＝w:pPrChange 內）。
@@ -587,10 +590,18 @@ pub fn parse_paragraph_numbering(document_xml: &[u8]) -> Vec<NumberingRef> {
                     b"AlternateContent" => {
                         ac_stack.push(fb);
                     }
+                    // K4e2：文字框子樹深度（口徑同 p_count：Fallback 內不跟）。
+                    b"txbxContent" => txbx_depth += 1,
                     b"p" => {
                         // Start 即預位：扁平索引＝Start 序（口徑鐵律）。
-                        p_count += 1;
-                        para_stack.push(p_count - 1);
+                        // K4e2：框內段落不佔槽——push 哨兵（End 照常配對 pop），
+                        // 其 numPr 因索引哨兵而老實不收（主解析器框內不消費 pPr）。
+                        if txbx_depth == 0 {
+                            p_count += 1;
+                            para_stack.push(p_count - 1);
+                        } else {
+                            para_stack.push(usize::MAX);
+                        }
                         ppr_depth = 0;
                     }
                     b"pPr" => {
@@ -654,18 +665,23 @@ pub fn parse_paragraph_numbering(document_xml: &[u8]) -> Vec<NumberingRef> {
                     continue;
                 }
                 match name.as_slice() {
+                    // K4e2：文字框子樹完結（先於各分支，與計數點同深度口徑）。
+                    b"txbxContent" => txbx_depth = txbx_depth.saturating_sub(1),
                     b"pPr" => {
                         ppr_depth = ppr_depth.saturating_sub(1);
                     }
                     b"numPr" => {
                         if let Some((ilvl, num_id)) = pending.take() {
+                            // K4e2：框內段落（哨兵索引）的 numPr 老實不收。
                             if let (Some(num_id), Some(para)) = (num_id, para_stack.last().copied())
                             {
-                                out.push(NumberingRef {
-                                    para_index: para,
-                                    ilvl: ilvl.unwrap_or(0),
-                                    num_id,
-                                });
+                                if para != usize::MAX {
+                                    out.push(NumberingRef {
+                                        para_index: para,
+                                        ilvl: ilvl.unwrap_or(0),
+                                        num_id,
+                                    });
+                                }
                             }
                         }
                     }
@@ -908,10 +924,12 @@ mod tests {
         let doc = parse_corpus("xopt/TestFiles_HC031-Complicated-Document.docx");
         let refs = paragraph_numbering_from_parts(&doc.parts);
         assert_eq!(refs.len(), 30, "HC031 的 numPr 段落數");
+        // K4e2：HC031 前段有 3 個文字框段落退出正文槽（掛 txbx_texts），
+        // 清單段索引整體前移 2（18→16；兩框段在首個 numPr 段之前）。
         assert_eq!(
             refs[0],
             NumberingRef {
-                para_index: 18,
+                para_index: 16,
                 ilvl: 0,
                 num_id: 1
             },
@@ -1077,13 +1095,14 @@ mod tests {
     fn paragraph_index_matches_engine_flat_convention() {
         let doc = parse_corpus("xopt/TestFiles_HC031-Complicated-Document.docx");
         let refs = paragraph_numbering_from_parts(&doc.parts);
-        assert_eq!(doc.paragraphs.len(), 131, "HC031 扁平段落數（引擎口徑）");
+        // K4e2：文字框段落不再佔正文槽（131→128；3 個框內段掛 txbx_texts）。
+        assert_eq!(doc.paragraphs.len(), 128, "HC031 扁平段落數（引擎口徑）");
         assert!(
-            refs.iter().all(|r| r.para_index < 131),
+            refs.iter().all(|r| r.para_index < 128),
             "段落索引須落在引擎段落序列內"
         );
-        // 巢狀文字框內的段落不影響外層索引：正文第一個 numPr 段落是索引 18。
-        assert_eq!(refs[0].para_index, 18);
+        // 巢狀文字框內的段落不影響外層索引：正文第一個 numPr 段落是索引 16。
+        assert_eq!(refs[0].para_index, 16);
     }
 
     // ---------------- (e) serde 向後相容 ----------------

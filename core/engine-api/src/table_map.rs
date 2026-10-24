@@ -579,6 +579,7 @@ mod tests {
             pos_y_pct: None,
             overlap: None,
             embed_rid: None,
+            txbx_texts: Vec::new(),
         }
     }
 
