@@ -579,6 +579,7 @@ mod tests {
             pos_y_pct: None,
             overlap: None,
             embed_rid: None,
+            embed_rids: Vec::new(),
             txbx_texts: Vec::new(),
             // K4c 新增欄位（全部老實缺省＝舊行為；本測試只吃幾何）。
             fill_argb: None,

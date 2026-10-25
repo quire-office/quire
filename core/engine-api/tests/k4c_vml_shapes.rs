@@ -23,6 +23,9 @@ fn dump(eng: &Engine, tag: &str) {
                 DrawItem::Text { text, .. } => texts.push(text.clone()),
                 DrawItem::Rect { fill_argb, .. } => fills.push(*fill_argb),
                 DrawItem::Rule { color_argb, .. } => rules.push(*color_argb),
+                // K4c-image 合併基線後 DrawItem 多一個變體：本卡測試只認
+                // Text/Rect/Rule，像素項與本卡契約無關，忽略。
+                DrawItem::Image { .. } => {}
             }
         }
         println!("[{tag}] p{p}: texts={texts:?} fills={fills:?} rules={rules:?}");
@@ -138,6 +141,8 @@ fn k4c_tdf152200_black_frame() {
                     }
                 }
                 DrawItem::Text { .. } => {}
+                // K4c-image 合併基線後的新變體：與本卡契約無關，忽略。
+                DrawItem::Image { .. } => {}
             }
         }
     }
