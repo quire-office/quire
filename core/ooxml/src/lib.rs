@@ -123,6 +123,25 @@ pub struct Run {
     /// 只在整鏈未宣告顏色／底線時兜底。存檔不經此欄位（parts passthrough）。
     #[serde(default)]
     pub hyperlink_default: bool,
+    /// 本 run 位於 `w:ins` 子樹（插入側修訂，ECMA-376 §17.13.5.19）。默認
+    /// 視圖（LO showChanges 實測口徑，K5-diag §2.3 最終判讀）照發文字＋
+    /// **底線註解**。不進 `direct`（同 `hyperlink_default` 的冒充教訓——
+    /// 註解不是直接格式，不得越過用戶字元樣式）；由級聯末端 OR 進發射
+    /// flags。存檔不經此欄位（parts passthrough）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub rev_insert: bool,
+    /// 本 run 位於 `w:del` 子樹：文字取自 `w:delText`（§17.13.5.5），默認
+    /// 視圖照發＋**刪除線註解**。K5-diag §2.3：LO 默認視圖 del+ins 都發
+    /// （'Chromatpgrams' LO PDF ×1 帶刪除線）；舊實作整段吞＝「delText 被
+    /// ins 吞」不一致由來。存檔不經此欄位（parts passthrough）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub rev_delete: bool,
+}
+
+/// `skip_serializing_if` 用：布爾欄位為 false 時不外露，保既有序列化輸出
+/// 逐位元組不變（金線）。
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 /// 本卡支援的頁碼欄位型別（其余欄位名如 SECTIONPAGES／DATE 老實保留快取文字）。
@@ -585,14 +604,22 @@ fn parse_document_xml_with_fonts(
     // 內層 begin 清空外層已累積指令、內層指令又混進外層 separate 的分類。
     let mut complex_stack: Vec<(Option<FieldKind>, bool, String)> = Vec::new();
     // ---- K4e3：修訂標記容器（ECMA-376 §17.13；LO 默認視圖口徑＝變更照畫）----
-    // `w:ins`／`w:moveTo` 子樹＝插入側（照發＋底線）；`w:del`／`w:moveFrom`＝
-    // 刪除側（`w:delText` 照發＋刪除線——LO 默認視圖實據：RA001 p6 'Chromatpgrams'
-    // 照畫且帶 0.6pt 中帶刪除線，'Chromatograms' 帶底線）。舊實作把 delText 整段
-    // 丟棄（只有 `w:t` 進文字流），LO 卻照畫——K5-diag §2.3 判定的「delText 被
-    // ins 吞」不一致由來。只動 run 採集：不預位、不計段（五台 p_count 鐵律）。
+    // 四容器各自計深（本卡實測 RA001 LO PDF 逐串核驗，2026-10-25）：
+    //   `w:ins` 子樹＝插入側（照發＋底線）；`w:del` 內 `w:delText`＝刪除側
+    //   （照發＋刪除線，實據：'Reference ChromatpgramsChromatograms:' LO 照畫
+    //   刪除線原文 ×1）；`w:moveFrom`＝移出源（照發＋刪除線）；`w:moveTo`＝
+    //   移入目的地（照發＋底線）。注意：K5-diag §2.3 曾判「LO 整棵不畫 move」，
+    //   本卡用同一支 soffice 重新轉換直掃 PDF 推翻——'der of injectio' LO ×4
+    //   （plain w:t 僅 ×2，其餘正是 moveFrom 的 w:t 'der of injectio' 與
+    //   moveTo 的 delText 'der of injection:'），且 'Order of injection' 源檔
+    //   無任何整串 w:t，LO ×4 全來自 move 兩側拼接——move 內容照畫，抑制會
+    //   把 LO 有的字弄丟。舊實作把 delText 整段丟棄（只有 `w:t` 進文字流）＝
+    //   「delText 被 ins 吞」不一致由來（K5-diag §2.3 真缺陷 (a)）。
+    // 只動 run 採集與標記：不預位、不計段（五台 p_count 鐵律）。
     let mut rev_ins_depth: usize = 0;
     let mut rev_del_depth: usize = 0;
-    let mut rev_move_depth: usize = 0;
+    let mut rev_mfrom_depth: usize = 0;
+    let mut rev_mto_depth: usize = 0;
     // `w:delText` 文字區間（`w:t` 的刪除側鏡像；两者永不重疊）。
     let mut in_del_t = false;
     let mut instr_active = false;
@@ -675,12 +702,22 @@ fn parse_document_xml_with_fonts(
                         // 刪除容器（同上；其內 `w:delText` 默認視圖照發＋刪除線）。
                         rev_del_depth += 1;
                     }
-                    b"moveFrom" | b"moveTo" => {
-                        // 移動容器：LO 默認視圖整棵不畫（RA001 實測：moveFrom 的
-                        // 'der of injectio'/'n'/':' 與 moveTo 的 'Or'/'der of
-                        // injection:' 全部 ×0——LO 只畫目的地重打字 'Order of
-                        // injection:'）。整棵抑制文字採集（見 in_t/in_del_t 閘）。
-                        rev_move_depth += 1;
+                    b"delText" if ppr_depth == 0 => {
+                        // 刪除側文字區間（`w:t` 的鏡像；ECMA-376 §17.13.5.5）。只認
+                        // `w:del`／`w:moveFrom` 容器內的（容器外的 delText＝畸形，
+                        // 不採——LO 亦不畫無容器的孤兒 delText）。
+                        if rev_del_depth > 0 || rev_mfrom_depth > 0 {
+                            in_del_t = true;
+                        }
+                    }
+                    b"moveFrom" if ppr_depth == 0 => {
+                        // 移出源（ECMA §17.13.5.24）：LO 默認視圖照畫＋刪除線
+                        // （見上：'Order of injection:' LO ×4 全含 move 兩側拼接）。
+                        rev_mfrom_depth += 1;
+                    }
+                    b"moveTo" if ppr_depth == 0 => {
+                        // 移入目的地（§17.13.5.23）：照畫＋底線（插入側同義）。
+                        rev_mto_depth += 1;
                     }
                     b"hyperlink" => {
                         hyperlink_depth += 1;
@@ -1054,6 +1091,21 @@ fn parse_document_xml_with_fonts(
                 }
                 match name.as_slice() {
                     b"t" => in_t = false,
+                    b"delText" => in_del_t = false,
+                    b"ins" if ppr_depth == 0 => {
+                        // End 臂與 Start 臂同閘：pPr/rPr 內的成對段落標記宣告
+                        // （罕見寫法）兩側都跳過，深計數不會單邊漂移。
+                        rev_ins_depth = rev_ins_depth.saturating_sub(1);
+                    }
+                    b"del" if ppr_depth == 0 => {
+                        rev_del_depth = rev_del_depth.saturating_sub(1);
+                    }
+                    b"moveFrom" if ppr_depth == 0 => {
+                        rev_mfrom_depth = rev_mfrom_depth.saturating_sub(1);
+                    }
+                    b"moveTo" if ppr_depth == 0 => {
+                        rev_mto_depth = rev_mto_depth.saturating_sub(1);
+                    }
                     b"pPr" => ppr_depth = ppr_depth.saturating_sub(1),
                     b"rPr" => ppr_rpr_depth = ppr_rpr_depth.saturating_sub(1),
                     b"instrText" => {
@@ -1084,6 +1136,13 @@ fn parse_document_xml_with_fonts(
                             // Word 的實際預設連結色來自**主題 hlink**，本卡
                             // 未接（見 theme 模組末「未做清單」）。
                             run.hyperlink_default = hyperlink_depth > 0;
+                            // 修訂標記（ECMA §17.13；LO 默認視圖實測口徑）：插入側
+                            // （`w:ins`／`w:moveTo`）＝底線、刪除側（`w:del` 容器內
+                            // run、`w:moveFrom` 含其 plain w:t）＝刪除線。只打標記、
+                            // 不進 direct（冒充直接格式會越過用戶字元樣式——同
+                            // hyperlink_default 教訓），發射層級聯末端才 OR 進 flags。
+                            run.rev_insert = rev_ins_depth > 0 || rev_mto_depth > 0;
+                            run.rev_delete = rev_del_depth > 0 || rev_mfrom_depth > 0;
                             p.runs.push(run);
                         }
                     }
@@ -1124,7 +1183,7 @@ fn parse_document_xml_with_fonts(
                     }
                     continue;
                 }
-                if let Some(r) = cur_run.as_mut().filter(|_| in_t) {
+                if let Some(r) = cur_run.as_mut().filter(|_| in_t || in_del_t) {
                     let s = t.unescape().map_err(|e| OoxmlError::Xml(e.to_string()))?;
                     // 已入文碼點計數隨文字增長——br-page 記錄偏移的標尺。
                     if let Some((_, _, cp_done)) = stack.last_mut() {
