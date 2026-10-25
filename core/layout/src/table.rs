@@ -91,12 +91,37 @@ pub struct CellMarginInput {
     pub right: Option<f32>,
 }
 
+/// 格內文字段的 run 級樣式片段（L2-cellruns／TODO(CardA) 清償）：
+/// `[from, to)` 為所屬段落文字的**碼點**半开区間（與正文 `Line::char_offset`
+/// 同尺），`flags`＝render-trait `FLAG_BOLD/ITALIC/UNDERLINE/STRIKE` 位元或
+/// （layout 層不知位元語義，只透傳——engine 端以 `run_style` 烘焙）。
+/// `size_pt`／`color_argb`＝`None`＝級聯未宣告（發射端退回格級／全域尺，
+/// 與 t_5dfc8ac7 的 size 三態口徑一致）。斷行器**不消費**本結構——它只
+/// 影響發射；幾何（寬、帶高）仍由整段文字決定（run 級寬度重排屬後續卡）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CellRun {
+    pub from: usize,
+    pub to: usize,
+    pub flags: u8,
+    #[serde(default)]
+    pub size_pt: Option<f32>,
+    #[serde(default)]
+    pub color_argb: Option<u32>,
+}
+
 /// 格內流式 block：文字段落或巢狀表，**保持文件序**（ECMA-376 §17.4.66：
 /// `w:tc` 是 block 序列；真實公文常「段落→子表→段落」交錯，拆成兩個獨立
 /// Vec 會丟失先後拓撲序——t_f5d47469 根因 1）。
+///
+/// L2-cellruns 取捨（PM 卡面授權自決）：採**保守方案**——`Text(String)`
+/// 原樣保留，run 標注走 `CellInput::run_spans` 平行欄位（ serde default）。
+/// 理由：`Text(String)` 在 goldens／line-metrics 診斷副本／大量測試中直接
+/// 構造，改變體形制會把改動擴散到本卡檔案邊界外；平行欄位讓既有序列化
+/// 外形逐位元組不變（向後相容鐵律自然成立），`run_spans` 缺＝舊整格單
+/// 樣式行為。斷行在本模組完成（斷行器吃整段文字，不看 run 標注）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CellBlock {
-    /// 段落原始字串（run 級粗斜體尚未穿透——與正文同款限制），斷行在本模組完成。
+    /// 段落原始字串（run 級樣式見 `CellInput::run_spans`），斷行在本模組完成。
     Text(String),
     /// 巢狀表（遞迴）。`Box` 間接化：`TableInput` 遠大於 `String`，
     /// 直接嵌入會讓整個 enum 膨到 1KB（clippy large_enum_variant，
@@ -134,6 +159,14 @@ pub struct CellInput {
     /// 表格行網格帶高（格內逐帶量化屬後續卡，本卡老實近似）。
     #[serde(default)]
     pub text_size_pt: Option<f32>,
+    /// run 級樣式標注（L2-cellruns）：與 `blocks` 中**文字 block 出現序**
+    /// 逐位對齊的平行欄位——`run_spans[i]`＝第 i 個 `CellBlock::Text` 的
+    /// run 標注（無標注＝空 vec，亦可整欄短於文字 block 數＝尾部缺位）。
+    /// 碼點區間以該 block 文字串為尺。serde default：舊序列化／舊構造
+    /// 缺＝空＝整格單樣式舊行為（發射層原樣走舊路徑，金樣零位移）。
+    /// 斷行／分頁／存檔完全不消費本欄（純發射面）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub run_spans: Vec<Vec<CellRun>>,
 }
 
 /// 列輸入。
@@ -275,10 +308,13 @@ enum Valign {
 enum CellBlockGeom {
     /// 段落：斷行結果＋佔用帶數（空段規則見 pass 1 注）。`size_pt`＝級聯
     /// 有效字級（t_5dfc8ac7；None＝全域尺），繪製端據此發射文字。
+    /// `runs`＝run 級樣式標注（L2-cellruns；空＝整段單樣式，繪製端走舊
+    /// 整格單樣式路徑）——純發射面，不影響 lines/bands。
     Text {
         lines: Vec<Line>,
         bands: u32,
         size_pt: Option<f32>,
+        runs: Vec<CellRun>,
     },
     /// 巢狀子表：完整排版；帶高＝自身 total_bands（至少 1）。
     Table { layout: TableLayout, bands: u32 },
@@ -753,16 +789,34 @@ pub fn layout_table(
                                     lines: Vec::new(),
                                     bands: 0,
                                     size_pt: cell.text_size_pt,
+                                    runs: Vec::new(),
                                 });
                             } else {
                                 let ls = break_lines(t, inner_w, &cell_m);
                                 let bands = ls.len().max(1) as u32;
+                                // run 標注（L2-cellruns）：run_spans 以「文字
+                                // block 出現序」為尺（跳過非文字 block），
+                                // 缺位＝空＝單樣式舊行為。
+                                let spans = cell
+                                    .run_spans
+                                    .get(text_i)
+                                    .filter(|v| !v.is_empty())
+                                    .cloned()
+                                    .unwrap_or_default();
+                                if !spans.is_empty() {
+                                    debug_assert!(
+                                        spans.iter().all(|r| r.to <= t.chars().count()),
+                                        "run_spans 越界（畸形輸入）：{t:?}"
+                                    );
+                                }
                                 blocks.push(CellBlockGeom::Text {
                                     lines: ls,
                                     bands,
                                     size_pt: cell.text_size_pt,
+                                    runs: spans,
                                 });
                             }
+                            text_i += 1;
                         }
                         CellBlock::Table(n) => {
                             if depth < MAX_NEST_DEPTH {
