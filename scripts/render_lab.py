@@ -179,6 +179,16 @@ def rasterize(pdf: pathlib.Path, png_dir: pathlib.Path, stem: str, max_pages: in
     return n
 
 
+def sect_pr_count(docx: pathlib.Path) -> int | None:
+    """源檔 `w:sectPr` 計數（真空頁 notes 實據，§2.5 方法）；讀不到回 None。"""
+    try:
+        import zipfile
+        data = zipfile.ZipFile(docx).read("word/document.xml").decode("utf-8", "ignore")
+        return len(re.findall(r"<w:sectPr\b", data))
+    except Exception:
+        return None
+
+
 def run_quire(docx: pathlib.Path, out_dir: pathlib.Path) -> dict:
     render_dir = out_dir / "quire" / docx.stem
     r = subprocess.run(
@@ -229,7 +239,7 @@ def layout_key(lines: list[str]) -> str:
     return " | ".join(norm(l) for l in lines[:8])
 
 
-def compare(name: str, lo: list[dict], ow: dict) -> dict:
+def compare(name: str, lo: list[dict], ow: dict, sect_pr: int | None = None) -> dict:
     """逐頁比對 LO vs quire，回傳該檔的差異摘要。
 
     J2 校正：**內容相似度**（忽略換行、大小寫不敏感、符號佔位）與
@@ -237,6 +247,11 @@ def compare(name: str, lo: list[dict], ow: dict) -> dict:
     把「同一句話換行位置不同」誤算成內容分歧（HC031 p1 實測兩邊文字
     幾乎相同卻得 0.007），會誤導所有 A/B 判讀。
     「首個分歧頁」判定改用 content_scores（<0.6）；換行差只進 notes。
+
+    M2 校正：同位雙空頁（LO 與我方都有該頁、LO 該頁文字/圖形/點陣圖全無）
+    記 None（度量假分差）而非 0.0——判別用頁數對齊上下文；我方多出頁是空
+    頁（LO 無此頁）仍 0.0 真事故。`sect_pr`＝源檔 `w:sectPr` 計數（可選，
+    真空頁 notes 實據用，讓報告可覆核）。
     """
     lo_pages, ow_pages = lo, ow["pages"]
     row = {
@@ -278,9 +293,28 @@ def compare(name: str, lo: list[dict], ow: dict) -> dict:
                     "images": images,
                     "unique_images": unique_images,
                 })
+            elif i < len(lo_pages) and i < len(ow_pages) and images == 0:
+                # 同位雙空（LO 與我方都有這一頁）且 LO 該頁文字/圖形/點陣圖全無
+                # ＝ LO 真空頁（para-level sectPr 照實開頁；tdf129888dml/tdf130120
+                # K5-diag 實測 LO p2 lines=[] drawings=0 images=0）⇒ 0.0 是度量假
+                # 分差，記 None 不進平均。sectPr 實據（源檔計數）寫進 notes 供覆核。
+                cs = ls = None
+                note = "measurement_artifact:雙空同位頁(LO真空)"
+                if note not in row["notes"]:
+                    row["notes"].append(note)
+                if sect_pr is not None:
+                    n2 = f"源檔 w:sectPr×{sect_pr}（雙方照實開頁⇒真空為結構性）"
+                    if n2 not in row["notes"]:
+                        row["notes"].append(n2)
+                row["measurement_artifacts"].append({
+                    "page": i,
+                    "drawings": 0,
+                    "images": 0,
+                    "reason": "both_empty_same_position",
+                })
             else:
-                # 兩邊皆空且 LO 只剩重複的頁首/頁尾圖（或無圖形）＝我方少了
-                # LO 的真內容（如 n751077 p2 我方多出的空白頁），仍記 0.0 真事故。
+                # 我方多出頁是空頁（LO 無此頁，n751077 p3 型），或 LO 該頁只剩重複
+                # 頁首/頁尾圖（4d 防放水案）＝我方少了 LO 的真內容，仍記 0.0 真事故。
                 cs = ls = 0.0
                 if "empty_page_mismatch" not in row["notes"]:
                     row["notes"].append("empty_page_mismatch")
@@ -430,15 +464,41 @@ def selftest() -> int:
           and r5["measurement_artifacts"][0]["images"] == 1,
           f"content={r5['content_scores'][0]} notes={r5['notes']}")
 
-    # (4b) 雙空且 LO 也無圖形 ⇒ 仍是 0.0 並標 empty_page_mismatch（不得放水）。
-    lo6 = {"lines": [], "drawings": 0, "images": 0, "w_pt": 612.0, "h_pt": 792.0}
-    ow6 = {"pages": [{"lines": []}],
-           "breaks": [{"width_pt": 612.0, "height_pt": 792.0}]}
-    r6 = compare("t6", [lo6], ow6)
-    check("4b 雙空且 LO 無圖形＝0.0 真事故",
-          r6["content_scores"][0] == 0.0 and r6["first_divergence"] == 0
-          and "empty_page_mismatch" in r6["notes"],
-          f"content={r6['content_scores'][0]} notes={r6['notes']}")
+    # (4b) 同位雙空（LO 也有這一頁）且 LO 該頁無圖形實據 ⇒ 度量假分差
+    #      （tdf129888dml/tdf130120 實測：para-level sectPr 雙方都照實開頁、
+    #      LO p2 真空）⇒ None（measurement_artifact），不進平均、不記分歧。
+    lo6a = [
+        {"lines": ["PAGE ONE TEXT"], "drawings": 2, "images": 0, "image_xrefs": [],
+         "w_pt": 612.0, "h_pt": 792.0},
+        {"lines": [], "drawings": 0, "images": 0, "image_xrefs": [],
+         "w_pt": 612.0, "h_pt": 792.0},
+    ]
+    ow6a = {"pages": [{"lines": ["PAGE ONE TEXT"]}, {"lines": []}],
+            "breaks": [{"width_pt": 612.0, "height_pt": 792.0},
+                       {"width_pt": 612.0, "height_pt": 792.0}]}
+    r6a = compare("t6a", lo6a, ow6a)
+    check("4b 同位雙空且 LO 無圖形＝None 度量假分差（tdf129888dml 型）",
+          r6a["content_scores"] == [1.0, None]
+          and r6a["layout_scores"] == [1.0, None]
+          and r6a["first_divergence"] is None
+          and any(n.startswith("measurement_artifact:雙空同位頁") for n in r6a["notes"])
+          and r6a["measurement_artifacts"]
+          and r6a["measurement_artifacts"][0].get("reason") == "both_empty_same_position",
+          f"scores={r6a['content_scores']} notes={r6a['notes']}")
+
+    # (4b2) 我方多出頁是空頁（LO 無此頁，n751077 p3 型真事故）⇒ 仍 0.0。
+    #       判別＝頁數對齊上下文：LO 頁數 > index 存在＝同位頁；否則＝我方多頁。
+    lo6b = {"lines": ["ONLY LO PAGE TEXT"], "drawings": 0, "images": 0,
+            "image_xrefs": [], "w_pt": 612.0, "h_pt": 792.0}
+    ow6b = {"pages": [{"lines": ["ONLY LO PAGE TEXT"]}, {"lines": []}],
+            "breaks": [{"width_pt": 612.0, "height_pt": 792.0},
+                       {"width_pt": 612.0, "height_pt": 792.0}]}
+    r6b = compare("t6b", [lo6b], ow6b)
+    check("4b2 我方多出空頁＝0.0 真事故（LO 無此頁）",
+          r6b["content_scores"][1] == 0.0 and r6b["first_divergence"] == 1
+          and any(n.startswith("empty_page_mismatch") for n in r6b["notes"])
+          and not r6b["measurement_artifacts"],
+          f"scores={r6b['content_scores']} div={r6b['first_divergence']} notes={r6b['notes']}")
 
     # (4c) 反向測試（n751077 p2 型）：LO 有文字、我方空 ⇒ 必須仍是 0.0，
     #      artifact 邏輯只能修雙空偽影，不能把真缺陷修沒。
@@ -530,7 +590,7 @@ def main() -> int:
             rows.append({"file": rel, "status": "lo_fail", "error": str(e)})
             lo_fail += 1
             continue
-        rows.append(compare(rel, lo, ow))
+        rows.append(compare(rel, lo, ow, sect_pr=sect_pr_count(docx)))
         r = rows[-1]
         print(f"   LO {r['lo_pages']} 頁 / OW {r['ow_pages']} 頁，"
               f"內容相似度 {r['content_scores'][:4]}（版面 {r['layout_scores'][:4]}）")

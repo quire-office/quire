@@ -33,6 +33,29 @@ pub enum DrawItem {
         h: f32,
         fill_argb: u32,
     },
+    /// 內嵌圖片像素（K4c-image）：docx `word/media/*` 真像素直出，
+    /// 取代同位的灰底佔位框（查無像素／不可渲染格式由發射層退佔位框）。
+    /// 新欄位全 `#[serde(default)]`——舊顯示列表 JSON 照解析。
+    /// z 序約定：與填色／框線同組（`sort_display_items` 的非文字臂）——
+    /// 保持推入序、恆在文字項之前，與表格切片同一約定的延伸（PM 2026-10-24：
+    /// 圖在填充之後、文字之前，以現行 push 序為準）。
+    Image {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        /// MIME 型別（由媒體副檔名判定，如 `image/png`）。
+        #[serde(default)]
+        mime: String,
+        /// 像素的 base64 編碼（SVG 端 `href="data:<mime>;base64,<data_b64>"`）。
+        /// 取捨：編碼放顯示列表而非渲染端——顯示列表要能跨進程（wasm 邊界）
+        /// 自帶像素，渲染端零 IO。
+        #[serde(default)]
+        data_b64: String,
+        /// 替代文字（`wp:docPr/@descr` 等；本卡不讀述欄＝None，留給後續卡）。
+        #[serde(default)]
+        alt: Option<String>,
+    },
     /// 筆畫（表格框線等）：寬度/顏色/虛線樣式齊備（Phase3-1b）。
     /// 新增欄位全部帶 serde default——舊顯示列表 JSON 仍可解析（向後兼容）。
     Rule {

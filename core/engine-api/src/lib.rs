@@ -114,6 +114,26 @@ pub struct Engine {
     /// 文字框佔位投影（K4e2）：段落索引 → 該段掛著的 shape 框（含文字框）。
     /// 純讀取派生（存檔路徑不經）；空表＝檔案無圖形＝發射層零擾動快路徑。
     shape_boxes: Vec<(usize, quire_ooxml::InlineImage)>,
+    /// 圖片像素池（K4c-image）：正文流／浮動／格內圖中**開檔期已解析出
+    /// 可渲染像素**的候選（配對鍵＝宿主段落＋extent 寬，與 K4e2 文字框池
+    /// 同議——高被帶高鉗制不可作鍵）。消費式配對：每頁一份旗標、用完即
+    /// 標記，正文流/浮動/格內切片三路徑共用一池。純讀取派生——存檔路徑
+    /// 完全不經此欄（嚴禁把 media part 寫回 docx）。頁首尾圖的像素解析
+    /// 另存 `HfPart::pixels`（HF part 有自家的 `.rels`）。
+    image_pixels: Vec<PixelSource>,
+}
+
+/// K4c-image 像素池項（開檔期一次性解析；像素位元組本身**不複製**進
+/// 引擎——只記來源 part 路徑，發射時才從 `doc.parts` 取位元組編 base64，
+/// 開檔成本與檔案大小同尺、不雙倍佔内存）。
+#[derive(Debug, Clone)]
+struct PixelSource {
+    /// 宿主段落（扁平段落索引；配對鍵之一）。
+    para: usize,
+    /// extent 寬（pt；配對鍵之二）。
+    w_pt: f32,
+    /// 像素來源（`word/media/*` part 路徑＋MIME）。
+    src: (String, String),
 }
 
 /// 頁首／頁尾 part 的已解析投影（開啟文件時一次性解析；純讀取）。
@@ -129,6 +149,11 @@ struct HfPart {
     /// 本 part 的圖片幾何投影（`quire_ooxml::read_images` 原樣複用）。
     /// 空表＝無圖＝發射層零變化（K4a）；發射只做佔位框，不碰存檔路徑。
     images: Vec<quire_ooxml::InlineImage>,
+    /// K4c-image：與 `images` **逐位對齊**的像素解析結果（Some＝該候選已
+    /// 解出可渲染像素的 part 路徑＋MIME；None＝查無/不可渲染格式→佔位框）。
+    /// rId 走本 part 自己的 `.rels`（HF part 有自家 rels，不是
+    /// document.xml.rels——Bug51170 實測）。空表＝無圖（零變化守門）。
+    pixels: Vec<Option<(String, String)>>,
 }
 
 /// 一節的頁首頁尾發射資料：宣告（已繼承、rId 已換算為「確實在 parts 裡」
@@ -360,6 +385,26 @@ impl Engine {
             eff_refs,
         );
         let bands = table_map::build_images(&images, params.line_h_pt(), &params, &sections);
+        // K4c-image：開檔期像素解析（純讀取）。正文流／浮動／格內圖一律沿
+        // 候選 rId 走 `word/_rels/document.xml.rels` 查 media part；可渲染
+        // 格式優先（PNG/JPEG/…）＞不可渲染（EMF/WMF/PDF）。解析成功才入池
+        // ——查無像素的圖不入池，發射層自然退佔位框（零虛構）。
+        let doc_rels = doc
+            .parts
+            .get("word/_rels/document.xml.rels")
+            .map(|r| read_rels(r))
+            .unwrap_or_default();
+        let image_pixels: Vec<PixelSource> = images
+            .iter()
+            .filter_map(|im| {
+                let src = resolve_pixel_source(&doc.parts, &doc_rels, &image_rid_candidates(im))?;
+                Some(PixelSource {
+                    para: im.para_index,
+                    w_pt: im.w_pt,
+                    src,
+                })
+            })
+            .collect();
         // br-page 硬斷點（ECMA-376 §17.4.3）：canonical 段落的 w:br w:type="page"
         // 偏移直傳版面層（與 texts 逐段同標）。無 br 檔案＝全空清單＝舊行為。
         // K2b：投影插入 marker 後，原始 `w:br` 碼點偏移需右移 marker 前綴
@@ -433,6 +478,7 @@ impl Engine {
                 .filter(|im| !im.txbx_texts.is_empty())
                 .map(|im| (im.para_index, im.clone()))
                 .collect(),
+            image_pixels,
         };
         Ok(engine.with_footnotes())
     }
@@ -1410,6 +1456,9 @@ impl Engine {
         // 鉗過（tdf130120：14.2pt 框鉗到 7.1pt），拿原始 extent 高比對會永不
         // 命中而吞字（實測：框內「7」整頁蒸發）。寬不经鉗制，是可靠鍵。
         let mut box_used = vec![false; self.shape_boxes.len()];
+        // K4c-image 像素池：同 K4e2 紀律（每頁一份、消費式），三路徑
+        // （表格切片→正文流→浮動）共用一池——同一張圖只發一次真像素。
+        let mut px_used = vec![false; self.image_pixels.len()];
         // 底層先畫表格（填色＋框線＋格內文字），再疊正文行；最後對「文字項」
         // 依 (y, x) 幾何閱讀序重排——跨表格/正文統一由上而下、由左而右。
         // 填色與框線保持推入序（穩定排序 key 同鍵，不互相顛倒遮蓋次序）。
@@ -1438,17 +1487,38 @@ impl Engine {
                 paras,
                 pr,
                 Some((self.shape_boxes.as_slice(), &mut box_used)),
+                // K4c-image：格內圖像素配對（池與正文流共用；para_range＋
+                // 同寬為鍵，與文字框池同議）。
+                Some((self.image_pixels.as_slice(), &mut px_used, &self.doc.parts)),
                 line_h,
             );
         }
         // 圖片佔位（t_a1397522）：正文流圖＝版心左緣＋行網格帶 y；浮動鎖點
         // 圖＝layout 已按各軸 relativeFrom 原點系換算成頁絕對座標，直接發射。
+        // K4c：先配對 shape 候補（真色版），配到→ emit_image_shape 吃真
+        // 填充／描邊／虛線／filled=f；配不到＝None＝舊灰底零擾動。
         for im in &p.images {
             let y = p.margin_top_pt + im.band as f32 * line_h;
-            emit_image_placeholder(&mut items, p.margin_left_pt, y, im.w_pt, im.h_pt);
+            // K4c 合併語意（像素×實色）：像素池命中（宿主段＋同寬）⇒ 發
+            // DrawItem::Image 且**跳過發框**（真像素取代佔位框/實色框，同位
+            // 不雙發）；未命中 ⇒ emit_image_shape 實色框（無 shape 候補＝
+            // 灰底佔位，零擾動守門）。框內文字照常配對發射（消費式池）。
+            let pix = take_image_pixel(
+                (self.image_pixels.as_slice(), &mut px_used, &self.doc.parts),
+                |s| s.para == im.para && (s.w_pt - im.w_pt).abs() < 0.01,
+                p.margin_left_pt,
+                y,
+                im.w_pt,
+                im.h_pt,
+            );
             let hit = self.shape_boxes.iter().enumerate().find(|(i, (bp, b))| {
                 !box_used[*i] && *bp == im.para && (b.w_pt - im.w_pt).abs() < 0.01
             });
+            let box_im = hit.map(|(_, (_, b))| b);
+            match pix {
+                Some(it) => items.push(it),
+                None => emit_image_shape(&mut items, p.margin_left_pt, y, im.w_pt, im.h_pt, box_im),
+            }
             if let Some((bi, (_, box_im))) = hit {
                 box_used[bi] = true;
                 emit_txbx_texts(
@@ -1464,15 +1534,30 @@ impl Engine {
                         .unwrap_or(&[]),
                     size,
                     line_h,
+                    Some(box_im),
                 );
             }
         }
         for fm in &p.floating_images {
-            emit_image_placeholder(&mut items, fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt);
+            // K4c 合併語意（浮動圖同口徑）：像素命中發真像素並跳過發框，
+            // 未命中發 emit_image_shape 實色框；框內文字照常配對。
+            let pix = take_image_pixel(
+                (self.image_pixels.as_slice(), &mut px_used, &self.doc.parts),
+                |s| s.para == fm.para && (s.w_pt - fm.w_pt).abs() < 0.01,
+                fm.x_pt,
+                fm.y_pt,
+                fm.w_pt,
+                fm.h_pt,
+            );
             // K4e2：浮動錨定文字框（DrawingML anchor）：框內文字落在換算後的鎖點。
             let hit = self.shape_boxes.iter().enumerate().find(|(i, (bp, b))| {
                 !box_used[*i] && *bp == fm.para && (b.w_pt - fm.w_pt).abs() < 0.01
             });
+            let box_b = hit.map(|(_, (_, b))| b);
+            match pix {
+                Some(it) => items.push(it),
+                None => emit_image_shape(&mut items, fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt, box_b),
+            }
             if let Some((bi, (_, b))) = hit {
                 box_used[bi] = true;
                 emit_txbx_texts(
@@ -1488,6 +1573,7 @@ impl Engine {
                         .unwrap_or(&[]),
                     size,
                     line_h,
+                    Some(b),
                 );
             }
         }
@@ -2100,22 +2186,116 @@ fn cascade_paragraphs(
 /// 也不丟字（比對指標要文字在，LO 對超高框同樣不裁字）。空框段（""）留
 /// 一行空白（段落分隔語義）。座標＝頁絕對（呼叫端已換算）。
 #[allow(clippy::too_many_arguments)] // 框座標/尺寸/文字/run/樣式基準皆必要輸入，不塞結構體轉運
+/// 框內幾何（K4c 契約 6/7）：`v:textbox/@inset` 四值（left,top,right,bottom
+/// pt）餵文字起點與可用寬高；`txbx_rect`（組映射後的框內矩形）優先於整框；
+/// `txbx_vertical`（layout-flow:vertical）→ 逐字堆疊；`txbx_table` → 框內
+/// 表格逐格填色 Rect（n780563 三色列）。全 None/false/空＝舊行為零擾動。
 fn emit_txbx_texts(
     items: &mut Vec<DrawItem>,
     x: f32,
     y: f32,
     w: f32,
-    _h: f32,
+    h: f32,
     texts: &[String],
     runs: &[Vec<quire_ooxml::Run>],
     size_pt: f32,
     line_h: f32,
+    shape: Option<&quire_ooxml::InlineImage>,
 ) {
-    if texts.is_empty() || w <= 0.0 {
+    if w <= 0.0 {
         return;
     }
-    let inner_w = (w - 6.0).max(10.0);
-    let mut yy = y + 4.0;
+    // 框內矩形：組映射（txbx_rect）缺 → 整框（老實退化，不虛構位置）。
+    let (bx, by, bw, bh) = match shape.and_then(|b| b.txbx_rect) {
+        Some([dx, dy, rw, rh]) if rw > 0.0 && rh > 0.0 => (x + dx, y + dy, rw, rh),
+        _ => (x, y, w, h),
+    };
+    // inset 吃成內邊界（契約 6）：缺宣告＝舊硬近（x+3、inner_w＝w−6）。
+    let inset = shape.and_then(|b| b.txbx_inset);
+    let [inset_l, inset_t, inset_r, inset_b] = inset.unwrap_or([3.0, 4.0, 3.0, 0.0]);
+    let old_style = inset.is_none();
+    let inner_x = bx + inset_l;
+    let inner_y = by + inset_t;
+    let inner_w = if old_style {
+        (bw - 6.0).max(10.0)
+    } else {
+        (bw - inset_l - inset_r).max(10.0)
+    };
+    let inner_h = (bh - inset_t - inset_b).max(0.0);
+
+    // ---- K4c：框內表格逐格填色（n780563 三色列表實據）：行按等分帶高、
+    // 列按等分寬（格寬宣告缺＝近似；只發有色的格，None 格不發）。----
+    if let Some(rows) = shape
+        .map(|b| b.txbx_table.clone())
+        .filter(|r| !r.is_empty())
+    {
+        let rh = (inner_h / rows.len() as f32).max(0.5);
+        for (ri, row) in rows.iter().enumerate() {
+            if row.is_empty() {
+                continue;
+            }
+            let cw = inner_w / row.len() as f32;
+            for (ci, cell) in row.iter().enumerate() {
+                if let Some(argb) = cell {
+                    items.push(DrawItem::Rect {
+                        x: inner_x + ci as f32 * cw,
+                        y: inner_y + ri as f32 * rh,
+                        w: cw,
+                        h: rh,
+                        fill_argb: *argb,
+                    });
+                }
+            }
+        }
+    }
+
+    // ---- K4c 契約 7：layout-flow:vertical → 逐字堆疊（y 單調、x 依框右緣
+    // 起欄；既有 DrawItem::Text 逐字發射，零新變體）。欄寬取段字級近似。----
+    let vertical = shape.is_some_and(|b| b.txbx_vertical);
+    if vertical {
+        for (ti, t) in texts.iter().enumerate() {
+            if t.is_empty() {
+                continue;
+            }
+            let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+            let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+            let (flags, color_argb, _) =
+                own_runs
+                    .first()
+                    .map(run_style)
+                    .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
+            let fam = own_runs
+                .first()
+                .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
+            let sz_eff = seg_size.max(1.0);
+            // 欄起點＝框右緣往內退 inset_r 再退一欄寬（一個字 Advance 近似）。
+            let col_w = TextMeasurer::new(sz_eff).text_width("n").max(sz_eff * 0.6);
+            let col_x = (bx + bw - inset_r - col_w).max(bx);
+            let step = (sz_eff * 1.2).max(1.0);
+            let mut yy = inner_y;
+            for c in t.chars() {
+                if yy > inner_y + inner_h + step {
+                    break; // 超出框高：老實停發（不溢出到別頁別框）
+                }
+                items.push(DrawItem::Text {
+                    x: col_x,
+                    y: yy,
+                    size_pt: sz_eff,
+                    flags,
+                    color_argb,
+                    family: fam.clone(),
+                    text: c.to_string(),
+                });
+                yy += step;
+            }
+        }
+        return;
+    }
+
+    if texts.is_empty() {
+        return;
+    }
+    let mut yy = inner_y;
     for (ti, t) in texts.iter().enumerate() {
         let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
         if t.trim().is_empty() {
@@ -2123,7 +2303,7 @@ fn emit_txbx_texts(
             // 樣式宣告是實內容；KP 斷行會 trim_end 吞掉純空白行，故繞過
             // break_lines 逐 run 直接發射一個佔位文字項），無 run＝純空白帶。
             if !own_runs0.is_empty() {
-                let mut xx = x + 3.0;
+                let mut xx = inner_x;
                 for r in own_runs0 {
                     let (flags, color_argb, sz) = run_style(r);
                     let fam = select_text_family(r.effective_fonts.as_ref(), &r.text);
@@ -2155,7 +2335,7 @@ fn emit_txbx_texts(
             ..Default::default()
         };
         for l in quire_layout::break_lines(t, inner_w, &m) {
-            emit_line_run_items(items, x + 3.0, yy, seg_size, &l, Some(&fake));
+            emit_line_run_items(items, inner_x, yy, seg_size, &l, Some(&fake));
             yy += line_h;
         }
     }
@@ -2163,32 +2343,203 @@ fn emit_txbx_texts(
 
 /// 圖片佔位框配色（t_a1397522）：灰底＋淺灰描邊。「誠實的近似」視覺：
 /// 用戶看得見這裡有圖、多大、在哪，點陣直出屬像素渲染卡。
-const IMAGE_PLACEHOLDER_FILL: u32 = 0xFFF0_F0F0;
-const IMAGE_PLACEHOLDER_EDGE: u32 = 0xFFCC_CCCC;
+pub(crate) const IMAGE_PLACEHOLDER_FILL: u32 = 0xFFF0_F0F0;
+pub(crate) const IMAGE_PLACEHOLDER_EDGE: u32 = 0xFFCC_CCCC;
 const IMAGE_PLACEHOLDER_RULE_PT: f32 = 0.75;
 
-/// 發射圖片佔位框：灰底 Rect＋四邊 Rule（尺寸＝extent）。不動 DrawItem
-/// 契約（零新增變體，卡片鐵律）；座標＝頁絕對。
-fn emit_image_placeholder(items: &mut Vec<DrawItem>, x: f32, y: f32, w: f32, h: f32) {
-    if w <= 0.0 || h <= 0.0 {
-        return; // 非法尺寸老實不發射（容錯鐵律）
+/// K4c：VML 布林欄位「明确假」判讀（Some(false)＝宣告不發；None/Some(true)
+/// ＝照發）。
+fn deco_off(flag: Option<bool>) -> bool {
+    flag == Some(false)
+}
+
+/// 最小 base64 編碼（K4c-image，RFC 4648 標準字母＋`=` 補齊）。零新增依賴
+/// 紀律：repo 無 base64 crate 且本卡禁止新增——編碼點必須在發射層
+/// （`DrawItem::Image` 於 engine 構造，顯示列表要跨 wasm 進程自帶像素），
+/// 故 helper 放本 crate 而非 native shell；SVG 端直接拼
+/// `href="data:<mime>;base64,<data_b64>"`，渲染端零 IO。
+fn base64_encode(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for ch in data.chunks(3) {
+        let n = ((ch[0] as u32) << 16)
+            | ((ch.get(1).copied().unwrap_or(0) as u32) << 8)
+            | ch.get(2).copied().unwrap_or(0) as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        // 尾組不足 3 位元組：多出的符號位以 `=` 補齊（RFC 4648 §4）。
+        out.push(if ch.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if ch.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
-    items.push(DrawItem::Rect {
+    out
+}
+
+/// K4c-image：媒體副檔名 → MIME（SVG 可渲染白名單）。不認識的
+/// （**EMF/WMF/PDF** 等）→ None ⇒ 呼叫端退既有佔位框（n779834 浮水印
+/// EMF 即走此路——本卡不解 EMF，誠實近似不虛構）。
+fn mime_of_media_path(path: &str) -> Option<&'static str> {
+    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => return None,
+    })
+}
+
+/// 像素候選 rId 序（文档序）：`embed_rids`（Choice＋Fallback 全備選）優先；
+/// 空退回 `embed_rid`（舊投影快照無 rids 欄＝單候選語義不变）。
+fn image_rid_candidates(im: &quire_ooxml::InlineImage) -> Vec<&str> {
+    if !im.embed_rids.is_empty() {
+        im.embed_rids.iter().map(|s| s.as_str()).collect()
+    } else {
+        im.embed_rid.as_deref().into_iter().collect()
+    }
+}
+
+/// K4c-image 像素解析（PM 決策規則）：沿候選 rId 走**來源 part 自己的**
+/// `.rels`（呼叫端傳入）→ `word/media/*`，可渲染格式＞不可渲染格式、皆可
+/// 渲染取先見。查無 rId／rels 查無／懸空 part（不在 parts）／副檔名不認
+/// ⇒ None ⇒ 發射層退既有佔位框（不可虛構、不可靜默丟）。
+fn resolve_pixel_source(
+    parts: &BTreeMap<String, Vec<u8>>,
+    rels: &[quire_ooxml::Relationship],
+    rids: &[&str],
+) -> Option<(String, String)> {
+    for rid in rids {
+        let Some(part) = resolve_relationship(rels, rid) else {
+            continue;
+        };
+        // 指向不存在 part 的懸空 rId → 繼續找下一個備選（容錯跳過）。
+        if !parts.contains_key(&part) {
+            continue;
+        }
+        let Some(mime) = mime_of_media_path(&part) else {
+            continue;
+        };
+        return Some((part, mime.to_string()));
+    }
+    None
+}
+
+/// 來源 part 路徑 → 它的 `.rels` part 路徑（OPC §3：`<dir>/_rels/<file>.rels`）。
+/// 頁首尾 part 有自家的 rels（Bug51170 的 header1 圖 rId 住在
+/// `word/_rels/header1.xml.rels`，不是 document.xml.rels）。
+fn rels_path_for(part_path: &str) -> String {
+    let (dir, file) = part_path.rsplit_once('/').unwrap_or(("", part_path));
+    if dir.is_empty() {
+        format!("_rels/{file}.rels")
+    } else {
+        format!("{dir}/_rels/{file}.rels")
+    }
+}
+
+/// K4c-image 像素池配對上下文：(像素池, 消費旗標, parts 索引)。消費式配對
+/// 與 K4e2 文字框池同一紀律——同一張圖只允許一條發射路徑取用一次。
+type PixelPool<'a> = (
+    &'a [PixelSource],
+    &'a mut Vec<bool>,
+    &'a BTreeMap<String, Vec<u8>>,
+);
+
+/// 配對取像素：池中找到**未消費**且 `pred` 命中者 → 發 `DrawItem::Image`
+/// （真像素，base64 內嵌 data URI）並標記消費；找不到 → None，呼叫端發
+/// 既有佔位框。非法尺寸（w/h≤0）＝不發像素（同佔位框容錯口徑）。
+fn take_image_pixel(
+    pool: PixelPool<'_>,
+    pred: impl Fn(&PixelSource) -> bool,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+) -> Option<DrawItem> {
+    if w <= 0.0 || h <= 0.0 {
+        return None; // 非法尺寸老實不發射（容錯鐵律，同佔位框）
+    }
+    let (pixels, used, parts) = pool;
+    let (i, src) = pixels
+        .iter()
+        .enumerate()
+        .find(|(i, s)| !used[*i] && pred(s))?;
+    let bytes = parts.get(&src.src.0)?; // parts 被編輯抽掉 → 退佔位框（誠實）
+    used[i] = true;
+    Some(DrawItem::Image {
         x,
         y,
         w,
         h,
-        fill_argb: IMAGE_PLACEHOLDER_FILL,
-    });
+        mime: src.src.1.clone(),
+        data_b64: base64_encode(bytes),
+        alt: None,
+    })
+}
+
+/// 發射圖片佔位框（K4c 升級：真色版）。`shape`=None 或全欄未宣告＝舊行為
+/// （灰底 Rect＋四邊淺灰 Rule，零擾動守門）；有宣告時（卡片契約 2/3/4）：
+/// - 填充：`filled="f"` → 整個 Rect 不發（**別把無填充畫成灰底**）；否則
+///   `fill_argb`（已按 `v:fill/@color` > `o:fillcolor` 合併）優先、缺→佔位灰。
+/// - 框線：`stroked="f"` → 四條 Rule 不發；否則色 `stroke_argb` 缺→佔位邊、
+///   線寬 `stroke_width_pt` 缺→0.75pt、虛線 `stroke_dash`（SVG dasharray）透傳。
+fn emit_image_shape(
+    items: &mut Vec<DrawItem>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    shape: Option<&quire_ooxml::InlineImage>,
+) {
+    if w <= 0.0 || h <= 0.0 {
+        return; // 非法尺寸老實不發射（容錯鐵律）
+    }
+    let fill = if shape.is_some_and(|b| deco_off(b.filled)) {
+        None
+    } else {
+        Some(
+            shape
+                .and_then(|b| b.fill_argb)
+                .unwrap_or(IMAGE_PLACEHOLDER_FILL),
+        )
+    };
+    if let Some(argb) = fill {
+        items.push(DrawItem::Rect {
+            x,
+            y,
+            w,
+            h,
+            fill_argb: argb,
+        });
+    }
+    if shape.is_some_and(|b| deco_off(b.stroked)) {
+        return;
+    }
+    let color = shape
+        .and_then(|b| b.stroke_argb)
+        .unwrap_or(IMAGE_PLACEHOLDER_EDGE);
+    let width_pt = shape
+        .and_then(|b| b.stroke_width_pt)
+        .unwrap_or(IMAGE_PLACEHOLDER_RULE_PT);
+    let dash = shape.and_then(|b| b.stroke_dash.clone());
     let rule = |x1: f32, y1: f32, x2: f32, y2: f32, items: &mut Vec<DrawItem>| {
         items.push(DrawItem::Rule {
             x1,
             y1,
             x2,
             y2,
-            width_pt: IMAGE_PLACEHOLDER_RULE_PT,
-            color_argb: IMAGE_PLACEHOLDER_EDGE,
-            dash: None,
+            width_pt,
+            color_argb: color,
+            dash: dash.clone(),
         })
     };
     rule(x, y, x + w, y, items);
@@ -2472,6 +2823,9 @@ fn push_frag_items(
     // 頁首尾表格無宿主段落＝傳 None（零擾動）。
     para_range: (usize, usize),
     mut shape: Option<ShapePool<'_>>,
+    // K4c-image：格內圖像素配對池（正文流路徑傳 Some；頁首尾表格傳 None
+    // ——HF 圖的像素走 `push_hf_slot` 自家解析，格內 HF 圖維持佔位框）。
+    mut pixels: Option<PixelPool<'_>>,
     line_h: f32,
 ) {
     let mut ry = 0.0f32; // 切片內列游標（累加列切片高）
@@ -2541,37 +2895,64 @@ fn push_frag_items(
                     text: t.text.clone(),
                 });
             }
-            // 圖片佔位框（t_a1397522）：灰底 Rect＋四邊 Rule（誠實近似——
-            // 點陣直出屬像素渲染卡；分頁容量先對，像素後補）。
+            // 圖片佔位框（t_a1397522）＋ K4c 真色版（配到 shape 候補時吃
+            // 真填充／描邊／filled=f／stroked=f；配不到＝灰底零擾動）。
             for im in &cell.images {
                 let ix = base_x + im.x_pt;
                 let iy = base_y + ry + im.y_pt;
-                emit_image_placeholder(items, ix, iy, im.w_pt, im.h_pt);
-                // K4e2：格內文字框（tdf130120 實據——圖框錨在儲存格段落）。
-                if let Some((boxes, used)) = shape.as_mut() {
-                    let hit = boxes.iter().enumerate().find(|(i, (bp, b))| {
+                // K4c-image 合併語意：格內圖真像素優先。配對鍵＝宿主段落
+                // （本槽 para_range 內）＋寬：切片寬是被格寬鉗過的原寬（只縮
+                // 不放），故放寬為「原寬 ≥ 切片寬」的首見未消費項（高同樣被
+                // 帶高鉗過，不可作鍵——K4e2 教訓）。像素命中發真像素並跳過
+                // 發框；未命中 ⇒ emit_image_shape 實色框（無候補＝灰底佔位）。
+                let pix = pixels.as_mut().and_then(|pool| {
+                    take_image_pixel(
+                        (pool.0, pool.1, pool.2),
+                        |s| {
+                            s.para >= para_range.0
+                                && s.para < para_range.1
+                                && s.w_pt >= im.w_pt - 0.01
+                        },
+                        ix,
+                        iy,
+                        im.w_pt,
+                        im.h_pt,
+                    )
+                });
+                let hit = shape.as_mut().and_then(|(boxes, used)| {
+                    boxes.iter().enumerate().find(|(i, (bp, b))| {
                         !used[*i]
                             && *bp >= para_range.0
                             && *bp < para_range.1
                             && (b.w_pt - im.w_pt).abs() < 0.01
-                    });
-                    if let Some((bi, (bp, b))) = hit {
-                        used[bi] = true;
-                        emit_txbx_texts(
-                            items,
-                            ix,
-                            iy,
-                            im.w_pt,
-                            im.h_pt,
-                            &b.txbx_texts,
-                            paragraphs
-                                .get(*bp)
-                                .map(|pp| pp.txbx_runs.as_slice())
-                                .unwrap_or(&[]),
-                            size,
-                            line_h,
-                        );
+                    })
+                });
+                match pix {
+                    Some(it) => items.push(it),
+                    None => {
+                        emit_image_shape(items, ix, iy, im.w_pt, im.h_pt, hit.map(|(_, (_, b))| b))
                     }
+                }
+                // K4e2：格內文字框（tdf130120 實據——圖框錨在儲存格段落）。
+                if let Some((bi, (bp, b))) = hit {
+                    if let Some((_, used)) = shape.as_mut() {
+                        used[bi] = true;
+                    }
+                    emit_txbx_texts(
+                        items,
+                        ix,
+                        iy,
+                        im.w_pt,
+                        im.h_pt,
+                        &b.txbx_texts,
+                        paragraphs
+                            .get(*bp)
+                            .map(|pp| pp.txbx_runs.as_slice())
+                            .unwrap_or(&[]),
+                        size,
+                        line_h,
+                        Some(b),
+                    );
                 }
             }
             let nested_tbls: Vec<&CanonicalTable> = canon_cell
@@ -2600,6 +2981,8 @@ fn push_frag_items(
                     paragraphs,
                     para_range,
                     shape.as_mut().map(|(b, u)| (*b, &mut **u)),
+                    // K4c-image：子表與母格共用像素池（消費旗標隨遞迴透傳）。
+                    pixels.as_mut().map(|(p, u, parts)| (*p, &mut **u, *parts)),
                     line_h,
                 );
             }
@@ -2823,12 +3206,43 @@ impl Engine {
         // 同一投影原樣複用）。y 起點＝slot 發射距，同 part 多圖按所屬段落
         // 疊行帶；x＝版心左緣。格內圖由表格切片負責，本輪不重複發射。
         // 無圖（空表）⇒ 迴圈零次 ⇒ 既有顯示列表逐位元組不變（零變化守門）。
-        for im in &part.images {
+        for (idx, im) in part.images.iter().enumerate() {
             if im.in_cell {
                 continue;
             }
             let y = emit_y + im.para_index as f32 * line_h;
-            emit_image_placeholder(items, hf_params.margin(MARGIN_LEFT), y, im.w_pt, im.h_pt);
+            // K4c 合併語意：HF 圖像素＝開檔期按本 part 自家 .rels 解析（part.pixels
+            // 與 images 逐位對齊；Bug51170 Choice→pdf 不可渲染、Fallback→png 可
+            // 渲染即在此翻綠）。命中發真像素並跳過發框；未命中發 emit_image_shape
+            // （HF 候選本身就是 InlineImage——真色直走 shape 版，None 才退灰佔位）。
+            let pix = part.pixels.get(idx).and_then(|p| p.as_ref()).and_then(
+                |(path, mime)| -> Option<DrawItem> {
+                    if im.w_pt <= 0.0 || im.h_pt <= 0.0 {
+                        return None;
+                    }
+                    let bytes = self.doc.parts.get(path)?;
+                    Some(DrawItem::Image {
+                        x: hf_params.margin(MARGIN_LEFT),
+                        y,
+                        w: im.w_pt,
+                        h: im.h_pt,
+                        mime: mime.clone(),
+                        data_b64: base64_encode(bytes),
+                        alt: None,
+                    })
+                },
+            );
+            match pix {
+                Some(it) => items.push(it),
+                None => emit_image_shape(
+                    items,
+                    hf_params.margin(MARGIN_LEFT),
+                    y,
+                    im.w_pt,
+                    im.h_pt,
+                    Some(im),
+                ),
+            }
         }
     }
 
@@ -2866,6 +3280,9 @@ impl Engine {
             paragraphs,
             // K4e2：頁首尾表格無宿主正文段落＝無文字框配對（零擾動）。
             (0, 0),
+            None,
+            // K4c-image：頁首尾表格的格內圖維持佔位框（HF 像素只供正文流
+            // 路徑的 push_hf_slot 圖；格內 HF 圖屬後續卡，零擾動守門）。
             None,
             hf_params.line_h_pt(),
         );
@@ -3062,6 +3479,19 @@ fn build_hf_layer(
                 // K4a：頁首／頁尾 part 的 `wp:drawing` 幾何（`read_images` 對
                 // 任意 XML part 通用；images 空＝零變化）。
                 let images = quire_ooxml::read_images(xml);
+                // K4c-image：HF 圖的像素解析走**本 part 自家的 .rels**
+                // （word/_rels/header1.xml.rels——Bug51170 實測；不是
+                // document.xml.rels）。逐位對齊 images；查無／EMF 等不可渲染
+                // 格式＝None ⇒ 發射退佔位框。無圖 part＝空向量（零擾動）。
+                let hf_rels = doc
+                    .parts
+                    .get(&rels_path_for(&path))
+                    .map(|r| read_rels(r))
+                    .unwrap_or_default();
+                let pixels: Vec<Option<(String, String)>> = images
+                    .iter()
+                    .map(|im| resolve_pixel_source(&doc.parts, &hf_rels, &image_rid_candidates(im)))
+                    .collect();
                 let (styles, metrics, _spacings, _marker_chars) = match style_table {
                     // 頁首尾不展開點引（widths 空＝不虛構；既有行為不變）。
                     Some(st) => cascade_paragraphs(st, &paragraphs, def_size, &[], &[]),
@@ -3074,6 +3504,7 @@ fn build_hf_layer(
                         metrics,
                         tables,
                         images,
+                        pixels,
                     },
                 );
             }
@@ -3502,11 +3933,13 @@ mod tests {
         );
     }
 
-    /// K4a（Bug51170）：頁首 part 的 `wp:inline` 圖必須投影成佔位框。
-    /// header1.xml 恰一張 1854200×990600 EMU（146×78pt）inline 圖；
-    /// sectPr 宣告 titlePg 但無 first 頁首 ⇒ 首頁依語義空白，其餘頁用
-    /// default 頁首——每頁都必須在 header 區（y < 正文首行 y）看到佔位 Rect。
-    /// A/B：無頁首圖的檔案不得冒出任何 header 區佔位（零變化守門）。
+    /// K4a→K4c-image（Bug51170）：頁首 part 的 `wp:inline` 圖先以佔位框投影
+    /// （K4a），K4c 起像素可渲染 ⇒ **升級**為真像素 `DrawItem::Image`（同位
+    /// 不再發灰底佔位框——不雙發）。header1.xml 恰一張 1854200×990600 EMU
+    /// （146×78pt）inline 圖；sectPr 宣告 titlePg 但無 first 頁首 ⇒ 首頁依
+    /// 語義空白，其餘頁用 default 頁首——每頁都必須在 header 區（y < 正文
+    /// 首行 y）看到 Image。A/B：無頁首圖的檔案不得冒出任何 header 區佔位
+    /// 或像素（零變化守門）。
     #[test]
     fn bug51170_header_inline_image_emitted() {
         const BUG51170: &[u8] =
@@ -3517,23 +3950,17 @@ mod tests {
         for page in 1..engine.page_count() {
             let top = engine.layout.pages()[page].margin_top_pt;
             let dl = engine.page_display_list(page).expect("頁存在");
-            let header_rects: Vec<(f32, f32, f32, f32)> = dl
+            let header_imgs: Vec<(f32, f32, f32, f32)> = dl
                 .items
                 .iter()
                 .filter_map(|it| match it {
-                    DrawItem::Rect {
-                        x,
-                        y,
-                        w,
-                        h,
-                        fill_argb,
-                    } if *fill_argb == IMAGE_PLACEHOLDER_FILL && *y < top => Some((*x, *y, *w, *h)),
+                    DrawItem::Image { x, y, w, h, .. } if *y < top => Some((*x, *y, *w, *h)),
                     _ => None,
                 })
                 .collect();
             assert!(
-                !header_rects.is_empty(),
-                "第 {page} 頁 header 區（y < {top}）必須有圖片佔位：{:?}",
+                !header_imgs.is_empty(),
+                "第 {page} 頁 header 區（y < {top}）必須有真像素 Image：{:?}",
                 dl.items
                     .iter()
                     .filter_map(|it| match it {
@@ -3542,13 +3969,23 @@ mod tests {
                     })
                     .collect::<Vec<_>>()
             );
-            let (_, _, w, h) = header_rects[0];
+            let (_, _, w, h) = header_imgs[0];
             assert!(
                 (w - 1854200.0 / 12700.0).abs() < 0.1 && (h - 990600.0 / 12700.0).abs() < 0.1,
                 "extent 應為 146×78pt：{w}×{h}"
             );
+            // 真像素取代佔位框：同頁 header 區不得再發灰底 Rect（K4a 語義
+            // 由 Image 承接，A/B 翻綠鎖）。
+            assert!(
+                !dl.items.iter().any(|it| matches!(
+                    it,
+                    DrawItem::Rect { y, fill_argb, .. }
+                        if *fill_argb == IMAGE_PLACEHOLDER_FILL && *y < top
+                )),
+                "第 {page} 頁頁首圖已真像素發射，不得雙發佔位框"
+            );
         }
-        // A/B：無頁首圖的檔案——header 區不得冒出佔位（既有顯示列表零變化）。
+        // A/B：無頁首圖的檔案——header 區不得冒出佔位或像素（既有顯示列表零變化）。
         const NO_HF_IMG: &[u8] =
             include_bytes!("../../../corpus/xopt/TestFiles_WC_WC049-Text-Box-in-Cell.docx");
         let ab = Engine::from_docx_bytes(NO_HF_IMG).expect("開啟 WC049 失敗");
@@ -3563,6 +4000,13 @@ mod tests {
                 )),
                 "無頁首圖的第 {page} 頁不得發射 header 佔位"
             );
+            assert!(
+                !dl.items.iter().any(|it| matches!(
+                    it,
+                    DrawItem::Image { y, .. } if *y < top
+                )),
+                "無頁首圖的第 {page} 頁不得發射 header 像素"
+            );
         }
     }
 
@@ -3571,7 +4015,9 @@ mod tests {
     const INLINE_IMG: &[u8] = include_bytes!("../../../fixtures/inline_image.docx");
 
     /// selfgen fixture：文字＋100pt inline 圖＋文字——中間段恰佔
-    /// ceil(100/16.8)＝6 帶，SVG 層（display list）有灰 Rect＋四邊 Rule。
+    /// ceil(100/16.8)＝6 帶。K4c-image 起像素（fixture 帶真 67B PNG）可解析
+    /// ⇒ 發射升級為真像素 `DrawItem::Image`（灰 Rect＋四 Rule 退位）；
+    /// 幾何（extent／帶 y／版心左緣）逐位沿用 K4a 口徑。
     #[test]
     fn inline_image_fixture_bands_and_placeholder_items() {
         let engine = Engine::from_docx_bytes(INLINE_IMG).unwrap();
@@ -3582,15 +4028,30 @@ mod tests {
             .iter()
             .filter(|it| matches!(it, DrawItem::Rect { fill_argb, .. } if *fill_argb == IMAGE_PLACEHOLDER_FILL))
             .collect();
-        assert_eq!(rects.len(), 1, "恰好一張佔位 Rect");
+        assert_eq!(rects.len(), 0, "K4c：真像素取代灰底佔位 Rect");
         let rules = dl
             .items
             .iter()
             .filter(|it| matches!(it, DrawItem::Rule { color_argb, .. } if *color_argb == IMAGE_PLACEHOLDER_EDGE))
             .count();
-        assert_eq!(rules, 4, "Rect 四邊各一條 Rule");
-        // Rect 幾何＝extent：200×100pt，x＝版心左緣（A4 1 吋邊界＝72pt）。
-        if let DrawItem::Rect { x, y, w, h, .. } = rects[0] {
+        assert_eq!(rules, 0, "K4c：佔位四邊 Rule 同退位");
+        let imgs: Vec<&DrawItem> = dl
+            .items
+            .iter()
+            .filter(|it| matches!(it, DrawItem::Image { .. }))
+            .collect();
+        assert_eq!(imgs.len(), 1, "恰好一張真像素 Image");
+        // Image 幾何＝extent：200×100pt，x＝版心左緣（A4 1 吋邊界＝72pt）。
+        if let DrawItem::Image {
+            x,
+            y,
+            w,
+            h,
+            mime,
+            data_b64,
+            ..
+        } = imgs[0]
+        {
             assert!(
                 (w - 200.0).abs() < 1e-2 && (h - 100.0).abs() < 1e-2,
                 "{w}x{h}"
@@ -3599,6 +4060,8 @@ mod tests {
             // 段落 0 帶 0 → 圖頂帶 1（吸收態：空行帶＝圖頂帶；本段行=空行）。
             let line_h = engine.params.line_h_pt();
             assert!((y - (72.0 + 1.0 * line_h)).abs() < 1e-2, "圖 y＝帶 1：{y}");
+            assert_eq!(mime, "image/png", "副檔名 png → image/png");
+            assert!(data_b64.starts_with("iVBORw0KGgo"), "PNG magic 直通");
         }
     }
 
@@ -3634,18 +4097,24 @@ mod tests {
             "浮動圖不得撐動正文行：{lines:?}"
         );
         let dl = engine.page_display_list(0).unwrap();
+        // K4c-image：anchor 圖的 rId 不變（像素可解析）⇒ 鎖點發真像素
+        // Image，佔位 Rect 退位；鎖點幾何口徑沿用 K4a。
         let rects = dl
             .items
             .iter()
             .filter(|it| matches!(it, DrawItem::Rect { fill_argb, .. } if *fill_argb == IMAGE_PLACEHOLDER_FILL))
             .count();
-        assert_eq!(rects, 1, "鎖點佔位 Rect 仍發射");
-        if let Some(DrawItem::Rect { x, y, .. }) = dl
+        assert_eq!(rects, 0, "K4c：像素可解析 ⇒ 鎖點不再發佔位 Rect");
+        let img = dl
             .items
             .iter()
-            .find(|it| matches!(it, DrawItem::Rect { fill_argb, .. } if *fill_argb == IMAGE_PLACEHOLDER_FILL))
-        {
-            assert!((x - 72.0).abs() < 1e-2 && (y - 144.0).abs() < 1e-2, "頁鎖點 1in/2in：{x},{y}");
+            .find(|it| matches!(it, DrawItem::Image { .. }))
+            .expect("鎖點真像素 Image");
+        if let DrawItem::Image { x, y, .. } = img {
+            assert!(
+                (x - 72.0).abs() < 1e-2 && (y - 144.0).abs() < 1e-2,
+                "頁鎖點 1in/2in：{x},{y}"
+            );
         }
     }
 
@@ -6389,6 +6858,119 @@ mod tests {
         assert!(
             (gap - 33.6).abs() < 0.01,
             "宣告下限 24pt 大於需求高 ⇒ ceil(24/16.8)=2 帶＝33.6，實得 {gap}"
+        );
+    }
+
+    // ---------------- K4c-image：像素解析 helper 單元鎖 ----------------
+
+    /// base64（RFC 4648 §4 附錄範例向量）：本卡自製 helper 的正確性鎖。
+    #[test]
+    fn k4c_base64_known_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        // PNG magic 全 8 位元組（含 >0x7F 位元組：字節級而非字元級編碼）。
+        assert_eq!(
+            base64_encode(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+            "iVBORw0KGgo="
+        );
+    }
+
+    /// 副檔名 → MIME 白名單；EMF/WMF/PDF 等不可渲染格式＝None（退佔位框）。
+    #[test]
+    fn k4c_mime_whitelist_and_opaque_formats() {
+        assert_eq!(
+            mime_of_media_path("word/media/image2.png"),
+            Some("image/png")
+        );
+        assert_eq!(mime_of_media_path("word/media/i.JPG"), Some("image/jpeg"));
+        assert_eq!(mime_of_media_path("a/b/c.jpeg"), Some("image/jpeg"));
+        assert_eq!(mime_of_media_path("x.gif"), Some("image/gif"));
+        assert_eq!(mime_of_media_path("x.bmp"), Some("image/bmp"));
+        assert_eq!(mime_of_media_path("x.TIFF"), Some("image/tiff"));
+        assert_eq!(mime_of_media_path("x.webp"), Some("image/webp"));
+        assert_eq!(mime_of_media_path("x.svg"), Some("image/svg+xml"));
+        // 本卡不明理解的格式：一律 None（n779834 浮水印 EMF 即此路）。
+        assert_eq!(mime_of_media_path("word/media/image1.emf"), None);
+        assert_eq!(mime_of_media_path("word/media/image1.wmf"), None);
+        assert_eq!(mime_of_media_path("word/media/image1.pdf"), None);
+        assert_eq!(mime_of_media_path("noext"), None);
+    }
+
+    /// 像素解析決策規則：可渲染＞不可渲染、皆可渲染取先見；懸空 rId／
+    /// 查無 rId 跳下一個備選；全部不可渲染＝None。
+    #[test]
+    fn k4c_resolve_pixel_priority_rules() {
+        use quire_ooxml::Relationship;
+        let mut parts = BTreeMap::new();
+        parts.insert("word/media/image1.pdf".to_string(), vec![1u8; 3]);
+        parts.insert("word/media/image2.png".to_string(), vec![2u8; 3]);
+        let rels = read_rels(
+            br#"<Relationships>
+  <Relationship Id="rId1" Target="media/image1.pdf"/>
+  <Relationship Id="rId2" Target="media/image2.png"/>
+  <Relationship Id="rId3" Target="media/gone.png"/>
+</Relationships>"#,
+        );
+        assert_eq!(rels.len(), 3);
+        // Choice→pdf 不可渲染、Fallback→png 可渲染 ⇒ 跳 pdf 取 png（Bug51170）。
+        assert_eq!(
+            resolve_pixel_source(&parts, &rels, &["rId1", "rId2"]),
+            Some(("word/media/image2.png".into(), "image/png".into()))
+        );
+        // 皆可渲染 ⇒ 取先見（文档序）。
+        parts.insert("word/media/image1.pdf".to_string(), vec![1u8; 3]);
+        let rels_png2 = read_rels(
+            br#"<Relationships>
+  <Relationship Id="rIdA" Target="media/image2.png"/>
+  <Relationship Id="rIdB" Target="media/a.jpg"/>
+</Relationships>"#,
+        );
+        parts.insert("word/media/a.jpg".to_string(), vec![3u8; 3]);
+        assert_eq!(
+            resolve_pixel_source(&parts, &rels_png2, &["rIdA", "rIdB"]),
+            Some(("word/media/image2.png".into(), "image/png".into()))
+        );
+        // 懸空 rId（part 不在包內）→ 跳過續找。
+        assert_eq!(
+            resolve_pixel_source(&parts, &rels, &["rId3", "rId2"]),
+            Some(("word/media/image2.png".into(), "image/png".into()))
+        );
+        // 全部不可渲染／查無 ⇒ None（發射退佔位框）。
+        assert_eq!(resolve_pixel_source(&parts, &rels, &["rId1"]), None);
+        assert_eq!(resolve_pixel_source(&parts, &rels, &["rIdX"]), None);
+        assert_eq!(resolve_pixel_source(&parts, &rels, &[]), None);
+        // External（http 目標）不是 part → 跳過（read_rels 已置 None）。
+        let rels_ext = read_rels(
+            br#"<Relationships><Relationship Id="rIdE" Target="https://e/x.png" TargetMode="External"/></Relationships>"#,
+        );
+        assert_eq!(resolve_pixel_source(&parts, &rels_ext, &["rIdE"]), None);
+        // Relationship 型別經 engine re-export 可用（分層鐵律的通道驗證）。
+        let _ = Relationship {
+            id: "r".into(),
+            target_part: None,
+        };
+    }
+
+    /// OPC rels 路徑推算：part → 它自家的 `.rels`（HF part 有自家 rels）。
+    #[test]
+    fn k4c_rels_path_mapping() {
+        assert_eq!(
+            rels_path_for("word/header1.xml"),
+            "word/_rels/header1.xml.rels"
+        );
+        assert_eq!(
+            rels_path_for("word/document.xml"),
+            "word/_rels/document.xml.rels"
+        );
+        assert_eq!(rels_path_for("a.xml"), "_rels/a.xml.rels");
+        assert_eq!(
+            rels_path_for("customXml/item1.xml"),
+            "customXml/_rels/item1.xml.rels"
         );
     }
 }

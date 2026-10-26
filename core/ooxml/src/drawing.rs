@@ -108,9 +108,58 @@ pub struct InlineImage {
     /// serde default＋空值不外露＝無框圖檔的序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub txbx_texts: Vec<String>,
+    // ---- K4c：填充／描邊／虛線／框內幾何（全部 serde default；欄位不存在
+    // ＝None＝舊行為，舊顯示列表 JSON 與序列化位元組零位移）----
+    /// 填色（0xAARRGGBB）：`v:fill/@color` > `o:fillcolor`（VML）；
+    /// DrawingML 取 `wps:spPr/a:solidFill/a:srgbClr`。不認識的颜色字串＝
+    /// None（不冒充）；`auto`＝明確黑。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_argb: Option<u32>,
+    /// `filled="f"` → Some(false)（不發填充，也**別把無填充畫成灰底**）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filled: Option<bool>,
+    /// 描邊色（0xAARRGGBB）：`v:stroke/@color` > `o:strokecolor`；
+    /// DrawingML 取 `wps:spPr/a:ln` 內 `a:solidFill/a:srgbClr`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_argb: Option<u32>,
+    /// `stroked="f"` → Some(false)（不發框線）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroked: Option<bool>,
+    /// 描邊線寬（pt）：`v:stroke/@weight`（無單位按 EMU）／
+    /// `strokeweight`／DrawingML `a:ln/@w`（EMU）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_width_pt: Option<f32>,
+    /// 虛線樣式（SVG stroke-dasharray 語義）：`strokedashstyle`／
+    /// `v:stroke/@dashstyle` 映射手冊見 [`vml_dashstyle_to_dash`]。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_dash: Option<String>,
+    /// 框內矩形（相對佔位框原點：dx, dy, 寬, 高，pt）。`v:group` 內子件
+    /// 依 coordorigin/coordsize 線性映射而來（PM 補正點：子件無單位數值
+    /// 是組座標系單位，不是 px）。映射條件不足（缺 coordsize 等）＝None
+    /// → 呼叫端退回整框（老實退化，不虛構位置）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub txbx_rect: Option<[f32; 4]>,
+    /// `v:textbox/@inset`（左,上,右,下 pt）——框內文邊界。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub txbx_inset: Option<[f32; 4]>,
+    /// `v:textbox style="layout-flow:vertical"`：框內文字直排（逐字堆疊）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub txbx_vertical: bool,
+    /// 框內表格（`w:txbxContent` 內 `w:tbl`）逐格填色（行→列；None＝該格
+    /// 無填色宣告）。n780563 三色列表實據：LO 發彩色條，我方至少要落地。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub txbx_table: Vec<Vec<Option<u32>>>,
     /// `a:blip/@r:embed`（VML 為 `v:imagedata/@r:id`）。本卡記錄不使用。
     #[serde(default)]
     pub embed_rid: Option<String>,
+    /// 同一候選的**全部** blip rId（文档序；`embed_rid`＝首見）。K4c-image：
+    /// `mc:AlternateContent`（含 `ve:` 變體）的 Choice 與 Fallback 各帶一個
+    /// `a:blip r:embed`，幾何相同、像素不同（Bug51170：Choice→pdf 不可渲染、
+    /// Fallback→png 可渲染）。解析層把 Fallback 的 rId 也記進本欄（不吞），
+    /// 像素可用性優先序由 engine 層依副檔名決定——解析器不判格式。
+    /// serde default＋空值不外露＝無此形態檔案的序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub embed_rids: Vec<String>,
 }
 
 impl InlineImage {
@@ -214,13 +263,351 @@ pub fn vml_style_wh(style: Option<&str>) -> (Option<f32>, Option<f32>) {
     (w, h)
 }
 
+/// VML/OOXML 顏色字串 → 0xAARRGGBB。口徑（卡片契約 2）：
+/// - `#RRGGBB`／`RRGGBB`／8 位 `AARRGGBB`（DrawingML `a:srgbClr/@val`）；
+/// - 具名色 black/white/red/blue/green/gray/grey/yellow/purple/olive/
+///   maroon/navy/teal/silver/lime；
+/// - `auto` → 明確黑（VML 慣例：auto 即主題文字色，近似黑）；
+/// - **不認識 → None**（老實不發色，不冒充）；
+/// - 帶尾註的 Word 產出（`"white [3201]"`／`"#7f7f7f [1601]"`）只吃空格前
+///   本體——尾註是主題索引註解，非颜色值的一部分。
+///   名稱大小寫不敏感。
+pub fn parse_vml_color(raw: Option<&str>) -> Option<u32> {
+    let s = raw?.trim();
+    let s = s.split([' ', '\t']).next().unwrap_or("");
+    if s.is_empty() {
+        return None;
+    }
+    let lower = s.to_ascii_lowercase();
+    if lower == "auto" {
+        return Some(0xFF00_0000);
+    }
+    let named = match lower.as_str() {
+        "black" => 0xFF00_0000,
+        "white" => 0xFFFF_FFFF,
+        "red" => 0xFFFF_0000,
+        "blue" => 0xFF00_00FF,
+        "green" => 0xFF00_8000,
+        "gray" | "grey" => 0xFF80_8080,
+        "yellow" => 0xFFFF_FF00,
+        "purple" => 0xFF80_0080,
+        "olive" => 0xFF80_8000,
+        "maroon" => 0xFF80_0000,
+        "navy" => 0xFF00_0080,
+        "teal" => 0xFF00_8080,
+        "silver" => 0xFFC0_C0C0,
+        "lime" => 0xFF00_FF00,
+        _ => {
+            // 十六進位：#RRGGBB／RRGGBB／AARRGGBB（ DrawingML 常用後者）。
+            let hex = lower.strip_prefix('#').unwrap_or(&lower);
+            if !(hex.len() == 6 || hex.len() == 8) || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            let v = u32::from_str_radix(hex, 16).ok()?;
+            return Some(if hex.len() == 6 { 0xFF00_0000 | v } else { v });
+        }
+    };
+    Some(named)
+}
+
+/// `strokedashstyle`／`v:stroke/@dashstyle` → SVG stroke-dasharray（卡片
+/// 契約 4 映射手冊；VML 官方樣式 → dasharray，單位 pt，線寬呼叫端另給）：
+/// - `solid`（含不認識值以外的實語義不明者）→ None（實線）；
+/// - `dash` → `"6 3"`（畫 6pt 空 3pt）；
+/// - `sysDash` → `"3 3"`（系統短橫線，LO 同款近似）；
+/// - `dot`／`sysDot` → `"1 3"`（點：畫 1pt 空 3pt）；
+/// - `dashDot` → `"6 3 1 3"`；
+/// - `dashDotDot` → `"6 3 1 3 1 3"`；
+/// - `longDash` → `"12 3"`；`longDashDot` → `"12 3 1 3"`；
+/// - `longDashDotDot` → `"12 3 1 3 1 3"`；
+/// - 三數值自訂式 `"sd,sd,sd"`（VML 允許 `1 2 3` 形态）→ 直接透傳。
+///   不認識 → None（實線近似，不虛構花樣）。
+pub fn vml_dashstyle_to_dash(raw: Option<&str>) -> Option<String> {
+    let s = raw?.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let named = match s.to_ascii_lowercase().as_str() {
+        "solid" => return None,
+        "dash" => "6 3",
+        "sysdash" => "3 3",
+        "dot" | "sysdot" => "1 3",
+        "dashdot" => "6 3 1 3",
+        "dashdotdot" => "6 3 1 3 1 3",
+        "longdash" => "12 3",
+        "longdashdot" => "12 3 1 3",
+        "longdashdotdot" => "12 3 1 3 1 3",
+        _ => {
+            // 自訂式：純數字（可含小數）以空白／逗號分隔 → 原樣正規化成
+            // 空白分隔（SVG 語義）。混雜非數字＝不認識 → None。
+            let parts: Vec<&str> = s
+                .split([',', ' ', '\t'])
+                .filter(|p| !p.is_empty())
+                .collect();
+            if parts.is_empty() || !parts.iter().all(|p| p.parse::<f32>().is_ok()) {
+                return None;
+            }
+            return Some(parts.join(" "));
+        }
+    };
+    Some(named.to_string())
+}
+
+/// `style` 宣告串 → (寬pt, 高pt, 其餘鍵小寫表)。除 width/height 走
+/// [`vml_style_wh`]（單位換算口徑共用）外，其餘鍵值原樣入表（呼叫端按需
+/// 取 left/top/layout-flow 等）。值不 unescape（style 屬性由 quick-xml
+/// 屬性迭代已 unescape）。
+fn vml_style_map(style: Option<&str>) -> (Option<f32>, Option<f32>, Vec<(String, String)>) {
+    let mut kv = Vec::new();
+    if let Some(style) = style {
+        for decl in style.split(';') {
+            if let Some((k, v)) = decl.split_once(':') {
+                kv.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+            }
+        }
+    }
+    let (w, h) = vml_style_wh(style);
+    (w, h, kv)
+}
+
+fn style_lookup<'a>(kv: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    kv.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+}
+
+/// `inset="3.6pt,54pt,3.6pt,180pt"` → (左,上,右,下) pt。只吃 `pt` 顯式
+/// 單位（VML inset 官方單位即 pt，無單位也按 pt）；任一值非法 → None
+/// （呼叫端退回內縮 3pt 的舊近似——老實退化，不虛構邊界）。
+fn parse_vml_inset(raw: Option<&str>) -> Option<[f32; 4]> {
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let mut out = [0.0f32; 4];
+    for (i, part) in raw.split(',').enumerate().take(4) {
+        let part = part.trim();
+        let digits_end = part
+            .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+            .unwrap_or(part.len());
+        let (num_s, unit) = (&part[..digits_end], part[digits_end..].trim());
+        if !unit.is_empty() && !unit.eq_ignore_ascii_case("pt") {
+            return None;
+        }
+        let v = num_s.trim().parse::<f32>().ok()?;
+        if !v.is_finite() || v < 0.0 {
+            return None;
+        }
+        out[i] = v;
+    }
+    Some(out)
+}
+
+/// `v:group` 座標系快照（PM 補正點）：組內子件的 left/top/width/height
+/// **無單位數值是該組 coordorigin/coordsize 座標系單位**，不是 px。
+/// 每層組建 coord→extent 線性映射，巢狀組逐層合成（子組的 dx0/dy0/W/H
+/// 由父幀先把子組自身的 coord 矩形映射成 pt 再入棧）：
+/// `x_pt = dx0 + (coord_x − origin_x) / coordsize_w × w_pt`（y 同理）。
+/// 缺 coordsize、子組自身 coord 矩形、或外框尺寸（pt）者——映射條件不足
+/// → 該層壓入 None（毒化層），其子件老實不映射（呼叫端退回整框；
+/// 不發射怪異座標）。
+#[derive(Clone, Copy)]
+struct CoordFrame {
+    origin_x: f64,
+    origin_y: f64,
+    size_w: f64,
+    size_h: f64,
+    /// 組頂點相對**最外層佔位框原點**的偏移（pt，巢狀合成後）。
+    dx0: f32,
+    dy0: f32,
+    /// 組 extent（pt）。
+    w_pt: f32,
+    h_pt: f32,
+}
+
+impl CoordFrame {
+    /// coord 點 → pt（絕對，含本層偏移）。
+    fn map_x(&self, cx: f64) -> f32 {
+        self.dx0 + ((cx - self.origin_x) / self.size_w * self.w_pt as f64) as f32
+    }
+    fn map_y(&self, cy: f64) -> f32 {
+        self.dy0 + ((cy - self.origin_y) / self.size_h * self.h_pt as f64) as f32
+    }
+    /// coord 尺寸 → pt（尺寸不含原點偏移與頂點偏移）。
+    fn scale_x(&self, cw: f64) -> f32 {
+        (cw / self.size_w * self.w_pt as f64) as f32
+    }
+    fn scale_y(&self, ch: f64) -> f32 {
+        (ch / self.size_h * self.h_pt as f64) as f32
+    }
+}
+
+/// `coordorigin="9211,-165"` → (x, y)；缺逗號側按 0；非法 → None。
+fn parse_coord_pair(raw: &str) -> Option<(f64, f64)> {
+    let mut it = raw.split(',');
+    let x = it.next()?.trim().parse::<f64>().ok()?;
+    let y = match it.next() {
+        Some(s) => s.trim().parse::<f64>().ok()?,
+        None => 0.0,
+    };
+    (x.is_finite() && y.is_finite()).then_some((x, y))
+}
+
+/// 子件 style 的 left/top/width/height 四值 → 組座標系數值。VML 慣例缺
+/// left/top 按 0；**只吃無單位純數值**（帶 pt/cm/… 字尾者是絕對慣例，不歸
+/// 本映射管→ None，呼叫端退回整框）；缺寬或高 → None（映射條件不足）。
+fn coord_style_rect(kv: &[(String, String)]) -> Option<[f64; 4]> {
+    let mut out = [0.0f64; 4];
+    for (i, key) in ["left", "top", "width", "height"].iter().enumerate() {
+        let v = match style_lookup(kv, key) {
+            Some(v) => v,
+            None if i < 2 => continue,
+            None => return None,
+        };
+        // 純數值（無單位）才是組座標系；帶 pt/cm/… 者交給 vml_len_to_pt 路徑。
+        if v.chars()
+            .any(|c| !(c.is_ascii_digit() || c == '.' || c == '-'))
+        {
+            return None;
+        }
+        let n = v.parse::<f64>().ok()?;
+        if !n.is_finite() {
+            return None;
+        }
+        out[i] = n;
+    }
+    Some(out)
+}
+
+/// VML 布林字串「假」值（filled="f"／stroked="false" 等）。
+fn is_vml_falseish(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "f" | "false" | "0" | "no" | "off"
+    )
+}
+
+/// style 值是否帶長度單位字尾（pt/cm/in/mm/px——數字前綴後仍有非數字殘留）。
+/// 用於區分「絕對長度宣告」與「組座標系無單位數值」。
+fn has_unit_suffix(v: &str) -> bool {
+    let v = v.trim();
+    match v.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+')) {
+        Some(0) => false,
+        Some(i) => {
+            v[i..].trim().eq_ignore_ascii_case("pt")
+                || v[i..].trim().eq_ignore_ascii_case("cm")
+                || v[i..].trim().eq_ignore_ascii_case("in")
+                || v[i..].trim().eq_ignore_ascii_case("mm")
+                || v[i..].trim().eq_ignore_ascii_case("px")
+        }
+        None => false,
+    }
+}
+
+/// shape 元素自身 Start → 填充／描邊宣告採集（首見為準）。優先序（卡片
+/// 契約 2）：`v:fill/@color`／`v:stroke/@color` 子元素 > 本函數的 shape
+/// 屬性（`fillcolor`／`strokecolor`／`strokeweight`／`strokedashstyle`）>
+/// docDefaults（本卡未接級聯＝老實缺省不發色）。
+fn apply_shape_style(v: &mut Pending, e: &quick_xml::events::BytesStart) {
+    if let Some(filled) = attr_local(e, b"filled") {
+        if is_vml_falseish(&filled) {
+            v.filled_f = true;
+        }
+    }
+    if let Some(stroked) = attr_local(e, b"stroked") {
+        if is_vml_falseish(&stroked) {
+            v.stroked_f = true;
+        }
+    }
+    if v.fill_attr.is_none() {
+        v.fill_attr = vml_attr_color(e, b"fillcolor");
+    }
+    if v.stroke_attr.is_none() {
+        v.stroke_attr = vml_attr_color(e, b"strokecolor");
+    }
+    if v.stroke_w.is_none() {
+        v.stroke_w = attr_weight_pt(attr_local(e, b"strokeweight").as_deref());
+    }
+    if v.dash.is_none() {
+        v.dash = vml_dashstyle_to_dash(attr_local(e, b"strokedashstyle").as_deref());
+    }
+}
+
+/// `v:fill`／`v:stroke`／`v:textbox` 子元素 → 樣式採集（Start 與 Empty 共用；
+/// 首見為準）。`v:fill/@color` 是填充色主源，`v:stroke` 帶 color/weight/
+/// dashstyle，`v:textbox` 帶 inset 與 style 內的 layout-flow。
+fn apply_vml_deco(v: &mut Pending, name: &[u8], e: &quick_xml::events::BytesStart) {
+    match name {
+        b"fill" => {
+            if v.fill.is_none() {
+                v.fill = vml_attr_color(e, b"color");
+            }
+        }
+        b"stroke" => {
+            if v.stroke.is_none() {
+                v.stroke = vml_attr_color(e, b"color");
+            }
+            if v.stroke_w.is_none() {
+                v.stroke_w = attr_weight_pt(attr_local(e, b"weight").as_deref());
+            }
+            if v.dash.is_none() {
+                v.dash = vml_dashstyle_to_dash(attr_local(e, b"dashstyle").as_deref());
+            }
+        }
+        b"textbox" => {
+            if v.txbx_inset.is_none() {
+                v.txbx_inset = parse_vml_inset(attr_local(e, b"inset").as_deref());
+            }
+            if !v.txbx_vertical {
+                let (_, _, kv) = vml_style_map(attr_local(e, b"style").as_deref());
+                if let Some(flow) = style_lookup(&kv, "layout-flow") {
+                    if flow.eq_ignore_ascii_case("vertical") {
+                        v.txbx_vertical = true;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 事件流解析器（quick-xml 單趟；深度計數狀態機）
 // ---------------------------------------------------------------------------
 
 /// local name 是否為 VML 圖形元素（其 style 攜帶框尺寸）。
 fn is_vml_shape(name: &[u8]) -> bool {
-    matches!(name, b"shape" | b"rect" | b"oval" | b"line" | b"roundrect")
+    // K4c：`v:group` 入列——組是「可遞進的容器形」（pict 直接子孫常態即
+    // group 包 shape，groupshape-sdt 實據），座標經 coordorigin/coordsize
+    // 映射（見 [`CoordFrame`]），尺寸以組自身 style（pt 慣例）為準。
+    matches!(
+        name,
+        b"shape" | b"rect" | b"oval" | b"line" | b"roundrect" | b"group"
+    )
+}
+
+/// K4c：填色／描邊／框線寬的字串→色值共用口徑（VML 與 DrawingML 落點同
+/// 一函數；首見為準由呼叫端把關）。
+fn vml_attr_color(attrs: &quick_xml::events::BytesStart, key: &[u8]) -> Option<u32> {
+    parse_vml_color(attr_local(attrs, key).as_deref())
+}
+
+/// `weight`／`strokeweight`／`a:ln/@w` 字串 → pt。帶單位走 vml_len_to_pt
+/// （strokeweight="1.5pt"），純數值按 EMU（v:stroke/@weight="9360"、
+/// a:ln/@w="9525"——兩者皆 EMU 慣例，9525EMU=0.75pt 吻合 DrawingML 預設）。
+fn attr_weight_pt(raw: Option<&str>) -> Option<f32> {
+    let s = raw?.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let digits_end = s
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+        .unwrap_or(s.len());
+    let (num_s, unit) = (&s[..digits_end], s[digits_end..].trim());
+    let num = num_s.parse::<f64>().ok()?;
+    if unit.is_empty() {
+        // 純數值＝EMU。
+        return emu_to_pt(Some(num_s));
+    }
+    vml_len_to_pt(num, &unit.to_ascii_lowercase())
 }
 
 /// 進行中的圖片累積（DrawingML 候選與 VML shape 共用；完結時尺寸齊備才落表）。
@@ -254,6 +641,9 @@ struct Pending {
     pct_axis: Option<bool>,
     overlap: Option<bool>,
     rid: Option<String>,
+    /// K4c-image：本候選見過的全部 blip rId（文档序去重；`rid`＝首見）。
+    /// Choice 走常規路徑收、Fallback 子樹破例只收 rId（幾何/段落一概不動）。
+    rids: Vec<String>,
     /// 產出目標是儲存格（建立時 tc 深度 > 0）而非正文段落。
     in_cell: bool,
     /// 候選出自 `wp:anchor`（浮動）。
@@ -274,9 +664,67 @@ struct Pending {
     txbx_in_t: bool,
     /// 框內 `w:p` 開閉深度（完結時 flush txbx_cur）。
     txbx_para_depth: usize,
+    // ---- K4c：填色／描邊／框內幾何累積（首見為準，與 w/h 同款口徑）----
+    /// `v:fill/@color`（主）與 DrawingML `spPr/solidFill/srgbClr`。
+    fill: Option<u32>,
+    /// shape 自身 `fillcolor`／`o:fillcolor`（退居其次：`v:fill/@color` >
+    /// 本欄 > docDefaults，卡片契約 2 優先序）。
+    fill_attr: Option<u32>,
+    filled_f: bool,
+    /// `v:stroke/@color`（主）。
+    stroke: Option<u32>,
+    /// shape 自身 `strokecolor`／`o:strokecolor`（退居其次）。
+    stroke_attr: Option<u32>,
+    stroked_f: bool,
+    stroke_w: Option<f32>,
+    dash: Option<String>,
+    /// 最近一個可映射 shape 的組內矩形（pt，相對外框原點）。
+    mapped_rect: Option<[f32; 4]>,
+    txbx_rect: Option<[f32; 4]>,
+    txbx_inset: Option<[f32; 4]>,
+    txbx_vertical: bool,
+    /// 進行中的一列填色（框內表格；None＝該格無填色宣告）。
+    tbl_row: Vec<Option<u32>>,
+    tbl_rows: Vec<Vec<Option<u32>>>,
+    /// 進行中 `w:tc` 的填色（`w:shd/@w:fill` 首見為準；`w:tc` 完結時
+    /// push 進 `tbl_row` 後歸零）。
+    cell_fill: Option<u32>,
+    /// 框內 `w:tc` 開閉深度（>0 時 w:shd/@w:fill 歸本格）。
+    tc_in: usize,
+    /// 最外層 `v:group` 自身 style（帶單位宣告）撐出的 extent（pt）：
+    /// pict 直接子孫是組時，候補 w/h 缺 → 以此補（組即佔位框實據）。
+    w_from_group: Option<f32>,
+    h_from_group: Option<f32>,
+    /// K4c：v:group coord→extent 映射幀棧（None 項＝映射條件不足的毒化層，
+    /// 其子件老實不映射）。随 pict／裸 shape 建候補時清空。
+    coord_stack: Vec<Option<CoordFrame>>,
+    // ---- DrawingML wps:spPr 樣式上下文（僅 graphic 候補用）----
+    /// `wps:spPr` 深度（>0 時 solidFill/srgbClr 才歸本候選的填充）。
+    sp_ctx: usize,
+    /// `a:ln` 深度（>0 時 solidFill 歸**描邊**而非填充）。
+    ln_ctx: usize,
+    /// `a:solidFill` 深度（其內 srgbClr 才落色）。
+    fill_ctx: usize,
+    /// `a:extLst`／`a:ext` 深度（>0 時 solidFill/srgbClr **一概不收**：
+    /// 擴充清單如 `a14:hiddenLine` 非真實填充／描邊，mce-nested 實據）。
+    ext_ctx: usize,
 }
 
 impl Pending {
+    /// K4c-image：blip／imagedata rId 記錄——首見進 `rid`（既有語義逐位不
+    /// 變），全部進 `rids`（文档序去重）。`AlternateContent` 的 Choice 與
+    /// Fallback 各帶一份 blip（幾何同、像素異）時兩條都留，engine 層依
+    /// 副檔名可渲染性擇優。
+    fn note_rid(&mut self, rid: Option<String>) {
+        let Some(rid) = rid else { return };
+        if self.rid.is_none() {
+            self.rid = Some(rid.clone());
+        }
+        if !self.rids.contains(&rid) {
+            self.rids.push(rid);
+        }
+    }
+
     fn new(para: usize, in_cell: bool) -> Self {
         Self {
             para,
@@ -296,6 +744,7 @@ impl Pending {
             pct_axis: None,
             overlap: None,
             rid: None,
+            rids: Vec::new(),
             floating: false,
             in_cell,
             vml_image: false,
@@ -305,6 +754,29 @@ impl Pending {
             txbx_cur: String::new(),
             txbx_in_t: false,
             txbx_para_depth: 0,
+            fill: None,
+            fill_attr: None,
+            filled_f: false,
+            stroke: None,
+            stroke_attr: None,
+            stroked_f: false,
+            stroke_w: None,
+            dash: None,
+            mapped_rect: None,
+            txbx_rect: None,
+            txbx_inset: None,
+            txbx_vertical: false,
+            tbl_row: Vec::new(),
+            tbl_rows: Vec::new(),
+            cell_fill: None,
+            tc_in: 0,
+            w_from_group: None,
+            h_from_group: None,
+            coord_stack: Vec::new(),
+            sp_ctx: 0,
+            ln_ctx: 0,
+            fill_ctx: 0,
+            ext_ctx: 0,
         }
     }
 }
@@ -377,7 +849,20 @@ impl DrawingParser {
             pos_y_pct: p.pos_y_pct,
             overlap: p.overlap,
             txbx_texts: p.txbx.clone(),
+            // 卡片契約 2 優先序：v:fill/@color（p.fill）> shape 屬性
+            // fillcolor/o:fillcolor（p.fill_attr）> docDefaults（未接＝不發）。
+            fill_argb: p.fill.or(p.fill_attr),
+            filled: if p.filled_f { Some(false) } else { None },
+            stroke_argb: p.stroke.or(p.stroke_attr),
+            stroked: if p.stroked_f { Some(false) } else { None },
+            stroke_width_pt: p.stroke_w,
+            stroke_dash: p.dash.clone(),
+            txbx_rect: p.txbx_rect.or(p.mapped_rect),
+            txbx_inset: p.txbx_inset,
+            txbx_vertical: p.txbx_vertical,
+            txbx_table: p.tbl_rows.clone(),
             embed_rid: p.rid.clone(),
+            embed_rids: p.rids.clone(),
         });
     }
 
@@ -392,15 +877,125 @@ impl DrawingParser {
             self.push_pending(&v);
         }
     }
+}
 
+// ---- K4c：組映射兩函數為自由函數（只吃 v 與事件屬性、不碰解析器狀態）：
+// 呼叫端在 `if let Some(v) = self.vml.as_mut()` 內，若再呼叫 &mut self 方法
+// 會雙重借入 self（E0499），自由函數邊界最乾淨。----
+
+/// K4c：`v:group` Start → 壓入 coord→extent 映射幀（[`CoordFrame`]）。
+/// 巢狀組：子組自身 style 的 left/top/width/height（**無單位＝父組
+/// coordorigin/coordsize 座標系單位**，PM 補正點）經父幀映射成 pt 後
+/// 入棧；最外層組（coord_stack 空＝pict 直接子孫）以自身 style 的
+/// pt 尺寸為 extent（VML px 慣例只適用 pict 直接子孫，本組有 pt 宣告）。
+/// 缺 coordsize、子組 coord 矩形非法、或外框尺寸（pt）缺 → 壓 None
+/// 毒化層，其子件老實不映射（呼叫端退回整框，不發射怪異座標）。
+fn push_group_frame(v: &mut Pending, e: &quick_xml::events::BytesStart) {
+    let style = attr_local(e, b"style");
+    let frame: Option<CoordFrame> = (|| {
+        let (size_w, size_h) = parse_coord_pair(attr_local(e, b"coordsize")?.trim())?;
+        if size_w <= 0.0 || size_h <= 0.0 {
+            return None;
+        }
+        let (origin_x, origin_y) = attr_local(e, b"coordorigin")
+            .as_deref()
+            .and_then(parse_coord_pair)
+            .unwrap_or((0.0, 0.0));
+        let (_, _, kv) = vml_style_map(style.as_deref());
+        let (dx0, dy0, w_pt, h_pt) = match v.coord_stack.last().copied().flatten() {
+            // 巢狀組：coord 矩形經父幀線性映射（映射不起 → 毒化）。
+            Some(parent) => {
+                let r = coord_style_rect(&kv)?;
+                (
+                    parent.map_x(r[0]),
+                    parent.map_y(r[1]),
+                    parent.scale_x(r[2]),
+                    parent.scale_y(r[3]),
+                )
+            }
+            // 最外層組：自身 style 即 extent。**只吃帶單位宣告**的
+            // width/height（pt/cm/…）——無單位純數值在組語境是 coord
+            // 單位而非 px，pict 直接子孫的 px 慣例不適用於組，缺父幀
+            // 無從映射 → 老實毒化（不虛構 extent）。
+            None => {
+                let wv = style_lookup(&kv, "width").filter(|v| has_unit_suffix(v))?;
+                let hv = style_lookup(&kv, "height").filter(|v| has_unit_suffix(v))?;
+                let (w, h) = (
+                    vml_style_wh(Some(&format!("width:{wv}"))).0?,
+                    vml_style_wh(Some(&format!("height:{hv}"))).0?,
+                );
+                // 外層組即佔位框：把 extent 留給候補（呼叫端在 w/h 缺時採用）。
+                v.w_from_group = Some(w);
+                v.h_from_group = Some(h);
+                (0.0, 0.0, w, h)
+            }
+        };
+        if !(w_pt.is_finite() && h_pt.is_finite()) || w_pt <= 0.0 || h_pt <= 0.0 {
+            return None;
+        }
+        Some(CoordFrame {
+            origin_x,
+            origin_y,
+            size_w,
+            size_h,
+            dx0,
+            dy0,
+            w_pt,
+            h_pt,
+        })
+    })();
+    v.coord_stack.push(frame);
+}
+
+/// K4c：組內子件 Start → 若頂幀可用且子件 style 為純 coord 數值，
+/// 線性映射出組內矩形（pt，相對佔位框原點）；首見為準。映射條件不足
+/// （毒化層／帶單位值／缺尺寸）→ 不動 `mapped_rect`（None＝呼叫端
+/// 退回整框，老實退化）。
+fn map_child_shape(v: &mut Pending, e: &quick_xml::events::BytesStart) {
+    if v.mapped_rect.is_some() {
+        return;
+    }
+    let Some(frame) = v.coord_stack.last().copied().flatten() else {
+        return;
+    };
+    let (_, _, kv) = vml_style_map(attr_local(e, b"style").as_deref());
+    let Some(r) = coord_style_rect(&kv) else {
+        return;
+    };
+    let rect = [
+        frame.map_x(r[0]),
+        frame.map_y(r[1]),
+        frame.scale_x(r[2]),
+        frame.scale_y(r[3]),
+    ];
+    if rect.iter().all(|x| x.is_finite()) && rect[2] > 0.0 && rect[3] > 0.0 {
+        v.mapped_rect = Some(rect);
+    }
+}
+
+impl DrawingParser {
     fn on_start(&mut self, name: &[u8], empty: bool, e: &quick_xml::events::BytesStart) {
         // ---- mc 雙份表示（先於一切：AC 透明、Fallback 吞沒——lib.rs 同構）----
         if self.fb > 0 {
-            // Fallback 子樹內：只維護巢狀深度與 AC 快照，其餘一概不看。
+            // Fallback 子樹內：只維護巢狀深度與 AC 快照＋K4c-image 破例——
+            // blip/imagedata 的 rId 一律記進進行中候選的 `rids`（像素備選；
+            // 幾何／段落／採納旗標一概不動，雙份去重語義不受影響）。
             if name == b"Fallback" && !empty {
                 self.fb += 1;
             } else if name == b"AlternateContent" && !empty {
                 self.ac_stack.push(self.fb);
+            }
+            let rid = match name {
+                b"blip" => attr_local(e, b"embed"),
+                b"imagedata" => attr_local(e, b"id"),
+                _ => None,
+            };
+            if let Some(rid) = rid {
+                if let Some(g) = self.graphic.as_mut() {
+                    g.note_rid(Some(rid));
+                } else if let Some(v) = self.vml.as_mut() {
+                    v.note_rid(Some(rid));
+                }
             }
             return;
         }
@@ -478,9 +1073,9 @@ impl DrawingParser {
                 b"imagedata" => {
                     if let Some(v) = self.vml.as_mut() {
                         v.vml_image = true;
-                        if v.rid.is_none() {
-                            v.rid = attr_local(e, b"id");
-                        }
+                        // K4c-image：經 note_rid 統一記錄（首見進 rid＋全部進
+                        // rids）；語義與舊「首見才設 rid」逐位相同。
+                        v.note_rid(attr_local(e, b"id"));
                     }
                 }
                 b"gfxdata" => {
@@ -493,13 +1088,51 @@ impl DrawingParser {
                     // 同一累積（首見尺寸為準＝外框，LO 同款近似）。
                     self.pict_depth += 1;
                 }
+                b"fill" | b"stroke" | b"textbox" => {
+                    if let Some(v) = self.vml.as_mut() {
+                        apply_vml_deco(v, name, e);
+                    }
+                }
+                b"tbl" | b"tr" => {}
+                b"tc" if !empty => {
+                    if let Some(v) = self.vml.as_mut() {
+                        if self.txbx_depth > 0 {
+                            v.tc_in += 1;
+                        }
+                    }
+                }
+                b"shd" => {
+                    // 框內表格格填色（n780563 三色列實據）：w:tc 內的
+                    // w:shd/@w:fill，首見為準。
+                    if self.txbx_depth > 0 {
+                        if let Some(v) = self.vml.as_mut() {
+                            if v.tc_in > 0 && v.cell_fill.is_none() {
+                                v.cell_fill = parse_vml_color(attr_local(e, b"fill").as_deref());
+                            }
+                        }
+                    }
+                }
                 n if is_vml_shape(n) && !empty => {
                     self.shape_depth += 1;
                     if let Some(v) = self.vml.as_mut() {
-                        if v.w.is_none() && v.h.is_none() {
-                            let (w, h) = vml_style_wh(attr_local(e, b"style").as_deref());
-                            v.w = w;
-                            v.h = h;
+                        if n == b"group" {
+                            // K4c：組遞進——座標系幀入棧；外層組（首見且
+                            // 帶單位宣告）以自身 style 撐框尺寸。
+                            push_group_frame(v, e);
+                            if v.w.is_none() && v.h.is_none() {
+                                if let (Some(w), Some(h)) = (v.w_from_group, v.h_from_group) {
+                                    v.w = Some(w);
+                                    v.h = Some(h);
+                                }
+                            }
+                        } else {
+                            if v.w.is_none() && v.h.is_none() {
+                                let (w, h) = vml_style_wh(attr_local(e, b"style").as_deref());
+                                v.w = w;
+                                v.h = h;
+                            }
+                            map_child_shape(v, e);
+                            apply_shape_style(v, e);
                         }
                     }
                 }
@@ -519,6 +1152,38 @@ impl DrawingParser {
             let mut p = self.graphic.take().expect("剛檢查過");
             if name == b"txbxContent" && !empty {
                 p.has_txbx = true;
+            }
+            // K4c：wps:spPr 樣式上下文深度（填充／描邊歸屬判別用）。
+            match name {
+                b"spPr" => p.sp_ctx += 1,
+                // 擴充清單標記：`a:extLst` 與其子 `a:ext/@uri`（帶 uri 者
+                // 才是擴充清單節點；xfrm 內的幾何 `a:ext cx/cy` 同名不同物）。
+                b"extLst" => p.ext_ctx += 1,
+                b"ext" if attr_local(e, b"uri").is_some() => p.ext_ctx += 1,
+                b"ln" => {
+                    p.ln_ctx += 1;
+                    // a:ln/@w（EMU）＝描邊線寬（首見為準；擴充清單內的
+                    // hiddenLine 不計——那不是真的可見描邊）。
+                    if p.stroke_w.is_none() && p.ext_ctx == 0 {
+                        p.stroke_w = emu_to_pt(attr_local(e, b"w").as_deref());
+                    }
+                }
+                b"solidFill" => p.fill_ctx += 1,
+                b"srgbClr" if p.fill_ctx > 0 && p.ext_ctx == 0 => {
+                    // 卡片契約 2 優先序（DrawingML 路徑）：`a:ln` 內的
+                    // solidFill 歸**描邊**，否則（spPr 直下）歸填充。首見為準。
+                    let argb = parse_vml_color(attr_local(e, b"val").as_deref());
+                    if let Some(c) = argb {
+                        if p.ln_ctx > 0 {
+                            if p.stroke.is_none() {
+                                p.stroke = Some(c);
+                            }
+                        } else if p.sp_ctx > 0 && p.fill.is_none() {
+                            p.fill = Some(c);
+                        }
+                    }
+                }
+                _ => {}
             }
             // 框內文字採集（K4e2；群組圖形 wps:txbx 路徑）。
             if self.txbx_depth > 0 {
@@ -567,9 +1232,9 @@ impl DrawingParser {
                     p.pct_axis = Some(true);
                 }
                 b"blip" => {
-                    if p.rid.is_none() {
-                        p.rid = attr_local(e, b"embed");
-                    }
+                    // K4c-image：經 note_rid 統一記錄（首見進 rid＋全部進
+                    // rids）；rid 語義與舊「首見才設」逐位相同。
+                    p.note_rid(attr_local(e, b"embed"));
                 }
                 b"drawing" | b"pict" if !empty => {
                     let close: &'static [u8] = if name == b"drawing" {
@@ -638,6 +1303,21 @@ impl DrawingParser {
             return;
         }
         if self.fb > 0 {
+            // K4c-image 破例（同 Start 分支）：自閉合 blip／imagedata 才是
+            // **常態**（Bug51170 的 `<a:blip r:embed="rId2"/>` 就是自閉合），
+            // 只記 rId，其餘一概不動。
+            let rid = match name {
+                b"blip" => attr_local(e, b"embed"),
+                b"imagedata" => attr_local(e, b"id"),
+                _ => None,
+            };
+            if let Some(rid) = rid {
+                if let Some(g) = self.graphic.as_mut() {
+                    g.note_rid(Some(rid));
+                } else if let Some(v) = self.vml.as_mut() {
+                    v.note_rid(Some(rid));
+                }
+            }
             return;
         }
         if self.skip_tag.is_some() {
@@ -648,14 +1328,29 @@ impl DrawingParser {
                 b"imagedata" => {
                     if let Some(v) = self.vml.as_mut() {
                         v.vml_image = true;
-                        if v.rid.is_none() {
-                            v.rid = attr_local(e, b"id");
-                        }
+                        // K4c-image：同 Start 分支，經 note_rid 統一記錄。
+                        v.note_rid(attr_local(e, b"id"));
                     }
                 }
                 b"gfxdata" => {
                     if let Some(v) = self.vml.as_mut() {
                         v.vml_gfxdata = true;
+                    }
+                }
+                // K4c：v:fill／v:stroke／v:textbox 常為自閉合標籤（tdf152200
+                // 實據 `<v:fill .../>`）——Empty 事件與 Start 共用採集口徑，
+                // 否則自閉合的填色／描邊／inset 全數漏收。
+                b"fill" | b"stroke" | b"textbox" => {
+                    if let Some(v) = self.vml.as_mut() {
+                        apply_vml_deco(v, name, e);
+                    }
+                }
+                b"shd" if self.txbx_depth > 0 => {
+                    // 框內表格格填色（n780563 三色列實據）：Empty 形態同警。
+                    if let Some(v) = self.vml.as_mut() {
+                        if v.tc_in > 0 && v.cell_fill.is_none() {
+                            v.cell_fill = parse_vml_color(attr_local(e, b"fill").as_deref());
+                        }
                     }
                 }
                 _ => {}
@@ -672,8 +1367,23 @@ impl DrawingParser {
                         p.h = emu_to_pt(attr_local(e, b"cy").as_deref());
                     }
                 }
-                b"blip" if p.rid.is_none() => {
-                    p.rid = attr_local(e, b"embed");
+                b"blip" => {
+                    // K4c-image：同 Start 分支，經 note_rid 統一記錄。
+                    p.note_rid(attr_local(e, b"embed"));
+                }
+                // K4c：`a:srgbClr` 幾乎總以自閉合形態出現（tdf152200 實據
+                // `<a:srgbClr val="000000"/>`）——Empty 事件同樣要落色，
+                // 歸屬判別與 Start 臂同口徑（ln 內→描邊、spPr 直下→填充）。
+                b"srgbClr" if p.fill_ctx > 0 && p.ext_ctx == 0 => {
+                    if let Some(c) = parse_vml_color(attr_local(e, b"val").as_deref()) {
+                        if p.ln_ctx > 0 {
+                            if p.stroke.is_none() {
+                                p.stroke = Some(c);
+                            }
+                        } else if p.sp_ctx > 0 && p.fill.is_none() {
+                            p.fill = Some(c);
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -800,6 +1510,24 @@ impl DrawingParser {
             }
         }
 
+        // ---- K4c：框內表格填色 flush（tc 完結→本列；tr 完結→本表）。----
+        if self.txbx_depth > 0 && matches!(name, b"tc" | b"tr" | b"tbl") {
+            if let Some(v) = self.vml.as_mut() {
+                match name {
+                    b"tc" => {
+                        if v.tc_in > 0 {
+                            v.tc_in -= 1;
+                            v.tbl_row.push(v.cell_fill.take());
+                        }
+                    }
+                    b"tr" if !v.tbl_row.is_empty() => {
+                        v.tbl_rows.push(std::mem::take(&mut v.tbl_row));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // ---- 吞沒幀 ----
         if let Some((tag, depth)) = self.skip_tag {
             if name == tag {
@@ -865,6 +1593,34 @@ impl DrawingParser {
                         p.capture = None;
                         p.align_axis = None;
                         p.pct_axis = None;
+                    }
+                    return;
+                }
+                // K4c：spPr 樣式上下文閉合出棧（與 Start 的 += 配對）。
+                b"spPr" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.sp_ctx = p.sp_ctx.saturating_sub(1);
+                    }
+                    return;
+                }
+                b"extLst" | b"ext" => {
+                    // End 不辨屬性（閉合標籤無 attrs）：Ext/Start 的 uri 判別
+                    // 已保證計數配對（同一對開閉都算或都不算——xfrm 幾何 ext
+                    // 開標不計，閉標 saturating_sub 於 0 亦不改其義）。
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.ext_ctx = p.ext_ctx.saturating_sub(1);
+                    }
+                    return;
+                }
+                b"ln" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.ln_ctx = p.ln_ctx.saturating_sub(1);
+                    }
+                    return;
+                }
+                b"solidFill" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.fill_ctx = p.fill_ctx.saturating_sub(1);
                     }
                     return;
                 }
