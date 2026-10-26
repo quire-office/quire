@@ -18,13 +18,22 @@ fn texts_of(dl: &quire_render_trait::PageDisplayList) -> Vec<(f32, f32, f32, u8,
         .items
         .iter()
         .filter_map(|it| match it {
-            DrawItem::Text { x, y, size_pt, flags, text, .. } => {
-                Some((*y, *x, *size_pt, *flags, text.clone()))
-            }
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                flags,
+                text,
+                ..
+            } => Some((*y, *x, *size_pt, *flags, text.clone())),
             _ => None,
         })
         .collect();
-    v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.partial_cmp(&b.1).unwrap()));
+    v.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap()
+            .then(a.1.partial_cmp(&b.1).unwrap())
+    });
     v
 }
 
