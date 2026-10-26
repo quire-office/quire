@@ -101,6 +101,21 @@
 4. **栏内浮动图形定位**：浮动图仍以页为参照（未做栏内绕排），与 K4 系列
    既有残差同源。
 
+## LO 页数组五瓶实读（pymupdf，禁凭印象；render_lab.lo_to_pdf）
+
+| 瓶 | LO 页数 | quire 修前 | quire 修后 | 收敛 |
+|---|---|---|---|---|
+| floating-table-section-columns | 1 | 1 | 1 | ✓ |
+| tdf103975_notPageBreakD | 1 | 1 | 1 | ✓ |
+| n830205 | **5** | 6 | **5** | ✓（分栏回流直接收敛） |
+| fdo53985 | 1 | 1 | 1 | ✓ |
+| 090716_Studentische_Arbeit_VWS | 6 | 6 | 6 | ✓ |
+
+n830205 是本案最强改善证据：修前单栏断行多挤 1 页，修后与 LO 全等，
+且 p1 实测两栏起点 [72.0, 315.6…]（第二栏=72+207.65+36 口径）、p2 起
+72/198 两栏结构。dump 前后存档 `~/.hermes/cache/scratch/l1/`
+（baseline_before.txt / final_five.txt）。
+
 ## 未尽事项
 
 - seed42 样本无溢出型双栏档（内容都不满栏），BETTER 侧无法在本样本内
