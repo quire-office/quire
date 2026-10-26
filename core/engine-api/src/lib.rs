@@ -6968,4 +6968,87 @@ mod tests {
             "customXml/_rels/item1.xml.rels"
         );
     }
+
+    // ---------------- M1-band：簇 A 分頁容量（K5-diag §2.6，一卡三席） ----------------
+    //
+    // 統一根因：級聯段行高／表格列高 ceil 到粗帶（docDefaults 帶尺 12.65／
+    // 15.4／16.8pt）→ 15pt 列吃 2 帶＝25.3pt（LO 15.0，×1.69）。處方＝帶尺
+    // 細化 ≤2.8pt（宣告級聯時；零宣告檔維持舊帶尺＝零宣告逐位元組不變）。
+    // 報告差異點名：K5-diag 說「後備行高固定 12pt×1.4」——實測 doc_grid
+    // 級聯已讓 grid_line_h 跟隨 docDefaults 字級（tdf127814 實為 11pt×1.15
+    // ＝12.65），真正的過扣來自 ceil 到粗帶本身，非 12pt 常數。
+
+    const M1_TDF127814: &[u8] =
+        include_bytes!("../../../corpus/ooxmlexport/tdf127814.docx");
+    const M1_TDF129575: &[u8] =
+        include_bytes!("../../../corpus/ooxmlexport/tdf129575-directBefore.docx");
+    const M1_RA001: &[u8] =
+        include_bytes!("../../../corpus/xopt/TestFiles_RA001-Tracked-Revisions-01.docx");
+
+    /// 頁「可抽行數」＝文字行＋表格列（lm 報告同口徑）。
+    fn m1_page_rows(engine: &Engine, page: usize) -> usize {
+        let pg = engine.layout.pages().get(page).expect("頁存在");
+        pg.lines.len()
+            + pg.tables
+                .iter()
+                .map(|t| t.frag.rows.len())
+                .sum::<usize>()
+    }
+
+    /// 紅燈 1（tdf127814）：LO 2 頁（p2 裝 28 項表格列）；基線 3 頁。
+    #[test]
+    fn m1_band_tdf127814_reaches_lo_two_pages() {
+        let engine = Engine::from_docx_bytes(M1_TDF127814).expect("開 tdf127814 失敗");
+        assert_eq!(
+            engine.page_count(),
+            2,
+            "tdf127814 帶尺細化後應與 LO 同為 2 頁（基線 3 頁：28 列×ceil(15/12.65)×12.65＝25.3/列 撐爆 p2）"
+        );
+        assert!(
+            m1_page_rows(&engine, 1) >= 28,
+            "p2 應裝 28 項表格列（LO p2 30 行），實得 {}",
+            m1_page_rows(&engine, 1)
+        );
+    }
+
+    /// 紅燈 2（tdf129575）：LO 3 頁；基線 4 頁（p2 少裝 3 項，整段位移）。
+    #[test]
+    fn m1_band_tdf129575_reaches_lo_three_pages() {
+        let engine = Engine::from_docx_bytes(M1_TDF129575).expect("開 tdf129575 失敗");
+        assert_eq!(
+            engine.page_count(),
+            3,
+            "tdf129575 帶尺細化後應與 LO 同為 3 頁（基線 4 頁：列高 46.2pt vs LO pitch 34.0）"
+        );
+    }
+
+    /// 紅燈 3（RA001）：頁數下降（基線 9）且 p2 可抽行上升（基線 25）。
+    /// LO＝6 頁；delCopy 雙發屬簇 B 卡，本卡紅燈只釘「頁數降＋p2 行升」。
+    #[test]
+    fn m1_band_ra001_pages_drop_and_p2_rows_rise() {
+        let engine = Engine::from_docx_bytes(M1_RA001).expect("開 RA001 失敗");
+        assert!(
+            engine.page_count() < 9,
+            "RA001 帶尺細化後頁數應低於基線 9（LO 6），實得 {}",
+            engine.page_count()
+        );
+        assert!(
+            m1_page_rows(&engine, 1) > 25,
+            "RA001 p2 可抽行應高於基線 25（18 段×33.6pt 粗帶壓扁容量），實得 {}",
+            m1_page_rows(&engine, 1)
+        );
+    }
+
+    /// 零宣告守門（反向紅燈）：無樣式宣告檔 k5_exact_guard（12pt×1.4 後備
+    /// 帶尺）帶制不得細化——顯示 y 步進維持 16.8pt（既有 k5 防風暴樁同值）。
+    #[test]
+    fn m1_band_undeclared_doc_keeps_coarse_fallback() {
+        const GUARD: &[u8] = include_bytes!("../../../fixtures/k5_exact_guard.docx");
+        let engine = Engine::from_docx_bytes(GUARD).expect("開 k5_exact_guard 失敗");
+        let gap = k5_first_line_gap(&engine).expect("p0 必須有至少兩行");
+        assert!(
+            (gap - 16.8).abs() < 0.01,
+            "零宣告檔後備帶尺不得細化：應 1 帶＝16.8pt，實得 {gap}"
+        );
+    }
 }
