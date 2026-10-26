@@ -2042,10 +2042,15 @@ fn cascade_paragraphs(
             let mut r2 = r.clone();
             // 三態 None＝全鏈未宣告＝未開（與舊「rPr 不見即 false」等價——
             // 舊 bool 欄位本就是 rPr 的有損投影）。
+            // 修訂註解（L3-revisions；ECMA §17.13＋LO 默認視圖實測）：插入側
+            // 底線／刪除側刪除線是**繪製層註解**（同 LO showChanges 的塗裝），
+            // 不受級聯是否宣告 w:u/w:strike 影響——直接 OR，不做「鏈上已宣告
+            // 即讓位」的兜底（那會把用戶宣告 w:u=none 誤當「不要修訂線」）。
+            // 標記在解析期不打進 direct，正為不冒充直接格式越過級聯其他欄位。
             r2.bold = eff.bold.unwrap_or(false);
             r2.italic = eff.italic.unwrap_or(false);
-            r2.underline = eff.underline.unwrap_or(false);
-            r2.strike = eff.strike.unwrap_or(false);
+            r2.underline = eff.underline.unwrap_or(false) || r.rev_insert;
+            r2.strike = eff.strike.unwrap_or(false) || r.rev_delete;
             if eff.color_set {
                 // 宣告 w:color（含 auto/非法→明確黑）以級聯為準；
                 // 未宣告不動——保留解析期代擬色（hyperlink 藍）。
