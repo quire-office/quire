@@ -49,6 +49,11 @@ fn l2_form_footnotes_italic_split() {
                 j += 1;
             }
             for w in ts[i..j].windows(2) {
+                // 兩段都必須實文字（回塞防呆：舊路徑整行單項＋空項併發時
+                // 空項會被誤判成「第二段」，偽綠）。
+                if w[0].4.is_empty() || w[1].4.is_empty() {
+                    continue;
+                }
                 let joined = w[0].4.clone() + &w[1].4;
                 let flags_differ = w[0].3 != w[1].3;
                 if flags_differ && !joined.is_empty() && para.contains(&joined) {
@@ -87,6 +92,8 @@ fn l2_form_footnotes_italic_split() {
 #[test]
 fn l2_bug65649_size_split() {
     let eng = load("poi/test-data_document_bug65649.docx");
+    // 來源段落（run 級 sz 24 vs 28 half-pt → 12pt vs 14pt；\xa0 run 為大字級）。
+    let para = "Огнетушащая (рабочая) концентрация: 3,42\u{a0}%.";
     let mut found = false;
     let mut diag = String::new();
     'pages: for p in 0..eng.page_count() {
@@ -94,16 +101,18 @@ fn l2_bug65649_size_split() {
         let ts = texts_of(&dl);
         for w in ts.windows(2) {
             let (a, b) = (&w[0], &w[1]);
-            // 同基線（同 y）＋字級相異＋兩項皆隸屬同一來源格段落。
-            let same_line = (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 50.0;
-            if !same_line || (a.2 - b.2).abs() <= 0.5 {
+            // 兩段都必須實文字（回塞防呆：舊路徑未拆時整段為單項，相鄰
+            // 他格項不得冒充第二段）。
+            if a.4.is_empty() || b.4.is_empty() {
                 continue;
             }
+            // 嚴格錨定：相鄰兩項拼接必須是**本來源段落的連續子串**且含
+            // 錨字（不丟字、不重複、不重排），同基線、字級相異。
             let joined = a.4.clone() + &b.4;
-            let anchored =
-                a.4.contains("концентрац") || a.4.contains("компонент") || joined.contains('%');
+            let same_line = (a.0 - b.0).abs() < 0.01 && b.1 > a.1;
+            let anchored = joined.contains("\u{a0}%") && para.contains(&joined);
             diag.push_str(&format!("p{p} {a:?} | {b:?}\n"));
-            if anchored {
+            if same_line && anchored && (a.2 - b.2).abs() > 0.5 {
                 found = true;
                 break 'pages;
             }
@@ -111,6 +120,6 @@ fn l2_bug65649_size_split() {
     }
     assert!(
         found,
-        "bug65649：找不到同基線 size_pt 相異的相鄰 Text 項（整格單樣式未拆）。診断：\n{diag}"
+        "bug65649：找不到同基線 size_pt 相異、拼接為來源段落連續子串的相鄰 Text 項（整格單樣式未拆）。診断：\n{diag}"
     );
 }
