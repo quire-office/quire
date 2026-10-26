@@ -219,6 +219,13 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
                         margin_right_pt: s.geo.margin_right_pt,
                         landscape: s.geo.landscape,
                         continuous: s.geo.continuous,
+                        // L1-columns：ooxml→layout 逐欄對應（同 engine-api 口徑）。
+                        cols: quire_layout::SectionCols {
+                            num: s.geo.cols.num,
+                            space_pt: s.geo.cols.space_pt,
+                            col_w_pt: s.geo.cols.col_w_pt,
+                            col_space_pt: s.geo.cols.col_space_pt,
+                        },
                     },
                 })
                 .collect()

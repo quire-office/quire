@@ -449,6 +449,7 @@ mod tests {
             margin_right_pt: 72.0,
             landscape: false,
             continuous: false,
+            cols: Default::default(),
         };
         let a4 = geo(595.0, 842.0);
         let letter = geo(612.0, 792.0);

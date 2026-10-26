@@ -997,6 +997,7 @@ mod tests {
                     width_pt: 0.0,
                     para_index: *para,
                     char_offset: *off,
+                    col: 0,
                 })
                 .collect(),
             line_bands: (0..lines.len() as u32).collect(),
