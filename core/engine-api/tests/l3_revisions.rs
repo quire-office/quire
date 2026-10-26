@@ -33,11 +33,22 @@ fn ra001_deltext_emitted_with_strike() {
         !hits.is_empty(),
         "delText 'Chromatpgrams' 未進顯示列表＝修訂刪除文字被吞（LO 默認視圖照畫）"
     );
-    assert_eq!(hits.len(), 1, "'Chromatpgrams' 應恰發 1 次（源檔僅 1 處），實際 {hits:?}");
+    assert_eq!(
+        hits.len(),
+        1,
+        "'Chromatpgrams' 應恰發 1 次（源檔僅 1 處），實際 {hits:?}"
+    );
     let (_, flags) = hits[0];
-    assert_ne!(flags & FLAG_STRIKE, 0, "刪除文字必須帶刪除線（FLAG_STRIKE），實際 flags={flags}");
+    assert_ne!(
+        flags & FLAG_STRIKE,
+        0,
+        "刪除文字必須帶刪除線（FLAG_STRIKE），實際 flags={flags}"
+    );
     // ins 併入照發口徑不變（'Reference Chromatograms:' 源檔 3 處，LO 亦 3 次）。
-    assert_eq!(chromatograms, 3, "'Chromatograms' 三處照發（含拆 run 段的 ins）");
+    assert_eq!(
+        chromatograms, 3,
+        "'Chromatograms' 三處照發（含拆 run 段的 ins）"
+    );
 }
 
 /// L3-revisions：插入文字（`w:ins`／`w:moveTo` 內 `w:t`）默認視圖帶底線。
@@ -63,7 +74,11 @@ fn ra001_insertion_emitted_with_underline() {
         }
     }
     let flags = found.expect("'Consider stage IV'（w:ins 插入段）必須在顯示列表");
-    assert_ne!(flags & FLAG_UNDERLINE, 0, "插入文字默認視圖帶底線（FLAG_UNDERLINE），實際 flags={flags}");
+    assert_ne!(
+        flags & FLAG_UNDERLINE,
+        0,
+        "插入文字默認視圖帶底線（FLAG_UNDERLINE），實際 flags={flags}"
+    );
 }
 
 /// 佔槽鐵律防呆：修訂分支只動 run 採集，不動 p 計數——RA001 段落數封頂
@@ -76,5 +91,9 @@ fn ra001_paragraph_count_locked() {
     ))
     .expect("讀 corpus RA001");
     let doc = quire_ooxml::parse(&bytes).expect("parse");
-    assert_eq!(doc.paragraphs.len(), 231, "RA001 正文段落數＝231（Start 口徑鐵律）");
+    assert_eq!(
+        doc.paragraphs.len(),
+        231,
+        "RA001 正文段落數＝231（Start 口徑鐵律）"
+    );
 }
