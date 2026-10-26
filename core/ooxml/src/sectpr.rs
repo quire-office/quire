@@ -29,8 +29,12 @@
 //! `evenAndOddHeaders` 為文件級旗標，另由 [`read_even_and_odd_headers`] 讀取。
 //!
 //! 已知骨架近似：表格 Cell 內段落自帶 sectPr（畸形但存在）時，section 邊界
-//! 推到該 Cell 所屬表格段落為止；section 起點的欄數（`w:cols`）未實作，
-//! 多欄 section 走單欄。
+//! 推到該 Cell 所屬表格段落為止。
+//!
+//! 欄數採集（L1-columns 卡）：`w:cols/@w:num`（欄數）、`w:cols/@w:space`
+//! （欄間距）、`w:col/@w:w`＋`@w:space`（逐欄寬與該欄後距，ECMA-376 §17.18.6）
+//! 一律讀進 [`SectionGeometry`]；分欄回流在 layout 層消費（那里是幾何唯一
+//! 消費者，本模組只負責如實投影）。
 
 use serde::{Deserialize, Serialize};
 
@@ -46,6 +50,40 @@ const DEF_MARGIN_LEFT: i64 = 1800;
 const DEF_MARGIN_RIGHT: i64 = 1800;
 /// `pgMar @w:header/@w:footer` 缺值（twip）：0.5 吋（ECMA-376 §17.4.48 預設）。
 const DEF_HF_DIST: i64 = 720;
+
+/// `w:cols` 採集結果（ECMA-376 §17.18.6／§17.18.7），欄寬與間距一律換算成
+/// pt 存（geometry 欄位同標尺）。`num <= 1`＝單欄——既有語義逐位元組不變。
+///
+/// `Copy` 鐵律：本結構隨 [`SectionGeometry`] 四處複製（HashMap 鍵值、逐段落
+/// 直查表），禁 Vec——逐欄值以固定長度陣列承載，頭 4 欄為上限（corpus 實見
+/// ≤2 欄；超標欄位的顯式寬以「未宣告」近似走平分，屬記錄在案的近似）。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SectionCols {
+    /// `w:cols/@w:num`（缺＝0＝未宣告，視同單欄；0/1 同義）。
+    pub num: u32,
+    /// `w:cols/@w:space`（pt；缺＝36pt＝720 twip，§17.18.6 預設）。
+    pub space_pt: f32,
+    /// 頭 4 欄 `w:col/@w:w`（pt；None＝該欄未宣告 → 呼叫端平分）。
+    pub col_w_pt: [Option<f32>; 4],
+    /// 頭 4 欄 `w:col/@w:space`（pt；None＝沿用 `space_pt`；§17.18.7：
+    /// 該欄**右側**距）。
+    pub col_space_pt: [Option<f32>; 4],
+}
+
+impl Default for SectionCols {
+    /// 未宣告態：單欄、間距預設 720 twip＝36pt（§17.18.6）、無逐欄宣告。
+    fn default() -> Self {
+        Self {
+            num: 0,
+            space_pt: DEF_COL_SPACE as f32 / 20.0,
+            col_w_pt: [None; 4],
+            col_space_pt: [None; 4],
+        }
+    }
+}
+
+/// 預設欄間距（twip）：720＝0.5 吋（ECMA-376 §17.18.6 `w:space` 預設）。
+const DEF_COL_SPACE: i64 = 720;
 
 /// 一個 section 的頁面幾何（pt）。`landscape` 僅供老實回報，
 /// 尺寸一律以 `page_w_pt`／`page_h_pt` 為準（Word/LO 皆直接信任 pgSz 的 w/h）。
