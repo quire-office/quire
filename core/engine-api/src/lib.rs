@@ -236,6 +236,14 @@ impl Engine {
                             margin_right_pt: s.geo.margin_right_pt,
                             landscape: s.geo.landscape,
                             continuous: s.geo.continuous,
+                            // L1-columns：ooxml→layout 逐欄對應（分層：兩側
+                            // SectionCols 同構雙定義，此處是唯一接線點）。
+                            cols: quire_layout::SectionCols {
+                                num: s.geo.cols.num,
+                                space_pt: s.geo.cols.space_pt,
+                                col_w_pt: s.geo.cols.col_w_pt,
+                                col_space_pt: s.geo.cols.col_space_pt,
+                            },
                         },
                     })
                     .collect()
@@ -258,15 +266,10 @@ impl Engine {
             None => params,
         };
         // 級聯烘焙（需 params 已定：製表位點引填補按該段可用寬計算）：
-        // 逐段可用寬＝該段 section 的 content_w（無 section 表＝基準 params）。
+        // 逐段可用寬＝該段 section 的**斷行寬**（L1-columns：多欄 section＝
+        // 首欄寬，與 layout 斷行同口徑；無 section 表＝基準 params）。
         let widths: Vec<f32> = (0..n_paras)
-            .map(|i| match sections.get(i) {
-                Some(s) => {
-                    LayoutParams::from_section(&s.geo, params.font_size_pt, params.line_spacing)
-                        .content_w_pt()
-                }
-                None => params.content_w_pt(),
-            })
+            .map(|i| quire_layout::section_break_w_pt(&params, &sections, i))
             .collect();
         // 顯式分頁旗標（parser 直讀，任何檔案都收；全 false＝舊行為）。
         let grid_break_v: Vec<bool> = doc.paragraphs.iter().map(|p| p.page_break).collect();
@@ -966,6 +969,7 @@ impl Engine {
             margin_right_pt: self.params.margin(quire_layout::MARGIN_RIGHT),
             landscape: false,
             continuous: false,
+            cols: Default::default(),
         })
     }
 
@@ -991,6 +995,7 @@ impl Engine {
             margin_right_pt: self.params.margin(quire_layout::MARGIN_RIGHT),
             landscape: false,
             continuous: false,
+            cols: Default::default(),
         };
         self.layout
             .pages()
@@ -1581,7 +1586,19 @@ impl Engine {
             let band = p.line_bands.get(i).copied().unwrap_or(i as u32) as f32;
             let y = p.margin_top_pt + band * line_h;
             let para = paras.get(l.para_index);
-            emit_line_run_items(&mut items, p.margin_left_pt, y, size, l, para);
+            // 欄起點（L1-columns）：欄序由 pack_run 蓋章在 Line::col；欄幾何
+            // 從該頁起頭 section 的分欄模型取（頁內不分節混排時逐段欄序仍與
+            // 起頭節一致——混節頁的 continuous 邊界會換頁重置欄序，近似記錄
+            // 在案）。單欄 col_layout=None → base_x＝版心左緣，舊路徑零變化。
+            let base_x = match self
+                .sec_geo_all
+                .get(&p.section_id)
+                .and_then(quire_layout::col_layout)
+            {
+                Some(cl) if (l.col as usize) < cl.n => p.margin_left_pt + cl.col_x[l.col as usize],
+                _ => p.margin_left_pt,
+            };
+            emit_line_run_items(&mut items, base_x, y, size, l, para);
         }
         // 頁底註腳層（F2b-2）：分隔線（Rule）＋條目文字＋正文錨點記號。
         // 文字項由下方穩定排序落進閱讀序（保留帶 y 最大 ⇒ 自然排最後）。
@@ -3081,6 +3098,7 @@ impl Engine {
             margin_right_pt: p.margin_left_pt,
             landscape: false,
             continuous: false,
+            cols: Default::default(),
         }
     }
 

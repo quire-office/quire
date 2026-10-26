@@ -12,7 +12,10 @@ fn main() {
     for (i, s) in secs.iter().enumerate() {
         let cur = (s.id, s.geo.continuous, s.geo.page_w_pt);
         if prev != Some(cur) {
-            println!("para{i}: id={} cont={} w={:.1}", s.id, s.geo.continuous, s.geo.page_w_pt);
+            println!(
+                "para{i}: id={} cont={} w={:.1}",
+                s.id, s.geo.continuous, s.geo.page_w_pt
+            );
             prev = Some(cur);
         }
     }

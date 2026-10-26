@@ -26,8 +26,18 @@ fn main() {
         println!(
             "page {p}: {} texts, x∈[{minx:.1},{maxx:.1}], first={:?} last={:?}",
             texts.len(),
-            texts.first().unwrap_or(&"").chars().take(24).collect::<String>(),
-            texts.last().unwrap_or(&"").chars().take(24).collect::<String>(),
+            texts
+                .first()
+                .unwrap_or(&"")
+                .chars()
+                .take(24)
+                .collect::<String>(),
+            texts
+                .last()
+                .unwrap_or(&"")
+                .chars()
+                .take(24)
+                .collect::<String>(),
         );
     }
 }

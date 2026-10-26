@@ -332,6 +332,7 @@ pub(crate) fn kp_break_lines_at(
                 width_pt: 0.0,
                 para_index: 0, // 由 layout_paragraphs_per_section 覆寫為真正段落索引
                 char_offset: 0,
+                col: 0, // L1-columns：欄序由 pack_run 放置時蓋章
             },
             range: (0, 0),
             hard_end: true,
@@ -424,6 +425,7 @@ pub(crate) fn kp_break_lines_at(
                     width_pt: pw.prefix(atoms[e].end) - pw.prefix(byte_start) - aw[e].tail,
                     para_index: 0, // 由 layout_paragraphs_per_section 覆寫為真正段落索引
                     char_offset,
+                    col: 0, // L1-columns：欄序由 pack_run 放置時蓋章
                 },
                 range: (byte_start, atoms[e].end),
                 hard_end: atoms[e].forced,
