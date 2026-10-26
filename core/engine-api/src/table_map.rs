@@ -12,10 +12,12 @@
 use std::collections::HashMap;
 
 use quire_layout::table::{
-    CellBlock, CellInput, CellMarginInput, EdgeSetInput, PenInput, RowInput, TableInput, WidthSpec,
+    CellBlock, CellInput, CellMarginInput, CellRun, EdgeSetInput, PenInput, RowInput, TableInput,
+    WidthSpec,
 };
 use quire_layout::{LayoutParams, SectionSpec, TableSlot, TextMeasurer};
 use quire_ooxml::{Block, BodyTable, Borders, Margins, Table, TblWidth};
+use quire_render_trait::{FLAG_BOLD, FLAG_ITALIC, FLAG_STRIKE, FLAG_UNDERLINE};
 
 /// twip → pt。非法／缺＝None（容錯鐵律：不猜、不虚構）。
 fn twip_pt(raw: Option<&str>) -> Option<f32> {
@@ -223,16 +225,82 @@ fn find_tbl_borders(seg: &str) -> Option<Borders> {
     (!bs.is_empty()).then_some(bs)
 }
 
+/// 段落級聯 run → 格內文字的 run 級樣式標注（L2-cellruns／TODO(CardA) 清償）。
+///
+/// 只為**確有多樣式**的段落產出標注：逐 run 累加碼點偏移、相鄰同鍵
+/// `(flags, size_pt, color_argb)` 段先併段，併完仍 ≥2 段才入表——單樣式段
+/// （含全段同鍵）整段不入表＝發射端走舊單樣式路徑，金樣與儀表板零擾動。
+/// 鍵含新欄位（段合併鍵判別鐵律：size/color 三態入鍵，缺＝級聯未宣告）。
+/// `flags` 以 render-trait 位元烘焙（layout 只透傳不解釋）；`color_argb`
+/// 缺＝級聯未宣告（發射端退回預設黑，與 `run_style` 口徑一致）。
+fn cell_run_spans(paras: &[quire_ooxml::Paragraph]) -> HashMap<usize, Vec<CellRun>> {
+    if std::env::var("L2_BUGGY").is_ok() {
+        return HashMap::new(); // 回塞：整體關閉標注（紅燈必須倒）
+    }
+    let mut out: HashMap<usize, Vec<CellRun>> = HashMap::new();
+    for (i, p) in paras.iter().enumerate() {
+        if p.runs.len() < 2 {
+            continue;
+        }
+        let mut spans: Vec<CellRun> = Vec::new();
+        let mut cp = 0usize;
+        for r in &p.runs {
+            let n = r.text.chars().count();
+            if n == 0 {
+                continue; // 零文字 run（tab／br-only）不佔碼點
+            }
+            let mut flags = 0u8;
+            if r.bold {
+                flags |= FLAG_BOLD;
+            }
+            if r.italic {
+                flags |= FLAG_ITALIC;
+            }
+            if r.underline {
+                flags |= FLAG_UNDERLINE;
+            }
+            if r.strike {
+                flags |= FLAG_STRIKE;
+            }
+            let from = cp;
+            cp += n;
+            if let Some(last) = spans.last_mut() {
+                // 相鄰同鍵併段（沿用正文 `emit_line_run_items` 合併鍵口徑：
+                // 字型宣告不入鍵——選族屬後續卡，否則同款式 run 只因字型
+                // 不同就被拆開，違反零版面變動契約）。
+                if last.flags == flags && last.size_pt == r.size_pt && last.color_argb == r.color {
+                    last.to = cp;
+                    continue;
+                }
+            }
+            spans.push(CellRun {
+                from,
+                to: cp,
+                flags,
+                size_pt: r.size_pt,
+                color_argb: r.color,
+            });
+        }
+        if spans.len() >= 2 {
+            out.insert(i, spans);
+        }
+    }
+    out
+}
+
 /// canonical 表 → layout 輸入（遞迴巢狀表；樣式框線查 `styles`）。
 /// `cell_imgs`（t_a1397522）：格內圖片投影（錨定段落 → 尺寸）——段落的
 /// Block 之後追加 `CellBlock::Image`（文件序：文字在上、圖在下）。
 /// `sizes`（t_5dfc8ac7）：段落索引 → 級聯有效字級（一格多段取最大）。
+/// `run_spans`（L2-cellruns）：段落索引 → run 級樣式標注（只含確有多樣式
+/// 的段落）；依格內**文字 block 出現序**平行落入 `CellInput::run_spans`。
 pub fn table_input(
     t: &Table,
     texts: &[String],
     styles: &HashMap<String, EdgeSetInput>,
     cell_imgs: &HashMap<usize, Vec<(f32, f32)>>,
     sizes: &HashMap<usize, f32>,
+    run_spans: &HashMap<usize, Vec<CellRun>>,
 ) -> TableInput {
     let p = &t.props;
     TableInput {
@@ -268,6 +336,10 @@ pub fn table_input(
                         // 子表各自入獨立 Vec 會丟失拓撲序，子表後的尾部段落
                         // 會被拉回頂部——流式堆疊的前提就在這裡。
                         let mut blocks = Vec::new();
+                        // run 標注（L2-cellruns）：與 blocks 中**文字 block
+                        // 出現序**逐位對齊的平行欄位；缺位（無標注段落）
+                        // 存空 vec，保持索引對齊。
+                        let mut spans: Vec<Vec<CellRun>> = Vec::new();
                         // 一格多段的級聯字級＝段內最大（斷行量測保守尺：
                         // 大字級少塞字，不虛構塞得下的行）。
                         let mut cell_size: Option<f32> = None;
@@ -277,6 +349,9 @@ pub fn table_input(
                                 Block::Paragraph { index } => {
                                     if let Some(s) = texts.get(*index) {
                                         blocks.push(CellBlock::Text(s.clone()));
+                                        spans.push(
+                                            run_spans.get(index).cloned().unwrap_or_default(),
+                                        );
                                     }
                                     if let Some(sz) = sizes.get(index) {
                                         cell_size = Some(cell_size.map_or(*sz, |v| v.max(*sz)));
@@ -291,7 +366,7 @@ pub fn table_input(
                                 }
                                 Block::Table(inner) => {
                                     blocks.push(CellBlock::Table(Box::new(table_input(
-                                        inner, texts, styles, cell_imgs, sizes,
+                                        inner, texts, styles, cell_imgs, sizes, run_spans,
                                     ))));
                                 }
                             }
@@ -311,6 +386,7 @@ pub fn table_input(
                             valign: c.props.valign.clone(),
                             margins: c.props.margins.as_ref().map(cell_margins),
                             text_size_pt: cell_size,
+                            run_spans: spans,
                         }
                     })
                     .collect(),
@@ -521,6 +597,9 @@ pub fn build_slots(
             sizes.insert(i, sz);
         }
     }
+    // L2-cellruns：格內文字的 run 級樣式標注（只含確有多樣式的段落；
+    // 單樣式段整段不入表＝發射端走舊路徑，金樣零位移）。
+    let run_spans = cell_run_spans(paras);
     let m = TextMeasurer::new(params.font_size_pt);
     let line_h = params.line_h_pt();
     let mut prev_end = 0usize; // 逐槽正規化游標：槽區間必不重疊且 ≤ n_paras
@@ -528,7 +607,7 @@ pub fn build_slots(
     tables
         .iter()
         .map(|bt| {
-            let input = table_input(&bt.table, texts, &styles, &cell_imgs, &sizes);
+            let input = table_input(&bt.table, texts, &styles, &cell_imgs, &sizes, &run_spans);
             let avail_w = avail_w_for(sections, params, bt.para_start);
             let layout = quire_layout::table::layout_table(&input, avail_w, line_h, &m, 0);
             let raw_end = table_para_end(&bt.table, bt.para_start);

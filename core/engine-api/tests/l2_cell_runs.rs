@@ -29,14 +29,14 @@ fn texts_of(dl: &quire_render_trait::PageDisplayList) -> Vec<(f32, f32, f32, u8,
 }
 
 /// 紅燈 1（form_footnotes）：「01 -   Full name」格內整段
-/// `01 -   Full name  (as per passport; do not abbreviate or omit)` 中
+/// `01 -   Full name  (as per passport; do not abbreviate or omit any name)` 中
 /// `(as per passport…` 為斜體 run（且 sz=18）。整格單樣式發射＝單一 Text
 /// 項；修後必須拆出「斜體段帶 ITALIC、非斜體段不带」的相鄰雙項，且兩段
 /// 拼接為來源整段的連續子串（逐字元核）。
 #[test]
 fn l2_form_footnotes_italic_split() {
     let eng = load("poi/test-data_document_form_footnotes.docx");
-    let para = "01 -   Full name  (as per passport; do not abbreviate or omit)";
+    let para = "01 -   Full name  (as per passport; do not abbreviate or omit any name)";
     let mut found: Option<(usize, String, String, u8, u8)> = None;
     'pages: for p in 0..eng.page_count() {
         let dl = eng.page_display_list(p).expect("頁存在");
@@ -73,30 +73,44 @@ fn l2_form_footnotes_italic_split() {
     println!("p{p} split: {a:?}({fa}) | {b:?}({fb})");
 }
 
-/// 紅燈 2（fdo68607）：表頭格「IGCSE Drama Glossary」run 帶**字級差異**
-/// （sz 28 vs 48 half-pt → 14pt vs 24pt）。修後同基線必須出現 size_pt 相異
-/// 的相鄰 Text 項（且拼接不超出來源文字——以兩項皆含目標詞片段佐證）。
+/// 紅燈 2（bug65649）：格內段落「Огнетушащая … концентрация: 3,42」的
+/// `[\xa0].` 片段 run 帶**字級差異**（sz 24 vs 28 half-pt → 12pt vs 14pt）。
+/// 修後同基線必須出現 size_pt 相異的相鄰 Text 項，且兩項拼接為來源段落的
+/// 連續子串（逐字元核——不丟字、不重複、不重排）。
+///
+/// 取捨注記（卡面「form_footnotes 或 fdo68607」的實測修正）：fdo68607 表頭
+/// 格的 sz48「IGCSE Drama Glossary」實為格內**文字框**內容
+/// （`mc:AlternateContent`→`w:pict`→`v:textbox`，走 K4e2 `emit_txbx_texts`
+/// 路徑）——卡面鐵律「格內文字框不在本卡範圍、別碰」，該檔格內主線段落
+/// 只有單 run「Acting area」，無格內多樣式可拆，故字級紅燈改錨 bug65649
+/// （實測：真·格內段落雙字級）。fdo68607 仍留儀表板 A/B 觀察。
 #[test]
-fn l2_fdo68607_size_split() {
-    let eng = load("ooxmlexport/fdo68607.docx");
+fn l2_bug65649_size_split() {
+    let eng = load("poi/test-data_document_bug65649.docx");
     let mut found = false;
     let mut diag = String::new();
-    for p in 0..eng.page_count() {
+    'pages: for p in 0..eng.page_count() {
         let dl = eng.page_display_list(p).expect("頁存在");
         let ts = texts_of(&dl);
-        let hits: Vec<&(f32, f32, f32, u8, String)> = ts
-            .iter()
-            .filter(|t| t.4.contains("Drama") || t.4.contains("Glossary") || t.4.contains("Acting"))
-            .collect();
-        for w in hits.windows(2) {
-            diag.push_str(&format!("p{p} {:?} | {:?}\n", &w[0], &w[1]));
-            if (w[0].0 - w[1].0).abs() < 0.01 && (w[0].2 - w[1].2).abs() > 0.5 {
+        for w in ts.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            // 同基線（同 y）＋字級相異＋兩項皆隸屬同一來源格段落。
+            let same_line = (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 50.0;
+            if !same_line || (a.2 - b.2).abs() <= 0.5 {
+                continue;
+            }
+            let joined = a.4.clone() + &b.4;
+            let anchored =
+                a.4.contains("концентрац") || a.4.contains("компонент") || joined.contains('%');
+            diag.push_str(&format!("p{p} {a:?} | {b:?}\n"));
+            if anchored {
                 found = true;
+                break 'pages;
             }
         }
     }
     assert!(
         found,
-        "fdo68607：找不到同基線 size_pt 相異的相鄰 Text 項（整格單樣式未拆）。診断：\n{diag}"
+        "bug65649：找不到同基線 size_pt 相異的相鄰 Text 項（整格單樣式未拆）。診断：\n{diag}"
     );
 }

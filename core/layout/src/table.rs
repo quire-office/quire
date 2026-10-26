@@ -234,6 +234,17 @@ pub struct CellText {
     /// serde default 兼容舊快照（goldens 的自訂序列化器不寫本欄，零位移）。
     #[serde(default)]
     pub size_pt: Option<f32>,
+    /// run 級樣式片段（L2-cellruns／TODO(CardA) 清償）：**行內局部**碼點座標
+    /// （`[from,to)` 以本行 `text` 為尺），由 `fragment` 把 block 級 run 標注
+    /// 與本行區間求交集得到；未覆蓋的縫隙補零樣式段，相鄰同鍵段合併，故
+    /// 非空時各段必首尾相接地平鋪整行（發射端按段切文字，拼接逐字元等於
+    /// 整行——不丟字、不重複、不重排）。**合併鍵含 flags/size/color 三態**
+    /// （段合併鍵判別鐵律：新欄位入鍵；同鍵相鄰段併為一段，單樣式行整段
+    /// 只剩一段＝與舊單樣式發射逐位元組同形，金樣零位移）。空＝整行單樣式
+    /// （舊行為：發射端走 `resolve_cell_line_style` 單發路徑）。serde default
+    /// 保舊快照／舊構造零擾動；斷行、分頁、存檔完全不消費本欄（純發射面）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<CellRun>,
 }
 
 /// 切片中的一格圖片佔位（t_a1397522）：x/y 為表格本地／切片相對（與
@@ -595,6 +606,7 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                     lines,
                     bands,
                     size_pt,
+                    runs,
                 } => {
                     let start = cur;
                     for ln in lines {
@@ -602,12 +614,35 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                             break 'blocks;
                         }
                         if cur >= win0 {
+                            // L2-cellruns：block 級 run 標注 ∩ 本行碼點區間 →
+                            // 行內局部座標（發射端直接按 [from,to) 切行內文字）。
+                            // 空 runs＝整段單樣式（舊行為）；行內無交集亦為空。
+                            let l_from = ln.char_offset;
+                            let l_to = l_from + ln.text.chars().count();
+                            let line_runs: Vec<CellRun> = if runs.is_empty() {
+                                Vec::new()
+                            } else {
+                                runs.iter()
+                                    .filter_map(|r| {
+                                        let s = r.from.max(l_from);
+                                        let e = r.to.min(l_to);
+                                        (s < e).then(|| CellRun {
+                                            from: s - l_from,
+                                            to: e - l_from,
+                                            flags: r.flags,
+                                            size_pt: r.size_pt,
+                                            color_argb: r.color_argb,
+                                        })
+                                    })
+                                    .collect()
+                            };
                             texts.push(CellText {
                                 x_pt: cg.x + cg.text_x_off,
                                 y_pt: (shift + pad_delta + (cur - win0) as f32 * tl.line_h)
                                     .max(0.0),
                                 text: ln.text.clone(),
                                 size_pt: *size_pt,
+                                runs: line_runs,
                             });
                         }
                         cur += 1;
@@ -771,11 +806,14 @@ pub fn layout_table(
             // 有子表）是協定填充，**不佔帶高**；填錯會把 7 份正常檔案與 golden
             // 全多撐 1 帶（評審陷阱，測試鎖死）。
             let mut blocks: Vec<CellBlockGeom> = Vec::new();
+            // run_spans 以「文字 block 出現序」為尺：text 分支專用游標。
+            let mut text_i = 0usize;
             if cell.blocks.is_empty() {
                 blocks.push(CellBlockGeom::Text {
                     lines: break_lines("", inner_w, &cell_m),
                     bands: 1,
                     size_pt: cell.text_size_pt,
+                    runs: Vec::new(),
                 });
             } else {
                 let has_table = cell.blocks.iter().any(|b| matches!(b, CellBlock::Table(_)));

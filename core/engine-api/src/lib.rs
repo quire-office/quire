@@ -2873,22 +2873,61 @@ fn push_frag_items(
                 line(p, x + cell.w_pt, y, x + cell.w_pt, y + h, items);
             }
             for t in &cell.texts {
-                // TODO(CardA): 表格格內文字本輪維持整格單樣式發射（不拆分為多個 DrawItem::Text），
-                // 待後續表格卡在 CellText 攜帶段落與字元偏移後，再與正文行共用跨 run 樣式拆段。
-                let (flags, color_argb) =
-                    resolve_cell_line_style(canon_cell, canon_tbl, paragraphs, &t.text);
-                items.push(DrawItem::Text {
-                    x: base_x + t.x_pt,
-                    y: y + t.y_pt,
-                    // 級聯字級（t_5dfc8ac7）：table_map 已按格內段落有效字級
-                    // 填入 CellText.size_pt；無宣告＝全域尺（舊行為）。
-                    size_pt: t.size_pt.unwrap_or(size),
-                    flags,
-                    color_argb,
-                    // 格內文字目前不帶 run 級字型（layout 層限制）；格內選族待後續卡。
-                    family: None,
-                    text: t.text.clone(),
-                });
+                // L2-cellruns（TODO(CardA) 清償）：`t.runs` 非空＝本行有 ≥2
+                // 種 run 樣式（來源端已過濾，單樣式行恆為空），按行內
+                // [from,to) 平鋪段拆多個 DrawItem::Text——拼接逐字元等於
+                // 整行。段 x＝按該段發射字級累加前段寬（正文
+                // `emit_line_run_items` 同款零漂移口徑）。空 runs＝整行單
+                // 樣式：原封不動走舊整格單樣式路徑（金樣／儀表板零擾動）。
+                if t.runs.is_empty() {
+                    // TODO(CardA): 表格格內文字本輪維持整格單樣式發射（不拆分為多個 DrawItem::Text），
+                    // 待後續表格卡在 CellText 攜帶段落與字元偏移後，再與正文行共用跨 run 樣式拆段。
+                    let (flags, color_argb) =
+                        resolve_cell_line_style(canon_cell, canon_tbl, paragraphs, &t.text);
+                    items.push(DrawItem::Text {
+                        x: base_x + t.x_pt,
+                        y: y + t.y_pt,
+                        // 級聯字級（t_5dfc8ac7）：table_map 已按格內段落有效字級
+                        // 填入 CellText.size_pt；無宣告＝全域尺（舊行為）。
+                        size_pt: t.size_pt.unwrap_or(size),
+                        flags,
+                        color_argb,
+                        // 格內文字目前不帶 run 級字型（layout 層限制）；格內選族待後續卡。
+                        family: None,
+                        text: t.text.clone(),
+                    });
+                    continue;
+                }
+                // 多樣式行：碼點→字节邊界表（平鋪段切片用）。
+                let char_idx: Vec<usize> = {
+                    let mut v: Vec<usize> = t.text.char_indices().map(|(b, _)| b).collect();
+                    v.push(t.text.len());
+                    v
+                };
+                let base_size = t.size_pt.unwrap_or(size);
+                let mut x_off = 0.0f32;
+                for r in &t.runs {
+                    let s = r.from.min(char_idx.len() - 1);
+                    let e = r.to.max(s).min(char_idx.len() - 1);
+                    if s >= e {
+                        continue;
+                    }
+                    let seg = &t.text[char_idx[s]..char_idx[e]];
+                    let seg_size = r.size_pt.unwrap_or(base_size).max(1.0);
+                    items.push(DrawItem::Text {
+                        x: base_x + t.x_pt + x_off,
+                        y: y + t.y_pt,
+                        size_pt: seg_size,
+                        flags: r.flags,
+                        color_argb: r.color_argb.unwrap_or(DEFAULT_TEXT_COLOR_ARGB),
+                        // 格內 run 級字型族未透傳（layout 層限制）——選族屬後續卡。
+                        family: None,
+                        text: seg.to_string(),
+                    });
+                    // 零漂移口徑（emit_line_run_items 同款）：未宣告段與整行
+                    // 同尺；宣告段按自身尺（Word 同款視覺近似）。
+                    x_off += TextMeasurer::new(seg_size).text_width(seg);
+                }
             }
             // 圖片佔位框（t_a1397522）＋ K4c 真色版（配到 shape 候補時吃
             // 真填充／描邊／filled=f／stroked=f；配不到＝灰底零擾動）。
