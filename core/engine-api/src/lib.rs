@@ -217,7 +217,16 @@ impl Engine {
         let def_size = doc_size.unwrap_or(12.0);
         // 文件帶尺（行網格量化單位）＝預設段落的行高；無宣告＝12pt×1.4，
         // 與舊 `LayoutParams::default()` 恆等（零宣告檔案逐位元組不變）。
-        let grid_line_h = resolve_line_h_pt(def_size, doc_line);
+        // M1-band（簇 A 分頁容量）：級聯**有宣告**（基準字級或預設行高任一）
+        // 時帶尺細化——粗帶 ceil 是過扣統一根因（15pt 表格列在 12.65pt 帶上
+        // 吃 2 帶＝25.3pt，LO 15.0，×1.69；K5-diag §2.6 三檔鐵證）。細化尺＝
+        // 宣告行高的 ≤2.8pt 最細等分，宣告行高本身恰佔整數帶（零誤差），
+        // 其餘高度量化誤差 ≤2.8pt。零宣告檔（如 k5 防風暴樁）維持
+        // 12pt×1.4＝16.8pt 粗尺——零宣告檔案逐位元組不變。
+        let grid_line_h = refine_band_h(
+            resolve_line_h_pt(def_size, doc_line),
+            doc_size.is_some() || doc_line.is_some(),
+        );
         let n_paras = doc.paragraphs.len();
         let sections: Vec<SectionSpec> = doc
             .parts
@@ -1907,6 +1916,24 @@ fn resolve_line_h_pt(size_pt: f32, line: Option<LineSpacing>) -> f32 {
     };
     h.max(1.0)
 }
+
+/// M1-band（簇 A）：文件帶尺細化——級聯**有宣告**時把粗帶換成宣告行高的
+/// 最細等分（每帶 ≤ `BAND_REFINE_MAX_PT`），量化誤差從「最多一整粗帶」
+/// 縮到 ≤2.8pt（K5-diag §2.6：15pt 表格列在 12.65pt 粗帶上吃 2 帶＝25.3pt、
+/// LO 15.0，×1.69 過扣）。宣告行高本身佔恰整數帶（n 等分零誤差）；未宣告
+/// 檔（呼叫端 gate）原值返還＝12pt×1.4 粗尺逐位元組不變。
+fn refine_band_h(declared_line_h: f32, declared: bool) -> f32 {
+    if !declared || !declared_line_h.is_finite() || declared_line_h <= 0.0 {
+        return declared_line_h;
+    }
+    // n＝把宣告行高等分成「每帶 ≤2.8pt」所需的最少份數（宣告值＝n×帶尺，
+    // 精確整除由 f32 乘回保尺度一致）。
+    let n = (declared_line_h / BAND_REFINE_MAX_PT).ceil().max(1.0);
+    declared_line_h / n
+}
+
+/// 帶尺細化上限（pt）：K5-diag §2.6 處方「帶尺細化 ≤2.8pt」。
+const BAND_REFINE_MAX_PT: f32 = 2.8;
 
 /// `word/document.xml` 的 `w:docGrid` 是否帶非零 `w:charSpace`（字元網格）。
 ///
@@ -4053,8 +4080,14 @@ mod tests {
             );
             assert!((x - 72.0).abs() < 1e-2, "版心左緣：{x}");
             // 段落 0 帶 0 → 圖頂帶 1（吸收態：空行帶＝圖頂帶；本段行=空行）。
+            // M1-band：細化帶尺下空行段佔宣告行高的整帶數（＝宣告行高本體），
+            // 物理 y 不變：72＋15.4＝87.4。
             let line_h = engine.params.line_h_pt();
-            assert!((y - (72.0 + 1.0 * line_h)).abs() < 1e-2, "圖 y＝帶 1：{y}");
+            let empty_bands = (11.0f32 * 1.4 / line_h).ceil();
+            assert!(
+                (y - (72.0 + empty_bands * line_h)).abs() < 1e-2,
+                "圖 y＝空行段末帶：{y}"
+            );
             assert_eq!(mime, "image/png", "副檔名 png → image/png");
             assert!(data_b64.starts_with("iVBORw0KGgo"), "PNG magic 直通");
         }
@@ -4460,7 +4493,6 @@ mod tests {
     fn style_cascade_fixture_bold_bands_break_and_leader_br() {
         const FX: &[u8] = include_bytes!("../../../fixtures/style_cascade.docx");
         let engine = Engine::from_docx_bytes(FX).expect("開啟 style_cascade.docx 失敗");
-        let line_h = engine.params.line_h_pt();
         // 頁頂＝該頁 section 的 top margin（發射層 y 座標的原點，同頁必同值）。
         let top_of = |page: usize| engine.layout.pages()[page].margin_top_pt;
 
@@ -4527,9 +4559,8 @@ mod tests {
             .expect("大字段同頁之後必有其他行");
         let gap = next_y - head_y;
         assert!(
-            (gap - 2.0 * line_h).abs() < 0.5,
-            "24pt 段行高 33.6pt→ceil(33.6/16.8)=2 帶：下段 y 距應 2×行高={}，實得 gap={gap} head_y={head_y} next_y={next_y}",
-            2.0 * line_h
+            (gap - 33.6).abs() < 0.5,
+            "24pt 段行高 33.6pt：M1-band 細化後＝12 帶×2.8pt（舊 2×16.8，物理高度不變），實得 gap={gap} head_y={head_y} next_y={next_y}"
         );
 
         // --- break_before_of：pageBreakBefore 段從頁首起頭 ---
@@ -5454,12 +5485,14 @@ mod tests {
             p3.iter().any(|l| !l.trim().is_empty()),
             "HC031 第 4 頁必須有實質內容（節末段不得被擠成獨立空頁）"
         );
-        // K2b：清單 marker 進投影後正文為 9 頁（原本 8 頁）；仍不得有
-        // 「只含空段」的空頁（見 `hc031_no_blank_body_page`）。
+        // K2b：清單 marker 進投影後正文一度為 9 頁（原本 8 頁）；M1-band
+        // 帶尺細化收回量化過扣後回到 8 頁＝LO 同頁數（本卡設計目的：方向
+        // ＝向 LO 頁數收斂）；仍不得有「只含空段」的空頁（見
+        // `hc031_no_blank_body_page`）。
         assert_eq!(
             engine.body_page_count(),
-            9,
-            "HC031 正文頁數＝9（清單 marker 改變斷行）；實得 {}",
+            8,
+            "HC031 正文頁數＝8（M1-band 細化後與 LO 收斂）；實得 {}",
             engine.body_page_count()
         );
     }
@@ -6978,8 +7011,7 @@ mod tests {
     // 級聯已讓 grid_line_h 跟隨 docDefaults 字級（tdf127814 實為 11pt×1.15
     // ＝12.65），真正的過扣來自 ceil 到粗帶本身，非 12pt 常數。
 
-    const M1_TDF127814: &[u8] =
-        include_bytes!("../../../corpus/ooxmlexport/tdf127814.docx");
+    const M1_TDF127814: &[u8] = include_bytes!("../../../corpus/ooxmlexport/tdf127814.docx");
     const M1_TDF129575: &[u8] =
         include_bytes!("../../../corpus/ooxmlexport/tdf129575-directBefore.docx");
     const M1_RA001: &[u8] =
@@ -6988,11 +7020,7 @@ mod tests {
     /// 頁「可抽行數」＝文字行＋表格列（lm 報告同口徑）。
     fn m1_page_rows(engine: &Engine, page: usize) -> usize {
         let pg = engine.layout.pages().get(page).expect("頁存在");
-        pg.lines.len()
-            + pg.tables
-                .iter()
-                .map(|t| t.frag.rows.len())
-                .sum::<usize>()
+        pg.lines.len() + pg.tables.iter().map(|t| t.frag.rows.len()).sum::<usize>()
     }
 
     /// 紅燈 1（tdf127814）：LO 2 頁（p2 裝 28 項表格列）；基線 3 頁。

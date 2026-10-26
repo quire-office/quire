@@ -42,6 +42,19 @@ fn resolve_line_h_pt(size_pt: f32, line: Option<LineSpacing>) -> f32 {
     h.max(1.0)
 }
 
+/// M1-band（簇 A，同步引擎側 `refine_band_h`）：級聯有宣告時把粗帶尺細化成
+/// 宣告行高的 ≤2.8pt 最細等分。引擎側不動本工具就報不出細化後的真實帶制。
+fn refine_band_h(declared_line_h: f32, declared: bool) -> f32 {
+    if !declared || !declared_line_h.is_finite() || declared_line_h <= 0.0 {
+        return declared_line_h;
+    }
+    let n = (declared_line_h / BAND_REFINE_MAX_PT).ceil().max(1.0);
+    declared_line_h / n
+}
+
+/// 帶尺細化上限（pt；與引擎側 `BAND_REFINE_MAX_PT` 同值鏡像）。
+const BAND_REFINE_MAX_PT: f32 = 2.8;
+
 /// 分頁輸入束（＝engine 開檔時餵 `LayoutEngine` 的同一組輸入＋級聯衍生的
 /// 逐段風格註記——報告的 line_rule／font_size 欄由此輸出）。
 pub struct DocInputs {
@@ -200,7 +213,11 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
     // 預設 12pt 兜底）。
     let def_size = doc_size.unwrap_or(FALLBACK_SIZE_PT);
     // 文件帶尺（行網格量化單位）＝預設段落行高；無宣告＝12pt×1.4。
-    let grid_line_h = resolve_line_h_pt(def_size, doc_line);
+    // M1-band：有宣告時細化（同步引擎 from_docx_bytes 同款閘門）。
+    let grid_line_h = refine_band_h(
+        resolve_line_h_pt(def_size, doc_line),
+        doc_size.is_some() || doc_line.is_some(),
+    );
     let n_paras = doc.paragraphs.len();
     let sections: Vec<SectionSpec> = doc
         .parts
