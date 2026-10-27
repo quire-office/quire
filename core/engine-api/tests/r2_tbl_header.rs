@@ -134,4 +134,10 @@ fn ra001_page_count_and_l3_locked() {
     );
     let (deltext, _) = pages_with(&eng, "Chromatpgrams");
     assert_eq!(deltext, 1, "L3 delText 'Chromatpgrams' ×1 不得回退");
+    // 卡面口徑 'Order of injection' ×4 現況鎖定——注意這是 **L3 領土**
+    // （'Or'＋'der of injection:' 拆 run ×2 ＋ delText 鏡像 ×2），
+    // R2_BUGGY=1 下仍 ×4（實測）：該數非表頭重發貢獻，此條為 L3 成果
+    // 防回退守門（本卡不得動 run 採集）。
+    let (oi, _) = pages_with(&eng, "Order of injection");
+    assert_eq!(oi, 4, "'Order of injection' ×4（L3 del/ins 口徑）不得回退");
 }
