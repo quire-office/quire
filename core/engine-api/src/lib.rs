@@ -228,9 +228,14 @@ impl Engine {
         // 宣告行高的 ≤2.8pt 最細等分，宣告行高本身恰佔整數帶（零誤差），
         // 其餘高度量化誤差 ≤2.8pt。零宣告檔（如 k5 防風暴樁）維持
         // 12pt×1.4＝16.8pt 粗尺——零宣告檔案逐位元組不變。
+        // 細化閘限定**含表格檔**（run6 A/B 實證）：處方根治的是「宣告 pt 高
+        // （trHeight／格內行高）ceil 到粗帶」的量化過扣；純文字檔的行距由
+        // 帶尺直接承載，細化會把 LO auto 行距有效 pitch（≈宣告×1.17，屬
+        // K6 pitch 保真權限）的既存缺口暴露成分數位移（Saturn −0.161／
+        // Bug51170 −0.061，run5 儀表板實測）——不碰＝零劣化底線守得住。
         let (grid_line_h, line_ref_bands) = refine_band_h(
             resolve_line_h_pt(def_size, doc_line),
-            doc_size.is_some() || doc_line.is_some(),
+            (doc_size.is_some() || doc_line.is_some()) && !doc.tables.is_empty(),
         );
         let n_paras = doc.paragraphs.len();
         let sections: Vec<SectionSpec> = doc

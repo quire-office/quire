@@ -215,10 +215,12 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
     // 預設 12pt 兜底）。
     let def_size = doc_size.unwrap_or(FALLBACK_SIZE_PT);
     // 文件帶尺（行網格量化單位）＝預設段落行高；無宣告＝12pt×1.4。
-    // M1-band：有宣告時細化（同步引擎 from_docx_bytes 同款閘門）。
+    // M1-band：有宣告且**含表格**時細化（同步引擎 from_docx_bytes 同款閘門：
+    // 處方根治 trHeight／格內宣告 pt 高 ceil 粗帶的過扣；純文字檔細化會把
+    // LO auto 行距 pitch 保真缺口（K6 權限）暴露成分數位移——run6 A/B 實證）。
     let (grid_line_h, line_ref_bands) = refine_band_h(
         resolve_line_h_pt(def_size, doc_line),
-        doc_size.is_some() || doc_line.is_some(),
+        (doc_size.is_some() || doc_line.is_some()) && !doc.tables.is_empty(),
     );
     let n_paras = doc.paragraphs.len();
     let sections: Vec<SectionSpec> = doc
