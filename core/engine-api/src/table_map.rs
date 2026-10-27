@@ -294,12 +294,14 @@ fn cell_run_spans(paras: &[quire_ooxml::Paragraph]) -> HashMap<usize, Vec<CellRu
 /// `sizes`（t_5dfc8ac7）：段落索引 → 級聯有效字級（一格多段取最大）。
 /// `run_spans`（L2-cellruns）：段落索引 → run 級樣式標注（只含確有多樣式
 /// 的段落）；依格內**文字 block 出現序**平行落入 `CellInput::run_spans`。
+#[allow(clippy::too_many_arguments)]
 pub fn table_input(
     t: &Table,
     texts: &[String],
     styles: &HashMap<String, EdgeSetInput>,
     cell_imgs: &HashMap<usize, Vec<(f32, f32)>>,
     sizes: &HashMap<usize, f32>,
+    line_hs: &HashMap<usize, f32>,
     line_ref_bands: u32,
     run_spans: &HashMap<usize, Vec<CellRun>>,
 ) -> TableInput {
@@ -343,6 +345,9 @@ pub fn table_input(
                         // 出現序**逐位對齊的平行欄位；缺位（無標注段落）
                         // 存空 vec，保持索引對齊。
                         let mut spans: Vec<Vec<CellRun>> = Vec::new();
+                        // K6：與文字 block 出現序平行的宣告行高（細化檔才
+                        // 填；見 `CellInput::text_line_h_pt`）。
+                        let mut text_line_h: Vec<f32> = Vec::new();
                         // 一格多段的級聯字級＝段內最大（斷行量測保守尺：
                         // 大字級少塞字，不虛構塞得下的行）。
                         let mut cell_size: Option<f32> = None;
@@ -355,6 +360,8 @@ pub fn table_input(
                                         spans.push(
                                             run_spans.get(index).cloned().unwrap_or_default(),
                                         );
+                                        text_line_h
+                                            .push(line_hs.get(index).copied().unwrap_or(0.0));
                                     }
                                     if let Some(sz) = sizes.get(index) {
                                         cell_size = Some(cell_size.map_or(*sz, |v| v.max(*sz)));
@@ -374,6 +381,7 @@ pub fn table_input(
                                         styles,
                                         cell_imgs,
                                         sizes,
+                                        line_hs,
                                         line_ref_bands,
                                         run_spans,
                                     ))));
@@ -395,6 +403,7 @@ pub fn table_input(
                             valign: c.props.valign.clone(),
                             margins: c.props.margins.as_ref().map(cell_margins),
                             text_size_pt: cell_size,
+                            text_line_h_pt: text_line_h,
                             run_spans: spans,
                         }
                     })
@@ -598,6 +607,7 @@ pub fn build_slots(
     sections: &[SectionSpec],
     images: &[quire_ooxml::InlineImage],
     paras: &[quire_ooxml::Paragraph],
+    line_hs: &[f32],
     line_ref_bands: u32,
 ) -> Vec<TableSlot> {
     let styles = styles_xml.map(table_style_borders).unwrap_or_default();
@@ -612,6 +622,18 @@ pub fn build_slots(
     // L2-cellruns：格內文字的 run 級樣式標注（只含確有多樣式的段落；
     // 單樣式段整段不入表＝發射端走舊路徑，金樣零位移）。
     let run_spans = cell_run_spans(paras);
+    // K6：段落索引 → 級聯量化前行高（僅細化檔消費；粗尺 lref=1 時表空，
+    // 格內行高逐位元組不動）。
+    let line_h_map: HashMap<usize, f32> = if line_ref_bands > 1 {
+        line_hs
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.is_finite() && **h > 0.0)
+            .map(|(i, h)| (i, *h))
+            .collect()
+    } else {
+        HashMap::new()
+    };
     let m = TextMeasurer::new(params.font_size_pt);
     let line_h = params.line_h_pt();
     let mut prev_end = 0usize; // 逐槽正規化游標：槽區間必不重疊且 ≤ n_paras
@@ -625,6 +647,7 @@ pub fn build_slots(
                 &styles,
                 &cell_imgs,
                 &sizes,
+                &line_h_map,
                 line_ref_bands,
                 &run_spans,
             );
@@ -822,6 +845,7 @@ mod tests {
                 &[],
                 &[],
                 &doc.paragraphs,
+                &[],
                 1,
             );
             assert!(!slots.is_empty(), "{rel}：標為 txbx-in-cell 檔應有表格槽");

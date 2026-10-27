@@ -54,6 +54,23 @@ fn refine_band_h(declared_line_h: f32, declared: bool) -> (f32, u32) {
     (declared_line_h / n, n as u32)
 }
 
+/// K6：主要宣告行高（與引擎 `modal_line_h` 同口徑）。
+fn modal_line_h(line_hs: &[f32], floor: f32) -> f32 {
+    use std::collections::BTreeMap;
+    let mut bins: BTreeMap<i32, u32> = BTreeMap::new();
+    for &h in line_hs {
+        if h.is_finite() && h > 0.0 {
+            *bins.entry((h * 10.0).round() as i32).or_default() += 1;
+        }
+    }
+    let mode = bins
+        .into_iter()
+        .max_by_key(|(_, c)| *c)
+        .map(|(k, _)| k as f32 / 10.0)
+        .unwrap_or(floor);
+    mode.max(floor)
+}
+
 /// 帶尺細化上限（pt；與引擎側 `BAND_REFINE_MAX_PT` 同值鏡像）。
 const BAND_REFINE_MAX_PT: f32 = 2.8;
 
@@ -95,6 +112,7 @@ fn cascade_paragraphs(
     st: &StyleTable,
     paras: &[Paragraph],
     def_size: f32,
+    doc_mult: f32,
     widths: &[f32],
 ) -> (
     Vec<Paragraph>,
@@ -144,7 +162,22 @@ fn cascade_paragraphs(
             r2.size_pt = eff.size_pt;
             eff_runs.push(r2);
         }
-        let line_h = resolve_line_h_pt(base.size_pt.unwrap_or(def_size), para.line);
+        let base_size = base.size_pt.unwrap_or(def_size);
+        // K6：auto 行距基準字級＝段內 run 有效字級最大值（rPr 級聯），
+        // 與引擎 `cascade_paragraphs` 同款；`K6_AUTO_PITCH_BUGGY=1` 回塞
+        // 舊的段落基準字級（紅燈回塞鎖，lm 必須與引擎同報）。
+        let auto_buggy = std::env::var_os("K6_AUTO_PITCH_BUGGY").is_some();
+        let line_h = match para.line {
+            Some(LineSpacing::AtLeast(_)) if meas_size > base_size => {
+                resolve_line_h_pt(meas_size * 1.4, para.line) * doc_mult
+            }
+            Some(LineSpacing::Auto(_)) if !auto_buggy => {
+                let size = meas_size.max(base_size);
+                resolve_line_h_pt(size, para.line) * 0.975
+            }
+            Some(LineSpacing::AtLeast(_)) => resolve_line_h_pt(base_size, para.line) * doc_mult,
+            other => resolve_line_h_pt(base_size, other),
+        };
         // 點引 leads 展開：段落宣告右對齊製表位＋leader＋內含
         // w:tab run 時，於首個 tab run 前插入填充符串至「製表位 − 尾串寬」
         // （Word/LO 同款視覺 `Heading 1 ......... 2`）。填充是獨立 run——
@@ -215,13 +248,20 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
     // 預設 12pt 兜底）。
     let def_size = doc_size.unwrap_or(FALLBACK_SIZE_PT);
     // 文件帶尺（行網格量化單位）＝預設段落行高；無宣告＝12pt×1.4。
-    // M1-band：有宣告且**含表格**時細化（同步引擎 from_docx_bytes 同款閘門：
-    // 處方根治 trHeight／格內宣告 pt 高 ceil 粗帶的過扣；純文字檔細化會把
-    // LO auto 行距 pitch 保真缺口（K6 權限）暴露成分數位移——run6 A/B 實證）。
-    let (grid_line_h, line_ref_bands) = refine_band_h(
-        resolve_line_h_pt(def_size, doc_line),
-        (doc_size.is_some() || doc_line.is_some()) && !doc.tables.is_empty(),
-    );
+    // K6：細化閘由「含表格檔」擴展到「docDefaults／Normal 鏈或段落直接
+    // 宣告字級／行距」的檔案（同步引擎 from_docx_bytes 同款閘門）；零宣告
+    // 檔維持 16.8pt 粗尺，lm 與引擎逐欄同口徑。
+    let any_para_declared = doc.paragraphs.iter().any(|p| {
+        (p.line.is_none()
+            && (p.prun.as_ref().and_then(|r| r.size_pt).is_some()
+                || p.runs
+                    .iter()
+                    .any(|r| r.direct.as_ref().and_then(|d| d.size_pt).is_some())))
+            || matches!(p.line, Some(LineSpacing::Auto(_)))
+    });
+    let refine = doc_size.is_some() || doc_line.is_some() || any_para_declared;
+    let doc_grid_h = resolve_line_h_pt(def_size, doc_line);
+    let (grid_line_h, _) = refine_band_h(doc_grid_h, refine);
     let n_paras = doc.paragraphs.len();
     let sections: Vec<SectionSpec> = doc
         .parts
@@ -275,14 +315,69 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         })
         .collect();
     // 級聯烘焙。
+    let doc_mult = match doc_line {
+        Some(LineSpacing::Auto(m)) => m,
+        _ => 1.0,
+    };
     let (eff_all, metrics, para_lines, spacings) =
-        cascade_paragraphs(&style_table, &doc.paragraphs, def_size, &widths);
+        cascade_paragraphs(&style_table, &doc.paragraphs, def_size, doc_mult, &widths);
     let grid_size_v: Vec<f32> = metrics.iter().map(|m| m.0).collect();
+    // K6：逐段量化前行高（格內文字行距基準；細化檔由 tables 消費）。
+    let mut para_line_h_v: Vec<f32> = metrics.iter().map(|m| m.1).collect();
+    let modal_h = if refine {
+        modal_line_h(&para_line_h_v, doc_grid_h)
+    } else {
+        0.0
+    };
+    if refine {
+        for (i, p) in doc.paragraphs.iter().enumerate() {
+            let inline = ParaStyle {
+                run: p.prun.clone().unwrap_or_default(),
+                line: p.line,
+                spacing_before_pt: p.spacing_before_pt,
+                spacing_after_pt: p.spacing_after_pt,
+                align: p.jc,
+            };
+            let eff_line = style_table
+                .effective_para(p.style.as_deref(), inline)
+                .1
+                .line;
+            if matches!(eff_line, Some(LineSpacing::Auto(_))) {
+                para_line_h_v[i] = para_line_h_v[i].max(modal_h);
+            }
+        }
+    }
+    // K6：錨行高若已是粗尺的整數倍（常見＝與 docDefaults 行距相同，
+    // 如 Bug51170 全部 atLeast 12.65pt），再細分只會改變段前／段後距的
+    // 量化（10pt 距由 1 帶 12.65 縮成 4 帶 10.12），純文字流反而偏離
+    // LO；此時保留原粗尺。只有錨行高無法用粗尺整除時才細化。
+    let anchor_h = modal_h.max(modal_line_h(&para_line_h_v, doc_grid_h));
+    let anchor_is_grid_multiple = {
+        let r = anchor_h / doc_grid_h;
+        r.is_finite() && (r - r.round()).abs() * doc_grid_h <= 0.11
+    };
+    // 含表格檔的 trHeight／格內行高仍需細尺（M1 紅燈），跳過細化只限
+    // 純文字檔：存量粗尺已能整除其行高。
+    let keep_coarse = doc.tables.is_empty() && anchor_is_grid_multiple;
+    let (grid_line_h, line_ref_bands) = if refine && !keep_coarse {
+        refine_band_h(anchor_h, true)
+    } else {
+        refine_band_h(doc_grid_h, false)
+    };
+    let params = LayoutParams {
+        font_size_pt: def_size,
+        line_spacing: if def_size > 0.0 {
+            grid_line_h / def_size
+        } else {
+            1.4
+        },
+        ..params
+    };
     // 段行高量化到文件帶尺（至少 1 帶；鉗上限＝分頁帶累加溢出護欄同款）。
-    let grid_bands_v: Vec<u32> = metrics
+    let grid_bands_v: Vec<u32> = para_line_h_v
         .iter()
-        .map(|m| {
-            let b = (m.1 / grid_line_h).ceil();
+        .map(|h| {
+            let b = (*h / grid_line_h).ceil();
             if !b.is_finite() {
                 MAX_PAGE_BANDS
             } else {
@@ -311,6 +406,7 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         &sections,
         &images_xml,
         eff_refs,
+        &para_line_h_v,
         line_ref_bands,
     );
     let bands = tables::build_images(&images_xml, params.line_h_pt(), &params, &sections);

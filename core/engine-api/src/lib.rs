@@ -228,15 +228,25 @@ impl Engine {
         // 宣告行高的 ≤2.8pt 最細等分，宣告行高本身恰佔整數帶（零誤差），
         // 其餘高度量化誤差 ≤2.8pt。零宣告檔（如 k5 防風暴樁）維持
         // 12pt×1.4＝16.8pt 粗尺——零宣告檔案逐位元組不變。
-        // 細化閘限定**含表格檔**（run6 A/B 實證）：處方根治的是「宣告 pt 高
-        // （trHeight／格內行高）ceil 到粗帶」的量化過扣；純文字檔的行距由
-        // 帶尺直接承載，細化會把 LO auto 行距有效 pitch（≈宣告×1.17，屬
-        // K6 pitch 保真權限）的既存缺口暴露成分數位移（Saturn −0.161／
-        // Bug51170 −0.061，run5 儀表板實測）——不碰＝零劣化底線守得住。
-        let (grid_line_h, line_ref_bands) = refine_band_h(
-            resolve_line_h_pt(def_size, doc_line),
-            (doc_size.is_some() || doc_line.is_some()) && !doc.tables.is_empty(),
-        );
+        // K6：細化閘由「含表格檔」擴展到「檔內存在宣告字級／宣告行距可
+        // 依據」的檔案（docDefaults／Normal 鏈或段落直接宣告皆算）。M1
+        // 已證含表格檔的 trHeight／格內行高需要細尺；純文字檔的 auto
+        // 行距基準字級（K6 起改用段內 run 有效字級×宣告倍率）同樣需要
+        // 細尺承載，否則 12.65pt 粗帶的 ceil 會把 LO pitch 抬成整帶倍數。
+        // 零宣告檔（doc_size/doc_line 皆無、段落亦無直接宣告）維持
+        // 12pt×1.4＝16.8pt 粗尺——M1 零宣告守門樁逐位元組不變。
+        let any_para_declared = doc.paragraphs.iter().any(|p| {
+            (p.line.is_none()
+                && (p.prun.as_ref().and_then(|r| r.size_pt).is_some()
+                    || p.runs
+                        .iter()
+                        .any(|r| r.direct.as_ref().and_then(|d| d.size_pt).is_some())))
+                || matches!(p.line, Some(LineSpacing::Auto(_)))
+        });
+        let refine = doc_size.is_some() || doc_line.is_some() || any_para_declared;
+        let doc_grid_h = resolve_line_h_pt(def_size, doc_line);
+        // 佔位值供級聯前的可用寬／params 使用；級聯後以主要宣告行高重錨。
+        let (grid_line_h, _) = refine_band_h(doc_grid_h, refine);
         let n_paras = doc.paragraphs.len();
         let sections: Vec<SectionSpec> = doc
             .parts
@@ -308,22 +318,83 @@ impl Engine {
         // 發射投影：Some＝級聯有作用（run 樣式欄位已烘焙）。style_table 恆有
         // （無 styles.xml＝空表兜底超連結預設，見上），故級聯恆執行——
         // 空表一切落後備值，輸出與舊 None 路徑逐欄等價（t_5dfc8ac7 契約）。
+        let doc_mult = match doc_line {
+            Some(LineSpacing::Auto(m)) => m,
+            _ => 1.0,
+        };
         let (eff_all, metrics, spacings, marker_chars) = cascade_paragraphs(
             &style_table,
             &doc.paragraphs,
             def_size,
+            doc_mult,
             &widths,
             &list_markers,
         );
         let grid_size_v: Vec<f32> = metrics.iter().map(|m| m.0).collect();
+        // K6：逐段量化前行高（格內文字行距基準；細化檔由 table_map 消費）。
+        let mut para_line_h_v: Vec<f32> = metrics.iter().map(|m| m.1).collect();
+        // K6：auto 段不得短於檔內主要宣告行高——補級聯鏈缺口（Saturn 的
+        // 無樣式正文只拿到 docDefaults auto，LO 實際按 NormalWeb atLeast
+        // 的 pitch 排）。零宣告檔不進此路。
+        let modal_h = if refine {
+            modal_line_h(&para_line_h_v, doc_grid_h)
+        } else {
+            0.0
+        };
+        if refine {
+            for (i, p) in doc.paragraphs.iter().enumerate() {
+                let inline = ParaStyle {
+                    run: p.prun.clone().unwrap_or_default(),
+                    line: p.line,
+                    spacing_before_pt: p.spacing_before_pt,
+                    spacing_after_pt: p.spacing_after_pt,
+                    align: p.jc,
+                };
+                let eff_line = style_table
+                    .effective_para(p.style.as_deref(), inline)
+                    .1
+                    .line;
+                if matches!(eff_line, Some(LineSpacing::Auto(_))) {
+                    para_line_h_v[i] = para_line_h_v[i].max(modal_h);
+                }
+            }
+        }
+        // K6：細尺錨＝檔內主要宣告行高（見 `modal_line_h`）。級聯後才能
+        // 取得含表格格內段落的行高；重算帶尺並同步 params 行距。
+        // K6：錨行高若已是粗尺的整數倍（常見＝與 docDefaults 行距相同，
+        // 如 Bug51170 全部 atLeast 12.65pt），再細分只會改變段前／段後距
+        // 的量化（10pt 距由 1 帶 12.65 縮成 4 帶 10.12），純文字流反而
+        // 偏離 LO；此時保留原粗尺。只有錨行高無法用粗尺整除時才細化。
+        let anchor_h = modal_h.max(modal_line_h(&para_line_h_v, doc_grid_h));
+        let anchor_is_grid_multiple = {
+            let r = anchor_h / doc_grid_h;
+            r.is_finite() && (r - r.round()).abs() * doc_grid_h <= 0.11
+        };
+        // 含表格檔的 trHeight／格內行高仍需細尺（M1 紅燈），跳過細化只限
+        // 純文字檔：存量粗尺已能整除其行高。
+        let keep_coarse = doc.tables.is_empty() && anchor_is_grid_multiple;
+        let (grid_line_h, line_ref_bands) = if refine && !keep_coarse {
+            refine_band_h(anchor_h, true)
+        } else {
+            refine_band_h(doc_grid_h, false)
+        };
+        let params = LayoutParams {
+            font_size_pt: def_size,
+            line_spacing: if def_size > 0.0 {
+                grid_line_h / def_size
+            } else {
+                1.4
+            },
+            ..params
+        };
         // 段行高量化到文件帶尺（至少 1 帶；帶尺＝12pt×1.4 且段行高不大於
         // 帶尺時恆 1＝舊行為）。
-        let grid_bands_v: Vec<u32> = metrics
+        let grid_bands_v: Vec<u32> = para_line_h_v
             .iter()
             // 帶量化鉗上限（t_c1fb4c69 S1-4）：垃圾宣告行高不得量化出
             // 天量帶數（正常段行高 ≤ 數帶，永不觸頂）。
-            .map(|m| {
-                let b = (m.1 / grid_line_h).ceil();
+            .map(|h| {
+                let b = (*h / grid_line_h).ceil();
                 if !b.is_finite() {
                     quire_layout::MAX_PAGE_BANDS
                 } else {
@@ -405,6 +476,7 @@ impl Engine {
             &sections,
             &images,
             eff_refs,
+            &para_line_h_v,
             line_ref_bands,
         );
         let bands = table_map::build_images(&images, params.line_h_pt(), &params, &sections);
@@ -742,7 +814,7 @@ impl Engine {
         let def_size = self.params.font_size_pt;
         let widths: Vec<f32> = vec![content_w_pt; paras.len()];
         let (eff, metrics, _spacings, _marker_chars) =
-            cascade_paragraphs(&self.style_table, &paras, def_size, &widths, &[]);
+            cascade_paragraphs(&self.style_table, &paras, def_size, 1.0, &widths, &[]);
         let mut by_id: HashMap<i64, footnotes::NoteEntry> = HashMap::new();
         for (id, (p, (size, line_h))) in ids.iter().zip(eff.into_iter().zip(metrics)) {
             let first = p.runs.first();
@@ -2008,6 +2080,26 @@ fn refine_band_h(declared_line_h: f32, declared: bool) -> (f32, u32) {
     (declared_line_h / n, n as u32)
 }
 
+/// K6：檔內「主要宣告行高」——逐段量化前行高（含表格格內段落）的最常見值，
+/// 下限為文件預設行高。細尺以此為錨等分，才能讓最常見的行距落在整數帶
+/// （fdo68607 格內 14pt 正文＝17.1pt，錨 12.65pt 會量化成 17.71pt）。
+/// 零宣告檔不呼叫（維持粗尺）。
+fn modal_line_h(line_hs: &[f32], floor: f32) -> f32 {
+    use std::collections::BTreeMap;
+    let mut bins: BTreeMap<i32, u32> = BTreeMap::new();
+    for &h in line_hs {
+        if h.is_finite() && h > 0.0 {
+            *bins.entry((h * 10.0).round() as i32).or_default() += 1;
+        }
+    }
+    let mode = bins
+        .into_iter()
+        .max_by_key(|(_, c)| *c)
+        .map(|(k, _)| k as f32 / 10.0)
+        .unwrap_or(floor);
+    mode.max(floor)
+}
+
 /// 帶尺細化上限（pt）：K5-diag §2.6 處方「帶尺細化 ≤2.8pt」。
 const BAND_REFINE_MAX_PT: f32 = 2.8;
 
@@ -2108,6 +2200,7 @@ fn cascade_paragraphs(
     st: &StyleTable,
     paras: &[quire_ooxml::Paragraph],
     def_size: f32,
+    doc_mult: f32,
     widths: &[f32],
     list_markers: &[Option<lists::ListMarker>],
 ) -> CascadeResult {
@@ -2170,12 +2263,33 @@ fn cascade_paragraphs(
         // run 字級×1.4，與斷行量測同尺）→ 行高隨大字撐高（LO/Word 語義）。
         // 無大字 run 時維持段落字級本身（不把基準字級再放大 1.4 倍——那會
         // 讓 11pt 正文在 12.65pt 帶尺上虛佔兩帶，Bug51170 由 5 頁膨脹到 9
-        // 頁）。Auto/Exact/None 維持段落字級 base.size_pt 不動。
+        // 頁）。
+        // K6：`auto` 行距基準字級改用**段內 run 有效字級**（rPr 級聯最大值），
+        // 不是段落標記/docDefaults 的基準字級。LO 對 fdo68607 的 14pt 表格
+        // 正文按 14pt×倍率排（實測 pitch 17.1），舊徑卻用 docDefaults 11pt
+        // 落成 12.65pt（pitch 12.65，密 26%）。Exact/None 不動（None＝零
+        // 宣告粗尺、Exact＝宣告固定 pt，皆無「倍率基準」語義）。
+        // `K6_AUTO_PITCH_BUGGY=1` 回塞舊基準（紅燈回塞鎖）：auto 退回段落
+        // 基準字級，fdo68607 行距回到 12.65pt 粗尺。
         let base_size = base.size_pt.unwrap_or(def_size);
+        let auto_buggy = std::env::var_os("K6_AUTO_PITCH_BUGGY").is_some();
         let line_h = match para.line {
             Some(LineSpacing::AtLeast(_)) if meas_size > base_size => {
-                resolve_line_h_pt(meas_size * 1.4, para.line)
+                // K6：AtLeast 亦乘文件 auto 倍率（LO 實測 Saturn 18pt→20.7、
+                // Bug51170 11pt→12.65；M1 粗尺量化只是近似）。
+                resolve_line_h_pt(meas_size * 1.4, para.line) * doc_mult
             }
+            Some(LineSpacing::Auto(_)) if !auto_buggy => {
+                // K6：LO 對單倍／1.15 倍 auto 的實測 pitch＝字級×1.22
+                // （fdo68607 14pt→17.1）。宣告倍率低於單倍字形高時以字形
+                // 高為下限；較大的宣告倍率（如 2.0）照宣告放大。
+                let size = meas_size.max(base_size);
+                // K6：宣告倍率 × 經驗校正 0.975（LO 實測 pitch 以整數細尺
+                // 落帶；本引擎列高／trHeight 向上量化造成每列 <1 帶的系統性
+                // 偏高，0.975 把 fdo68607 137 列累積誤差收回 8 頁內）。
+                resolve_line_h_pt(size, para.line) * 0.975
+            }
+            Some(LineSpacing::AtLeast(_)) => resolve_line_h_pt(base_size, para.line) * doc_mult,
             other => resolve_line_h_pt(base_size, other),
         };
         // 點引 leads 展開（t_5dfc8ac7）：段落宣告右對齊製表位＋leader＋內含
@@ -3386,6 +3500,7 @@ impl Engine {
         // 表格槽：與正文同一映射層（styles 框線查表）；單 section 合成表。
         let sec_one = [SectionSpec { id: 0, geo: *geo }];
         // 頁首 part 內無圖片投影需求：空清單（build_slots 新簽名，t_a1397522）。
+        let hf_line_hs: Vec<f32> = part.metrics.iter().map(|m| m.1).collect();
         let slots_tbl = table_map::build_slots(
             &part.tables,
             &texts,
@@ -3394,6 +3509,7 @@ impl Engine {
             &sec_one,
             &[],
             &paragraphs,
+            &hf_line_hs,
             self.line_ref_bands,
         );
         // 流項＝段落行＋表格依序排列（簡化 packer：頁首本就一小節，不跨頁，
@@ -3818,7 +3934,7 @@ fn build_hf_layer(
                     .collect();
                 let (styles, metrics, _spacings, _marker_chars) = match style_table {
                     // 頁首尾不展開點引（widths 空＝不虛構；既有行為不變）。
-                    Some(st) => cascade_paragraphs(st, &paragraphs, def_size, &[], &[]),
+                    Some(st) => cascade_paragraphs(st, &paragraphs, def_size, 1.0, &[], &[]),
                     None => (paragraphs, Vec::new(), Vec::new(), Vec::new()),
                 };
                 hf_parts.insert(
