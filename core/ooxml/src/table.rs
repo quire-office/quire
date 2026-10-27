@@ -776,11 +776,16 @@ impl TableParser {
                 }
             }
             b"tblHeader" if self.top_is(&[b"trPr"]) => {
+                // R2：`w:val`（ECMA-376 §17.4.86 布林）與舊 `w:repeat` 皆須
+                // 判 off——「標記存在即頁首列」在 val="0"（取消重複）時會虛重貼。
                 let rep = attr(e, b"repeat");
+                let val = attr(e, b"val");
+                let off = matches!(val.as_deref(), Some("0") | Some("false"))
+                    || matches!(rep.as_deref(), Some("0") | Some("false"));
                 if let Some(i) = self.innermost_row() {
                     let props = &mut self.frames[i].row_mut().props;
-                    props.header = true;
-                    props.header_raw = rep;
+                    props.header = !off;
+                    props.header_raw = val.or(rep);
                 }
             }
             // ---- tc / tcPr（tc 用 under()：列內可插行級 sdt 包裝儲存格；
