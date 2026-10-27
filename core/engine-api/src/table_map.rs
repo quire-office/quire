@@ -233,9 +233,12 @@ pub fn table_input(
     styles: &HashMap<String, EdgeSetInput>,
     cell_imgs: &HashMap<usize, Vec<(f32, f32)>>,
     sizes: &HashMap<usize, f32>,
+    line_ref_bands: u32,
 ) -> TableInput {
     let p = &t.props;
     TableInput {
+        // M1-band：細尺份數逐層直送（巢狀表同尺；粗尺＝0/1＝舊行為）。
+        line_ref_bands,
         grid_pt: t.grid.iter().map(|g| g.w_pt.unwrap_or(0.0)).collect(),
         width: p.width.as_ref().and_then(width_spec),
         fixed_layout: p.layout_fixed == Some(true),
@@ -291,7 +294,12 @@ pub fn table_input(
                                 }
                                 Block::Table(inner) => {
                                     blocks.push(CellBlock::Table(Box::new(table_input(
-                                        inner, texts, styles, cell_imgs, sizes,
+                                        inner,
+                                        texts,
+                                        styles,
+                                        cell_imgs,
+                                        sizes,
+                                        line_ref_bands,
                                     ))));
                                 }
                             }
@@ -503,6 +511,7 @@ pub fn build_images(
 /// `images`（t_a1397522）：全文圖片投影；格內圖注入對應 `CellBlock::Image`。
 /// `paras`（t_5dfc8ac7）：級聯烘焙後的段落投影（run 帶 effective size）——
 /// 逐格文字字級＝格內段落首 run 有效字級（首 run 無宣告＝無宣告）。
+#[allow(clippy::too_many_arguments)]
 pub fn build_slots(
     tables: &[BodyTable],
     texts: &[String],
@@ -511,6 +520,7 @@ pub fn build_slots(
     sections: &[SectionSpec],
     images: &[quire_ooxml::InlineImage],
     paras: &[quire_ooxml::Paragraph],
+    line_ref_bands: u32,
 ) -> Vec<TableSlot> {
     let styles = styles_xml.map(table_style_borders).unwrap_or_default();
     let cell_imgs = cell_image_map(images);
@@ -528,7 +538,14 @@ pub fn build_slots(
     tables
         .iter()
         .map(|bt| {
-            let input = table_input(&bt.table, texts, &styles, &cell_imgs, &sizes);
+            let input = table_input(
+                &bt.table,
+                texts,
+                &styles,
+                &cell_imgs,
+                &sizes,
+                line_ref_bands,
+            );
             let avail_w = avail_w_for(sections, params, bt.para_start);
             let layout = quire_layout::table::layout_table(&input, avail_w, line_h, &m, 0);
             let raw_end = table_para_end(&bt.table, bt.para_start);
@@ -718,6 +735,7 @@ mod tests {
                 &[],
                 &[],
                 &doc.paragraphs,
+                1,
             );
             assert!(!slots.is_empty(), "{rel}：標為 txbx-in-cell 檔應有表格槽");
             let mut prev_end = 0usize;

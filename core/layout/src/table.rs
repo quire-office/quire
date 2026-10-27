@@ -968,6 +968,12 @@ fn compute_row_heights(tl: &mut TableLayout, input: &TableInput) {
             .cells
             .iter()
             .filter(|g| !matches!(g.merge, Some((_, false))))
+            // vMerge head（跨多行列）的內容對**整個 merge 塊**負責，不是
+            // 首列（ECMA-376＋LO ground truth：tdf127814 首欄旋轉文字豎排
+            // 滿全表，首列仍 15.75pt）；不足額由尾部的 vMerge 餘額補列邏輯
+            // 平均分配。單行塊（block_end_row==block_head_row）無 continue
+            // 列可補，維持计入首列自然高（舊行為不變）。
+            .filter(|g| !matches!(g.merge, Some((_, true))) || g.block_end_row == g.block_head_row)
         {
             natural = natural.max(g.content_bands);
             natural_pt = natural_pt.max(g.content_bands as f32 * line_h + g.extra_pt(line_h));
@@ -982,13 +988,17 @@ fn compute_row_heights(tl: &mut TableLayout, input: &TableInput) {
                     // exact 以宣告為準（沿用既有「ceil 後帶高」口徑）。
                     bands = need.max(1);
                     extra = 0.0;
-                } else if need > bands {
-                    bands = need;
-                    extra = 0.0;
                 } else {
-                    // atLeast：精確列高不得低於宣告值（帶化後的下界）。
-                    let need_floor = need as f32 * line_h - bands as f32 * line_h;
-                    extra = extra.max(need_floor);
+                    // atLeast（含無 rule 屬性預設）：宣告高是**地板不是天花板**
+                    // （LO 實測 tdf127814：列內文字折 3 行仍佔滿宣告 15.75pt，
+                    // 27 列×15.0＝LO pitch）。vMerge 塊的格內容被 continue 列
+                    // 吸收後自然高可低於宣告（首列實測 3 帶 < ceil(15.75)＝5 帶），
+                    // 舊 `need > bands` 才抬的條件漏掉此情形→每列欠 2 帶、
+                    // 28 列共欠 56 帶虛構出第 3 頁。粗尺下 natural 地板 ≥
+                    // ceil(h) 恆成立（1 帶 ≥ 16.8pt、宣告列高 ≤16.8 時同值），
+                    // 此修正為細尺專屬；exact 支路不動（鐵律）。
+                    bands = bands.max(need);
+                    extra = (natural_pt - bands as f32 * line_h).max(0.0);
                 }
             }
         }

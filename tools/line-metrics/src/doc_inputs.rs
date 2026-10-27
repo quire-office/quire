@@ -44,12 +44,14 @@ fn resolve_line_h_pt(size_pt: f32, line: Option<LineSpacing>) -> f32 {
 
 /// M1-band（簇 A，同步引擎側 `refine_band_h`）：級聯有宣告時把粗帶尺細化成
 /// 宣告行高的 ≤2.8pt 最細等分。引擎側不動本工具就報不出細化後的真實帶制。
-fn refine_band_h(declared_line_h: f32, declared: bool) -> f32 {
+/// 回傳（細化帶尺, n）：n＝宣告行高的等分份數＝細尺下一行文字應佔帶數
+/// （與引擎側 `refine_band_h` 同款；未細化＝1）。
+fn refine_band_h(declared_line_h: f32, declared: bool) -> (f32, u32) {
     if !declared || !declared_line_h.is_finite() || declared_line_h <= 0.0 {
-        return declared_line_h;
+        return (declared_line_h, 1);
     }
     let n = (declared_line_h / BAND_REFINE_MAX_PT).ceil().max(1.0);
-    declared_line_h / n
+    (declared_line_h / n, n as u32)
 }
 
 /// 帶尺細化上限（pt；與引擎側 `BAND_REFINE_MAX_PT` 同值鏡像）。
@@ -214,7 +216,7 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
     let def_size = doc_size.unwrap_or(FALLBACK_SIZE_PT);
     // 文件帶尺（行網格量化單位）＝預設段落行高；無宣告＝12pt×1.4。
     // M1-band：有宣告時細化（同步引擎 from_docx_bytes 同款閘門）。
-    let grid_line_h = refine_band_h(
+    let (grid_line_h, line_ref_bands) = refine_band_h(
         resolve_line_h_pt(def_size, doc_line),
         doc_size.is_some() || doc_line.is_some(),
     );
@@ -300,6 +302,7 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         &sections,
         &images_xml,
         eff_refs,
+        line_ref_bands,
     );
     let bands = tables::build_images(&images_xml, params.line_h_pt(), &params, &sections);
     // br-page 硬斷點（ECMA-376 §17.4.3）：canonical 段落偏移直傳版面層。

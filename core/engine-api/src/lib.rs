@@ -121,6 +121,11 @@ pub struct Engine {
     /// 完全不經此欄（嚴禁把 media part 寫回 docx）。頁首尾圖的像素解析
     /// 另存 `HfPart::pixels`（HF part 有自家的 `.rels`）。
     image_pixels: Vec<PixelSource>,
+    /// M1-band（簇 A）：細尺下「格內一行文字」應佔的帶數＝宣告行高的等分
+    /// 份數（`refine_band_h` 的 n；未細化＝1＝舊「一行＝一帶」口徑）。
+    /// 表格映射層（`table_map::build_slots`）消費；純讀取派生——存檔路徑
+    /// 完全不經本欄。
+    line_ref_bands: u32,
 }
 
 /// K4c-image 像素池項（開檔期一次性解析；像素位元組本身**不複製**進
@@ -223,7 +228,7 @@ impl Engine {
         // 宣告行高的 ≤2.8pt 最細等分，宣告行高本身恰佔整數帶（零誤差），
         // 其餘高度量化誤差 ≤2.8pt。零宣告檔（如 k5 防風暴樁）維持
         // 12pt×1.4＝16.8pt 粗尺——零宣告檔案逐位元組不變。
-        let (grid_line_h, _line_ref_bands) = refine_band_h(
+        let (grid_line_h, line_ref_bands) = refine_band_h(
             resolve_line_h_pt(def_size, doc_line),
             doc_size.is_some() || doc_line.is_some(),
         );
@@ -392,6 +397,7 @@ impl Engine {
             &sections,
             &images,
             eff_refs,
+            line_ref_bands,
         );
         let bands = table_map::build_images(&images, params.line_h_pt(), &params, &sections);
         // K4c-image：開檔期像素解析（純讀取）。正文流／浮動／格內圖一律沿
@@ -488,6 +494,7 @@ impl Engine {
                 .map(|im| (im.para_index, im.clone()))
                 .collect(),
             image_pixels,
+            line_ref_bands,
         };
         Ok(engine.with_footnotes())
     }
@@ -3169,6 +3176,7 @@ impl Engine {
             &sec_one,
             &[],
             &paragraphs,
+            self.line_ref_bands,
         );
         // 流項＝段落行＋表格依序排列（簡化 packer：頁首本就一小節，不跨頁，
         // 表格整張放進自身帶高，超出部分由頁首自然向下延伸——重疊風險見模組注）。
