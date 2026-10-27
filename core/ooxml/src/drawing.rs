@@ -584,6 +584,20 @@ fn is_vml_shape(name: &[u8]) -> bool {
     )
 }
 
+/// K4d：吞沒幀閉合標籤查表（`is_vml_shape` 同族）——run 外裸 shape 整棵
+/// 跳過時 `skip_tag` 需要與 Start 配對的靜態閉合名。非 shape 名 → None。
+fn vml_shape_close(name: &[u8]) -> Option<&'static [u8]> {
+    Some(match name {
+        b"shape" => b"shape",
+        b"rect" => b"rect",
+        b"oval" => b"oval",
+        b"line" => b"line",
+        b"roundrect" => b"roundrect",
+        b"group" => b"group",
+        _ => return None,
+    })
+}
+
 /// K4c：填色／描邊／框線寬的字串→色值共用口徑（VML 與 DrawingML 落點同
 /// 一函數；首見為準由呼叫端把關）。
 fn vml_attr_color(attrs: &quick_xml::events::BytesStart, key: &[u8]) -> Option<u32> {
@@ -791,6 +805,13 @@ struct DrawingParser {
     drawing_depth: usize,
     pict_depth: usize,
     shape_depth: usize,
+    /// K4d（E2）：進行中 `w:r` 包圍深度——LO 對 VML 圖形的繪製開關**唯一**是
+    /// 「`w:pict` 是否為 `w:r` 子節點」（k5-diag §1.3 變體實驗：錯置 pict＋
+    /// wrap/absolute 照樣消失；合法包 run 後任何 wrap 都照畫）。`run_depth
+    /// == 0` 的 pict／裸 shape 整棵跳過（框、Rule、框內文字發射路徑同受此閂）。
+    /// 自閉合 `w:r` 不計（比照 `p_count` 口徑）；`w:ins`／`w:hyperlink` 包 run
+    /// （修訂圖／連結圖的 Word 正規產出）天然涵蓋——計的是祖先 run，非父節點。
+    run_depth: usize,
     /// 進行中的 DrawingML 候選（與 inline/anchor 閉合配對）。
     graphic: Option<Box<Pending>>,
     /// 進行中的 VML 累積（pict 或裸 shape）。
@@ -804,6 +825,10 @@ struct DrawingParser {
     txbx_depth: usize,
     /// `mc:AlternateContent` 巢狀快照（錯置標籤不致 fb 卡死，同主解析器）。
     ac_stack: Vec<usize>,
+    /// K4d 防過抑回塞鎖（照 L2-cellruns `L2_BUGGY` 先例）：`K4D_BUGGY=1` 時
+    /// 閂退化為「run 與非 run 都採納」——紅燈 1（錯置 pict 消失）必須轉紅。
+    /// 只在 `new()` 讀一次，熱路徑零 env 查詢。
+    buggy: bool,
 }
 
 impl DrawingParser {
@@ -815,12 +840,14 @@ impl DrawingParser {
             drawing_depth: 0,
             pict_depth: 0,
             shape_depth: 0,
+            run_depth: 0,
             graphic: None,
             vml: None,
             skip_tag: None,
             fb: 0,
             txbx_depth: 0,
             ac_stack: Vec::new(),
+            buggy: std::env::var("K4D_BUGGY").is_ok(),
         }
     }
 
@@ -1027,6 +1054,13 @@ impl DrawingParser {
                 self.skip_tag = Some((tag, depth + 1));
             }
             return;
+        }
+
+        // ---- K4d：`w:r` 包圍計數（E2 閂輸入；先於 VML/DrawingML 各分支）。
+        // 自閉合 `w:r`（Empty 事件）不計，比照 `p_count` 口徑；`w:ins`／
+        // `w:hyperlink` 等 run-level 容器不特判——計的是祖先 run，非父節點。----
+        if name == b"r" && !empty {
+            self.run_depth += 1;
         }
 
         // ---- 段落計數（三解析器同口徑；自閉合 w:p 不算；K4e2：框內段落不計）----
@@ -1274,20 +1308,36 @@ impl DrawingParser {
                 self.graphic = Some(Box::new(p));
             }
             b"pict" if !empty => {
-                self.pict_depth += 1;
-                if self.vml.is_none() {
-                    self.vml = Some(Box::new(Pending::new(self.cur_para(), self.tc_depth > 0)));
+                // K4d（E2）：錯置 pict（非 `w:r` 子孫）整棵吞沒——LO 唯一繪製
+                // 開關＝run 包圍（§1.5 C/G：合法包 run 後任何 wrap 都照畫，
+                // 故閂只認 run 包圍，不順手加 wrap/absolute 條件）。
+                if self.run_depth > 0 || self.buggy {
+                    self.pict_depth += 1;
+                    if self.vml.is_none() {
+                        self.vml = Some(Box::new(Pending::new(self.cur_para(), self.tc_depth > 0)));
+                    }
+                } else {
+                    self.skip_tag = Some((b"pict", 0));
                 }
             }
             n if is_vml_shape(n) && !empty => {
                 // 裸 VML shape（Word OLE 常態：w:object 下 v:shape 無 pict 包）。
-                self.shape_depth += 1;
-                if self.vml.is_none() {
-                    let (w, h) = vml_style_wh(attr_local(e, b"style").as_deref());
-                    let mut p = Pending::new(self.cur_para(), self.tc_depth > 0);
-                    p.w = w;
-                    p.h = h;
-                    self.vml = Some(Box::new(p));
+                // K4d：同閂——run 外裸 shape 照樣吞沒（corpus 全數在 run 內，
+                // 零擾動；處方依 k5-diag §1.5 卡面，勿自行放寬）。
+                let Some(close) = vml_shape_close(n) else {
+                    return;
+                };
+                if self.run_depth > 0 || self.buggy {
+                    self.shape_depth += 1;
+                    if self.vml.is_none() {
+                        let (w, h) = vml_style_wh(attr_local(e, b"style").as_deref());
+                        let mut p = Pending::new(self.cur_para(), self.tc_depth > 0);
+                        p.w = w;
+                        p.h = h;
+                        self.vml = Some(Box::new(p));
+                    }
+                } else {
+                    self.skip_tag = Some((close, 0));
                 }
             }
             b"tc" if !empty => self.tc_depth += 1,
@@ -1538,6 +1588,12 @@ impl DrawingParser {
                 }
             }
             return;
+        }
+
+        // ---- K4d：`w:r` 包圍計數閉合（與 Start 配對；fb／吞沒幀內 Start 未
+        // 計、此處同不減——兩側早退點同構，深度必平衡）。----
+        if name == b"r" {
+            self.run_depth = self.run_depth.saturating_sub(1);
         }
 
         // ---- 儲存格邊界（in_cell 旗標在候選建立時已定格，閉合只管深度）----
@@ -2024,6 +2080,189 @@ mod tests {
             r##"<w:p><w:r><w:pict><v:shape xmlns:v="v" type="#_x0000_t202" style="width:120pt;height:60pt"><v:textbox>w:txbxContent 文字</v:textbox></v:shape></w:pict></w:r></w:p>"##,
         );
         assert!(read_images(xml.as_bytes()).is_empty());
+    }
+
+    // ---- K4d（E2）：錯置 w:pict 抑制——LO 繪製開關唯一＝`w:r` 包圍 ----
+
+    /// 紅燈 1（parser 層）：`w:pict` 直接掛 `w:p`（錯置 OOXML，實據
+    /// sdt_vml_textbox）→ 整棵不採納（框、框內文字發射路徑同消失）。
+    #[test]
+    fn misplaced_pict_direct_under_para_not_emitted() {
+        let xml = doc(
+            r##"<w:p><w:pict><v:rect xmlns:v="v" style="width:200pt;height:60pt" fillcolor="#FFFFCC"><v:textbox><w:txbxContent><w:p><w:r><w:t>VML 文字框內容</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect></w:pict></w:p>"##,
+        );
+        let imgs = read_images(xml.as_bytes());
+        assert!(
+            imgs.is_empty(),
+            "錯置 pict（非 w:r 子孫）LO 整棵忽略不畫，我方不得多發：{imgs:?}"
+        );
+        // 宿主段仍照常佔槽（抑制的是圖形，不是段落計數口徑）。
+        assert_eq!(count_paras(xml.as_bytes()), 1);
+    }
+
+    /// 正向對照（變體 A）：同一 pict 包進 `w:r` → 照常採納（閂只認 run 包圍）。
+    #[test]
+    fn same_pict_inside_run_still_emitted() {
+        let xml = doc(
+            r##"<w:p><w:r><w:pict><v:rect xmlns:v="v" style="width:200pt;height:60pt" fillcolor="#FFFFCC"><v:textbox><w:txbxContent><w:p><w:r><w:t>VML 文字框內容</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect></w:pict></w:r></w:p>"##,
+        );
+        let imgs = read_images(xml.as_bytes());
+        assert_eq!(
+            imgs.len(),
+            1,
+            "合法包 run 的 pict 照發（K4c-rect 語義不動）"
+        );
+        assert_eq!((imgs[0].w_pt, imgs[0].h_pt), (200.0, 60.0));
+        assert_eq!(imgs[0].fill_argb, Some(0xFF_FF_FF_CC));
+        assert_eq!(imgs[0].txbx_texts, vec!["VML 文字框內容".to_string()]);
+    }
+
+    /// §1.5 C/G 鐵證的 parser 側對照：合法包 run 後，任何 wrap／absolute 形態
+    /// 都照樣採納——閂**不得**順手加 wrap/absolute 條件。
+    #[test]
+    fn wrapped_or_absolute_pict_in_run_unaffected() {
+        let wrap = doc(
+            r##"<w:p><w:r><w:pict><v:rect xmlns:v="v" style="width:200pt;height:60pt"><w10:wrap xmlns:w10="w" type="none"/><v:textbox><w:txbxContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect></w:pict></w:r></w:p>"##,
+        );
+        assert_eq!(
+            read_images(wrap.as_bytes()).len(),
+            1,
+            "wrap=none 包 run 照發（LO §1.3 B：dr=5）"
+        );
+        let abs = doc(
+            r##"<w:p><w:r><w:pict><v:rect xmlns:v="v" style="position:absolute;width:200pt;height:60pt"><v:textbox><w:txbxContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect></w:pict></w:r></w:p>"##,
+        );
+        assert_eq!(
+            read_images(abs.as_bytes()).len(),
+            1,
+            "position:absolute 包 run 照發（LO §1.3 C：dr=5）"
+        );
+    }
+
+    /// 錯置 pict 加 wrap（變體 D）：LO 照樣消失——閂不認 wrap 救錯置。
+    #[test]
+    fn misplaced_pict_with_wrap_still_suppressed() {
+        let xml = doc(
+            r##"<w:p><w:pict><v:rect xmlns:v="v" style="width:200pt;height:60pt"><w10:wrap xmlns:w10="w" type="none"/><v:textbox><w:txbxContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect></w:pict></w:p>"##,
+        );
+        assert!(
+            read_images(xml.as_bytes()).is_empty(),
+            "錯置＋wrap 照樣抑制（§1.3 D 變體：LO dr=0）"
+        );
+    }
+
+    /// run 外裸 `v:shape`（無 pict 包）同閂：錯置裸 shape 不採納；包 run 的
+    /// OLE 常態（`w:object` 下裸 shape）零擾動。
+    #[test]
+    fn bare_shape_outside_run_suppressed_inside_run_ok() {
+        let bad = doc(
+            r##"<w:p><v:shape xmlns:v="v" style="width:50pt;height:40pt"><v:imagedata xmlns:r="r" r:id="rId4"/></v:shape></w:p>"##,
+        );
+        assert!(
+            read_images(bad.as_bytes()).is_empty(),
+            "run 外裸 shape＝無 LO 繪製依據，不採納"
+        );
+        let ok = doc(
+            r##"<w:p><w:r><w:object><v:shape xmlns:v="v" type="#_x0000_t75" style="width:50pt;height:40pt"><v:imagedata xmlns:r="r" r:id="rId4"/></v:shape></w:object></w:r></w:p>"##,
+        );
+        assert_eq!(
+            read_images(ok.as_bytes()).len(),
+            1,
+            "OLE 裸 shape 常態（run 內）零擾動"
+        );
+    }
+
+    /// 巢狀容器：`w:ins` 包 run（修訂圖的 Word 正規產出）——計的是祖先 run，
+    /// 非直接父節點，照發。
+    #[test]
+    fn pict_under_ins_in_run_emitted() {
+        let xml = doc(
+            r##"<w:p><w:ins w:id="1" w:author="a"><w:r><w:pict><v:rect xmlns:v="v" style="width:30pt;height:20pt"><v:textbox><w:txbxContent><w:p><w:r><w:t>t</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect></w:pict></w:r></w:ins></w:p>"##,
+        );
+        assert_eq!(
+            read_images(xml.as_bytes()).len(),
+            1,
+            "w:ins>w:r>pict：run 包圍成立照發"
+        );
+    }
+
+    /// 同段先有正常 run 後接錯置 pict：pict 仍在 run 外（`</w:r>` 已收）→ 抑制。
+    #[test]
+    fn pict_after_closed_run_suppressed() {
+        let xml = doc(
+            r##"<w:p><w:r><w:t>HOSTRUN</w:t></w:r><w:pict><v:rect xmlns:v="v" style="width:200pt;height:60pt"><v:textbox><w:txbxContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect></w:pict></w:p>"##,
+        );
+        assert!(
+            read_images(xml.as_bytes()).is_empty(),
+            "變體 E 口徑：同段有文字 run 但 pict 不在 run 內＝照樣抑制"
+        );
+    }
+
+    /// 防過抑回塞鎖（紅燈 2）：buggy 態（`K4D_BUGGY=1` 或欄位直設）把閂退化為
+    /// 「run 與非 run 都採納」時，錯置臂必須重新採納（紅燈 1 轉紅）。
+    /// 本測試不設行程 env（避免汙染平行執行緒）：直設欄位自證 buggy 路徑。
+    #[test]
+    fn buggy_lock_adopts_misplaced_pict() {
+        use quick_xml::events::Event;
+        let xml = r#"<w:body><w:p><w:pict><v:rect xmlns:v="v" style="width:200pt;height:60pt"><v:textbox><w:txbxContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect></w:pict></w:p></w:body>"#;
+        let mut p = DrawingParser::new();
+        p.buggy = true;
+        let mut reader = quick_xml::Reader::from_str(xml);
+        loop {
+            match reader.read_event() {
+                Ok(Event::Eof) | Err(_) => break,
+                Ok(Event::Start(e)) => {
+                    let n = e.local_name().as_ref().to_vec();
+                    p.on_start(&n, false, &e);
+                }
+                Ok(Event::Empty(e)) => {
+                    let n = e.local_name().as_ref().to_vec();
+                    p.on_empty(&n, &e);
+                }
+                Ok(Event::Text(t)) => {
+                    if let Ok(s) = t.unescape() {
+                        p.on_text(&s);
+                    }
+                }
+                Ok(Event::End(e)) => {
+                    let n = e.local_name().as_ref().to_vec();
+                    p.on_end(&n);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            p.out.len(),
+            1,
+            "buggy 態必須重新採納錯置 pict（否則紅燈 2 假綠）"
+        );
+        // 同款 XML 於修態（run_depth==0）＝空（與紅燈 1 互鎖）。
+        let mut fixed = DrawingParser::new();
+        let mut reader = quick_xml::Reader::from_str(xml);
+        loop {
+            match reader.read_event() {
+                Ok(Event::Eof) | Err(_) => break,
+                Ok(Event::Start(e)) => {
+                    let n = e.local_name().as_ref().to_vec();
+                    fixed.on_start(&n, false, &e);
+                }
+                Ok(Event::Empty(e)) => {
+                    let n = e.local_name().as_ref().to_vec();
+                    fixed.on_empty(&n, &e);
+                }
+                Ok(Event::Text(t)) => {
+                    if let Ok(s) = t.unescape() {
+                        fixed.on_text(&s);
+                    }
+                }
+                Ok(Event::End(e)) => {
+                    let n = e.local_name().as_ref().to_vec();
+                    fixed.on_end(&n);
+                }
+                _ => {}
+            }
+        }
+        assert!(fixed.out.is_empty(), "修態同款 XML 必須抑制");
     }
 
     #[test]
