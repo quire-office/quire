@@ -576,6 +576,7 @@ pub fn build_images(
                 h_pt: im.h_pt,
                 bands,
                 anchor,
+                page_pinned: im.page_pinned,
             }
         })
         .collect();
@@ -690,6 +691,7 @@ mod tests {
             txbx_inset: None,
             txbx_vertical: false,
             txbx_table: Vec::new(),
+            page_pinned: false,
         }
     }
 
