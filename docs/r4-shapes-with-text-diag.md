@@ -2,6 +2,7 @@
 
 - 卡：t_738df8ca（report-only，零引擎觸碰；本文為本卡唯一新檔）
 - 日期：2026-10-27；引擎區間實測：`fb06767..75d3648` 全 commits（31+基線，逐檔實跑）
+  ＋ run2 補測現態 main=`7ab8604`（R3，見 §1.3/§4）
 - 檔：`corpus/poi/test-data_document_shapes-with-text.docx`（11 段：1 宿主段掛 7 錨定圖，5 框有字）
 
 ---
@@ -30,6 +31,12 @@
    - `break_lines` 本身**無錯**：實測餵真實框寬時斷行與 LO 逐詞一致（§3.3）。
 3. **修復路徑已量化**：R1＋R2 全修後實測 **content=1.000 / layout=0.985**；
    單修 R1 只回 0.655、單修 R2 得 0.992——**R1/R2 必須同卡共修**（見 §4/§5）。
+4. **現態 main=`7ab8604`（R3，10-27 13:42 合併）對本檔零影響（run2 補測）**：
+   實測 content=0.650 / layout=0.628，display list（45 項：Text×10＋Rect×7＋Rule×28）
+   與 `75d3648` **逐位元組相同**——R1/R2 未被 R3 部分治癒也未被加重，§5 處方不動。
+   機制：本檔 7 圖走 `mc:Choice Requires="wps"`（`wp:anchor`×7，K4e 前就已浮動化），
+   R3 的 `apply_vml_position` 只吃 VML `position:absolute`（fdo76591/n751077 語料，
+   見 commit message「無 position:absolute 的 VML…一概不動」），本檔觸不到。
 
 ---
 
@@ -72,6 +79,21 @@
 `b6b3dc5 → 591bed8` 是本檔唯一的一次分數跳變（0.849→0.650），**單點鎖死 K4e2**。
 K4e2 當時的「LO 儀表板 seed42 零劣化」結論對本檔不成立——seed 樣本未覆蓋或
 總平均稀釋，非儀表板口徑錯誤。
+
+### 1.3 run2 補測：現態 main 前推至 `7ab8604`（R3）
+
+| commit | 日期 | 內容分 | 版面分 | 說明 |
+|---|---|---:|---:|---|
+| 75d3648（卡面 tip） | 10-27 11:26 | 0.650 | 0.628 | §1.1 全鏈終點 |
+| **7ab8604（R3，現態 origin/main）** | 10-27 13:42 | **0.650** | **0.628** | display list 45 項逐位元組相同（`diff_r3.py` 實測） |
+
+R3（採納 VML `position:absolute` 絕對定位＋mso-position 頁面釘定）的打擊面是
+「VML 裸 `position:absolute` 未解析」類檔（fdo76591/n751077，N1 卡 §2.1 語料）。
+本檔 7 圖全走 `mc:Choice Requires="wps"`＋`wp:anchor`（DrawingML 浮動路徑），
+VML 分支只在 `mc:Fallback` 內——R3 的 `apply_vml_position` 明確不動無
+`position:absolute` 宣告的 VML、更不觸 `wp:anchor` 路徑，故零擾動。
+**含義**：R1/R2 處方（§5）在 R3 之上依然成立、無需改寫；修復卡直接以
+`7ab8604` 為基線開工即可。
 
 ---
 
@@ -182,6 +204,7 @@ R4PROBE runs: t="An ellipse with text inside" nruns=1
 |---|---:|---:|---|
 | 基線 b6b3dc5（實測） | 0.849 | 0.829 | 5 行、LO 序（平化正文流） |
 | 現況 75d3648（實測） | 0.650 | 0.628 | mid-word＋錯序＋錯色 |
+| **現態 7ab8604/R3（run2 實測）** | **0.650** | **0.628** | 與 75d3648 逐位元組同（R3 零擾動，§1.3） |
 | 只修 R1（run 錯位） | 0.655 | 0.641 | 斷行正常但 y 序仍錯 → **幾乎白修** |
 | 只修 R2（順序，仍 mid-word） | 0.992 | 0.856 | 順序即主兇的實證 |
 | R1＋R2（文件序） | 0.849 | 0.832 | 回到基線水位（楕圓/Where 斷行微差殘留） |
@@ -235,6 +258,10 @@ git -C ~/projects/quire worktree add --detach $S/worktrees/base fb06767
 - `step5_backbisect.py` — 前追 bisect（`scores/back.jsonl`）
 - `step7_lo_words.py` — LO span/word 級實讀（§2 表來源）
 - `step8_decompose.py` / `step9_scenarios.py` — 分數拆解（§4 表來源）
+- `step10_r3.py` — run2 現態補測（`scores/r3.jsonl`；worktree
+  `worktrees/r3` 建自 `git worktree add --detach … 7ab8604`）
+- `diff_r3.py` — display list 逐位元組對拍（75d3648 `dump_cur.json` vs
+  7ab8604 `dump_7ab8604.json`，§1.3 實據）
 - `worktrees/cur/core/layout/examples/r4_probe.rs` — 斷行器自證（§3.3）
 - 引擎埋點 diff（§3.4）：`worktrees/cur` 內 `core/engine-api/src/lib.rs`
   （R4PROBE eprintln，僅 scratch）
