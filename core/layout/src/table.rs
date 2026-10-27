@@ -170,6 +170,18 @@ pub struct TableInput {
     /// `w:tblCellMar`。
     pub cell_margins: Option<CellMarginInput>,
     pub rows: Vec<RowInput>,
+    /// M1-band（簇 A）：帶尺細化後「格內一行文字」應佔的帶數＝宣告行高的
+    /// 等分份數（見 engine 側 `refine_band_h`）。細尺下若仍按「一行＝一帶」
+    /// 堆疊，格內文字會塌進 1/n 高度（patho_table_across_pages_b 30.8pt 列
+    /// 被壓成 5.1pt、52 列塞進 1 頁的實測回歸）。舊消費者（goldens／測試／
+    /// 未細化檔）serde default＝0→讀取側夾 1＝舊行為逐位元組不變。
+    #[serde(default, skip_serializing_if = "line_ref_is_default")]
+    pub line_ref_bands: u32,
+}
+
+/// serde 跳過條件：0/1（預設值）不寫入——既有快照/位元組輸出零位移。
+fn line_ref_is_default(v: &u32) -> bool {
+    *v <= 1
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +388,9 @@ pub struct TableLayout {
     row_base: Vec<u32>,
     pub total_bands: u32,
     line_h: f32,
+    /// M1-band：格內一行文字所佔帶數（=`TableInput::line_ref_bands` 夾 ≥1）。
+    /// 粗尺（未細化）＝1，與舊「一行＝一帶」口徑逐位元組相同。
+    line_ref: u32,
 }
 
 impl TableLayout {
@@ -574,7 +589,8 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                                 size_pt: *size_pt,
                             });
                         }
-                        cur += 1;
+                        // M1-band：細尺下一行文字佔 lref 帶（粗尺 lref=1＝舊行為）。
+                        cur += tl.line_ref;
                     }
                     // bands 可多於 lines（空段佔帶）：游標補到 block 尾。
                     cur = cur.max(start + *bands);
@@ -684,6 +700,8 @@ pub fn layout_table(
     depth: usize,
 ) -> TableLayout {
     let line_h = line_h.max(1.0);
+    // M1-band：格內一行文字的帶數（細尺下＝宣告行高等分份數；粗尺＝1＝舊行為）。
+    let lref = input.line_ref_bands.max(1);
     let avail_w = avail_w.max(1.0);
     let cols = resolve_columns(input, avail_w);
     let width = cols.iter().sum::<f32>().max(1.0);
@@ -738,7 +756,7 @@ pub fn layout_table(
             if cell.blocks.is_empty() {
                 blocks.push(CellBlockGeom::Text {
                     lines: break_lines("", inner_w, &cell_m),
-                    bands: 1,
+                    bands: lref,
                     size_pt: cell.text_size_pt,
                 });
             } else {
@@ -756,7 +774,7 @@ pub fn layout_table(
                                 });
                             } else {
                                 let ls = break_lines(t, inner_w, &cell_m);
-                                let bands = ls.len().max(1) as u32;
+                                let bands = ls.len().max(1) as u32 * lref;
                                 blocks.push(CellBlockGeom::Text {
                                     lines: ls,
                                     bands,
@@ -838,6 +856,7 @@ pub fn layout_table(
         row_base: Vec::new(),
         total_bands: 0,
         line_h,
+        line_ref: lref,
     };
     compute_row_heights(&mut tl, input);
     tl.rebuild_base();
@@ -936,12 +955,15 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
 /// trHeight atLeast 取大、exact 以宣告為準；vMerge block 不足額平均分給 continue 列。
 fn compute_row_heights(tl: &mut TableLayout, input: &TableInput) {
     let line_h = tl.line_h;
+    let line_ref = tl.line_ref.max(1);
     for (ri, rg) in tl.rows.iter_mut().enumerate() {
         // 自然帶高仍取非 continue 格的最大 content_bands（分頁容量）；
         // 精確高度另取「content_bands×line_h＋格餘量」的最大值，差額記在
         // 列的 extra_pt——垂直邊距因此以 pt 貢獻列高，不再被 ceil 撐大。
-        let mut natural = 1u32;
-        let mut natural_pt = line_h;
+        // M1-band：自然地板＝**一行文字**（細尺下＝line_ref 帶，非 1 帶；
+        // 粗尺 line_ref=1 時與舊值逐位元組相同）。
+        let mut natural = line_ref;
+        let mut natural_pt = line_ref as f32 * line_h;
         for g in rg
             .cells
             .iter()

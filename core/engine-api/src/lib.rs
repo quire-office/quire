@@ -223,7 +223,7 @@ impl Engine {
         // 宣告行高的 ≤2.8pt 最細等分，宣告行高本身恰佔整數帶（零誤差），
         // 其餘高度量化誤差 ≤2.8pt。零宣告檔（如 k5 防風暴樁）維持
         // 12pt×1.4＝16.8pt 粗尺——零宣告檔案逐位元組不變。
-        let grid_line_h = refine_band_h(
+        let (grid_line_h, _line_ref_bands) = refine_band_h(
             resolve_line_h_pt(def_size, doc_line),
             doc_size.is_some() || doc_line.is_some(),
         );
@@ -1922,14 +1922,16 @@ fn resolve_line_h_pt(size_pt: f32, line: Option<LineSpacing>) -> f32 {
 /// 縮到 ≤2.8pt（K5-diag §2.6：15pt 表格列在 12.65pt 粗帶上吃 2 帶＝25.3pt、
 /// LO 15.0，×1.69 過扣）。宣告行高本身佔恰整數帶（n 等分零誤差）；未宣告
 /// 檔（呼叫端 gate）原值返還＝12pt×1.4 粗尺逐位元組不變。
-fn refine_band_h(declared_line_h: f32, declared: bool) -> f32 {
+/// 回傳（細化帶尺, n）：n＝宣告行高的等分份數＝**一行文字在細尺下應佔的
+/// 帶數**（表格格內文字／頁首尾行等「一行＝一帶」假設的補償因子；未細化＝1）。
+fn refine_band_h(declared_line_h: f32, declared: bool) -> (f32, u32) {
     if !declared || !declared_line_h.is_finite() || declared_line_h <= 0.0 {
-        return declared_line_h;
+        return (declared_line_h, 1);
     }
     // n＝把宣告行高等分成「每帶 ≤2.8pt」所需的最少份數（宣告值＝n×帶尺，
     // 精確整除由 f32 乘回保尺度一致）。
     let n = (declared_line_h / BAND_REFINE_MAX_PT).ceil().max(1.0);
-    declared_line_h / n
+    (declared_line_h / n, n as u32)
 }
 
 /// 帶尺細化上限（pt）：K5-diag §2.6 處方「帶尺細化 ≤2.8pt」。
