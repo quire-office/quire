@@ -789,7 +789,23 @@ impl Engine {
         // （F3 重構）PageInfo 構造抽成 page_infos()，尾註支路同用；
         // F2c 的 capacity_bands 錨定已併入該函式。
         let info = self.page_infos(&full);
-        let lay = footnotes::layout_notes(
+        // R7：表格段→掛載頁 對位表（格內錨點在流行程找不到行的改道鏈；
+        // 槽序＝`table_slots()` 序＝`FlowItem::Table{slot}`／`TablePlacement::slot`
+        // 同一命名空間，錨點段索引＝eff_paragraphs 段序＝layout texts 段序）。
+        let slots = self.layout.table_slots();
+        let n_paras = self.eff_paragraphs().len();
+        let mut slot_of_para = vec![usize::MAX; n_paras];
+        let header_of_slot: Vec<usize> = slots
+            .iter()
+            .enumerate()
+            .map(|(si, t)| {
+                for p in t.para_start.min(n_paras)..t.para_end.min(n_paras) {
+                    slot_of_para[p] = si;
+                }
+                t.para_start
+            })
+            .collect();
+        let lay = footnotes::layout_notes_with_tables(
             pages,
             &info,
             &self.note_anchors,
@@ -798,6 +814,8 @@ impl Engine {
             body_size,
             &self.mark_styles,
             rounds,
+            &slot_of_para,
+            &header_of_slot,
         );
         // 此處回傳的是**計算值**（下一輪該套的預留）——收斂判準就比這個值；
         // 「發射↔分頁自洽」由呼叫端（compute_footnotes 定案點）保證。
