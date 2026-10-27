@@ -87,6 +87,38 @@ pub struct LayoutParams {
     pub endnote_reserves_pt: Vec<f32>,
 }
 
+/// `w:cols` 分欄宣告（ECMA-376 §17.18.6／§17.18.7）——`sectpr::SectionCols`
+/// 的 layout 側鏡像型別（分層鐵律：layout 不依賴 ooxml，engine 接線處逐欄
+/// 對應，與 [`SectionGeometry`] 雙定義同款模式）。`num <= 1`＝單欄——既有
+/// 路徑逐位元組零擾動的閘門值。
+///
+/// `Copy` 鐵律：隨 [`SectionGeometry`] 四處複製，禁 Vec——逐欄值以頭 4 欄
+/// 固定陣列承載（corpus 實見 ≤2 欄；超標欄位走未宣告≈平分，記錄在案）。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SectionCols {
+    /// `w:cols/@w:num`（缺＝0＝未宣告，視同單欄；0/1 同義）。
+    pub num: u32,
+    /// `w:cols/@w:space`（pt；缺＝36pt＝720 twip，§17.18.6 預設）。
+    pub space_pt: f32,
+    /// 頭 4 欄 `w:col/@w:w`（pt；None＝該欄未宣告 → 平分近似）。
+    pub col_w_pt: [Option<f32>; 4],
+    /// 頭 4 欄 `w:col/@w:space`（pt；None＝沿用 `space_pt`；§17.18.7：
+    /// 該欄**右側**距）。
+    pub col_space_pt: [Option<f32>; 4],
+}
+
+impl Default for SectionCols {
+    /// 未宣告態：單欄、間距預設 720 twip＝36pt（§17.18.6）、無逐欄宣告。
+    fn default() -> Self {
+        Self {
+            num: 0,
+            space_pt: 720.0 / 20.0,
+            col_w_pt: [None; 4],
+            col_space_pt: [None; 4],
+        }
+    }
+}
+
 /// 頁面幾何（來自 section；pt）。型別定義在 layout 層——版面是唯一消費者，
 /// ooxml 層只負責把 sectPr 讀成同構資料，engine 層對應（分層：layout 不依賴 ooxml）。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -101,6 +133,92 @@ pub struct SectionGeometry {
     pub landscape: bool,
     /// `w:type/@w:val="continuous"`：同頁續排，section 邊界不強制換頁。
     pub continuous: bool,
+    /// `w:cols` 分欄宣告（L1-columns）。serde default＝舊快照無此欄視同
+    /// 未宣告（單欄）——既有輸出逐位元組零擾動的守門。
+    #[serde(default)]
+    pub cols: SectionCols,
+}
+
+/// 分欄版面幾何（L1-columns）：欄寬＋欄起點 x（**版心左緣為原點**，pt）。
+/// 只有 `cols.num >= 2` 才構造（None＝單欄，呼叫端走原路徑）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColLayout {
+    /// 欄數（2..=4）。
+    pub n: usize,
+    /// 各欄寬（pt）。
+    pub col_w: [f32; 4],
+    /// 各欄起點 x（pt，自版心左緣；＝Σ(前欄寬＋前欄右距)）。
+    pub col_x: [f32; 4],
+}
+
+/// 由 section 幾何構造分欄模型（L1-columns；ECMA-376 §17.18.6）。
+///
+/// 兩種模式（記錄在案的近似口徑）：
+/// - **宣告模式**：頭 n 欄全宣告 `@w:w` 且 Σ欄寬＋Σ欄距 ≤ 版心寬（容忍 2%
+///   四捨五入誤差）→ 逐欄信任宣告寬，x＝Σ(前欄寬＋`col_space_pt` 右距)。
+/// - **平分模式**：其餘一切（未宣告 w、`equalWidth="0"` 但宣告寬總和爆版心
+///   的版面戲法檔如 tdf103975、超頭 4 欄）→ `w=(版心−(n−1)×space)/n` 等寬，
+///   x＝k×(w+space)。LO 對不等欄寬同走等寬近似，本卡與之對齊。
+///
+/// 斷行寬取**首欄寬**（回流自第一欄起，Word 首欄先填；等寬宣告下與逐欄無差別）。
+pub fn col_layout(geo: &SectionGeometry) -> Option<ColLayout> {
+    let n = (geo.cols.num as usize).clamp(1, 4);
+    if n < 2 {
+        return None;
+    }
+    let content_w = (geo.page_w_pt - geo.margin_left_pt - geo.margin_right_pt).max(1.0);
+    let gap = geo.cols.space_pt.max(0.0);
+    // 宣告模式判定的空間和：相鄰欄間距用 col_space_pt[i]（缺＝space_pt）。
+    let declared_w = |i: usize| geo.cols.col_w_pt[i];
+    let declared_gap = |i: usize| geo.cols.col_space_pt[i].unwrap_or(gap).max(0.0);
+    let all_declared = (0..n).all(|i| declared_w(i).is_some());
+    if all_declared {
+        let sum: f32 = (0..n)
+            .map(declared_w)
+            .map(|w| w.unwrap_or(0.0))
+            .sum::<f32>()
+            + (0..n.saturating_sub(1)).map(declared_gap).sum::<f32>();
+        if sum <= content_w * 1.02 {
+            let mut out = ColLayout {
+                n,
+                col_w: [content_w; 4],
+                col_x: [0.0; 4],
+            };
+            let mut x = 0.0;
+            for i in 0..n {
+                out.col_w[i] = declared_w(i).unwrap_or(0.0).max(1.0);
+                out.col_x[i] = x;
+                x += out.col_w[i] + declared_gap(i);
+            }
+            return Some(out);
+        }
+    }
+    // 平分模式。
+    let w = ((content_w - (n - 1) as f32 * gap) / n as f32).max(1.0);
+    let mut out = ColLayout {
+        n,
+        col_w: [w; 4],
+        col_x: [0.0; 4],
+    };
+    for i in 0..n {
+        out.col_x[i] = i as f32 * (w + gap);
+    }
+    Some(out)
+}
+
+/// 段落 i 的**斷行寬**：多欄 section＝首欄寬，單欄／無 section 表＝版心寬。
+/// `num <= 1` 時與 `LayoutParams::content_w_pt()` 逐位元組等價（零擾動閘門）。
+/// 公開給 engine 接線（級聯烘焙的逐段可用寬必須與斷行寬同口徑）。
+pub fn section_break_w_pt(p: &LayoutParams, sections: &[SectionSpec], para: usize) -> f32 {
+    match sections.get(para) {
+        Some(s) => match col_layout(&s.geo) {
+            Some(cl) => cl.col_w[0],
+            None => {
+                LayoutParams::from_section(&s.geo, p.font_size_pt, p.line_spacing).content_w_pt()
+            }
+        },
+        None => p.content_w_pt(),
+    }
 }
 
 /// 逐段落清單的一項：段落所屬 section 的識別與幾何（engine 層由 sectPr 餵入）。
@@ -236,6 +354,10 @@ pub struct Line {
     /// 段落 run 邊界精確對位求交集；serde default 保持舊快照相容）。
     #[serde(default)]
     pub char_offset: usize,
+    /// 本行所屬**欄序**（L1-columns，0 起）。0＝首欄／單欄——既有行為零擾動。
+    /// 分欄 section 由 `pack_run` 依欄內 y 溢出回流時蓋章（先填滿欄、再換欄）。
+    #[serde(default)]
+    pub col: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -330,7 +452,7 @@ pub fn layout_paragraphs_with_breaks(
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            let content_w = section_params(p, sections, i).content_w_pt();
+            let content_w = section_break_w_pt(p, sections, i);
             let (lines, para_breaks) = break_para_lines(
                 t,
                 content_w,
@@ -410,7 +532,7 @@ pub fn layout_paragraphs_grid(
         .enumerate()
         .map(|(i, t)| {
             let size = grid.get(i).map_or(p.font_size_pt, |g| g.0);
-            let content_w = section_params(p, sections, i).content_w_pt();
+            let content_w = section_break_w_pt(p, sections, i);
             let m = TextMeasurer::new(size);
             let mut pl = ParagraphLayout {
                 para_index: i,
@@ -426,6 +548,10 @@ pub fn layout_paragraphs_grid(
 }
 
 /// 段落 i 所屬 section 的版面參數（字級/行距維持 `p`，頁面幾何來自 section）。
+/// L1-columns 起斷行寬統一走 [`section_break_w_pt`]（多欄 section＝首欄寬），
+/// 本函數只餘「整包參數」需求時可用；目前全倉庫無呼叫端——保留給後續需要
+/// 逐段完整參數（非僅寬度）的路徑，`allow(dead_code)` 標注守 clippy -D。
+#[allow(dead_code)]
 fn section_params(p: &LayoutParams, sections: &[SectionSpec], para: usize) -> LayoutParams {
     match sections.get(para) {
         Some(s) => LayoutParams::from_section(&s.geo, p.font_size_pt, p.line_spacing),
@@ -502,6 +628,7 @@ fn effective_section(p: &LayoutParams, sections: &[SectionSpec], para: usize) ->
                 margin_right_pt: p.margin(MARGIN_RIGHT),
                 landscape: false,
                 continuous: false,
+                cols: SectionCols::default(),
             },
         },
     }
@@ -688,7 +815,17 @@ struct PackState {
     /// 當前頁累積的圖片佔位（t_a1397522；flush 時移交 Page.images）。
     cur_images: Vec<PageImage>,
     /// 當前頁已佔行網格帶數（文字行＋表格帶）。
+    /// 分欄 section（L1-columns）下語義收窄為**當前欄**已佔帶數——欄高＝版心高，
+    /// 每欄各自從 0 起算（先填滿欄、再換欄）；單欄（`cols.num<=1`）語義與舊版
+    /// 逐位元組全等（頁級帶計數），零擾動守門。
     cur_used: u32,
+    /// 當前欄序（L1-columns，0 起）。單欄恆 0——既有路徑零擾動。
+    /// 換欄（欄內 y 溢出）時遞增；換頁／跨 section 邊界時歸 0。
+    cur_col: u8,
+    /// 跨欄項（表格／整幅圖，L1-columns）在各欄頂端共同吃掉的帶數：
+    /// 換欄時新欄起點＝本值（而非 0），避免跨欄項與後續欄文字重疊。
+    /// 單欄恆不被讀取——零擾動。
+    page_used: u32,
     cur_spec: Option<SectionSpec>,
     /// 本頁**頁首項**的 section（t_c1fb4c69 S1-1）：continuous 同頁混節時
     /// 末項會覆寫 cur_spec——頁的 section 必須按頁首項蓋章（titlePg／頁首
@@ -706,6 +843,8 @@ impl PackState {
             cur_tables: Vec::new(),
             cur_images: Vec::new(),
             cur_used: 0,
+            cur_col: 0,
+            page_used: 0,
             cur_spec: None,
             page_spec: None,
             page_start: (0, 0, 0),
@@ -910,6 +1049,10 @@ fn pack_run(
         out_starts.push(st.page_start);
         st.page_start = st.cursor;
         st.cur_used = 0;
+        // 換頁重置欄序與頁級跨欄計數（L1-columns）：新頁從第一欄起算
+        // （單欄恆 0＝舊行為）。
+        st.cur_col = 0;
+        st.page_used = 0;
         st.page_spec = None;
     };
 
@@ -1029,25 +1172,61 @@ fn pack_run(
         // continuous 邊界**不得**短路它們（協定只免「邊界強制換頁」一項）。
         // 帶數加算 saturating（S1-4 防呆）：垃圾 bands 不得在 debug 下溢出
         // panic（源頭守衛在 ooxml 轉換層，此處是 layout 側第二道閘）。
-        let cap_hard = st.cur_used >= cap as u32
-            || hard
-            || hard_after
+        // L1-columns 拆分：容量溢出（cap_only）與硬斷（hard/hard_after）分開——
+        // 多欄 section 下容量溢出優先「換欄」（先填滿欄、再換欄），硬斷照樣換頁。
+        // 本流項所屬 section 的分欄模型：None＝單欄——下面 col_break_now 恆
+        // false，本函數其餘路徑與舊版逐位元組全等（零擾動閘門）。
+        let cols = col_layout(&spec.geo);
+        let cap_only = st.cur_used >= cap as u32
             || (item_bands > 0
                 && st.cur_used > absorb_exemption
-                && st.cur_used.saturating_add(item_bands) > cap as u32);
+                && st.cur_used.saturating_add(item_bands) > cap as u32)
+            // 跨欄表格保護（L1-columns）：多欄下切片帶錨在頁級 `page_used`，
+            // 若其已達容量、再放會得 remain=0→切片空→表格整項被丟。此處先換頁
+            // 讓新頁從頂重放（單欄 item_bands 路徑＋cur_used<cap 恆真不受影響；
+            // 頁空時不 trigger——新頁 page_used=0 必然再過，無死循環）。
+            || (cols.is_some()
+                && matches!(&flow[fi], FlowItem::Table { .. })
+                && st.page_used.max(st.cur_used) >= cap as u32
+                && (st.cur_used > 0 || !st.cur_tables.is_empty() || !st.cur_images.is_empty()));
+        let cap_hard = cap_only || hard || hard_after;
+        // 本流項所屬 section 的分欄模型（L1-columns）：None＝單欄——下面
+        // col_break_now 恆 false，本函數其餘路徑與舊版逐位元組全等（零擾動閘門）。
+        let cols = col_layout(&spec.geo);
+        // 跨 section 邊界且非 continuous：邊界強制換頁（S1-1 既有語義），
+        // 欄位換不掉它；其餘容量溢出在有多餘欄時先換欄。
+        let section_force_page = st
+            .cur_spec
+            .is_some_and(|prev| prev.id != spec.id && !spec.geo.continuous);
+        let col_break_now = cap_only
+            && !hard
+            && !hard_after
+            && !page_break_before
+            && !section_force_page
+            && (st.cur_col as usize + 1) < cols.map_or(0, |c| c.n);
         let start_new = match st.cur_spec {
             // section 邊界：非 continuous 一律換頁（同尺寸也換）；continuous
-            // 只免邊界本身，容量已滿／硬斷照樣換頁（S1-1）。
+            // 只免邊界本身，容量已滿／硬斷照樣換頁（S1-1）。多欄 continuous
+            // 邊界下容量溢出由 `col_break_now` 先換欄吸收（欄是頁內位移）。
             Some(prev) if prev.id != spec.id => {
-                !spec.geo.continuous || cap_hard || page_break_before
+                (!spec.geo.continuous || cap_hard || page_break_before) && !col_break_now
             }
             // 顯式分頁（pageBreakBefore，t_5dfc8ac7）：段首行前一律換頁（純 flow
             // 輸入函數：增量復入、收斂比較皆決定性）。首項（None＝本頁尚無內容）
             // 不換頁——游標前已 flush，段本就從頁首起，無須空白頁。
             Some(_) if page_break_before => true,
-            Some(_) => cap_hard,
+            Some(_) => cap_hard && !col_break_now,
             None => false,
         };
+        if col_break_now {
+            // 換欄（L1-columns）：欄內 y 溢出 → 下一欄從版心頂重新計帶。
+            // 不 flush 頁、不動 cur_spec/page_spec、不推進 out_starts——
+            // 這是頁內位移，增量收斂鍵（頁起頭 FlowPos）不受影響。
+            // 起點＝`page_used`：跨欄項（表格／整幅圖）在**每一欄**頂端共同
+            // 吃掉的帶數（無跨欄項時恆 0＝經典「欄從頂起」回流）。
+            st.cur_col += 1;
+            st.cur_used = st.page_used;
+        }
         if start_new {
             fresh_page(out, out_starts, st);
             // 收斂檢查在 flush 後：新頁起頭（== 游標）對齊舊版面 ⇒ 往後可重用。
@@ -1075,7 +1254,13 @@ fn pack_run(
                 let before_b = para_before(*para, li);
                 let after_b = para_after(*para, li);
                 st.cur_used = st.cur_used.saturating_add(before_b);
-                st.cur.push(pls[*para].lines[li].clone());
+                {
+                    // 欄序蓋章（L1-columns）：本行落在當前欄。單欄恆 0（col 欄位
+                    // serde default＝0，既有輸出與快照逐位元組不變）。
+                    let mut l = pls[*para].lines[li].clone();
+                    l.col = st.cur_col;
+                    st.cur.push(l);
+                }
                 st.cur_bands.push(st.cur_used);
                 // 段落行按段行高量化佔帶（全域尺＝1，舊行為逐位元組不變）。
                 // saturating（t_5b391cfd S2／t_c1fb4c69 S1-4 同口徑）：病態段
@@ -1099,7 +1284,16 @@ fn pack_run(
                     st.cursor = (fi + 1, 0, 0);
                     continue;
                 }
-                let remain = cap.saturating_sub(st.cur_used as usize) as u32;
+                // 跨欄項（L1-columns）：表格佔滿版心寬＝跨欄近似（本卡從簡，
+                // 與 LO「欄內表格」有殘差，記錄在案）。多欄下切片放在**頁級**
+                // 帶 `page_used`（每一欄頂端共同讓位），並將當前欄壓到其下；
+                // 單欄 cols=None 時 place_band==cur_used——舊算式逐位元組全等。
+                let place_band = if cols.is_some() {
+                    st.page_used.max(st.cur_used)
+                } else {
+                    st.cur_used
+                };
+                let remain = cap.saturating_sub(place_band as usize) as u32;
                 let page_left = spec.geo.margin_left_pt;
                 let (mut frag, next, used) = tl.fragment(li, band, remain, false, page_left);
                 if used == 0 {
@@ -1108,14 +1302,15 @@ fn pack_run(
                 }
                 // 切片 y 蓋章：頁內絕對＝上邊界＋已佔帶數×行高。列內偏移由
                 // 繪製端累加 RowFrag.height_pt（切片內列序決定，不另存欄位）。
-                frag.y_pt = spec.geo.margin_top_pt + st.cur_used as f32 * line_h;
+                frag.y_pt = spec.geo.margin_top_pt + place_band as f32 * line_h;
                 st.cur_tables.push(TablePlacement {
                     slot: *slot,
                     anchor_para: tables[*slot].para_start,
-                    band: st.cur_used,
+                    band: place_band,
                     frag,
                 });
-                st.cur_used = st.cur_used.saturating_add(used); // 同 S2 守衛口徑
+                st.page_used = st.page_used.max(place_band).saturating_add(used); // 同 S2 守衛口徑
+                st.cur_used = st.cur_used.max(st.page_used); // 當前欄文字續排到表格之下
                 st.cursor = if next.0 >= tl.row_count() {
                     (fi + 1, 0, 0)
                 } else {
@@ -1127,14 +1322,25 @@ fn pack_run(
                 // 段落末行的下一帶；純圖段落（吸收）圖頂＝段落起始帶（Word
                 // 實態：圖就在那一行上，行高由圖撐起）。容量檢查在 start_new
                 // （放不下整塊已先換頁）。
+                // 跨欄近似（L1-columns，與表格同款從簡）：多欄下整幅置於頁級
+                // 帶，各欄頂端共同讓位。absorb（純圖段落）圖頂仍貼當前欄的
+                // 空行帶（圖就是那一行）。單欄路徑 top/bottom 與舊算式逐位元組全等。
                 let im = &images[*img];
                 let b = im.bands.max(1);
                 let absorb = absorb_slot(*img, fi);
-                let top = if absorb {
-                    // 圖頂＝段落起始帶：回退空行自身已計的帶數（全域尺＝1）。
-                    st.cur_used.saturating_sub(para_band(im.para))
+                let consumed = if absorb {
+                    b.saturating_sub(para_band(im.para))
                 } else {
-                    st.cur_used
+                    b
+                }; // 同 S2 守衛口徑
+                let (top, bottom) = if absorb {
+                    let t = st.cur_used.saturating_sub(para_band(im.para));
+                    (t, st.cur_used.saturating_add(consumed))
+                } else if cols.is_some() {
+                    let t = st.page_used.max(st.cur_used);
+                    (t, t.saturating_add(b))
+                } else {
+                    (st.cur_used, st.cur_used.saturating_add(b))
                 };
                 st.cur_images.push(PageImage {
                     para: im.para,
@@ -1142,13 +1348,10 @@ fn pack_run(
                     w_pt: im.w_pt,
                     h_pt: im.h_pt.min(b as f32 * line_h),
                 });
-                // 佔用：absorb＝max(圖帶, 空行帶)－空行帶（空行帶已由 Text 空行
-                // 計入）；非 absorb＝圖帶原額（段落另有實文，不共用帶）。
-                st.cur_used = st.cur_used.saturating_add(if absorb {
-                    b.saturating_sub(para_band(im.para))
-                } else {
-                    b
-                }); // 同 S2 守衛口徑
+                if cols.is_some() {
+                    st.page_used = st.page_used.max(bottom);
+                }
+                st.cur_used = st.cur_used.max(bottom); // 同 S2 守衛口徑（單欄==舊式 cur+consumed）
                 st.cursor = (fi + 1, 0, 0);
             }
         }
@@ -1312,6 +1515,7 @@ fn paginate_flow(
                 width_pt: 0.0,
                 para_index: 0,
                 char_offset: 0,
+                col: 0,
             }],
             line_bands: vec![0],
             tables: Vec::new(),
@@ -1829,7 +2033,7 @@ impl LayoutEngine {
     /// 給 pack_run 升格為頁邊界；段字級取自 band grid（缺位＝全域 params
     /// 字級＝舊行為，t_5dfc8ac7）。
     fn break_para(&self, i: usize) -> ParagraphLayout {
-        let content_w = section_params(&self.params, &self.sections, i).content_w_pt();
+        let content_w = section_break_w_pt(&self.params, &self.sections, i);
         let size = self.grid.size_of(i, self.params.font_size_pt);
         let m = TextMeasurer::new(size);
         let (lines, para_breaks) = break_para_lines(
@@ -1956,6 +2160,9 @@ impl LayoutEngine {
             cur_tables: Vec::new(),
             cur_images: Vec::new(),
             cur_used: 0,
+            // 頁邊界復位＝頁首（L1-columns）：欄序與跨欄計數同換頁口徑歸 0。
+            cur_col: 0,
+            page_used: 0,
             // 空 cur ⇒ 首行必不 trigger 換頁（前頁已保留），None 安全。
             cur_spec: None,
             // 重排頁從掃描首項重蓋 section（S1-1 頁首項蓋章）。
@@ -2659,6 +2866,7 @@ mod tests {
             margin_right_pt: 72.0,
             landscape: false,
             continuous: false,
+            cols: SectionCols::default(),
         }
     }
 
@@ -2672,6 +2880,7 @@ mod tests {
             margin_right_pt: 72.0,
             landscape: true,
             continuous: false,
+            cols: SectionCols::default(),
         }
     }
 
@@ -4051,6 +4260,7 @@ mod tests {
             margin_right_pt: 0.0,
             landscape: false,
             continuous,
+            cols: SectionCols::default(),
         }
     }
 
@@ -4754,5 +4964,210 @@ mod tests {
             },
         );
         assert_eq!(zeros.pages(), base.as_slice(), "零帶必須逐欄等於舊分頁");
+    }
+
+    // ---------------- L1-columns（w:cols 分欄回流） ----------------
+
+    /// 兩欄宣告的 Letter 幾何（預設 720 twip＝36pt 欄距，未宣告逐欄寬＝平分）。
+    fn letter_geo_cols(n: u32, space_pt: f32) -> SectionGeometry {
+        SectionGeometry {
+            cols: SectionCols {
+                num: n,
+                space_pt,
+                col_w_pt: [None; 4],
+                col_space_pt: [None; 4],
+            },
+            ..letter_geo()
+        }
+    }
+
+    /// `col_layout`：num<=1 → None（單欄零擾動閘門）。
+    #[test]
+    fn cols_single_or_unannounced_is_none() {
+        assert_eq!(col_layout(&letter_geo()), None, "未宣告 cols＝None");
+        let mut g = letter_geo();
+        g.cols.num = 1;
+        assert_eq!(col_layout(&g), None, "num=1＝單欄");
+        g.cols.num = 0;
+        assert_eq!(col_layout(&g), None, "num=0（缺）＝單欄");
+    }
+
+    /// `col_layout` 平分模式：兩欄版心 468pt、欄距 36pt → 欄寬 216、
+    /// 第二欄起點 x＝216＋36＝252（自版心左緣）。
+    #[test]
+    fn cols_even_split_geometry() {
+        let cl = col_layout(&letter_geo_cols(2, 36.0)).expect("兩欄必構造");
+        assert_eq!(cl.n, 2);
+        assert!((cl.col_w[0] - 216.0).abs() < 0.01, "欄寬＝(468−36)/2");
+        assert!((cl.col_x[0]).abs() < f32::EPSILON);
+        assert!((cl.col_x[1] - 252.0).abs() < 0.01, "第二欄 x＝欄寬＋欄距");
+    }
+
+    /// `col_layout` 宣告模式：逐欄 `@w:w`＋`@w:space` 全宣告且總和放得進
+    /// 版心 → 信任宣告寬，x 累加欄右距（floating-table-section-columns 形態）。
+    #[test]
+    fn cols_declared_widths_trusted() {
+        let g = SectionGeometry {
+            cols: SectionCols {
+                num: 2,
+                space_pt: 36.0,
+                col_w_pt: [Some(200.0), Some(180.0), None, None],
+                col_space_pt: [Some(30.0), None, None, None],
+            },
+            ..letter_geo()
+        };
+        let cl = col_layout(&g).expect("宣告模式");
+        assert!((cl.col_w[0] - 200.0).abs() < f32::EPSILON);
+        assert!((cl.col_w[1] - 180.0).abs() < f32::EPSILON);
+        assert!(
+            (cl.col_x[1] - 230.0).abs() < f32::EPSILON,
+            "x1＝200＋30（col_space）"
+        );
+    }
+
+    /// `col_layout` 平分回退：宣告寬總和爆出版心（tdf103975 版面戲法形態）
+    /// → 退回等寬近似（LO 同款）。
+    #[test]
+    fn cols_declared_overflow_falls_back_to_even() {
+        let g = SectionGeometry {
+            cols: SectionCols {
+                num: 2,
+                space_pt: 36.0,
+                col_w_pt: [Some(900.0), Some(900.0), None, None],
+                col_space_pt: [None; 4],
+            },
+            ..letter_geo()
+        };
+        let cl = col_layout(&g).expect("仍構造兩欄");
+        assert!((cl.col_w[0] - 216.0).abs() < 0.01, "爆版心→平分 216");
+    }
+
+    /// 分欄回流主案：4 欄寬內短文 ×4 段、每頁容量 4 帶、兩欄 → 一頁塞滿
+    /// 兩欄（先填滿欄、再換欄），第 5 段起換頁；行帶著正確欄序。
+    #[test]
+    fn cols_reflow_fills_column_before_page() {
+        let mut geo = letter_geo();
+        geo.cols = SectionCols {
+            num: 2,
+            space_pt: 36.0,
+            ..SectionCols::default()
+        };
+        // 帶尺 16pt（16×1.0）：容量 floor((792−144)/16)＝40 帶。兩欄×40 帶。
+        let p = LayoutParams {
+            font_size_pt: 16.0,
+            line_spacing: 1.0,
+            ..LayoutParams::default()
+        };
+        // 84 段單行短文（每段 1 帶）：第一欄 40 段、第二欄 40 段、其後 4 段第 2 頁。
+        let texts: Vec<String> = (0..84).map(|i| format!("段{i}")).collect();
+        let sections = single(geo, texts.len());
+        let eng = LayoutEngine::with_sections(&texts, p, sections);
+        assert_eq!(eng.page_count(), 2, "40+40 欄內回流，第 81 段起第 2 頁");
+        let p0 = &eng.pages()[0];
+        assert_eq!(p0.lines.len(), 80, "第一頁兩欄各 40 行");
+        // 前 40 行欄序 0，其後 40 行欄序 1。
+        assert!(
+            p0.lines[..40].iter().all(|l| l.col == 0),
+            "首欄 40 行 col=0"
+        );
+        assert!(
+            p0.lines[40..].iter().all(|l| l.col == 1),
+            "次欄 40 行 col=1"
+        );
+        // 欄內 y 網格獨立重計：第二欄首行帶索引回到 0。
+        assert_eq!(p0.line_bands[40], 0, "換欄後帶計數從欄頂重來");
+        assert_eq!(p0.line_bands[39], 39, "首欄末行帶 39");
+    }
+
+    /// 跨欄表格（本卡從簡：佔滿版心寬）在多欄頁置於頁級帶，各欄頂共同讓位；
+    /// 換欄後文字續排在表格之下。
+    #[test]
+    fn cols_table_spans_full_width_and_shifts_columns() {
+        let mut geo = letter_geo();
+        geo.cols = SectionCols {
+            num: 2,
+            space_pt: 36.0,
+            ..SectionCols::default()
+        };
+        let p = LayoutParams {
+            font_size_pt: 16.0,
+            line_spacing: 1.0,
+            ..LayoutParams::default()
+        };
+        let mut texts: Vec<String> = (0..6).map(|i| format!("段{i}")).collect();
+        // 第 3 段位置插一張單列表（para_start=3）。
+        let slot = TableSlot {
+            para_start: 3,
+            para_end: 4,
+            layout: crate::table::layout_table(
+                &crate::table::TableInput {
+                    rows: vec![crate::table::RowInput {
+                        cells: vec![crate::table::CellInput {
+                            blocks: vec![crate::table::CellBlock::Text("表".into())],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    grid_pt: vec![200.0],
+                    ..Default::default()
+                },
+                p.content_w_pt(),
+                p.line_h_pt(),
+                &TextMeasurer::new(p.font_size_pt),
+                0,
+            ),
+        };
+        texts[3] = String::new(); // 表格內部段落（流失權給切片）
+        let sections = single(geo, texts.len());
+        let eng = LayoutEngine::with_tables(&texts, p, sections, vec![slot]);
+        let p0 = &eng.pages()[0];
+        assert!(!p0.tables.is_empty(), "表格必須發切片");
+        // 跨欄：切片 x＝版心左緣（72），帶＝頁級位置（第 3 段前＝2 帶）。
+        let tp = &p0.tables[0];
+        assert!(
+            (tp.frag.x_pt - 72.0).abs() < 0.01,
+            "跨欄表格從版心左緣起（x={}",
+            tp.frag.x_pt
+        );
+        // 表格後的文字行（段4/5）仍在欄內且欄序合法（0 或 1）。
+        let after: Vec<&Line> = p0.lines.iter().filter(|l| l.para_index >= 4).collect();
+        assert!(!after.is_empty(), "表格後文字仍排入");
+    }
+
+    /// 零擾動鐵律：cols 未宣告（num=0）時，分頁輸出與既有 `paginate` 逐欄
+    /// 相等（Line.col 欄位恆 0，快照欄位逐位元組不變）。
+    #[test]
+    fn cols_unannounced_pagination_bitwise_identical() {
+        let p = LayoutParams::default();
+        let texts: Vec<String> = (0..40).map(|i| format!("第{i}段測試文字")).collect();
+        let pls = layout_paragraphs(&texts, &p);
+        let base = paginate(&pls, &p);
+        // 帶「顯式單欄宣告」（num=1）走同一閘門。
+        let mut geo = SectionGeometry {
+            page_w_pt: p.page_w_pt,
+            page_h_pt: p.page_h_pt,
+            margin_top_pt: 72.0,
+            margin_bottom_pt: 72.0,
+            margin_left_pt: 72.0,
+            margin_right_pt: 72.0,
+            landscape: false,
+            continuous: false,
+            cols: SectionCols {
+                num: 1,
+                ..SectionCols::default()
+            },
+        };
+        geo.cols.space_pt = 0.0; // num=1 時不讀 space——仍置零排除干擾
+        let sections = single(geo, texts.len());
+        let eng = LayoutEngine::with_sections(&texts, p.clone(), sections);
+        assert_eq!(
+            eng.pages(),
+            base.as_slice(),
+            "num=1 必須逐欄等於無 section 分頁"
+        );
+        assert!(eng
+            .pages()
+            .iter()
+            .all(|pg| pg.lines.iter().all(|l| l.col == 0)));
     }
 }

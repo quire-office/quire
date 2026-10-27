@@ -29,8 +29,12 @@
 //! `evenAndOddHeaders` 為文件級旗標，另由 [`read_even_and_odd_headers`] 讀取。
 //!
 //! 已知骨架近似：表格 Cell 內段落自帶 sectPr（畸形但存在）時，section 邊界
-//! 推到該 Cell 所屬表格段落為止；section 起點的欄數（`w:cols`）未實作，
-//! 多欄 section 走單欄。
+//! 推到該 Cell 所屬表格段落為止。
+//!
+//! 欄數採集（L1-columns 卡）：`w:cols/@w:num`（欄數）、`w:cols/@w:space`
+//! （欄間距）、`w:col/@w:w`＋`@w:space`（逐欄寬與該欄後距，ECMA-376 §17.18.6）
+//! 一律讀進 [`SectionGeometry`]；分欄回流在 layout 層消費（那里是幾何唯一
+//! 消費者，本模組只負責如實投影）。
 
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +51,40 @@ const DEF_MARGIN_RIGHT: i64 = 1800;
 /// `pgMar @w:header/@w:footer` 缺值（twip）：0.5 吋（ECMA-376 §17.4.48 預設）。
 const DEF_HF_DIST: i64 = 720;
 
+/// `w:cols` 採集結果（ECMA-376 §17.18.6／§17.18.7），欄寬與間距一律換算成
+/// pt 存（geometry 欄位同標尺）。`num <= 1`＝單欄——既有語義逐位元組不變。
+///
+/// `Copy` 鐵律：本結構隨 [`SectionGeometry`] 四處複製（HashMap 鍵值、逐段落
+/// 直查表），禁 Vec——逐欄值以固定長度陣列承載，頭 4 欄為上限（corpus 實見
+/// ≤2 欄；超標欄位的顯式寬以「未宣告」近似走平分，屬記錄在案的近似）。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SectionCols {
+    /// `w:cols/@w:num`（缺＝0＝未宣告，視同單欄；0/1 同義）。
+    pub num: u32,
+    /// `w:cols/@w:space`（pt；缺＝36pt＝720 twip，§17.18.6 預設）。
+    pub space_pt: f32,
+    /// 頭 4 欄 `w:col/@w:w`（pt；None＝該欄未宣告 → 呼叫端平分）。
+    pub col_w_pt: [Option<f32>; 4],
+    /// 頭 4 欄 `w:col/@w:space`（pt；None＝沿用 `space_pt`；§17.18.7：
+    /// 該欄**右側**距）。
+    pub col_space_pt: [Option<f32>; 4],
+}
+
+impl Default for SectionCols {
+    /// 未宣告態：單欄、間距預設 720 twip＝36pt（§17.18.6）、無逐欄宣告。
+    fn default() -> Self {
+        Self {
+            num: 0,
+            space_pt: DEF_COL_SPACE as f32 / 20.0,
+            col_w_pt: [None; 4],
+            col_space_pt: [None; 4],
+        }
+    }
+}
+
+/// 預設欄間距（twip）：720＝0.5 吋（ECMA-376 §17.18.6 `w:space` 預設）。
+const DEF_COL_SPACE: i64 = 720;
+
 /// 一個 section 的頁面幾何（pt）。`landscape` 僅供老實回報，
 /// 尺寸一律以 `page_w_pt`／`page_h_pt` 為準（Word/LO 皆直接信任 pgSz 的 w/h）。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -62,6 +100,10 @@ pub struct SectionGeometry {
     /// `w:type/@w:val="continuous"`：同頁續排，不強制換頁。
     /// （oddPage/evenPage 以 nextPage 近似＝false。）
     pub continuous: bool,
+    /// `w:cols` 分欄宣告（L1-columns）；未宣告＝[`SectionCols::default`]
+    /// （單欄）——既有輸出逐位元組零擾動。serde default 保舊快照相容。
+    #[serde(default)]
+    pub cols: SectionCols,
 }
 
 /// 逐段落清單的一項：段落所屬 section 的識別與幾何。
@@ -99,7 +141,7 @@ pub struct SectionHeaderFooter {
     pub footer: SlotRefs,
 }
 
-/// 一節的 pgSz/pgMar/type/頁首頁尾宣告累積值（距離以 twip 原單位存）。
+/// 一節的 pgSz/pgMar/type/頁首頁尾宣告／分欄宣告累積值（距離以 twip 原單位存）。
 #[derive(Debug, Clone)]
 struct Accum {
     w: i64,
@@ -119,6 +161,10 @@ struct Accum {
     note_footnote: Option<NotePr>,
     /// `w:endnotePr`（ECMA-376 §17.11.4 節範圍）；缺＝None。
     note_endnote: Option<NotePr>,
+    /// `w:cols`（L1-columns）；缺＝未宣告＝單欄。
+    cols: SectionCols,
+    /// 已見 `w:col` 個數（逐欄槽位游標：第 k 個 `w:col` 填頭 4 欄的第 k 槽）。
+    col_seen: usize,
 }
 
 impl Accum {
@@ -139,6 +185,8 @@ impl Accum {
             footer: SlotRefs::default(),
             note_footnote: None,
             note_endnote: None,
+            cols: SectionCols::default(),
+            col_seen: 0,
         }
     }
     fn into_geom(self) -> SectionGeometry {
@@ -152,6 +200,7 @@ impl Accum {
             margin_right_pt: self.right as f32 / 20.0,
             landscape: self.landscape,
             continuous: self.continuous,
+            cols: self.cols,
         }
     }
     fn into_hf(self, id: u32) -> SectionHeaderFooter {
@@ -421,6 +470,36 @@ fn scan_sections(xml: &[u8]) -> Scan {
                     b"type" if in_sect => {
                         if let Some(a) = accum.as_mut() {
                             a.continuous = attr_str(&e, b"val").as_deref() == Some("continuous");
+                        }
+                    }
+                    // L1-columns：`w:cols`（§17.18.6）讀 num/space；`w:col`
+                    // （§17.18.7）按出現序填頭 4 欄槽位（真實文件一律自閉合，
+                    // Start|Empty 同臂；col_seen 槽位游標隨 Accum 逐節重置）。
+                    b"cols" if in_sect => {
+                        if let Some(a) = accum.as_mut() {
+                            a.cols.num = attr_i64(&e, b"num", a.cols.num as i64).max(0) as u32;
+                            // @w:space 缺值＝720 twip（§17.18.6 預設）；負值鉗 0。
+                            a.cols.space_pt =
+                                attr_i64(&e, b"space", DEF_COL_SPACE).max(0) as f32 / 20.0;
+                            // `w:cols` 重開（畸形檔一節多 cols）：槽位游標歸零。
+                            a.col_seen = 0;
+                        }
+                    }
+                    b"col" if in_sect => {
+                        if let Some(a) = accum.as_mut() {
+                            let i = a.col_seen;
+                            a.col_seen += 1;
+                            if i < 4 {
+                                // 逐欄 `@w:w`：缺＝未宣告（呼叫端平分近似）。
+                                a.cols.col_w_pt[i] = attr_str(&e, b"w")
+                                    .and_then(|v| v.trim().parse::<f64>().ok())
+                                    .map(|v| (v.max(0.0) / 20.0) as f32);
+                                // 逐欄 `@w:space`（該欄右側距，§17.18.7）：
+                                // 缺＝None＝沿用 cols@space。
+                                a.cols.col_space_pt[i] = attr_str(&e, b"space")
+                                    .and_then(|v| v.trim().parse::<f64>().ok())
+                                    .map(|v| (v.max(0.0) / 20.0) as f32);
+                            }
                         }
                     }
                     b"titlePg" if in_sect => {
@@ -857,5 +936,90 @@ mod tests {
              </w:body></w:document>"#);
         assert_eq!(read_sections_note_pr(&x), vec![None]);
         assert_eq!(read_sections_endnote_pr(&x), vec![None]);
+    }
+
+    // ---------------- L1-columns：w:cols 採集 ----------------
+
+    /// 未宣告 `w:cols` → [`SectionCols::default`]（num=0＝單欄；零擾動閘門）。
+    #[test]
+    fn cols_unannounced_defaults_single() {
+        let x = xml(r#"<w:document xmlns:w="x"><w:body>
+               <w:p><w:r><w:t>A</w:t></w:r></w:p>
+               <w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr>
+             </w:body></w:document>"#);
+        let g = read_sections_per_paragraph(&x, 1);
+        assert_eq!(g[0].geo.cols, SectionCols::default());
+        assert_eq!(g[0].geo.cols.num, 0);
+        assert!(
+            (g[0].geo.cols.space_pt - 36.0).abs() < f32::EPSILON,
+            "缺＝720 twip 預設"
+        );
+    }
+
+    /// `w:cols w:num=2 w:space=720`（n830205 第二節形態）＋逐欄宣告
+    /// （floating-table-section-columns 形態）：num/space/逐欄 w＋space 全數
+    /// 如實投影（twip÷20→pt）。
+    #[test]
+    fn cols_announced_projected_verbatim() {
+        let x = xml(r#"<w:document xmlns:w="x"><w:body>
+               <w:p><w:r><w:t>A</w:t></w:r></w:p>
+               <w:sectPr><w:pgSz w:w="11906" w:h="16838"/>
+                 <w:cols w:num="2" w:space="440" w:equalWidth="0">
+                   <w:col w:w="5040" w:space="720"/>
+                   <w:col w:w="4680"/>
+                 </w:cols>
+               </w:sectPr>
+             </w:body></w:document>"#);
+        let c = read_sections_per_paragraph(&x, 1)[0].geo.cols;
+        assert_eq!(c.num, 2);
+        assert!((c.space_pt - 22.0).abs() < f32::EPSILON, "440 twip = 22 pt");
+        assert_eq!(c.col_w_pt[0], Some(252.0), "5040 twip = 252 pt");
+        assert_eq!(c.col_w_pt[1], Some(234.0), "4680 twip = 234 pt");
+        assert_eq!(c.col_space_pt[0], Some(36.0), "逐欄 space 720 twip = 36 pt");
+        assert_eq!(
+            c.col_space_pt[1], None,
+            "該欄未宣告 space → 沿用 cols@space"
+        );
+        assert_eq!(c.col_w_pt[2], None, "第 3 欄未宣告");
+    }
+
+    /// `w:cols` 自閉合形態＋跨節：第一節兩欄、檔尾節未宣告＝單欄（逐節獨立）。
+    #[test]
+    fn cols_self_closing_and_per_section() {
+        let x = xml(r#"<w:document xmlns:w="x"><w:body>
+               <w:p><w:r><w:t>A</w:t></w:r></w:p>
+               <w:p><w:pPr><w:sectPr>
+                 <w:cols w:num="3"/>
+               </w:sectPr></w:pPr><w:r><w:t>B</w:t></w:r></w:p>
+               <w:p><w:r><w:t>C</w:t></w:r></w:p>
+               <w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr>
+             </w:body></w:document>"#);
+        let g = read_sections_per_paragraph(&x, 3);
+        assert_eq!(g[0].geo.cols.num, 3, "第一節 w:cols num=3");
+        assert!(
+            (g[0].geo.cols.space_pt - 36.0).abs() < f32::EPSILON,
+            "space 缺＝720 twip"
+        );
+        assert_eq!(g[2].geo.cols.num, 0, "檔尾節未宣告＝單欄");
+    }
+
+    /// 超 4 欄（畸形罕見）：槽位只吃頭 4 欄、num 原值保留（呼叫端 clamp）。
+    #[test]
+    fn cols_beyond_four_slots_capped() {
+        let x = xml(r#"<w:document xmlns:w="x"><w:body>
+               <w:p><w:r><w:t>A</w:t></w:r></w:p>
+               <w:sectPr>
+                 <w:cols w:num="6">
+                   <w:col w:w="1000"/><w:col w:w="1000"/><w:col w:w="1000"/>
+                   <w:col w:w="1000"/><w:col w:w="1000"/><w:col w:w="1000"/>
+                 </w:cols>
+               </w:sectPr>
+             </w:body></w:document>"#);
+        let c = read_sections_per_paragraph(&x, 1)[0].geo.cols;
+        assert_eq!(c.num, 6, "num 原值保留（呼叫端 clamp 到 4）");
+        assert!(
+            c.col_w_pt.iter().all(|w| *w == Some(50.0)),
+            "頭 4 槽各 50pt"
+        );
     }
 }

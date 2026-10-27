@@ -312,6 +312,8 @@ pub fn table_input(
                             grid_span: c.props.grid_span(),
                             vmerge: c.props.vmerge_restart(),
                             blocks,
+                            // L2-cellruns：本工具只做行量測，不吃 run 級樣式→空標注。
+                            run_spans: Vec::new(),
                             borders: c.props.borders.as_ref().map(edge_set),
                             fill: c
                                 .props
