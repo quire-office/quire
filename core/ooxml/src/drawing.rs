@@ -54,6 +54,10 @@ pub const EMU_PER_PT: f64 = 12_700.0;
 const MAX_OOXML_LONG: f64 = i64::MAX as f64;
 
 /// R5：serde 空值不外露（`txbx_start == 0` 等同舊資料）。
+fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
+}
+
 fn is_zero_usize(v: &usize) -> bool {
     *v == 0
 }
@@ -184,6 +188,16 @@ pub struct InlineImage {
     /// 錨定段落頁（fdo76591 實據）。serde default 保持舊投影位元組不變。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub page_pinned: bool,
+    /// R6：`wp:anchor/@relativeHeight`（z 序）。LO 對這些 `wps:wsp` 標註的
+    /// 抽取序＝z 序（fdo74605 實據：LO p1 124 行依 relativeHeight 遞增），
+    /// 發射層據此排序框內文字。inline／無宣告＝0（舊行為零擾動）。
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub rel_height: i64,
+    /// R6：本候選是 DrawingML `wps:wsp` 標註（而非 VML `v:textbox`）。
+    /// 只有此類候選套用「標註矩形∩宿主框」裁切與 z 序（K4c-image／VML
+    /// 路徑一概不動）。serde default 保持舊投影位元組不變。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wps_annotation: bool,
 }
 
 impl InlineImage {
@@ -818,6 +832,10 @@ struct Pending {
     /// R3：VML 頁面釘定（mso-position 兩軸 page|margin＋center）——浮動
     /// 圖錨定頁改取所屬 section 起始頁。
     page_pinned: bool,
+    /// R6：`wp:anchor/@relativeHeight`（z 序；DrawingML 標註抽取序）。
+    rel_height: i64,
+    /// R6：本候選是 DrawingML `wps:wsp` 標註（套用宿主框裁切與 z 序）。
+    wps_annotation: bool,
     /// VML：v:imagedata 出現過。
     vml_image: bool,
     /// VML：o:gfxdata（OLE 圖示）出現過。
@@ -919,6 +937,8 @@ impl Pending {
             rids: Vec::new(),
             floating: false,
             page_pinned: false,
+            rel_height: 0,
+            wps_annotation: false,
             in_cell,
             vml_image: false,
             vml_gfxdata: false,
@@ -1039,6 +1059,8 @@ impl DrawingParser {
             h_pt: h,
             floating: p.floating,
             page_pinned: p.page_pinned,
+            rel_height: p.rel_height,
+            wps_annotation: p.wps_annotation,
             in_cell: p.in_cell,
             pos_x_pt: p.pos_x_pt,
             pos_x_rel: p.pos_x_rel.clone(),
@@ -1376,6 +1398,10 @@ impl DrawingParser {
             if name == b"txbxContent" && !empty {
                 p.has_txbx = true;
             }
+            // R6：DrawingML `wps:wsp` 標註——只有此類候選吃宿主框裁切／z 序。
+            if name == b"wsp" {
+                p.wps_annotation = true;
+            }
             // K4c：wps:spPr 樣式上下文深度（填充／描邊歸屬判別用）。
             match name {
                 b"spPr" => p.sp_ctx += 1,
@@ -1494,6 +1520,12 @@ impl DrawingParser {
                 let mut p = Pending::new(self.cur_para(), self.tc_depth > 0);
                 p.overlap = overlap;
                 p.floating = floating;
+                // R6：z 序（LO 抽取序）——anchor 的 relativeHeight；inline 無。
+                if floating {
+                    p.rel_height = attr_local(e, b"relativeHeight")
+                        .and_then(|v| v.trim().parse::<i64>().ok())
+                        .unwrap_or(0);
+                }
                 self.graphic = Some(Box::new(p));
             }
             b"pict" if !empty => {

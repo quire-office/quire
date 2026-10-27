@@ -1482,6 +1482,9 @@ impl Engine {
         // 鉗過（tdf130120：14.2pt 框鉗到 7.1pt），拿原始 extent 高比對會永不
         // 命中而吞字（實測：框內「7」整頁蒸發）。寬不经鉗制，是可靠鍵。
         let mut box_used = vec![false; self.shape_boxes.len()];
+        // R6：`R6_CLIP_BUGGY=1` 回塞整組 R6 發射（裁切／z 序／宣告字級斷行）
+        // ——紅燈 1-3 必回紅（回塞鎖）。
+        let r6_buggy = std::env::var_os("R6_CLIP_BUGGY").is_some();
         // K4c-image 像素池：同 K4e2 紀律（每頁一份、消費式），三路徑
         // （表格切片→正文流→浮動）共用一池——同一張圖只發一次真像素。
         let mut px_used = vec![false; self.image_pixels.len()];
@@ -1508,7 +1511,7 @@ impl Engine {
                 })
                 .or_insert(ly);
         }
-        let mut txbx_keys: Vec<(usize, f32, i64)> = Vec::new();
+        let mut txbx_keys: Vec<(usize, f32, i64, i64, i64)> = Vec::new();
         // 底層先畫表格（填色＋框線＋格內文字），再疊正文行；最後對「文字項」
         // 依 (y, x) 幾何閱讀序重排——跨表格/正文統一由上而下、由左而右。
         // 填色與框線保持推入序（穩定排序 key 同鍵，不互相顛倒遮蓋次序）。
@@ -1583,13 +1586,14 @@ impl Engine {
                     size,
                     line_h,
                     Some(box_im),
+                    !r6_buggy,
                 );
                 push_txbx_keys(
                     &mut txbx_keys,
                     &items,
                     start,
                     im.para,
-                    box_im.txbx_start,
+                    r6_ord(box_im, r6_buggy),
                     &txbx_host_counts,
                     &txbx_host_y,
                     y,
@@ -1630,13 +1634,14 @@ impl Engine {
                     size,
                     line_h,
                     Some(b),
+                    !r6_buggy,
                 );
                 push_txbx_keys(
                     &mut txbx_keys,
                     &items,
                     start,
                     fm.para,
-                    b.txbx_start,
+                    r6_ord(b, r6_buggy),
                     &txbx_host_counts,
                     &txbx_host_y,
                     fm.y_pt,
@@ -2374,22 +2379,32 @@ fn emit_txbx_texts(
     size_pt: f32,
     line_h: f32,
     shape: Option<&quire_ooxml::InlineImage>,
+    r6: bool,
 ) {
     if w <= 0.0 {
         return;
     }
+    // R6：只有 `wps:wsp` 標註吃「宿主框裁切＋z 序＋宣告字級斷行」；
+    // VML／舊路徑逐位不動。`R6_CLIP_BUGGY=1` 由呼叫端把 r6 傳成 false。
+    let wps = r6 && shape.is_some_and(|b| b.wps_annotation);
     // 框內矩形：組映射（txbx_rect）缺 → 整框（老實退化，不虛構位置）。
     let (bx, by, bw, bh) = match shape.and_then(|b| b.txbx_rect) {
         Some([dx, dy, rw, rh]) if rw > 0.0 && rh > 0.0 => (x + dx, y + dy, rw, rh),
         _ => (x, y, w, h),
     };
+    // 宿主框裁切底線：標註文字不得越出宿主佔位框（LO 默認視圖口徑）。
+    let clip_bottom = if wps { by + bh } else { f32::INFINITY };
     // inset 吃成內邊界（契約 6）：缺宣告＝舊硬近（x+3、inner_w＝w−6）。
     let inset = shape.and_then(|b| b.txbx_inset);
     let [inset_l, inset_t, inset_r, inset_b] = inset.unwrap_or([3.0, 4.0, 3.0, 0.0]);
     let old_style = inset.is_none();
     let inner_x = bx + inset_l;
     let inner_y = by + inset_t;
-    let inner_w = if old_style {
+    let inner_w = if wps {
+        // R6：DrawingML 標註無 VML inset 宣告時，LO 以近整框寬排字
+        // （fdo74605 實據）；不再套 3pt 硬內縮，斷行才與 LO 對齊。
+        (bw - 2.0).max(10.0)
+    } else if old_style {
         (bw - 6.0).max(10.0)
     } else {
         (bw - inset_l - inset_r).max(10.0)
@@ -2510,7 +2525,9 @@ fn emit_txbx_texts(
             // 尺同用本段字級（正文 cascade_paragraphs 同款思路的框內近似）。
             let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
             let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
-            let m = TextMeasurer::new(seg_size.max(size_pt));
+            // R6：wps 標註用 run 自帶字級量寬（LO 實據：8pt 文字按 8pt 排），
+            // 不再被文件基準字級（11pt）放大而多斷行；其餘路徑維持舊尺。
+            let m = TextMeasurer::new(if wps { seg_size } else { seg_size.max(size_pt) });
             // 行→run 邊界對位借用一個「假段落」（runs＝本框段 runs），讓
             // emit_line_run_items 直接產出粗/斜/色/字級/字型族的同質段。
             let fake = quire_ooxml::Paragraph {
@@ -2518,6 +2535,10 @@ fn emit_txbx_texts(
                 ..Default::default()
             };
             for l in quire_layout::break_lines(t, inner_w, &m) {
+                // R6：標註矩形越出宿主框底線 → 該行起不發（LO 默認視圖裁切）。
+                if yy + line_h > clip_bottom + 0.01 {
+                    break;
+                }
                 emit_line_run_items(&mut block, inner_x, yy, seg_size, &l, Some(&fake));
                 yy += line_h;
             }
@@ -3178,6 +3199,7 @@ fn push_frag_items(
                         size,
                         line_h,
                         Some(b),
+                        std::env::var_os("R6_CLIP_BUGGY").is_none(),
                     );
                 }
             }
@@ -3611,31 +3633,44 @@ fn note_chain(
 /// 抽取端一致。
 ///
 /// 正文頁與尾註頁共用本函式（同一份閱讀序口徑）。
-fn sort_display_items(items: &mut [DrawItem], txbx_keys: &[(usize, f32, i64)]) {
+fn sort_display_items(items: &mut [DrawItem], txbx_keys: &[(usize, f32, i64, i64, i64)]) {
     // R5（R2）：框內文字項帶群組鍵——主鍵取「宿主段落末行 y」（整數化後與
     // 正文同尺度），同 y 時正文（kind 0）先於框內文（kind 1）；框內文再依
-    // （錨定圖文件序, 框內段序）排，不再被 y-sort 打散。無鍵（單框宿主／
+    // （宿主段, 錨定圖序, 框內段序）排，不再被 y-sort 打散。無鍵（單框宿主／
     // 表格切片／頁首尾）＝舊 y,x 口徑，零位移。
+    // R6：wps 標註的「錨定圖序」改帶 relativeHeight（LO z 序抽取口徑）。
     if txbx_keys.is_empty() {
         items.sort_by_key(|it| match it {
-            DrawItem::Text { x, y, .. } => {
-                (1i8, (*y * 4.0).round() as i64, (*x * 4.0).round() as i64)
-            }
-            _ => (0i8, 0, 0),
+            DrawItem::Text { x, y, .. } => (
+                1i8,
+                (*y * 4.0).round() as i64,
+                0i8,
+                0i64,
+                0i64,
+                (*x * 4.0).round() as i64,
+            ),
+            _ => (0i8, 0, 0, 0, 0, 0),
         });
         return;
     }
-    let mut keymap: HashMap<usize, (f32, i64)> = HashMap::with_capacity(txbx_keys.len());
-    for &(i, ey, doc) in txbx_keys {
-        keymap.insert(i, (ey, doc));
+    let mut keymap: HashMap<usize, (f32, i64, i64, i64)> = HashMap::with_capacity(txbx_keys.len());
+    for &(i, ey, host, ord, seq) in txbx_keys {
+        keymap.insert(i, (ey, host, ord, seq));
     }
-    let key = |i: usize| -> (i8, i64, i8, i64) {
+    let key = |i: usize| -> (i8, i64, i8, i64, i64, i64) {
         match &items[i] {
             DrawItem::Text { x, y, .. } => match keymap.get(&i) {
-                Some((ey, doc)) => (1, (*ey * 4.0).round() as i64, 1, *doc),
-                None => (1, (*y * 4.0).round() as i64, 0, (*x * 4.0).round() as i64),
+                Some((ey, host, ord, seq)) => (1, (*ey * 4.0).round() as i64, 1, *host, *ord, *seq),
+                None => (
+                    1,
+                    (*y * 4.0).round() as i64,
+                    0,
+                    0,
+                    0,
+                    (*x * 4.0).round() as i64,
+                ),
             },
-            _ => (0, 0, 0, 0),
+            _ => (0, 0, 0, 0, 0, 0),
         }
     };
     let mut order: Vec<usize> = (0..items.len()).collect();
@@ -3644,16 +3679,26 @@ fn sort_display_items(items: &mut [DrawItem], txbx_keys: &[(usize, f32, i64)]) {
     items.clone_from_slice(&reordered);
 }
 
+/// R6：wps 標註的排序鍵——LO 抽取序＝`wp:anchor/@relativeHeight`（z 序）。
+/// 非標註／回塞模式維持 R5 的框起點序（舊行為逐位不變）。
+fn r6_ord(b: &quire_ooxml::InlineImage, buggy: bool) -> i64 {
+    if !buggy && b.wps_annotation && b.rel_height != 0 {
+        b.rel_height
+    } else {
+        b.txbx_start as i64
+    }
+}
+
 /// R5（R2）：把本次 `emit_txbx_texts` 推入的文字項蓋上群組鍵。只在宿主段落
 /// 掛 ≥2 個「有實文字」的框時啟用——單框宿主維持舊 y-sort（既有 1.0 檔零
 /// 擾動）。`R5_R2_BUGGY=1` 時完全不鍵＝舊 y-sort 回塞。
 #[allow(clippy::too_many_arguments)]
 fn push_txbx_keys(
-    keys: &mut Vec<(usize, f32, i64)>,
+    keys: &mut Vec<(usize, f32, i64, i64, i64)>,
     items: &[DrawItem],
     start: usize,
     host: usize,
-    img_ord: usize,
+    ord: i64,
     counts: &HashMap<usize, usize>,
     host_y: &HashMap<usize, f32>,
     fallback_y: f32,
@@ -3665,11 +3710,10 @@ fn push_txbx_keys(
         return;
     }
     let ey = host_y.get(&host).copied().unwrap_or(fallback_y) + 0.001;
-    let base = host as i64 * 1_000_000_000 + img_ord as i64 * 1_000_000;
     let mut seq = 0i64;
     for (i, it) in items.iter().enumerate().skip(start) {
         if matches!(it, DrawItem::Text { .. }) {
-            keys.push((i, ey, base + seq));
+            keys.push((i, ey, host as i64, ord, seq));
             seq += 1;
         }
     }

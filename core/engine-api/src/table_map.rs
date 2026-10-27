@@ -694,6 +694,8 @@ mod tests {
             txbx_vertical: false,
             txbx_table: Vec::new(),
             page_pinned: false,
+            rel_height: 0,
+            wps_annotation: false,
         }
     }
 
