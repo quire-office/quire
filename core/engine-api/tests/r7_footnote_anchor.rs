@@ -41,12 +41,9 @@ fn page_texts(eng: &Engine, page: usize) -> Vec<(f32, f32, String)> {
     dl.items
         .iter()
         .filter_map(|it| match it {
-            DrawItem::Text {
-                x,
-                y,
-                text,
-                ..
-            } if !text.trim().is_empty() => Some((*x, *y, text.trim().to_string())),
+            DrawItem::Text { x, y, text, .. } if !text.trim().is_empty() => {
+                Some((*x, *y, text.trim().to_string()))
+            }
             _ => None,
         })
         .collect()
@@ -91,10 +88,7 @@ fn r7_note_attaches_to_anchor_page_footer() {
         "註文仍在最後一頁 p{}＝掛載未改道",
         last + 1
     );
-    assert!(
-        page_has(&eng, 0, "1."),
-        "p1 頁腳區必須有編號前綴條目 '1.'"
-    );
+    assert!(page_has(&eng, 0, "1."), "p1 頁腳區必須有編號前綴條目 '1.'");
 }
 
 /// 紅燈 2（守門形）：掛載修復不新增頁。卡面 LO 目標 4→3；實測 4 頁之殘差

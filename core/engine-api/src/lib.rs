@@ -799,8 +799,9 @@ impl Engine {
             .iter()
             .enumerate()
             .map(|(si, t)| {
-                for p in t.para_start.min(n_paras)..t.para_end.min(n_paras) {
-                    slot_of_para[p] = si;
+                let (a, b) = (t.para_start.min(n_paras), t.para_end.min(n_paras));
+                if a < b {
+                    slot_of_para[a..b].fill(si);
                 }
                 t.para_start
             })
