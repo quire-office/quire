@@ -71,26 +71,35 @@ fn sdt_vml_textbox_misplaced_pict_fully_suppressed() {
 }
 
 /// 抑制不得改段落口徑：宿主段（pict 段）仍佔正文槽——修前後頁顯示列表
-/// 的**段落數**零位移（四解析器同口徑鐵律：閂只掐圖形，不動 p_count）。
-/// 基線對照（dump-base）：該檔正文段＝4（含錯置 pict 宿主空段）。
+/// 的**段落數**零位移（五台 p_count 同口徑鐵律：閂只掐圖形，不動 p_count）。
+/// 基線對照（dump-base，修前）：Text 項＝5（非空 4：正文 3＋框內字 1；
+/// 空槽 1：錯置 pict 宿主段）。修後：框內字消失→非空 3，**空槽 1 必須原樣
+/// 保留**（宿主段計數不受抑制影響，pict 段仍佔正文一行）。
 #[test]
 fn suppression_keeps_paragraph_slots() {
     let eng = load_sdt_vml();
     let dl = eng.page_display_list(0).expect("頁存在");
-    // 正文 Text 項（含宿主空段）：修前 5＋框內字 1＋空段 1，修後框內字消失、
-    // 宿主空段保留——段落計數口徑以**非空正文句**為準，框內字不佔正文段
-    // （K4e2 已分離）。此斷言鎖「正文句集」不因閂多吞/少吞。
-    let host: Vec<String> = dl
-        .items
-        .iter()
-        .filter_map(|it| match it {
-            DrawItem::Text { text, .. } if !text.is_empty() => Some(text.clone()),
-            _ => None,
-        })
-        .collect();
+    let mut host: Vec<&str> = Vec::new();
+    let mut empty_slots = 0usize;
+    for it in &dl.items {
+        if let DrawItem::Text { text, .. } = it {
+            if text.is_empty() {
+                empty_slots += 1;
+            } else {
+                host.push(text.as_str());
+            }
+        }
+    }
+    // 非空正文句恰 3：框內字（「VML 文字框內容」）已隨錯置 pict 抑制消失。
     assert_eq!(
         host.len(),
         3,
         "正文非空句恰為 3（框內字已隨錯置 pict 抑制），實際 {host:?}"
+    );
+    // p_count 口徑：錯置 pict 的宿主段仍是正文一段——空槽必須保留恰 1
+    // （修前 dump-base 同值）。若閂順手吞掉宿主段落計數，此斷言必紅。
+    assert_eq!(
+        empty_slots, 1,
+        "pict 宿主空段必須照佔正文槽（五台 p_count 鐵律），實際空槽={empty_slots}"
     );
 }
