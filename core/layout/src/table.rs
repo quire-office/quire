@@ -179,7 +179,7 @@ pub struct RowInput {
     pub height_pt: Option<f32>,
     /// `w:trHeight/@w:hRule == "exact"`。
     pub height_exact: bool,
-    /// `w:tblHeader`（v1 僅記錄，跨頁重複未實作）。
+    /// `w:tblHeader`：跨頁切片時逐頁重貼（R2；連頭段，見 `TableLayout::header_count`）。
     pub header: bool,
 }
 
@@ -419,6 +419,8 @@ struct RowGeom {
     /// 未滿一整帶的精確差值（≤0，因帶數一律 ceil）。
     extra_pt: f32,
     cant_split: bool,
+    /// `w:tblHeader`（R2：表頭連頭段＝跨頁切片逐頁重貼的列數基準）。
+    header: bool,
     cells: Vec<CellGeom>,
 }
 
@@ -448,6 +450,12 @@ impl TableLayout {
         self.rows.len()
     }
 
+    /// `w:tblHeader` 表頭段列數（R2）：自列 0 起**連續**的 header 列數。
+    /// Word 對非連續的 tblHeader 列不做部分重貼（§17.4.86 只重貼開頭連續段）。
+    pub fn header_count(&self) -> usize {
+        self.rows.iter().take_while(|r| r.header).count()
+    }
+
     /// 全域帶序 → (row, band) 游標（跨列跳帶用；越界＝(rows.len(), 0)）。
     /// `fragment(row, band, …)` 不代為跨列正規化 band，呼叫端先過此換算。
     fn cursor_at_band(&self, band: u32) -> (usize, u32) {
@@ -469,6 +477,12 @@ impl TableLayout {
     /// 巢狀表**不再**用此旗標——t_f5d47469 起子表按外層切片視窗換算的
     /// (inner_start, inner_budget) 逐帶切片（根因 5：整張重畫修復）。
     /// `page_left_pt`：可用區左緣（頁座標系），換算 `TableFrag::x_pt`。
+    ///
+    /// R2（`w:tblHeader` 逐切片重貼）：游標落在**續片**（非表首）且表頭連頭段
+    /// 完整可放時，先原樣重貼表頭列（含 L2 run_spans 標注，frag_of_cell 全數
+    /// 復用），重貼帶數計入本切片預算與 `used`（LO/Word 口徑：表頭吃頁面空間）。
+    /// 首片 (0,0) 不另貼（表頭本來就在最前）；游標落在表頭段內部（表頭比頁高
+    /// 的病態拆法）不重複貼，只續排。
     pub fn fragment(
         &self,
         row: usize,
@@ -481,6 +495,50 @@ impl TableLayout {
         let (mut r, mut b) = (row, band);
         let mut budget = max_bands.max(1);
         let mut used = 0u32;
+        // R2 回塞鎖：R2_BUGGY=1 關閉逐切片重貼（紅燈必須倒，比照 L2_BUGGY 口徑）。
+        let repeat_hdr = std::env::var("R2_BUGGY").is_err();
+        let hc = self.header_count();
+        if repeat_hdr && hc > 0 && !whole_row_only && (row, band) != (0, 0) && row >= hc {
+            // 表頭列整列重貼不拆切片；預留 ≥1 帶給內容列（游標必須前進，
+            // 否則 packer 死循環——M1 守門「重貼不得再扣列高預算兩次」：
+            // 首片表頭走正常列路徑，僅**續片**才另計重貼帶數）。
+            let hdr_budget = budget.saturating_sub(1);
+            let mut hb = 0u32;
+            for hr in 0..hc {
+                let rg = &self.rows[hr];
+                if hb + rg.bands > hdr_budget {
+                    break; // 放不下整列表頭＝不貼此列（LO 同款從寬）
+                }
+                hb += rg.bands;
+                let cells: Vec<CellFrag> = rg
+                    .cells
+                    .iter()
+                    .map(|cg| {
+                        frag_of_cell(
+                            self,
+                            cg,
+                            SliceWin {
+                                row: hr,
+                                band: 0,
+                                take: rg.bands,
+                                starts_row: true,
+                                ends_row: true,
+                            },
+                        )
+                    })
+                    .collect();
+                frag_rows.push(RowFrag {
+                    height_pt: rg.bands as f32 * self.line_h + rg.extra_pt,
+                    band_start: 0,
+                    row_index: hr,
+                    ends_row: true,
+                    starts_row: true,
+                    cells,
+                });
+            }
+            budget = budget.saturating_sub(hb);
+            used += hb;
+        }
         while r < self.rows.len() {
             let rg = &self.rows[r];
             if b >= rg.bands {
@@ -933,6 +991,7 @@ pub fn layout_table(
             bands: 1,
             extra_pt: 0.0,
             cant_split: row.cant_split,
+            header: row.header,
             cells,
         });
     }
