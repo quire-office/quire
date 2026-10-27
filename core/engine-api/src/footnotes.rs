@@ -442,6 +442,43 @@ pub struct PageInfo {
     pub capacity_bands: u32,
 }
 
+/// R7：表格格內錨點 → 掛載頁（LO 口徑：引用跨頁切片跟**首現頁**）。
+///
+/// 背景：格內段落的文字由表格切片繪製、不進正文流行程（`build_flow` 的
+/// 「表格內部段落流失權」契約），故 [`find_anchor_line`] 對格內錨點**必然**
+/// 找不到行——舊行為整條落「文件最後一頁」（form_footnotes 實測：註文壓在
+/// p4，LO 掛 p1 頁腳）。本函式補上「表格段→頁」這一段映射：
+/// - `slot_of_para[p]`＝段落 p 所属表格槽的下標（engine 由 `table_slots()` 的
+///   `para_start..para_end` 反查；`usize::MAX`＝非表格段，走流行程原路徑）；
+/// - `header_of_slot[s]`＝槽 s 的錨點段 index（＝ `TableSlot::para_start`，
+///   與 `TablePlacement::anchor_para` 蓋章同源）；
+/// - 錨點段屬槽 s ⇒ 回**最前**一個 `anchor_para == header_of_slot[s]` 的
+///   `TablePlacement` 所在頁（切片跨頁時即首現頁）。不讀 `starts_table`：
+///   該旗標標的是「切片起於表格首列首帶」，與「本槽在本頁首現」在首列
+///   超頁高／跨節重排時可分離，段歸屬口徑（與 packer 排槽同源）才可靠。
+///
+/// `R7_BUGGY=1` 回塞鎖（照 L2_BUGGY／R2_BUGGY／K4D_BUGGY 先例）：本函式恒回
+/// `None`，退回「格內註腳落末頁」舊態——紅燈必紅。
+pub fn table_anchor_page(
+    pages: &[quire_layout::Page],
+    anchor: &Anchor,
+    slot_of_para: &[usize],
+    header_of_slot: &[usize],
+) -> Option<usize> {
+    if std::env::var_os("R7_BUGGY").is_some() {
+        return None;
+    }
+    let slot = *slot_of_para.get(anchor.para)?;
+    if slot == usize::MAX || slot >= header_of_slot.len() {
+        return None;
+    }
+    let header = header_of_slot[slot];
+    pages
+        .iter()
+        .find(|page| page.tables.iter().any(|t| t.anchor_para == header))
+        .map(|page| page.index.min(pages.len() - 1))
+}
+
 /// 錨點記號的發射樣式（engine 由該 anchor run 的級聯有效值餵入）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MarkStyle {
@@ -472,6 +509,43 @@ pub fn layout_notes(
     styles: &[MarkStyle],
     rounds: usize,
 ) -> NoteLayout {
+    layout_notes_with_tables(
+        pages,
+        info,
+        anchors,
+        entries,
+        note_of_anchor,
+        body_size_pt,
+        styles,
+        rounds,
+        &[],
+        &[],
+    )
+}
+
+/// 同 [`layout_notes`]，外加「表格段→掛載頁」對位鏈（R7）。
+///
+/// `slot_of_para`／`header_of_slot` 由 engine 以 `LayoutEngine::table_slots()`
+/// 構造（見 [`table_anchor_page`]）。定位順序改為：
+/// 1. 流行程找行（既有口徑，正文錨點逐位元組不變）；
+/// 2. 找不到行且錨點段在表格槽內 ⇒ **引用首現頁**（表格切片歸屬）；
+/// 3. 仍找不到 ⇒ 落最後一頁（既有兜底：表格已被拔除／索引越界等邊界）。
+///
+/// 記號（`AnchorMark`）口徑不動：格內記號的欄內座標投影屬後續卡，這裡
+/// 不虛構座標（老實不發記號，與舊態一致）。
+#[allow(clippy::too_many_arguments)] // 同 layout_notes：版面事實/錨點/條目/映射/樣式/表格對位皆必要輸入
+pub fn layout_notes_with_tables(
+    pages: &[quire_layout::Page],
+    info: &[PageInfo],
+    anchors: &[Anchor],
+    entries: &[NoteEntry],
+    note_of_anchor: &[usize],
+    body_size_pt: f32,
+    styles: &[MarkStyle],
+    rounds: usize,
+    slot_of_para: &[usize],
+    header_of_slot: &[usize],
+) -> NoteLayout {
     let mut per_page: Vec<Vec<usize>> = vec![Vec::new(); pages.len()];
     let mut marks: Vec<Vec<AnchorMark>> = vec![Vec::new(); pages.len()];
     for (ai, a) in anchors.iter().enumerate() {
@@ -495,8 +569,13 @@ pub fn layout_notes(
         );
         let (page_idx, mark) = match hit {
             Some((pi, m)) => (pi, Some(m)),
-            // (2) 定位失敗：註腳落末頁、記號不發。
-            None => (pages.len().saturating_sub(1), None),
+            // (2) 流行程無行：格內錨點改走表格切片對位（引用首現頁；記號
+            //     口徑不動——欄內座標投影屬後續卡，不虛構）。
+            None => match table_anchor_page(pages, a, slot_of_para, header_of_slot) {
+                Some(pi) => (pi, None),
+                // (3) 定位失敗：註腳落末頁、記號不發。
+                None => (pages.len().saturating_sub(1), None),
+            },
         };
         if per_page[page_idx].contains(&ni) {
             continue; // (3) 同頁同則只一條（記號亦只一條）。
