@@ -30,7 +30,6 @@ const BOXES: [&str; 5] = [
 #[derive(Debug, Clone)]
 struct T {
     text: String,
-    x: f32,
     y: f32,
     size: f32,
     color: u32,
@@ -50,7 +49,6 @@ fn texts(eng: &Engine) -> Vec<T> {
         .iter()
         .filter_map(|it| match it {
             DrawItem::Text {
-                x,
                 y,
                 size_pt,
                 color_argb,
@@ -58,7 +56,6 @@ fn texts(eng: &Engine) -> Vec<T> {
                 ..
             } if !text.trim().is_empty() => Some(T {
                 text: text.trim().to_string(),
-                x: *x,
                 y: *y,
                 size: *size_pt,
                 color: *color_argb,
@@ -79,10 +76,7 @@ fn box_indexes(items: &[T]) -> Vec<usize> {
     let mut out = Vec::with_capacity(items.len());
     let mut cur = 0usize;
     for t in items {
-        let bi = starts
-            .iter()
-            .rposition(|&s| cur >= s)
-            .unwrap_or(0);
+        let bi = starts.iter().rposition(|&s| cur >= s).unwrap_or(0);
         out.push(bi);
         cur += t.text.chars().count() + 1;
     }
@@ -129,7 +123,8 @@ fn r5_txbx_no_midword_homogeneous_white_ellipse() {
                 idxs.iter().map(|&i| &items[i]).collect::<Vec<_>>()
             );
             assert_eq!(
-                items[i].color, first.color,
+                items[i].color,
+                first.color,
                 "框「{phrase}」顏色不同質：{:?}",
                 idxs.iter().map(|&i| &items[i]).collect::<Vec<_>>()
             );
@@ -169,7 +164,10 @@ fn r5_txbx_extraction_order_is_lo() {
 
     // 群組兩框（Where 383pt 先於 group 352pt）——LO 內容流把 Where 排在
     // 「A group of shapes」之前；y-sort 會顛倒（R2 主兇）。
-    let where_pos = items.iter().position(|t| t.text.starts_with("Where some")).unwrap();
+    let where_pos = items
+        .iter()
+        .position(|t| t.text.starts_with("Where some"))
+        .unwrap();
     let group_pos = items
         .iter()
         .position(|t| t.text == "A group of shapes")

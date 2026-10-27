@@ -53,6 +53,11 @@ pub const EMU_PER_PT: f64 = 12_700.0;
 /// 在下游 `(h/line_h).ceil() as u32` 爆量→分頁迴圈 OOM，源头擋掉最乾淨。
 const MAX_OOXML_LONG: f64 = i64::MAX as f64;
 
+/// R5：serde 空值不外露（`txbx_start == 0` 等同舊資料）。
+fn is_zero_usize(v: &usize) -> bool {
+    *v == 0
+}
+
 /// 圖片佔位投影：扁平段落序列第 `para_index` 段內的一個圖片/圖形框。
 ///
 /// 只讀投影（段落以索引引用，與 `Block::Paragraph{index}` 同款）；佔位
@@ -108,6 +113,18 @@ pub struct InlineImage {
     /// serde default＋空值不外露＝無框圖檔的序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub txbx_texts: Vec<String>,
+    /// R5：本框文字在**宿主段落** `Paragraph::txbx_texts` 展平清單中的起始
+    /// 索引（與 `txbx_runs` 同序；跨圖逐項展平由解析層蓋章）。發射層據此
+    /// 取本框自帶的 run 組，取代舊「全域 txbx index 撞每圖一組」的錯位。
+    /// serde default＋0 不外露＝無文字框檔案的序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub txbx_start: usize,
+    /// R5：框內每個 `w:txbxContent` 子框的段落數（文件序）。只有 DrawingML
+    /// 群組（`wpg:wgp` 內多個 `wps:wsp`）會有多項；LO 內容流把群組子框以
+    /// **反向文件序**寫入 PDF（shapes-with-text 實據：Where 先於 rightArrow），
+    /// 發射層據此對齊抽取序。單子框／VML 群組維持空＝舊行為零擾動。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub txbx_children: Vec<usize>,
     // ---- K4c：填充／描邊／虛線／框內幾何（全部 serde default；欄位不存在
     // ＝None＝舊行為，舊顯示列表 JSON 與序列化位元組零位移）----
     /// 填色（0xAARRGGBB）：`v:fill/@color` > `o:fillcolor`（VML）；
@@ -817,6 +834,8 @@ struct Pending {
     txbx_in_t: bool,
     /// 框內 `w:p` 開閉深度（完結時 flush txbx_cur）。
     txbx_para_depth: usize,
+    /// R5：框內每個 `w:txbxContent` 子框的段落數（DrawingML 群組子框序用）。
+    txbx_children: Vec<usize>,
     // ---- K4c：填色／描邊／框內幾何累積（首見為準，與 w/h 同款口徑）----
     /// `v:fill/@color`（主）與 DrawingML `spPr/solidFill/srgbClr`。
     fill: Option<u32>,
@@ -908,6 +927,7 @@ impl Pending {
             txbx_cur: String::new(),
             txbx_in_t: false,
             txbx_para_depth: 0,
+            txbx_children: Vec::new(),
             fill: None,
             fill_attr: None,
             filled_f: false,
@@ -963,6 +983,10 @@ struct DrawingParser {
     /// K4e2：`w:txbxContent` 文字框子樹深度。>0 時其內 `w:p` **不入扁平口徑**
     /// （主解析器改掛外層段落的 `txbx_texts`）——四解析器同口徑鐵律的改寫點。
     txbx_depth: usize,
+    /// R5：宿主段落 → 已完結候選累積的框內段落數（含不受理候選）。發射層的
+    /// `txbx_texts` 是跨圖展平的，本游標在解析層逐框蓋章 `txbx_start`，讓
+    /// 「第 N 框」對到自己的 run 組，不再錯採前框樣式。
+    txbx_seen: Vec<usize>,
     /// `mc:AlternateContent` 巢狀快照（錯置標籤不致 fb 卡死，同主解析器）。
     ac_stack: Vec<usize>,
     /// K4d 防過抑回塞鎖（照 L2-cellruns `L2_BUGGY` 先例）：`K4D_BUGGY=1` 時
@@ -986,6 +1010,7 @@ impl DrawingParser {
             skip_tag: None,
             fb: 0,
             txbx_depth: 0,
+            txbx_seen: Vec::new(),
             ac_stack: Vec::new(),
             buggy: std::env::var("K4D_BUGGY").is_ok(),
         }
@@ -997,6 +1022,14 @@ impl DrawingParser {
 
     /// 完結落表：尺寸齊備才採納（extent 缺／非法＝老實不採納，不虛構幾何）。
     fn push_pending(&mut self, p: &Pending) {
+        // R5：先在宿主段落的展平清單裡蓋章本框起點，再推進游標——不受理
+        // 候選（缺 extent）也照樣計數，才與主解析器 `attach_txbx` 的批次
+        // 累積序對齊（否則後續框的 run 會整體前移）。
+        if self.txbx_seen.len() <= p.para {
+            self.txbx_seen.resize(p.para + 1, 0);
+        }
+        let txbx_start = self.txbx_seen[p.para];
+        self.txbx_seen[p.para] = txbx_start + p.txbx.len();
         let (Some(w), Some(h)) = (p.w, p.h) else {
             return;
         };
@@ -1017,6 +1050,8 @@ impl DrawingParser {
             pos_y_pct: p.pos_y_pct,
             overlap: p.overlap,
             txbx_texts: p.txbx.clone(),
+            txbx_start,
+            txbx_children: p.txbx_children.clone(),
             // 卡片契約 2 優先序：v:fill/@color（p.fill）> shape 屬性
             // fillcolor/o:fillcolor（p.fill_attr）> docDefaults（未接＝不發）。
             fill_argb: p.fill.or(p.fill_attr),
@@ -1182,6 +1217,13 @@ impl DrawingParser {
 
         // ---- K4e2：txbxContent 深度追蹤（先於一切分支；此處 fb 必為 0）----
         if name == b"txbxContent" && !empty {
+            if self.txbx_depth == 0 && self.skip_tag.is_none() {
+                // R5：新子框起點——只記 DrawingML 候選（`wpg:wgp` 群組子框）；
+                // VML 群組維持空（LO 對 VML 群組的抽取序未見反向實據，不動）。
+                if let Some(g) = self.graphic.as_mut() {
+                    g.txbx_children.push(0);
+                }
+            }
             self.txbx_depth += 1;
         }
 
@@ -1687,6 +1729,7 @@ impl DrawingParser {
         }
         // ---- K4e2：框內 p／t 完結——文字 flush 進宿主候補的 txbx ----
         if self.txbx_depth > 0 && matches!(name, b"p" | b"t") {
+            let td = self.txbx_depth;
             if let Some(v) = self.vml.as_mut() {
                 if name == b"t" {
                     v.txbx_in_t = false;
@@ -1704,6 +1747,13 @@ impl DrawingParser {
                     g.txbx_para_depth = g.txbx_para_depth.saturating_sub(1);
                     if g.txbx_para_depth == 0 {
                         g.txbx.push(std::mem::take(&mut g.txbx_cur));
+                        // R5：本子框（頂層 txbxContent）每 flush 一段就累加；
+                        // 巢狀框（depth>1）不計入外層子框統計。
+                        if td == 1 {
+                            if let Some(c) = g.txbx_children.last_mut() {
+                                *c += 1;
+                            }
+                        }
                     }
                 }
             }

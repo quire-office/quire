@@ -1364,7 +1364,7 @@ impl Engine {
         // 條目區：自分隔線佔帶之後起（margin_top ＋ 佔帶×帶尺）。
         let top0 = geo.margin_top_pt + footnotes::endnote_sep_bands(band) as f32 * band;
         self.push_endnote_item_text(&mut out, items, geo.margin_left_pt, top0, band);
-        sort_display_items(&mut out);
+        sort_display_items(&mut out, &[]);
         Some(PageDisplayList {
             page,
             width_pt: geo.page_w_pt,
@@ -1485,6 +1485,30 @@ impl Engine {
         // K4c-image 像素池：同 K4e2 紀律（每頁一份、消費式），三路徑
         // （表格切片→正文流→浮動）共用一池——同一張圖只發一次真像素。
         let mut px_used = vec![false; self.image_pixels.len()];
+        // R5（R2）：多框宿主段的框內文字群組鍵。宿主段落 → 有實文字的框數
+        // （≥2 才啟用，單框維持舊 y-sort）；宿主段末行 y 作群組錨點，讓框內
+        // 文字落在宿主正文之後、後續段落之前。`txbx_keys` 逐項蓋章後交給
+        // `sort_display_items`，不再被 y-sort 打散。
+        let mut txbx_host_counts: HashMap<usize, usize> = HashMap::new();
+        for (hp, b) in &self.shape_boxes {
+            if b.txbx_texts.iter().any(|t| !t.trim().is_empty()) {
+                *txbx_host_counts.entry(*hp).or_insert(0) += 1;
+            }
+        }
+        let mut txbx_host_y: HashMap<usize, f32> = HashMap::new();
+        for (i, l) in p.lines.iter().enumerate() {
+            let band = p.line_bands.get(i).copied().unwrap_or(i as u32) as f32;
+            let ly = p.margin_top_pt + band * line_h;
+            txbx_host_y
+                .entry(l.para_index)
+                .and_modify(|e| {
+                    if ly > *e {
+                        *e = ly;
+                    }
+                })
+                .or_insert(ly);
+        }
+        let mut txbx_keys: Vec<(usize, f32, i64)> = Vec::new();
         // 底層先畫表格（填色＋框線＋格內文字），再疊正文行；最後對「文字項」
         // 依 (y, x) 幾何閱讀序重排——跨表格/正文統一由上而下、由左而右。
         // 填色與框線保持推入序（穩定排序 key 同鍵，不互相顛倒遮蓋次序）。
@@ -1547,6 +1571,7 @@ impl Engine {
             }
             if let Some((bi, (_, box_im))) = hit {
                 box_used[bi] = true;
+                let start = items.len();
                 emit_txbx_texts(
                     &mut items,
                     p.margin_left_pt,
@@ -1554,13 +1579,20 @@ impl Engine {
                     im.w_pt,
                     im.h_pt,
                     &box_im.txbx_texts,
-                    paras
-                        .get(im.para)
-                        .map(|pp| pp.txbx_runs.as_slice())
-                        .unwrap_or(&[]),
+                    txbx_runs_for(paras.get(im.para), box_im),
                     size,
                     line_h,
                     Some(box_im),
+                );
+                push_txbx_keys(
+                    &mut txbx_keys,
+                    &items,
+                    start,
+                    im.para,
+                    box_im.txbx_start,
+                    &txbx_host_counts,
+                    &txbx_host_y,
+                    y,
                 );
             }
         }
@@ -1586,6 +1618,7 @@ impl Engine {
             }
             if let Some((bi, (_, b))) = hit {
                 box_used[bi] = true;
+                let start = items.len();
                 emit_txbx_texts(
                     &mut items,
                     fm.x_pt,
@@ -1593,13 +1626,20 @@ impl Engine {
                     fm.w_pt,
                     fm.h_pt,
                     &b.txbx_texts,
-                    paras
-                        .get(fm.para)
-                        .map(|pp| pp.txbx_runs.as_slice())
-                        .unwrap_or(&[]),
+                    txbx_runs_for(paras.get(fm.para), b),
                     size,
                     line_h,
                     Some(b),
+                );
+                push_txbx_keys(
+                    &mut txbx_keys,
+                    &items,
+                    start,
+                    fm.para,
+                    b.txbx_start,
+                    &txbx_host_counts,
+                    &txbx_host_y,
+                    fm.y_pt,
                 );
             }
         }
@@ -1637,7 +1677,7 @@ impl Engine {
         }
         // 穩定排序：非文字項（填色/框線）同鍵保持原序且恆在前；文字項依基線 y
         // 再依 x 排列，讓「正文→表格→正文」的閱讀序與 PDF 抽取端一致。
-        sort_display_items(&mut items);
+        sort_display_items(&mut items, &txbx_keys);
         Some(PageDisplayList {
             page,
             width_pt: p.width_pt,
@@ -2238,6 +2278,81 @@ fn cascade_paragraphs(
     (eff_all, metrics, spacings, marker_chars)
 }
 
+/// R5（R1）：取本框自帶的 run 組——解析層已在宿主段落 `txbx_texts` 的展平
+/// 清單上蓋章 `txbx_start`（與 `txbx_runs` 同序），據此切片即「逐框對位」，
+/// 不再用全域 txbx index 去撞每圖一組的 run（舊缺陷：白字框採到首框黑字、
+/// 錯位碼點把整行在詞中鋸開）。
+///
+/// 容錯：起點越界或文字對不上（例如錯置 pict 被 K4d 抑制、解析游標未推進）
+/// 時，退回在宿主段落裡按**完整文字片段**循序搜尋；仍找不到＝空 run 組
+/// （老實退預設樣式，絕不串段）。`R5_R1_BUGGY=1` 還原舊行為供紅燈回塞。
+fn txbx_runs_for<'a>(
+    para: Option<&'a quire_ooxml::Paragraph>,
+    box_im: &quire_ooxml::InlineImage,
+) -> &'a [Vec<quire_ooxml::Run>] {
+    let Some(p) = para else {
+        return &[];
+    };
+    if box_im.txbx_texts.is_empty() {
+        return &[];
+    }
+    if std::env::var_os("R5_R1_BUGGY").is_some() {
+        // 回塞鎖：舊路徑＝整段合併的 run 清單（發射端再以每框 index 取樣）。
+        return p.txbx_runs.as_slice();
+    }
+    // VML 候選解析層不蓋 children（見 drawing.rs txbxContent 起點）——維持舊
+    // 「整段合併 run」口徑；否則逐 run 切段會把 VML 框的整句拆成多個文字項
+    // （fdo76591 的 BELVIDERE 綠燈鎖：整句必須同一個 Text 項）。
+    if box_im.txbx_children.is_empty() {
+        return p.txbx_runs.as_slice();
+    }
+    let n = box_im.txbx_texts.len();
+    let start = box_im.txbx_start;
+    if let (Some(ts), Some(rs)) = (
+        p.txbx_texts.get(start..start + n),
+        p.txbx_runs.get(start..start + n),
+    ) {
+        if ts == box_im.txbx_texts.as_slice() {
+            return rs;
+        }
+    }
+    // 起點錯位（有候選被抑制、解析游標沒前進）：按文字內容循序找回。
+    if n <= p.txbx_texts.len() {
+        for pos in 0..=(p.txbx_texts.len() - n) {
+            if p.txbx_texts[pos..pos + n] == box_im.txbx_texts {
+                if let Some(rs) = p.txbx_runs.get(pos..pos + n) {
+                    return rs;
+                }
+            }
+        }
+    }
+    &[]
+}
+
+/// R5（R2）：框內 TEXT 項的抽取序——把子框按解析層給的段落數切段；DrawingML
+/// 群組多子框時依 LO 內容流**反向文件序**（shapes-with-text 實據：Where 先於
+/// rightArrow），群組內各段仍保文件序。單子框／VML＝文件序。
+fn txbx_text_order(n: usize, children: &[usize]) -> Vec<usize> {
+    if std::env::var_os("R5_R2_BUGGY").is_some() {
+        return (0..n).collect();
+    }
+    let sum: usize = children.iter().sum();
+    if children.len() <= 1 || sum != n {
+        return (0..n).collect();
+    }
+    let mut spans = Vec::with_capacity(children.len());
+    let mut at = 0usize;
+    for &c in children {
+        spans.push((at, at + c));
+        at += c;
+    }
+    let mut order = Vec::with_capacity(n);
+    for &(a, b) in spans.iter().rev() {
+        order.extend(a..b);
+    }
+    order
+}
+
 /// K4e2：把宿主段落的 `txbx_texts` 發射進 shape 佔位框（LO 同款語義：
 /// 框內文字按框寬斷行、落在框內；框本身仍由 `emit_image_placeholder` 撐位）。
 /// 字級＝文件基準、x 內縮 3pt（內邊距近似）；**不做高度鉗**——寧可溢出框
@@ -2307,94 +2422,111 @@ fn emit_txbx_texts(
         }
     }
 
+    if texts.is_empty() {
+        return;
+    }
+    // ---- R5（R2）：先按文件序排好各段 block（座標／換行照舊），再依
+    // `txbx_text_order` 推入 items——群組子框只改抽取序，文字視覺落點
+    // （y 連增）不被搬動。單子框／VML 的 order＝0..n，推入序與舊碼逐位相同。
+    let order = txbx_text_order(
+        texts.len(),
+        shape.map(|b| b.txbx_children.as_slice()).unwrap_or(&[]),
+    );
+    let mut blocks: Vec<Vec<DrawItem>> = Vec::with_capacity(texts.len());
+
     // ---- K4c 契約 7：layout-flow:vertical → 逐字堆疊（y 單調、x 依框右緣
     // 起欄；既有 DrawItem::Text 逐字發射，零新變體）。欄寬取段字級近似。----
     let vertical = shape.is_some_and(|b| b.txbx_vertical);
     if vertical {
         for (ti, t) in texts.iter().enumerate() {
-            if t.is_empty() {
-                continue;
-            }
-            let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
-            let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
-            let (flags, color_argb, _) =
-                own_runs
+            let mut block: Vec<DrawItem> = Vec::new();
+            if !t.is_empty() {
+                let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+                let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+                let (flags, color_argb, _) =
+                    own_runs
+                        .first()
+                        .map(run_style)
+                        .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
+                let fam = own_runs
                     .first()
-                    .map(run_style)
-                    .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
-            let fam = own_runs
-                .first()
-                .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
-            let sz_eff = seg_size.max(1.0);
-            // 欄起點＝框右緣往內退 inset_r 再退一欄寬（一個字 Advance 近似）。
-            let col_w = TextMeasurer::new(sz_eff).text_width("n").max(sz_eff * 0.6);
-            let col_x = (bx + bw - inset_r - col_w).max(bx);
-            let step = (sz_eff * 1.2).max(1.0);
-            let mut yy = inner_y;
-            for c in t.chars() {
-                if yy > inner_y + inner_h + step {
-                    break; // 超出框高：老實停發（不溢出到別頁別框）
-                }
-                items.push(DrawItem::Text {
-                    x: col_x,
-                    y: yy,
-                    size_pt: sz_eff,
-                    flags,
-                    color_argb,
-                    family: fam.clone(),
-                    text: c.to_string(),
-                });
-                yy += step;
-            }
-        }
-        return;
-    }
-
-    if texts.is_empty() {
-        return;
-    }
-    let mut yy = inner_y;
-    for (ti, t) in texts.iter().enumerate() {
-        let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
-        if t.trim().is_empty() {
-            // 全空白／空段：有 run 就照發（HC031：框內只有大字号空白 run，
-            // 樣式宣告是實內容；KP 斷行會 trim_end 吞掉純空白行，故繞過
-            // break_lines 逐 run 直接發射一個佔位文字項），無 run＝純空白帶。
-            if !own_runs0.is_empty() {
-                let mut xx = inner_x;
-                for r in own_runs0 {
-                    let (flags, color_argb, sz) = run_style(r);
-                    let fam = select_text_family(r.effective_fonts.as_ref(), &r.text);
-                    let sz_eff = sz.unwrap_or(size_pt);
-                    items.push(DrawItem::Text {
-                        x: xx,
+                    .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
+                let sz_eff = seg_size.max(1.0);
+                // 欄起點＝框右緣往內退 inset_r 再退一欄寬（一個字 Advance 近似）。
+                let col_w = TextMeasurer::new(sz_eff).text_width("n").max(sz_eff * 0.6);
+                let col_x = (bx + bw - inset_r - col_w).max(bx);
+                let step = (sz_eff * 1.2).max(1.0);
+                let mut yy = inner_y;
+                for c in t.chars() {
+                    if yy > inner_y + inner_h + step {
+                        break; // 超出框高：老實停發（不溢出到別頁別框）
+                    }
+                    block.push(DrawItem::Text {
+                        x: col_x,
                         y: yy,
                         size_pt: sz_eff,
                         flags,
                         color_argb,
-                        family: fam,
-                        text: r.text.clone(),
+                        family: fam.clone(),
+                        text: c.to_string(),
                     });
-                    xx += TextMeasurer::new(sz_eff).text_width(&r.text);
+                    yy += step;
                 }
             }
-            yy += line_h;
-            continue;
+            blocks.push(block);
         }
-        // 段級字級：本框段首個宣告字級的 run（無＝文件基準）。斷行尺與發射
-        // 尺同用本段字級（正文 cascade_paragraphs 同款思路的框內近似）。
-        let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
-        let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
-        let m = TextMeasurer::new(seg_size.max(size_pt));
-        // 行→run 邊界對位借用一個「假段落」（runs＝本框段 runs），讓
-        // emit_line_run_items 直接產出粗/斜/色/字級/字型族的同質段。
-        let fake = quire_ooxml::Paragraph {
-            runs: own_runs.to_vec(),
-            ..Default::default()
-        };
-        for l in quire_layout::break_lines(t, inner_w, &m) {
-            emit_line_run_items(items, inner_x, yy, seg_size, &l, Some(&fake));
-            yy += line_h;
+    } else {
+        let mut yy = inner_y;
+        for (ti, t) in texts.iter().enumerate() {
+            let mut block: Vec<DrawItem> = Vec::new();
+            let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+            if t.trim().is_empty() {
+                // 全空白／空段：有 run 就照發（HC031：框內只有大字号空白 run，
+                // 樣式宣告是實內容；KP 斷行會 trim_end 吞掉純空白行，故繞過
+                // break_lines 逐 run 直接發射一個佔位文字項），無 run＝純空白帶。
+                if !own_runs0.is_empty() {
+                    let mut xx = inner_x;
+                    for r in own_runs0 {
+                        let (flags, color_argb, sz) = run_style(r);
+                        let fam = select_text_family(r.effective_fonts.as_ref(), &r.text);
+                        let sz_eff = sz.unwrap_or(size_pt);
+                        block.push(DrawItem::Text {
+                            x: xx,
+                            y: yy,
+                            size_pt: sz_eff,
+                            flags,
+                            color_argb,
+                            family: fam,
+                            text: r.text.clone(),
+                        });
+                        xx += TextMeasurer::new(sz_eff).text_width(&r.text);
+                    }
+                }
+                yy += line_h;
+                blocks.push(block);
+                continue;
+            }
+            // 段級字級：本框段首個宣告字級的 run（無＝文件基準）。斷行尺與發射
+            // 尺同用本段字級（正文 cascade_paragraphs 同款思路的框內近似）。
+            let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+            let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+            let m = TextMeasurer::new(seg_size.max(size_pt));
+            // 行→run 邊界對位借用一個「假段落」（runs＝本框段 runs），讓
+            // emit_line_run_items 直接產出粗/斜/色/字級/字型族的同質段。
+            let fake = quire_ooxml::Paragraph {
+                runs: own_runs.to_vec(),
+                ..Default::default()
+            };
+            for l in quire_layout::break_lines(t, inner_w, &m) {
+                emit_line_run_items(&mut block, inner_x, yy, seg_size, &l, Some(&fake));
+                yy += line_h;
+            }
+            blocks.push(block);
+        }
+    }
+    for &ti in &order {
+        if let Some(b) = blocks.get_mut(ti) {
+            items.append(b);
         }
     }
 }
@@ -3042,10 +3174,7 @@ fn push_frag_items(
                         im.w_pt,
                         im.h_pt,
                         &b.txbx_texts,
-                        paragraphs
-                            .get(*bp)
-                            .map(|pp| pp.txbx_runs.as_slice())
-                            .unwrap_or(&[]),
+                        txbx_runs_for(paragraphs.get(*bp), b),
                         size,
                         line_h,
                         Some(b),
@@ -3482,16 +3611,68 @@ fn note_chain(
 /// 抽取端一致。
 ///
 /// 正文頁與尾註頁共用本函式（同一份閱讀序口徑）。
-fn sort_display_items(items: &mut [DrawItem]) {
-    items.sort_by(|a, b| {
-        let key = |it: &DrawItem| match it {
+fn sort_display_items(items: &mut [DrawItem], txbx_keys: &[(usize, f32, i64)]) {
+    // R5（R2）：框內文字項帶群組鍵——主鍵取「宿主段落末行 y」（整數化後與
+    // 正文同尺度），同 y 時正文（kind 0）先於框內文（kind 1）；框內文再依
+    // （錨定圖文件序, 框內段序）排，不再被 y-sort 打散。無鍵（單框宿主／
+    // 表格切片／頁首尾）＝舊 y,x 口徑，零位移。
+    if txbx_keys.is_empty() {
+        items.sort_by_key(|it| match it {
             DrawItem::Text { x, y, .. } => {
                 (1i8, (*y * 4.0).round() as i64, (*x * 4.0).round() as i64)
             }
             _ => (0i8, 0, 0),
-        };
-        key(a).cmp(&key(b))
-    });
+        });
+        return;
+    }
+    let mut keymap: HashMap<usize, (f32, i64)> = HashMap::with_capacity(txbx_keys.len());
+    for &(i, ey, doc) in txbx_keys {
+        keymap.insert(i, (ey, doc));
+    }
+    let key = |i: usize| -> (i8, i64, i8, i64) {
+        match &items[i] {
+            DrawItem::Text { x, y, .. } => match keymap.get(&i) {
+                Some((ey, doc)) => (1, (*ey * 4.0).round() as i64, 1, *doc),
+                None => (1, (*y * 4.0).round() as i64, 0, (*x * 4.0).round() as i64),
+            },
+            _ => (0, 0, 0, 0),
+        }
+    };
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by_key(|&a| key(a));
+    let reordered: Vec<DrawItem> = order.iter().map(|&i| items[i].clone()).collect();
+    items.clone_from_slice(&reordered);
+}
+
+/// R5（R2）：把本次 `emit_txbx_texts` 推入的文字項蓋上群組鍵。只在宿主段落
+/// 掛 ≥2 個「有實文字」的框時啟用——單框宿主維持舊 y-sort（既有 1.0 檔零
+/// 擾動）。`R5_R2_BUGGY=1` 時完全不鍵＝舊 y-sort 回塞。
+#[allow(clippy::too_many_arguments)]
+fn push_txbx_keys(
+    keys: &mut Vec<(usize, f32, i64)>,
+    items: &[DrawItem],
+    start: usize,
+    host: usize,
+    img_ord: usize,
+    counts: &HashMap<usize, usize>,
+    host_y: &HashMap<usize, f32>,
+    fallback_y: f32,
+) {
+    if std::env::var_os("R5_R2_BUGGY").is_some() {
+        return;
+    }
+    if counts.get(&host).copied().unwrap_or(0) < 2 {
+        return;
+    }
+    let ey = host_y.get(&host).copied().unwrap_or(fallback_y) + 0.001;
+    let base = host as i64 * 1_000_000_000 + img_ord as i64 * 1_000_000;
+    let mut seq = 0i64;
+    for (i, it) in items.iter().enumerate().skip(start) {
+        if matches!(it, DrawItem::Text { .. }) {
+            keys.push((i, ey, base + seq));
+            seq += 1;
+        }
+    }
 }
 
 /// 樣式級聯烘焙（t_5dfc8ac7：與正文同一條 `cascade_paragraphs` 路徑）。
