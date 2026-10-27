@@ -94,7 +94,11 @@ fn r2_body_rows_not_repeated() {
 #[test]
 fn r2_page_count_locked() {
     let eng = patho();
-    assert_eq!(eng.page_count(), 2, "patho 頁數＝2（M1-band 基線；重貼不得改頁數）");
+    assert_eq!(
+        eng.page_count(),
+        2,
+        "patho 頁數＝2（M1-band 基線；重貼不得改頁數）"
+    );
 }
 
 /// 零擾動守門（綠燈）：數據列全檔各發一次——重貼只加表頭、不得虛增他項。
@@ -103,12 +107,19 @@ fn r2_no_spurious_repeat() {
     let eng = patho();
     // 表頭「項目」發射次數恰＝頁數（每頁恰一次，不得同頁虛發多次）。
     let (n, _) = pages_with(&eng, "項目");
-    assert_eq!(n, eng.page_count(), "表頭「項目」每切片頁恰發一次（實際 {n}）");
+    assert_eq!(
+        n,
+        eng.page_count(),
+        "表頭「項目」每切片頁恰發一次（實際 {n}）"
+    );
     // 60 條資料列發射 48 次：每 5 列（5,10,…,60 共 12 列）首格是 vMerge
     // continue——ECMA 語義其內容渲染時不出現（goldens.rs 同款口徑），
     // 60−12＝48。重貼只加表頭，數據列不得再被重複。
     let (m, _) = pages_with(&eng, "跨頁資料列");
-    assert_eq!(m, 48, "數據列全檔共發 48 次＝每非 merge 列恰一次（實際 {m}）");
+    assert_eq!(
+        m, 48,
+        "數據列全檔共發 48 次＝每非 merge 列恰一次（實際 {m}）"
+    );
 }
 
 /// 守門（L3 鐵律＋卡面綠燈）：RA001 頁數維持 6 頁、delText
@@ -116,68 +127,11 @@ fn r2_no_spurious_repeat() {
 #[test]
 fn ra001_page_count_and_l3_locked() {
     let eng = ra001();
-    assert_eq!(eng.page_count(), 6, "RA001 頁數＝6（M1-band 基線；本卡不改頁數）");
+    assert_eq!(
+        eng.page_count(),
+        6,
+        "RA001 頁數＝6（M1-band 基線；本卡不改頁數）"
+    );
     let (deltext, _) = pages_with(&eng, "Chromatpgrams");
     assert_eq!(deltext, 1, "L3 delText 'Chromatpgrams' ×1 不得回退");
-}
-
-/// 診斷用（非斷言）：印出 patho 各頁表頭/數據列命中。
-#[test]
-fn diag_patho() {
-    let eng = patho();
-    println!("pages={}", eng.page_count());
-    for p in 0..eng.page_count() {
-        let dl = eng.page_display_list(p).expect("頁存在");
-        for it in &dl.items {
-            if let DrawItem::Text { text, x, y, .. } = it {
-                if text.contains('項') || text.contains('數') || text.contains("60") {
-                    println!("p{p} y={y:.1} x={x:.1} {text:?}");
-                }
-            }
-        }
-    }
-}
-
-/// 診斷用（非斷言）：patho 數據列發射全覽。
-#[test]
-fn diag_rows() {
-    let eng = patho();
-    let mut c = 0;
-    for p in 0..eng.page_count() {
-        let dl = eng.page_display_list(p).expect("頁存在");
-        for it in &dl.items {
-            if let DrawItem::Text { text, x, .. } = it {
-                if text.contains('列') {
-                    c += 1;
-                    if c <= 4 || text.contains("11") || text.contains("40") || text.contains("60") {
-                        println!("p{p} x={x:.1} {text:?}");
-                    }
-                }
-            }
-        }
-    }
-    println!("total={c}");
-}
-
-/// 診斷用（非斷言）：列舉缺號的資料列。
-#[test]
-fn diag_missing() {
-    let eng = patho();
-    let mut seen: Vec<usize> = Vec::new();
-    for p in 0..eng.page_count() {
-        let dl = eng.page_display_list(p).expect("頁存在");
-        for it in &dl.items {
-            if let DrawItem::Text { text, .. } = it {
-                if let Some(rest) = text.strip_prefix("跨頁資料列 ") {
-                    if let Ok(n) = rest.trim().parse::<usize>() {
-                        seen.push(n);
-                    }
-                }
-            }
-        }
-    }
-    seen.sort();
-    let missing: Vec<usize> = (1..=60).filter(|n| !seen.contains(n)).collect();
-    println!("seen={} missing={:?}", seen.len(), missing);
-    println!("range {:?}..{:?}", seen.first(), seen.last());
 }
