@@ -498,6 +498,7 @@ pub fn build_images(
                 h_pt: im.h_pt,
                 bands,
                 anchor,
+                page_pinned: im.page_pinned,
             }
         })
         .collect();

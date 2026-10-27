@@ -728,6 +728,10 @@ pub struct ImageBand {
     /// 浮動鎖點（Some＝不佔帶、不查容量，只記鎖點座標＋原點系；
     /// None＝inline 排帶）。
     pub anchor: Option<FloatingAnchor>,
+    /// R3：頁面釘定（VML `mso-position-*-relative:page|margin`＋center）。
+    /// true＝浮動圖附掛到「所屬 section 起始頁」，而非錨定段落流頁
+    /// （K5-diag §2.1 n751077 的 LO 真值語義）。
+    pub page_pinned: bool,
 }
 
 /// 鎖點原點系（ECMA-376 `wp:positionX/@relativeFrom` 的三檔近似分類）。
@@ -1549,11 +1553,19 @@ fn floating_attach_scans() -> usize {
     FLOATING_ATTACH_SCANS.with(|c| c.get())
 }
 
+/// R3 開關：頁面釘定浮動圖錨定「所屬 section 起始頁」。關閉＝回到舊行為
+/// （錨定段落流頁）——紅燈回塞驗證用，正式路徑恆 true。
+const R3_PINNED_SECTION_START: bool = true;
+
 /// 浮動圖片附掛（t_a1397522）：鎖點項不進流，分頁完成後按錨定段落所在頁
 /// 掛到該頁的 `floating_images`。段落 → 流項 → 頁：起頭 FlowPos 嚴格單調，
 /// partition_point 一步到位。錨定段落查無所在頁（未排/畸形）＝老實丟棄。
 /// **冪等全量重算**：先清空再附掛——增量重排（含重用尾段）後呼叫同一函數
 /// 即可讓鎖點跟隨新頁界，永不出現雙掛。
+///
+/// R3：`page_pinned` 項（VML 頁面釘定）改掛「所屬 section 起始頁」——LO
+/// 對 `mso-position-*-relative:page|margin`＋center 的框固定在節首頁繪製，
+/// 不隨錨定段落（含 para-level sectPr 的段落）落到次頁（n751077 3→2 頁）。
 fn attach_floating_images(
     pages: &mut [Page],
     starts: &[FlowPos],
@@ -1603,9 +1615,18 @@ fn attach_floating_images(
         // 段落**起頭頁**（S2-7）：頁 p 涵蓋 [starts[p], starts[p+1])，段落首行
         // 位址 (fi,0,0) 落在哪個區間就掛哪頁。舊式 `s.0 <= fi` 只比流項下標
         // ——跨頁段落的後續頁起頭（同 fi、更大 li）也命中，被鉗到末頁。
-        let page = starts
+        let mut page = starts
             .partition_point(|s| *s <= (fi, 0, 0))
             .saturating_sub(1);
+        // R3：頁面釘定浮動圖 → 回退到所屬 section 的起始頁（頁的
+        // `section_id` 是該頁起頭所屬節；同 id 的連續頁往前收）。
+        if R3_PINNED_SECTION_START && im.page_pinned {
+            if let Some(sid) = pages.get(page).map(|p| p.section_id) {
+                while page > 0 && pages[page - 1].section_id == sid {
+                    page -= 1;
+                }
+            }
+        }
         let Some(pg) = pages.get_mut(page) else {
             continue;
         };
@@ -3480,6 +3501,7 @@ mod tests {
             h_pt,
             bands: (h_pt / line_h).ceil().max(1.0) as u32,
             anchor: None,
+            page_pinned: false,
         }
     }
 
@@ -3598,6 +3620,40 @@ mod tests {
             fm.y_pt
         );
         assert_eq!(pages[0].line_bands, vec![0], "正文仍只佔 1 帶");
+    }
+
+    #[test]
+    fn page_pinned_floating_image_attaches_to_section_start_page() {
+        // R3（n751077 語義）：頁面釘定圖掛「所屬 section 起始頁」，不隨
+        // 錨定段落落到次頁。9 段×1 行＞7 帶容 ⇒ 段 8 落 p1；釘定仍掛 p0。
+        let p = img_params();
+        let line_h = p.line_h_pt();
+        let texts: Vec<String> = (0..9).map(|i| format!("行{i}")).collect();
+        let mut floats = vec![band(8, 20.0, line_h)];
+        floats[0].anchor = Some(FloatingAnchor {
+            x_pt: 10.0,
+            y_pt: 20.0,
+            x_frame: OriginFrame::Margin,
+            y_frame: OriginFrame::Margin,
+        });
+        floats[0].bands = 0;
+        floats[0].page_pinned = true;
+        let pls = layout_paragraphs(&texts, &p);
+        let (pages, _starts) = paginate_tables_images(&pls, &p, &[], &[], &floats);
+        let host_page = pages
+            .iter()
+            .position(|pg| pg.lines.iter().any(|l| l.para_index == 8))
+            .expect("錨定段落必有一頁");
+        assert!(host_page > 0, "前置 9 段應把錨定段推到第 2 頁");
+        assert_eq!(
+            pages[0].floating_images.len(),
+            1,
+            "頁面釘定應回掛 section 起始頁 p0"
+        );
+        assert!(
+            pages[host_page].floating_images.is_empty(),
+            "不得再掛錨定段落流頁"
+        );
     }
 
     #[test]

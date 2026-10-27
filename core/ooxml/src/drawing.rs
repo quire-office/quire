@@ -160,6 +160,13 @@ pub struct InlineImage {
     /// serde default＋空值不外露＝無此形態檔案的序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub embed_rids: Vec<String>,
+    /// R3：VML 頁面釘定（`mso-position-*-relative:page|margin`＋`center`
+    /// 的 `position:absolute` 群組）。true＝浮動圖的錨定頁取「所屬 section
+    /// 起始頁」而非錨定段落所在頁（LO 頁面釘定語義，K5-diag §2.1 n751077）。
+    /// 非頁面釘定的 VML 絕對定位（僅 margin-left/margin-top 偏移）維持
+    /// 錨定段落頁（fdo76591 實據）。serde default 保持舊投影位元組不變。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub page_pinned: bool,
 }
 
 impl InlineImage {
@@ -261,6 +268,135 @@ pub fn vml_style_wh(style: Option<&str>) -> (Option<f32>, Option<f32>) {
         }
     }
     (w, h)
+}
+
+/// R3 開關：VML `position:absolute` 絕對定位解析。關閉＝回到舊行為（VML
+/// 框一律 inline 佔帶）——紅燈回塞驗證用，正式路徑恆 true。
+const R3_VML_ABSOLUTE_ENABLED: bool = true;
+
+/// R3 開關：VML 頁面釘定浮動框（`mso-position-*-relative:page|margin`＋
+/// center）。關閉＝該類框退回舊 inline 佔帶（紅燈回塞驗證用；n751077
+/// 3 頁重現），正式路徑恆 true。與 `core/layout` 的
+/// `R3_PINNED_SECTION_START` 成對（一管採納、一管錨定頁）。
+const R3_VML_PAGE_PINNED_ENABLED: bool = true;
+
+/// VML style 偏移長度 → pt（**允許 0 與負值**；margin-left／margin-top 是
+/// 頁邊距原點外的位移，可為負＝版心外）。支援 pt/cm/in/mm/px，無單位按
+/// px（CSS 慣例；`margin-left:0` 在 n751077 實據即無單位）。非法／非有限
+/// 值 → None（不虛構座標）。
+fn vml_offset_to_pt(raw: &str) -> Option<f32> {
+    let v = raw.trim();
+    if v.is_empty() {
+        return None;
+    }
+    let digits_end = v
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+'))
+        .unwrap_or(v.len());
+    let (num_s, unit) = (
+        &v[..digits_end],
+        v[digits_end..].trim().to_ascii_lowercase(),
+    );
+    let num = num_s.trim().parse::<f64>().ok()?;
+    if !num.is_finite() || num.abs() > MAX_OOXML_LONG {
+        return None;
+    }
+    let pt = match unit.as_str() {
+        "" | "px" => num * 72.0 / 96.0,
+        "pt" => num,
+        "cm" => num * 72.0 / 2.54,
+        "in" => num * 72.0,
+        "mm" => num * 72.0 / 25.4,
+        _ => return None,
+    };
+    (pt as f32).is_finite().then_some(pt as f32)
+}
+
+/// R3：VML shape/group 的 `position:absolute` 定位採集（首見為準）。
+///
+/// 兩式（依 LO 實測優先序）：
+/// 1. `mso-position-{horizontal,vertical}:center|left|right|top|bottom` 搭配
+///    `mso-position-*-relative:page|margin`——頁面釘定（n751077 v:group
+///    實據）；記成 `pos_*_rel`＋`pos_*_align`，`page_pinned=true`。
+/// 2. `margin-left`／`margin-top` 偏移——原點＝版心左上（LO 換算為頁邊距
+///    原點＋偏移，fdo76591 三框實據）；記成 `pos_*_pt`＋rel="margin"。
+///
+/// 無 `position:absolute` 的 VML（K4a/K4c 既有語料）一概不動＝浮動旗標
+/// 零變化。子件（組內 rect）不覆寫已由外層 group 定下的定位（首見為準）。
+fn apply_vml_position(v: &mut Pending, e: &quick_xml::events::BytesStart) {
+    if !R3_VML_ABSOLUTE_ENABLED {
+        return;
+    }
+    // 定位一旦由外層 group 或前一同名候選定下即不再覆寫。
+    if v.pos_x_pt.is_some()
+        || v.pos_x_rel.is_some()
+        || v.pos_x_align.is_some()
+        || v.pos_y_pt.is_some()
+        || v.pos_y_rel.is_some()
+        || v.pos_y_align.is_some()
+    {
+        return;
+    }
+    let (_, _, kv) = vml_style_map(attr_local(e, b"style").as_deref());
+    if !style_lookup(&kv, "position").is_some_and(|p| p.trim().eq_ignore_ascii_case("absolute")) {
+        return;
+    }
+    let rel_of = |key: &str| style_lookup(&kv, key).map(|r| r.trim().to_ascii_lowercase());
+    let page_or_margin =
+        |r: Option<&String>| matches!(r.map(String::as_str), Some("page") | Some("margin"));
+    let h_rel = rel_of("mso-position-horizontal-relative");
+    let v_rel = rel_of("mso-position-vertical-relative");
+    let h_align =
+        style_lookup(&kv, "mso-position-horizontal").map(|a| a.trim().to_ascii_lowercase());
+    let v_align = style_lookup(&kv, "mso-position-vertical").map(|a| a.trim().to_ascii_lowercase());
+    let valid_h = |a: &str| matches!(a, "left" | "center" | "right" | "inside" | "outside");
+    let valid_v = |a: &str| matches!(a, "top" | "center" | "bottom" | "inside" | "outside");
+    // 頁面釘定判別（K5-diag §2.1）：水平與垂直都 relative page|margin 且
+    // 皆為 center → 錨定頁取所屬 section 起始頁。回塞開關關閉時，此類框
+    // 整支退回舊 inline 佔帶（不採納浮動），n751077 3 頁重現。
+    let pinned = page_or_margin(h_rel.as_ref())
+        && page_or_margin(v_rel.as_ref())
+        && h_align.as_deref() == Some("center")
+        && v_align.as_deref() == Some("center");
+    if pinned && !R3_VML_PAGE_PINNED_ENABLED {
+        return;
+    }
+    let mut positioned = false;
+    // 第 1 式：頁面釘定對齊（relative 限 page/margin）。
+    if page_or_margin(h_rel.as_ref()) {
+        if let Some(a) = h_align.as_deref().filter(|a| valid_h(a)) {
+            v.pos_x_rel = h_rel.clone();
+            v.pos_x_align = Some(a.to_string());
+            positioned = true;
+        }
+    }
+    if page_or_margin(v_rel.as_ref()) {
+        if let Some(a) = v_align.as_deref().filter(|a| valid_v(a)) {
+            v.pos_y_rel = v_rel.clone();
+            v.pos_y_align = Some(a.to_string());
+            positioned = true;
+        }
+    }
+    // 第 2 式：margin 偏移（第 1 式未定該軸時才退）。
+    if v.pos_x_rel.is_none() && v.pos_x_align.is_none() {
+        if let Some(x) = style_lookup(&kv, "margin-left").and_then(vml_offset_to_pt) {
+            v.pos_x_pt = Some(x);
+            v.pos_x_rel = Some("margin".to_string());
+            positioned = true;
+        }
+    }
+    if v.pos_y_rel.is_none() && v.pos_y_align.is_none() {
+        if let Some(y) = style_lookup(&kv, "margin-top").and_then(vml_offset_to_pt) {
+            v.pos_y_pt = Some(y);
+            v.pos_y_rel = Some("margin".to_string());
+            positioned = true;
+        }
+    }
+    if positioned {
+        v.floating = true;
+    }
+    if pinned {
+        v.page_pinned = true;
+    }
 }
 
 /// VML/OOXML 顏色字串 → 0xAARRGGBB。口徑（卡片契約 2）：
@@ -646,8 +782,11 @@ struct Pending {
     rids: Vec<String>,
     /// 產出目標是儲存格（建立時 tc 深度 > 0）而非正文段落。
     in_cell: bool,
-    /// 候選出自 `wp:anchor`（浮動）。
+    /// 候選出自 `wp:anchor`（浮動）或 VML `position:absolute`（R3）。
     floating: bool,
+    /// R3：VML 頁面釘定（mso-position 兩軸 page|margin＋center）——浮動
+    /// 圖錨定頁改取所屬 section 起始頁。
+    page_pinned: bool,
     /// VML：v:imagedata 出現過。
     vml_image: bool,
     /// VML：o:gfxdata（OLE 圖示）出現過。
@@ -746,6 +885,7 @@ impl Pending {
             rid: None,
             rids: Vec::new(),
             floating: false,
+            page_pinned: false,
             in_cell,
             vml_image: false,
             vml_gfxdata: false,
@@ -838,6 +978,7 @@ impl DrawingParser {
             w_pt: w,
             h_pt: h,
             floating: p.floating,
+            page_pinned: p.page_pinned,
             in_cell: p.in_cell,
             pos_x_pt: p.pos_x_pt,
             pos_x_rel: p.pos_x_rel.clone(),
@@ -922,7 +1063,7 @@ fn push_group_frame(v: &mut Pending, e: &quick_xml::events::BytesStart) {
                 let hv = style_lookup(&kv, "height").filter(|v| has_unit_suffix(v))?;
                 let (w, h) = (
                     vml_style_wh(Some(&format!("width:{wv}"))).0?,
-                    vml_style_wh(Some(&format!("height:{hv}"))).0?,
+                    vml_style_wh(Some(&format!("height:{hv}"))).1?,
                 );
                 // 外層組即佔位框：把 extent 留給候補（呼叫端在 w/h 缺時採用）。
                 v.w_from_group = Some(w);
@@ -1134,6 +1275,12 @@ impl DrawingParser {
                             map_child_shape(v, e);
                             apply_shape_style(v, e);
                         }
+                        // R3：VML 絕對定位只認最外層（group 自身或無組包裝的
+                        // 頂層 shape）；組內子件的 position:absolute 是組座標
+                        // 系宣告，不得取代外框鎖點（n751077 子 rect 實據）。
+                        if n == b"group" || v.coord_stack.is_empty() {
+                            apply_vml_position(v, e);
+                        }
                     }
                 }
                 _ => {}
@@ -1287,6 +1434,8 @@ impl DrawingParser {
                     let mut p = Pending::new(self.cur_para(), self.tc_depth > 0);
                     p.w = w;
                     p.h = h;
+                    // R3：裸 VML shape 的 position:absolute 同樣入鎖點。
+                    apply_vml_position(&mut p, e);
                     self.vml = Some(Box::new(p));
                 }
             }
@@ -2005,6 +2154,77 @@ mod tests {
         assert_eq!(imgs[0].w_pt.round(), 243.0);
         assert_eq!(imgs[0].h_pt.round(), 181.0);
         assert_eq!(imgs[0].embed_rid.as_deref(), Some("rId3"));
+    }
+
+    #[test]
+    fn vml_absolute_margin_offsets_become_floating() {
+        // R3 席1（fdo76591 實據）：position:absolute＋margin-left/margin-top
+        // → margin 原點系鎖點（LO 換算＝頁邊距原點＋偏移），浮動不佔帶。
+        let xml = doc(
+            r##"<w:p><w:r><w:pict><v:shape xmlns:v="v" style="position:absolute;left:0;margin-left:220.05pt;margin-top:554.45pt;width:99.95pt;height:100.2pt;z-index:251658752"><v:textbox><w:txbxContent><w:p><w:r><w:t>框</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>"##,
+        );
+        let imgs = read_images(xml.as_bytes());
+        assert_eq!(imgs.len(), 1);
+        assert!(imgs[0].floating, "position:absolute 必須採納為浮動");
+        assert_eq!(imgs[0].pos_x_rel.as_deref(), Some("margin"));
+        assert_eq!(imgs[0].pos_y_rel.as_deref(), Some("margin"));
+        assert!((imgs[0].pos_x_pt.unwrap() - 220.05).abs() < 1e-3);
+        assert!((imgs[0].pos_y_pt.unwrap() - 554.45).abs() < 1e-3);
+        assert!(!imgs[0].page_pinned, "margin 偏移不是頁面釘定");
+    }
+
+    #[test]
+    fn vml_negative_margin_offset_allowed() {
+        // 負偏移＝版心外（fdo76591 背板框 -13.95／-17.8 實據）。
+        let xml = doc(
+            r##"<w:p><w:r><w:pict><v:shape xmlns:v="v" style="position:absolute;margin-left:-13.95pt;margin-top:-17.8pt;width:567pt;height:733.65pt"><v:textbox><w:txbxContent><w:p/></w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>"##,
+        );
+        let imgs = read_images(xml.as_bytes());
+        assert_eq!(imgs.len(), 1);
+        assert!((imgs[0].pos_x_pt.unwrap() + 13.95).abs() < 1e-3);
+        assert!((imgs[0].pos_y_pt.unwrap() + 17.8).abs() < 1e-3);
+    }
+
+    #[test]
+    fn vml_position_absolute_pinned_center_group() {
+        // R3 席2（n751077 實據）：mso-position 兩軸 page|margin＋center →
+        // 頁面釘定（浮動＋page_pinned），中心對齊由 engine 依 frame 換算。
+        let xml = doc(
+            r##"<w:p><w:r><w:pict><v:group xmlns:v="v" style="position:absolute;margin-left:0;margin-top:0;width:611.95pt;height:9in;mso-position-horizontal:center;mso-position-horizontal-relative:page;mso-position-vertical:center;mso-position-vertical-relative:margin" coordorigin=",1440" coordsize="12239,12960"><v:rect style="left:1800;top:1440;width:8638;height:916"><v:textbox><w:txbxContent><w:p><w:r><w:t>TEXT1</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect></v:group></w:pict></w:r></w:p>"##,
+        );
+        let imgs = read_images(xml.as_bytes());
+        assert_eq!(imgs.len(), 1);
+        assert!(
+            (imgs[0].w_pt - 611.95).abs() < 0.1,
+            "group w={}",
+            imgs[0].w_pt
+        );
+        assert!(
+            (imgs[0].h_pt - 648.0).abs() < 0.1,
+            "group h={}",
+            imgs[0].h_pt
+        );
+        assert!(imgs[0].floating, "頁面釘定群組必須浮動");
+        assert!(imgs[0].page_pinned, "兩軸 page|margin＋center＝頁面釘定");
+        assert_eq!(imgs[0].pos_x_rel.as_deref(), Some("page"));
+        assert_eq!(imgs[0].pos_y_rel.as_deref(), Some("margin"));
+        assert_eq!(imgs[0].pos_x_align.as_deref(), Some("center"));
+        assert_eq!(imgs[0].pos_y_align.as_deref(), Some("center"));
+        assert_eq!(imgs[0].pos_x_pt, None, "center 不得被 margin-left:0 蓋掉");
+    }
+
+    #[test]
+    fn vml_without_absolute_stays_inline() {
+        // 零擾動守門：無 position:absolute 的 VML 圖（K4a/K4c 既有語料）
+        // floating 恆 false、不帶鎖點——R3 的採納門禁。
+        let xml = doc(
+            r##"<w:p><w:r><w:pict><v:shape xmlns:v="v" style="width:242.95pt;height:180.85pt;margin-left:10pt"><v:imagedata xmlns:r="r" r:id="rId3"/></v:shape></w:pict></w:r></w:p>"##,
+        );
+        let imgs = read_images(xml.as_bytes());
+        assert_eq!(imgs.len(), 1);
+        assert!(!imgs[0].floating, "無 position:absolute 不得變浮動");
+        assert_eq!(imgs[0].pos_x_pt, None);
+        assert!(!imgs[0].page_pinned);
     }
 
     #[test]

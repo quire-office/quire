@@ -7156,4 +7156,104 @@ mod tests {
             "零宣告檔後備帶尺不得細化：應 1 帶＝16.8pt，實得 {gap}"
         );
     }
+
+    // ---------------- R3：VML 浮動定位消費（fdo76591／n751077） ----------------
+
+    const R3_FDO76591: &[u8] = include_bytes!("../../../corpus/ooxmlexport/fdo76591.docx");
+    const R3_N751077: &[u8] = include_bytes!("../../../corpus/ooxmlimport/n751077.docx");
+
+    /// 席1 紅燈（fdo76591）：2→1 頁；三框絕對定位（頁邊距原點＋margin
+    /// 偏移）；'BELVIDERE ASSEMBLY PLANT' 落 p0 且只發一次。
+    #[test]
+    fn r3_fdo76591_vml_absolute_reaches_lo_one_page() {
+        let engine = Engine::from_docx_bytes(R3_FDO76591).expect("開 fdo76591 失敗");
+        assert_eq!(
+            engine.page_count(),
+            1,
+            "fdo76591 應與 LO 同為 1 頁（基線 2 頁）"
+        );
+        let pg0 = engine.layout.pages().first().expect("p0 存在");
+        assert!(pg0.images.is_empty(), "絕對定位框不得再佔正文流帶");
+        assert_eq!(pg0.floating_images.len(), 3, "三個 VML 框全數浮動附掛");
+        // LO 實測：框1 (256.05,590.45)、框2 (193.8,729.2)、框3 (22.05,18.2)。
+        let got: Vec<(f32, f32, f32, f32)> = pg0
+            .floating_images
+            .iter()
+            .map(|f| (f.x_pt, f.y_pt, f.w_pt, f.h_pt))
+            .collect();
+        for (want_x, want_y, want_w, want_h) in [
+            (256.05f32, 590.45f32, 99.95f32, 100.2f32),
+            (193.8, 729.2, 225.0, 45.0),
+            (22.05, 18.2, 567.0, 733.65),
+        ] {
+            assert!(
+                got.iter().any(|(x, y, w, h)| (x - want_x).abs() < 0.1
+                    && (y - want_y).abs() < 0.1
+                    && (w - want_w).abs() < 0.1
+                    && (h - want_h).abs() < 0.1),
+                "缺 LO 真值框 ({want_x},{want_y},{want_w},{want_h})；實得 {got:?}"
+            );
+        }
+        let dl = engine.page_display_list(0).expect("p0 顯示列表");
+        let bel = dl
+            .items
+            .iter()
+            .filter(|it| matches!(it, DrawItem::Text { text, .. } if text.contains("BELVIDERE ASSEMBLY PLANT")))
+            .count();
+        assert_eq!(bel, 1, "BELVIDERE 應落 p0 且只發一遍");
+        assert!(
+            dl.items
+                .iter()
+                .any(|it| matches!(it, DrawItem::Text { text, .. } if text.contains("3-23-2011"))),
+            "末行日期應同在 p0"
+        );
+    }
+
+    /// 席2 紅燈（n751077）：3→2 頁；TEXT1-9 與圖同落 p1（我方的 p0）；
+    /// 頁面釘定群組掛「所屬 section 起始頁」而非錨定段落流頁。
+    #[test]
+    fn r3_n751077_page_pinned_group_reaches_lo_two_pages() {
+        let engine = Engine::from_docx_bytes(R3_N751077).expect("開 n751077 失敗");
+        assert_eq!(
+            engine.page_count(),
+            2,
+            "n751077 應與 LO 同為 2 頁（基線 3 頁）"
+        );
+        let pg0 = engine.layout.pages().first().expect("p0 存在");
+        // p0 另有段 0 的 DrawingML 錨定圖（66.6pt 寬）；群組以 611.95pt 寬辨識。
+        let grp = pg0
+            .floating_images
+            .iter()
+            .find(|f| (f.w_pt - 611.95).abs() < 0.1)
+            .expect("頁面釘定群組應掛在節首頁");
+        assert_eq!(grp.para, 1, "浮動群組宿主段落＝含 sectPr 的段 1");
+        assert!(
+            pg0.lines.iter().any(|l| l.para_index == 1),
+            "宿主段落應留在節首頁（para-level sectPr 的 break 前內容留原頁）"
+        );
+        let dl = engine.page_display_list(0).expect("p0 顯示列表");
+        for i in 1..=9 {
+            let want = format!("TEXT{i}");
+            assert!(
+                dl.items
+                    .iter()
+                    .any(|it| matches!(it, DrawItem::Text { text, .. } if text.contains(&want))),
+                "{want} 應落 p1（我方 p0）"
+            );
+        }
+        assert!(
+            dl.items
+                .iter()
+                .any(|it| matches!(it, DrawItem::Image { .. })),
+            "段 0 的浮動圖應同在 p0"
+        );
+        assert!(
+            engine
+                .layout
+                .pages()
+                .get(1)
+                .is_some_and(|pg| pg.floating_images.is_empty()),
+            "第 2 頁不得再掛頁面釘定群組"
+        );
+    }
 }
