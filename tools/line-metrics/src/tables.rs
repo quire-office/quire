@@ -230,6 +230,8 @@ fn find_tbl_borders(seg: &str) -> Option<Borders> {
 /// `cell_imgs`：格內圖片投影（錨定段落 → 尺寸）——段落的
 /// Block 之後追加 `CellBlock::Image`（文件序：文字在上、圖在下）。
 /// `sizes`：段落索引 → 級聯有效字級（一格多段取最大）。
+// K7-cal 加 advs 後 8 參（比照 core/engine-api table_map::table_input 同口徑）。
+#[allow(clippy::too_many_arguments)]
 pub fn table_input(
     t: &Table,
     texts: &[String],
