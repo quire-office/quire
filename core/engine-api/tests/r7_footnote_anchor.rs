@@ -91,25 +91,26 @@ fn r7_note_attaches_to_anchor_page_footer() {
     assert!(page_has(&eng, 0, "1."), "p1 頁腳區必須有編號前綴條目 '1.'");
 }
 
-/// 紅燈 2（守門形）：掛載修復不新增頁。卡面 LO 目標 4→3；實測 4 頁之殘差
-/// 由簇 A（`('unknown',151.2,0)` 級帶容量）造成，與掛載無關（拔除
-/// `footnoteReference` run 的副本仍 4 頁，實據見提交說明）——本斷言只鎖
-/// 「掛載不使頁數惡化」。
+/// 紅燈 2（守門形）：掛載修復不新增頁。卡面 LO 目標 4→3；K6 校準 pitch
+/// 落地後簇 A 的級帶過扣一併消失，頁數收斂到 LO 的 3 頁——本斷言鎖
+/// 「掛載不使頁數惡化」，並以新的 LO 同頁數為準。
 #[test]
 fn r7_page_count_not_worsened_by_anchoring() {
     let eng = load(FORM);
     assert_eq!(
         eng.page_count(),
-        4,
-        "頁數偏離 4：掛載改道引發頁數變動（簇 A 之外不得動分頁頁數）"
+        3,
+        "頁數偏離 3（LO 目標）：K6 校準 pitch 後應與 LO 同頁數"
     );
 }
 
-/// 綠燈守門：單頁檔的格內註腳（引用頁恰＝末頁）位置逐值不動。
+/// 綠燈守門：單頁檔的格內註腳（引用頁恰＝末頁）位置。K6 校準 pitch 改變
+/// 正文行高，頁腳區隨之整體位移（仍為單頁、條目仍在頁腳區底部），故
+/// 錨點改記 K6 後實測值。
 #[test]
 fn r7_single_page_cell_note_unchanged() {
-    // poi/test-data_document_table_footnotes：1 頁；註文 'snoska' 條目 y≈772.7
-    // （編號前綴 '1.' 因上標上移在 771.6）。
+    // poi/test-data_document_table_footnotes：1 頁；註文 'snoska' 條目
+    // y≈769.6（K6 前 772.7；編號前綴 '1.' 因上標在 768.4）。
     let eng = load("poi/test-data_document_table_footnotes.docx");
     assert_eq!(eng.page_count(), 1);
     let hit = page_texts(&eng, 0)
@@ -117,12 +118,13 @@ fn r7_single_page_cell_note_unchanged() {
         .find(|(_, _, t)| t.contains("snoska"))
         .expect("格內註腳條目必須保留");
     assert!(
-        (hit.1 - 772.7).abs() < 1.0,
-        "單頁格內註腳 y 位移：{} ≠ 772.7（零擾動守門）",
+        (hit.1 - 769.6).abs() < 1.0,
+        "單頁格內註腳 y 位移：{} ≠ 769.6（K6 pitch 後實測）",
         hit.1
     );
 
-    // ooxmlexport/tdf104354-2：1 頁；'Footnote text.' 條目 y≈524.5。
+    // ooxmlexport/tdf104354-2：1 頁；'Footnote text.' 條目 y≈526.3
+    // （K6 前 524.5；LO 真值 528.9——細化後距 LO 由 4.4 收斂至 2.6，PM 實測錨定）。
     let eng = load("ooxmlexport/tdf104354-2.docx");
     assert_eq!(eng.page_count(), 1);
     let hit = page_texts(&eng, 0)
@@ -130,8 +132,8 @@ fn r7_single_page_cell_note_unchanged() {
         .find(|(_, _, t)| t.contains("Footnote text."))
         .expect("格內註腳條目必須保留");
     assert!(
-        (hit.1 - 524.5).abs() < 1.0,
-        "單頁格內註腳 y 位移：{} ≠ 524.5（零擾動守門）",
+        (hit.1 - 526.3).abs() < 1.0,
+        "單頁格內註腳 y 位移：{} ≠ 526.3（K6 pitch 後實測）",
         hit.1
     );
 }

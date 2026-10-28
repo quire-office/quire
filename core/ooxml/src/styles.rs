@@ -74,6 +74,12 @@ pub struct RunFonts {
     /// `w:rFonts/@w:hint` 是否為 `eastAsia`。
     #[serde(default)]
     pub hint_east_asian: bool,
+    /// K6：theme 字型引用**斷鏈**（有 `w:*Theme` 但 theme part 缺席／槽位
+    /// 解析不到，且無同元素直接值可回退）。LO 對這種檔案會落到自身替換
+    /// 預設 Noto Serif；此旗標讓行距查表能走 1.3620 的 fallback 列。
+    /// 純派生欄位，serde default 保舊快照相容。
+    #[serde(default)]
+    pub theme_unresolved: bool,
 }
 
 impl RunFonts {
@@ -90,6 +96,7 @@ impl RunFonts {
             self.cs = upper.cs.clone();
         }
         self.hint_east_asian |= upper.hint_east_asian;
+        self.theme_unresolved |= upper.theme_unresolved;
         self
     }
 }
@@ -273,6 +280,11 @@ pub struct StyleTable {
     para_default_run: RunStyle,
     /// styleId → 自帶宣告。
     styles: HashMap<String, OwnStyle>,
+    /// K6：表格樣式（`w:type="table"`）的自帶段落宣告。原本整類丟棄；
+    /// 校準報告 §3(2) 證實表格樣式的 `w:spacing/@w:line` 會壓過 docDefaults
+    /// （fdo68607 的 240 vs 276），故單獨收表、查詢時沿 basedOn 鏈取第一個
+    /// 已宣告值（不併進段落樣式表，避免型別污染）。
+    table_styles: HashMap<String, OwnStyle>,
     /// styleId → 合成後（parse 結束一次性沿鏈合成；查詢期不可變）。
     resolved: HashMap<String, (RunStyle, ParaStyle)>,
     /// styleId → **只沿 basedOn 鏈**合成的 run 宣告（不含 docDefaults）。
@@ -442,15 +454,19 @@ pub(crate) fn rfonts_of(
         attr_val(e, "eastAsiaTheme").and_then(|v| theme::east_asia_theme_slot(&v));
     // 同層 theme 取勝：查表成功者覆蓋直接值；查不到則保留直接值
     // （回退語義）；查不到且直接值也沒有 → 該欄維持 None。
-    let ascii = ascii_theme
+    let ascii_resolved = ascii_theme
         .and_then(|slot| tf.and_then(|t| t.resolve_slot(slot)))
-        .map(str::to_string)
-        .or(ascii);
-    let east_asia = east_asia_theme
+        .map(str::to_string);
+    let east_asia_resolved = east_asia_theme
         .and_then(|slot| tf.and_then(|t| t.resolve_slot(slot)))
-        .map(str::to_string)
-        .or(east_asia);
-    if ascii.is_none() && east_asia.is_none() && cs.is_none() && !hint {
+        .map(str::to_string);
+    // K6：theme 斷鏈＝有 theme 引用但查不到槽位，且該欄沒有直接值可回退。
+    // 這正是 LO 落到 Noto Serif 的族群（報告 §1 的 fallback 列）。
+    let theme_unresolved = (ascii_theme.is_some() && ascii_resolved.is_none() && ascii.is_none())
+        || (east_asia_theme.is_some() && east_asia_resolved.is_none() && east_asia.is_none());
+    let ascii = ascii_resolved.or(ascii);
+    let east_asia = east_asia_resolved.or(east_asia);
+    if ascii.is_none() && east_asia.is_none() && cs.is_none() && !hint && !theme_unresolved {
         return None;
     }
     Some(RunFonts {
@@ -458,6 +474,7 @@ pub(crate) fn rfonts_of(
         east_asia,
         cs,
         hint_east_asian: hint,
+        theme_unresolved,
     })
 }
 
@@ -789,9 +806,13 @@ impl StyleTable {
                         b"docDefaults" => in_doc_defaults = false,
                         b"style" => {
                             if let Some((id, own)) = cur.take() {
-                                if !id.is_empty() && own.kind != StyleKind::Other {
-                                    t.empty = false;
-                                    t.styles.insert(id, own);
+                                if !id.is_empty() {
+                                    if own.kind == StyleKind::Other {
+                                        t.table_styles.insert(id, own);
+                                    } else {
+                                        t.empty = false;
+                                        t.styles.insert(id, own);
+                                    }
                                 }
                             }
                         }
@@ -804,9 +825,13 @@ impl StyleTable {
         // 畸形檔（`</w:style>` 前截斷）：半張樣式照「已收部分」入帳——
         // 比整張丟掉更接近 Word 的容錯行為（見函數頭）。
         if let Some((id, own)) = cur.take() {
-            if !id.is_empty() && own.kind != StyleKind::Other {
-                t.empty = false;
-                t.styles.insert(id, own);
+            if !id.is_empty() {
+                if own.kind == StyleKind::Other {
+                    t.table_styles.insert(id, own);
+                } else {
+                    t.empty = false;
+                    t.styles.insert(id, own);
+                }
             }
         }
         t.resolve_all();
@@ -1042,6 +1067,95 @@ impl StyleTable {
         para.align = inline.align.or(para.align);
         let base = para.run.clone();
         (base, para)
+    }
+
+    /// K6：段落樣式鏈（只沿 basedOn，**不含 docDefaults**）的第一個行距宣告。
+    /// 級聯優先序需把表格樣式插在「Normal 樣式」與「docDefaults」之間，
+    /// 因此必須能分辨「這條 line 是樣式宣告還是 docDefaults 兜底」。
+    pub fn para_chain_line(&self, id: Option<&str>) -> Option<LineSpacing> {
+        let mut cur = match id.filter(|s| !s.is_empty()) {
+            Some(s) if self.style_kind(s) == Some(StyleKind::Paragraph) => Some(s.to_string()),
+            _ => self.default_para.clone(),
+        };
+        for _ in 0..MAX_CHAIN {
+            let key = cur?;
+            let own = self.styles.get(&key)?;
+            if own.line.is_some() {
+                return own.line;
+            }
+            cur = own
+                .based_on
+                .clone()
+                .filter(|b| self.style_kind(b) == Some(StyleKind::Paragraph) && b != &key);
+        }
+        None
+    }
+
+    /// K6：段落樣式鏈（不含 docDefaults）的第一個段前／段後距宣告。
+    pub fn para_chain_spacing(&self, id: Option<&str>) -> (Option<f32>, Option<f32>) {
+        let mut cur = match id.filter(|s| !s.is_empty()) {
+            Some(s) if self.style_kind(s) == Some(StyleKind::Paragraph) => Some(s.to_string()),
+            _ => self.default_para.clone(),
+        };
+        for _ in 0..MAX_CHAIN {
+            let Some(key) = cur else { break };
+            let Some(own) = self.styles.get(&key) else {
+                break;
+            };
+            if own.spacing_before_pt.is_some() || own.spacing_after_pt.is_some() {
+                return (own.spacing_before_pt, own.spacing_after_pt);
+            }
+            cur = own
+                .based_on
+                .clone()
+                .filter(|b| self.style_kind(b) == Some(StyleKind::Paragraph) && b != &key);
+        }
+        (None, None)
+    }
+
+    /// K6：表格樣式鏈（不含 docDefaults）的第一個段前／段後距宣告。
+    pub fn table_style_spacing(&self, id: &str) -> (Option<f32>, Option<f32>) {
+        let mut cur = Some(id.to_string());
+        for _ in 0..MAX_CHAIN {
+            let Some(key) = cur else { break };
+            let Some(own) = self.table_styles.get(&key) else {
+                break;
+            };
+            if own.spacing_before_pt.is_some() || own.spacing_after_pt.is_some() {
+                return (own.spacing_before_pt, own.spacing_after_pt);
+            }
+            cur = own.based_on.clone().filter(|b| b != &key);
+        }
+        (None, None)
+    }
+
+    /// K6：表格樣式（`w:type="table"`）鏈的第一個行距宣告（不含 docDefaults）。
+    /// 召喚端在「段落＞Normal 樣式＞表格樣式＞docDefaults」級聯中把它插在
+    /// 第三層；查無 id／無宣告＝None（落到 docDefaults）。
+    pub fn table_style_line(&self, id: &str) -> Option<LineSpacing> {
+        let mut cur = Some(id.to_string());
+        for _ in 0..MAX_CHAIN {
+            let key = cur?;
+            let own = self.table_styles.get(&key)?;
+            if own.line.is_some() {
+                return own.line;
+            }
+            cur = own.based_on.clone().filter(|b| b != &key);
+        }
+        None
+    }
+
+    /// K6：文件是否在任何級聯層宣告過字型族（docDefaults／樣式鏈／段落
+    /// 直接格式由 engine 另檢）。無任何字型宣告的檔案維持舊 1.4 粗尺，
+    /// 保 M1/R 系零宣告守門逐位元組不變。
+    pub fn has_fonts(&self) -> bool {
+        let all_run = |r: &RunStyle| r.fonts.is_some();
+        self.run_default.fonts.is_some()
+            || self.para_default_run.fonts.is_some()
+            || self
+                .styles
+                .values()
+                .any(|s| all_run(&s.run) || all_run(&s.ppr_run))
     }
 
     /// 級聯最外層：run 直接格式疊於（段落基底 ∪ 字元樣式）之上。

@@ -13,7 +13,7 @@ use quire_ooxml::{
     diff_untouched, diff_zip_structure, parse, parse_header_footer_part_with_fonts,
     read_even_and_odd_headers, read_rels, read_sections_header_footer, read_sections_note_pr,
     read_sections_per_paragraph, resolve_relationship, LineSpacing, OoxmlDoc, OoxmlError,
-    ParaStyle, SlotRefs, StyleTable, ThemeColors, ThemeFonts, ZipDiff,
+    ParaStyle, RunFonts, SlotRefs, StyleTable, ThemeColors, ThemeFonts, ZipDiff,
 };
 use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
@@ -211,11 +211,16 @@ impl Engine {
         // 還承載「超連結合成預設」的末端兜底（`RunStyle::with_hyperlink_default`）；
         // 若此處短路，無 styles.xml 的檔案連結會失去預設藍／底線。空表一切
         // 落後備值，與舊 None 路徑逐欄等價。
-        let style_table = doc
-            .parts
-            .get("word/styles.xml")
-            .map(|s| StyleTable::parse_with_fonts(s.as_slice(), &theme, Some(&theme_fonts)))
-            .unwrap_or_else(|| StyleTable::parse_with_fonts(&[], &theme, Some(&theme_fonts)));
+        // K6：styles.xml 必須經 `word/_rels/document.xml.rels` 的 styles 關聯
+        // 才生效（校準報告 §3(2) 鐵證；無關聯時 LO 連 docDefaults 都忽略）。
+        let style_table = if styles_referenced(&doc.parts) {
+            doc.parts
+                .get("word/styles.xml")
+                .map(|s| StyleTable::parse_with_fonts(s.as_slice(), &theme, Some(&theme_fonts)))
+                .unwrap_or_else(|| StyleTable::parse_with_fonts(&[], &theme, Some(&theme_fonts)))
+        } else {
+            StyleTable::parse_with_fonts(&[], &theme, Some(&theme_fonts))
+        };
         let (doc_size, doc_line) = style_table.doc_grid();
         // 文件基準字級：docDefaults∪Normal 鏈的有效 sz（ECMA 無宣告時的
         // Word 預設 12pt 兜底）。無級聯層＝12（既有硬編碼後備）。
@@ -228,15 +233,25 @@ impl Engine {
         // 宣告行高的 ≤2.8pt 最細等分，宣告行高本身恰佔整數帶（零誤差），
         // 其餘高度量化誤差 ≤2.8pt。零宣告檔（如 k5 防風暴樁）維持
         // 12pt×1.4＝16.8pt 粗尺——零宣告檔案逐位元組不變。
-        // 細化閘限定**含表格檔**（run6 A/B 實證）：處方根治的是「宣告 pt 高
-        // （trHeight／格內行高）ceil 到粗帶」的量化過扣；純文字檔的行距由
-        // 帶尺直接承載，細化會把 LO auto 行距有效 pitch（≈宣告×1.17，屬
-        // K6 pitch 保真權限）的既存缺口暴露成分數位移（Saturn −0.161／
-        // Bug51170 −0.061，run5 儀表板實測）——不碰＝零劣化底線守得住。
-        let (grid_line_h, line_ref_bands) = refine_band_h(
-            resolve_line_h_pt(def_size, doc_line),
-            (doc_size.is_some() || doc_line.is_some()) && !doc.tables.is_empty(),
-        );
+        // K6：細化閘由「含表格檔」擴展到「檔內存在宣告字級／宣告行距可
+        // 依據」的檔案（docDefaults／Normal 鏈或段落直接宣告皆算）。M1
+        // 已證含表格檔的 trHeight／格內行高需要細尺；純文字檔的 auto
+        // 行距基準字級（K6 起改用段內 run 有效字級×宣告倍率）同樣需要
+        // 細尺承載，否則 12.65pt 粗帶的 ceil 會把 LO pitch 抬成整帶倍數。
+        // 零宣告檔（doc_size/doc_line 皆無、段落亦無直接宣告）維持
+        // 12pt×1.4＝16.8pt 粗尺——M1 零宣告守門樁逐位元組不變。
+        let any_para_declared = doc.paragraphs.iter().any(|p| {
+            (p.line.is_none()
+                && (p.prun.as_ref().and_then(|r| r.size_pt).is_some()
+                    || p.runs
+                        .iter()
+                        .any(|r| r.direct.as_ref().and_then(|d| d.size_pt).is_some())))
+                || matches!(p.line, Some(LineSpacing::Auto(_)))
+        });
+        let refine = doc_size.is_some() || doc_line.is_some() || any_para_declared;
+        let doc_grid_h = resolve_line_h_pt(def_size, doc_line);
+        // 佔位值供級聯前的可用寬／params 使用；級聯後以主要宣告行高重錨。
+        let (grid_line_h, _) = refine_band_h(doc_grid_h, refine);
         let n_paras = doc.paragraphs.len();
         let sections: Vec<SectionSpec> = doc
             .parts
@@ -308,22 +323,112 @@ impl Engine {
         // 發射投影：Some＝級聯有作用（run 樣式欄位已烘焙）。style_table 恆有
         // （無 styles.xml＝空表兜底超連結預設，見上），故級聯恆執行——
         // 空表一切落後備值，輸出與舊 None 路徑逐欄等價（t_5dfc8ac7 契約）。
+        let doc_mult = match doc_line {
+            Some(LineSpacing::Auto(m)) => m,
+            _ => 1.0,
+        };
+        // K6：字型表可用性＝文件任何層宣告過字型。沒有字型宣告的檔案維持
+        // 舊 1.4 粗尺（M1 零宣告守門／k5 Exact 防風暴樁逐位元組不變）。
+        let font_metrics = style_table.has_fonts()
+            || doc.paragraphs.iter().any(|p| {
+                p.prun.as_ref().and_then(|r| r.fonts.as_ref()).is_some()
+                    || p.runs.iter().any(|r| {
+                        r.direct.as_ref().and_then(|d| d.fonts.as_ref()).is_some()
+                            || r.effective_fonts.is_some()
+                    })
+            });
+        let auto_buggy = std::env::var_os("K6_AUTO_PITCH_BUGGY").is_some();
+        let calibrated = font_metrics && !auto_buggy;
+        let mut table_styles_of: HashMap<usize, String> = HashMap::new();
+        for bt in &doc.tables {
+            collect_table_styles(&bt.table, None, &mut table_styles_of);
+        }
         let (eff_all, metrics, spacings, marker_chars) = cascade_paragraphs(
             &style_table,
             &doc.paragraphs,
             def_size,
+            doc_mult,
             &widths,
             &list_markers,
+            PitchCascade {
+                table_styles: &table_styles_of,
+                calibrated,
+            },
         );
         let grid_size_v: Vec<f32> = metrics.iter().map(|m| m.0).collect();
+        // K6：逐段量化前行高（格內文字行距基準；細化檔由 table_map 消費）。
+        let mut para_line_h_v: Vec<f32> = metrics.iter().map(|m| m.1).collect();
+        let (grid_line_h, line_ref_bands) = if calibrated {
+            // K6：宣告字級／字型檔走校準 pitch。單一行高＝M1 的 ≤2.8pt 等分；
+            // 多行高（混級、表格多字級）搜尋能同時表示全部目標的細尺。
+            choose_grid_line_h(&para_line_h_v).unwrap_or_else(|| refine_band_h(doc_grid_h, refine))
+        } else {
+            // 舊路徑（K6_AUTO_PITCH_BUGGY=1 或全檔無字型宣告）：保留
+            // 51e2e71 的粗尺細化行為，供紅燈回塞鎖比對。零宣告但有字型的
+            // 檔，舊徑的 ×1.4 行高就是帶尺（pitch 15.4，留下紅證據）。
+            if font_metrics && doc_line.is_none() && doc_size.is_none() && doc.tables.is_empty() {
+                let target = modal_line_h(&para_line_h_v, 0.0);
+                refine_band_h(target, true)
+            } else {
+                let modal_h = if refine {
+                    modal_line_h(&para_line_h_v, doc_grid_h)
+                } else {
+                    0.0
+                };
+                if refine {
+                    for (i, p) in doc.paragraphs.iter().enumerate() {
+                        let inline = ParaStyle {
+                            run: p.prun.clone().unwrap_or_default(),
+                            line: p.line,
+                            spacing_before_pt: p.spacing_before_pt,
+                            spacing_after_pt: p.spacing_after_pt,
+                            align: p.jc,
+                        };
+                        let eff_line = style_table
+                            .effective_para(p.style.as_deref(), inline)
+                            .1
+                            .line;
+                        if matches!(eff_line, Some(LineSpacing::Auto(_))) {
+                            para_line_h_v[i] = para_line_h_v[i].max(modal_h);
+                        }
+                    }
+                }
+                let anchor_h = modal_h.max(modal_line_h(&para_line_h_v, doc_grid_h));
+                let anchor_is_grid_multiple = {
+                    let r = anchor_h / doc_grid_h;
+                    r.is_finite() && (r - r.round()).abs() * doc_grid_h <= 0.11
+                };
+                let keep_coarse = doc.tables.is_empty() && anchor_is_grid_multiple;
+                if refine && !keep_coarse {
+                    refine_band_h(anchor_h, true)
+                } else {
+                    refine_band_h(doc_grid_h, false)
+                }
+            }
+        };
+        let params = LayoutParams {
+            font_size_pt: def_size,
+            line_spacing: if def_size > 0.0 {
+                grid_line_h / def_size
+            } else {
+                1.4
+            },
+            ..params
+        };
         // 段行高量化到文件帶尺（至少 1 帶；帶尺＝12pt×1.4 且段行高不大於
         // 帶尺時恆 1＝舊行為）。
-        let grid_bands_v: Vec<u32> = metrics
+        let grid_bands_v: Vec<u32> = para_line_h_v
             .iter()
             // 帶量化鉗上限（t_c1fb4c69 S1-4）：垃圾宣告行高不得量化出
             // 天量帶數（正常段行高 ≤ 數帶，永不觸頂）。
-            .map(|m| {
-                let b = (m.1 / grid_line_h).ceil();
+            .map(|h| {
+                // K6 校準路徑取最近帶（pitch 保真）；舊徑維持 ceil（保守
+                // 不下壓段高，回塞鎖才能重現舊分頁）。
+                let b = if calibrated {
+                    (*h / grid_line_h).round()
+                } else {
+                    (*h / grid_line_h).ceil()
+                };
                 if !b.is_finite() {
                     quire_layout::MAX_PAGE_BANDS
                 } else {
@@ -405,6 +510,7 @@ impl Engine {
             &sections,
             &images,
             eff_refs,
+            &para_line_h_v,
             line_ref_bands,
         );
         let bands = table_map::build_images(&images, params.line_h_pt(), &params, &sections);
@@ -741,8 +847,20 @@ impl Engine {
             .collect();
         let def_size = self.params.font_size_pt;
         let widths: Vec<f32> = vec![content_w_pt; paras.len()];
-        let (eff, metrics, _spacings, _marker_chars) =
-            cascade_paragraphs(&self.style_table, &paras, def_size, &widths, &[]);
+        let fn_calibrated =
+            self.style_table.has_fonts() && std::env::var_os("K6_AUTO_PITCH_BUGGY").is_none();
+        let (eff, metrics, _spacings, _marker_chars) = cascade_paragraphs(
+            &self.style_table,
+            &paras,
+            def_size,
+            1.0,
+            &widths,
+            &[],
+            PitchCascade {
+                table_styles: &HashMap::new(),
+                calibrated: fn_calibrated,
+            },
+        );
         let mut by_id: HashMap<i64, footnotes::NoteEntry> = HashMap::new();
         for (id, (p, (size, line_h))) in ids.iter().zip(eff.into_iter().zip(metrics)) {
             let first = p.runs.first();
@@ -2027,6 +2145,172 @@ fn refine_band_h(declared_line_h: f32, declared: bool) -> (f32, u32) {
     (declared_line_h / n, n as u32)
 }
 
+/// K6：檔內「主要宣告行高」——逐段量化前行高（含表格格內段落）的最常見值，
+/// 下限為文件預設行高。細尺以此為錨等分，才能讓最常見的行距落在整數帶
+/// （fdo68607 格內 14pt 正文＝17.1pt，錨 12.65pt 會量化成 17.71pt）。
+/// 零宣告檔不呼叫（維持粗尺）。
+fn modal_line_h(line_hs: &[f32], floor: f32) -> f32 {
+    use std::collections::BTreeMap;
+    let mut bins: BTreeMap<i32, u32> = BTreeMap::new();
+    for &h in line_hs {
+        if h.is_finite() && h > 0.0 {
+            *bins.entry((h * 10.0).round() as i32).or_default() += 1;
+        }
+    }
+    let mode = bins
+        .into_iter()
+        .max_by_key(|(_, c)| *c)
+        .map(|(k, _)| k as f32 / 10.0)
+        .unwrap_or(floor);
+    mode.max(floor)
+}
+
+/// K6：宣告族 → LO 實際渲染 face 的 real line-height 因子（`docs/k6-lineheight-calibration.md` §1）。
+/// 鍵一律小寫（宣告族名 casefold）；查不到＝1.1499（Liberation 系）＋TODO。
+/// **禁止**再引入 1.4／1.22／0.975 這類普適後備——那些是缺族表時代的湊數。
+fn face_line_factor(face: &str) -> f32 {
+    let key = face.trim().to_lowercase();
+    match key.as_str() {
+        // Calibri → Carlito；Cambria → Caladea。
+        "calibri" | "carlito" => 1.2207,
+        "cambria" | "caladea" => 1.1720,
+        // Liberation 系（Times New Roman／Arial 在本基準環境都替到它）。
+        "liberation serif" | "liberationserif" | "times new roman" | "times" => 1.1499,
+        "arial" | "liberation sans" | "liberationsans" | "helvetica" => 1.1499,
+        // theme 斷鏈 fallback（LO 落到自身預設 Noto Serif）。
+        "noto serif" | "notoserif" => 1.3620,
+        // CJK 宣告族在本基準環境替到 WenQuanYi Zen Hei。
+        "pmingliu" | "新細明體" | "kaititc" | "標楷體" | "msyahei" | "microsoft yahei"
+        | "微軟雅黑" | "wenquanyi zen hei" | "wenquanyizenhei" => 1.3496,
+        // 查不到族：報告 §6.1 指定退回 Liberation 系。
+        // TODO(K6)：補齊 fontTools hhea 實測族表；現階段不虛構新因子。
+        _ => 1.1499,
+    }
+}
+
+/// CJK 字元（用於選 eastAsia face；純拉丁 run 不吃 EA 宣告，報告 §3(4)）。
+fn has_cjk(text: &str) -> bool {
+    text.chars().any(|c| {
+        matches!(c as u32,
+            0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF
+            | 0xFF00..=0xFFEF)
+    })
+}
+
+/// 單一 run 的 real line-height 因子：有文字時按實際 script 選 face
+/// （CJK→eastAsia、其餘→ascii），無文字時退回 ascii/eastAsia 任一。
+/// theme 斷鏈優先走 Noto Serif 1.3620。
+fn run_line_factor(fonts: Option<&RunFonts>, text: &str) -> Option<f32> {
+    let f = fonts?;
+    if f.theme_unresolved {
+        return Some(1.3620);
+    }
+    let face = if has_cjk(text) {
+        f.east_asia.as_deref().or(f.ascii.as_deref())
+    } else {
+        f.ascii.as_deref().or(f.east_asia.as_deref())
+    }?;
+    Some(face_line_factor(face))
+}
+
+/// K6：一組目標行高 → 文件帶尺（細尺）。單一值沿用 M1 的 ≤2.8pt 等分
+/// （宣告值恰佔整數帶）；多值（混級／表格多字級）搜尋「主要值 / n」中
+/// 能同時表示全部目標的最粗尺（每值誤差 ≤0.12pt），避免單尺 ceil 把
+/// k6 fixture 的 24.2pt 抬成 26.8pt。搜不到時落到 0.25pt 細尺（誤差 ≤0.125）。
+fn choose_grid_line_h(targets: &[f32]) -> Option<(f32, u32)> {
+    // 計次後只留「有意義」的行高：單一空段／裝飾段的 14.04pt 不該把整份
+    // 17.1pt 表格拖去 0.25pt 細尺（fdo68607 實測 7 vs 8 頁）。低於主值
+    // 1/10 出現次數者視為離群，各自按整數帶就近落帶。
+    let mut bins: BTreeMap<i32, (f32, u32)> = BTreeMap::new();
+    for &h in targets {
+        if h.is_finite() && h > 0.0 {
+            let e = bins.entry((h * 10.0).round() as i32).or_insert((h, 0));
+            e.1 += 1;
+        }
+    }
+    let max_count = bins.values().map(|(_, c)| *c).max().unwrap_or(0);
+    let mut vals: Vec<f32> = bins
+        .values()
+        .filter(|(_, c)| *c * 10 >= max_count)
+        .map(|(h, _)| *h)
+        .collect();
+    if vals.is_empty() {
+        return None;
+    }
+    vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    vals.dedup_by(|a, b| (*a - *b).abs() <= 0.02);
+    // 取「最常見值」本身而非 0.1pt 量化後的值：12.65pt 若先捨成 12.7pt，
+    // 216 行的累積位移足以讓 Bug51170 的換頁跑掉（內容相似度 0.757→0.677）。
+    let modal = bins
+        .values()
+        .max_by_key(|(_, c)| *c)
+        .map(|(h, _)| *h)
+        .unwrap_or(0.0);
+    // 版面座標以 twip（1/20pt）為單位：錨點先落到 0.05pt 再切帶尺。
+    // 12.6489pt（Times 11pt×1.1499）若不落 12.65，`spacing_band_vectors`
+    // 的 f64 餘數會逐步漂移，Bug51170 的 10pt 段距樓梯在十幾段後翻帶。
+    let modal = (modal * 20.0).round() / 20.0;
+    if vals.len() == 1 {
+        return Some(refine_band_h(modal, true));
+    }
+    // n 由小到大＝尺由粗到細；取第一個能同時命中的（偏好粗尺、少帶數）。
+    let max_n = (modal / 0.25).ceil().max(1.0) as u32;
+    for n in 1..=max_n {
+        let g = modal / n as f32;
+        if g > BAND_REFINE_MAX_PT {
+            continue;
+        }
+        let err = vals
+            .iter()
+            .map(|h| ((h / g).round().max(1.0) * g - h).abs())
+            .fold(0.0, f32::max);
+        if err <= 0.12 {
+            let lref = (modal / g).round().max(1.0) as u32;
+            return Some((g, lref.min(quire_layout::MAX_PAGE_BANDS)));
+        }
+    }
+    // 最細尺兜底：0.25pt（誤差 ≤0.125pt；仍遠優於一整粗帶）。
+    let g = 0.25f32;
+    let lref = (modal / g).round().max(1.0) as u32;
+    Some((g, lref.min(quire_layout::MAX_PAGE_BANDS)))
+}
+
+/// K6：`word/document.xml.rels` 是否真的引用 `word/styles.xml`（報告 §3(2)）。
+/// 無 styles 關聯的檔案，LO 會整支忽略 styles.xml（含 docDefaults）。
+fn styles_referenced(parts: &BTreeMap<String, Vec<u8>>) -> bool {
+    parts
+        .get("word/_rels/document.xml.rels")
+        .map(|xml| {
+            read_rels(xml)
+                .iter()
+                .any(|r| r.target_part.as_deref() == Some("word/styles.xml"))
+        })
+        .unwrap_or(false)
+}
+
+/// K6：表格內段落索引 → 所屬表格樣式 id（巢狀表以內層樣式為準，缺則繼承外層）。
+fn collect_table_styles(
+    t: &quire_ooxml::Table,
+    inherit: Option<&str>,
+    out: &mut HashMap<usize, String>,
+) {
+    let sid = t.props.style.as_deref().or(inherit);
+    for row in &t.rows {
+        for cell in &row.cells {
+            for b in &cell.blocks {
+                match b {
+                    quire_ooxml::Block::Paragraph { index } => {
+                        if let Some(s) = sid {
+                            out.entry(*index).or_insert_with(|| s.to_string());
+                        }
+                    }
+                    quire_ooxml::Block::Table(inner) => collect_table_styles(inner, sid, out),
+                }
+            }
+        }
+    }
+}
+
 /// 帶尺細化上限（pt）：K5-diag §2.6 處方「帶尺細化 ≤2.8pt」。
 const BAND_REFINE_MAX_PT: f32 = 2.8;
 
@@ -2123,12 +2407,21 @@ type CascadeResult = (
 /// `def_size`＝文件基準字級（級聯全無宣告時）。
 /// `widths`＝逐段可用寬（pt）：製表位點引填補的計算尺；短/空＝該段不展開
 /// （無錨點不虛構——頁首尾 part 走空表＝tab 維持原樣，既有行為不變）。
+/// K6：級聯的 auto-pitch 輸入束（表格樣式層＋是否走校準路徑）。綁成一個
+/// 參數是為了讓 `cascade_paragraphs` 的參數數目守住 clippy 上限，語義不變。
+struct PitchCascade<'a> {
+    table_styles: &'a HashMap<usize, String>,
+    calibrated: bool,
+}
+
 fn cascade_paragraphs(
     st: &StyleTable,
     paras: &[quire_ooxml::Paragraph],
     def_size: f32,
+    doc_mult: f32,
     widths: &[f32],
     list_markers: &[Option<lists::ListMarker>],
+    pitch: PitchCascade<'_>,
 ) -> CascadeResult {
     let mut eff_all: Vec<quire_ooxml::Paragraph> = Vec::with_capacity(paras.len());
     let mut metrics: Vec<(f32, f32)> = Vec::with_capacity(paras.len());
@@ -2144,8 +2437,35 @@ fn cascade_paragraphs(
             spacing_after_pt: p.spacing_after_pt,
             align: p.jc,
         };
-        let (base, para) = st.effective_para(p.style.as_deref(), inline);
+        let (base, mut para) = st.effective_para(p.style.as_deref(), inline.clone());
+        // K6：表格樣式插在「段落＞Normal 樣式＞表格樣式＞docDefaults」第三層。
+        // 只有段落樣式鏈（含 Normal）完全沒宣告時才讓表格樣式露面——
+        // effective_para 已把 docDefaults 兜進來，這裡用鏈查詢分辨層級。
+        if let (true, Some(tid)) = (pitch.calibrated, pitch.table_styles.get(&pi)) {
+            if inline.line.is_none() && st.para_chain_line(p.style.as_deref()).is_none() {
+                if let Some(line) = st.table_style_line(tid) {
+                    para.line = Some(line);
+                }
+            }
+            let (cb, ca) = st.para_chain_spacing(p.style.as_deref());
+            if inline.spacing_before_pt.is_none()
+                && inline.spacing_after_pt.is_none()
+                && cb.is_none()
+                && ca.is_none()
+            {
+                let (tb, ta) = st.table_style_spacing(tid);
+                if tb.is_some() {
+                    para.spacing_before_pt = tb;
+                }
+                if ta.is_some() {
+                    para.spacing_after_pt = ta;
+                }
+            }
+        }
         let mut meas_size = base.size_pt.unwrap_or(def_size);
+        // K6：逐 run 的 real line-height 需求（size × LH(face)）。混排行取
+        // max over runs；CJK run 用 eastAsia face，純拉丁 run 不看 EA。
+        let mut run_pitch = 0.0f32;
         let mut eff_runs: Vec<quire_ooxml::Run> = Vec::with_capacity(p.runs.len());
         for r in &p.runs {
             let mut b = base.clone();
@@ -2160,6 +2480,11 @@ fn cascade_paragraphs(
             // 字級成形；本引擎斷行用單一尺，取大者保守不切字）。
             if let Some(sz) = eff.size_pt {
                 meas_size = meas_size.max(sz);
+            }
+            // 未宣告字級的 run 仍吃文件基準字級（ECMA 預設），字型已宣告
+            // 就必須進 real-LH（否則「只宣告字型」的檔會被舊 ×1.4 吃掉）。
+            if let Some(lf) = run_line_factor(eff.fonts.as_ref(), &r.text) {
+                run_pitch = run_pitch.max(eff.size_pt.unwrap_or(def_size) * lf);
             }
             let mut r2 = r.clone();
             // 三態 None＝全鏈未宣告＝未開（與舊「rPr 不見即 false」等價——
@@ -2189,13 +2514,43 @@ fn cascade_paragraphs(
         // run 字級×1.4，與斷行量測同尺）→ 行高隨大字撐高（LO/Word 語義）。
         // 無大字 run 時維持段落字級本身（不把基準字級再放大 1.4 倍——那會
         // 讓 11pt 正文在 12.65pt 帶尺上虛佔兩帶，Bug51170 由 5 頁膨脹到 9
-        // 頁）。Auto/Exact/None 維持段落字級 base.size_pt 不動。
+        // 頁）。
+        // K6：`auto` 行距基準字級改用**段內 run 有效字級**（rPr 級聯最大值），
+        // 不是段落標記/docDefaults 的基準字級。LO 對 fdo68607 的 14pt 表格
+        // 正文按 14pt×倍率排（實測 pitch 17.1），舊徑卻用 docDefaults 11pt
+        // 落成 12.65pt（pitch 12.65，密 26%）。Exact/None 不動（None＝零
+        // 宣告粗尺、Exact＝宣告固定 pt，皆無「倍率基準」語義）。
+        // `K6_AUTO_PITCH_BUGGY=1` 回塞舊基準（紅燈回塞鎖）：auto 退回段落
+        // 基準字級，fdo68607 行距回到 12.65pt 粗尺。
         let base_size = base.size_pt.unwrap_or(def_size);
-        let line_h = match para.line {
-            Some(LineSpacing::AtLeast(_)) if meas_size > base_size => {
-                resolve_line_h_pt(meas_size * 1.4, para.line)
+        // K6：段落基準字型的字形需求（空段／無 run 字級時的唯一來源）。
+        if let Some(lf) = run_line_factor(base.fonts.as_ref(), "") {
+            run_pitch = run_pitch.max(base_size * lf);
+        }
+        // K6 校準公式（報告 §1）：pitch＝size×(declared/240)×LH(face)。
+        // None ≡ 240（宣告倍率 1.0）；混排已在上方 max-over-runs 完成。
+        // 無任何字型可查時退回舊徑（1.4／AtLeast 需求），零宣告守門不變。
+        // K6_AUTO_PITCH_BUGGY=1 強制舊徑（紅燈回塞鎖）。
+        let line_h = if pitch.calibrated && run_pitch > 0.0 {
+            match para.line {
+                Some(LineSpacing::Auto(m)) => run_pitch * m.max(0.1),
+                Some(LineSpacing::Exact(v)) => v,
+                Some(LineSpacing::AtLeast(v)) => v.max(run_pitch),
+                None => run_pitch,
             }
-            other => resolve_line_h_pt(base_size, other),
+        } else {
+            let auto_buggy = std::env::var_os("K6_AUTO_PITCH_BUGGY").is_some();
+            match para.line {
+                Some(LineSpacing::AtLeast(_)) if meas_size > base_size => {
+                    resolve_line_h_pt(meas_size * 1.4, para.line) * doc_mult
+                }
+                Some(LineSpacing::Auto(_)) if !auto_buggy => {
+                    let size = meas_size.max(base_size);
+                    resolve_line_h_pt(size, para.line) * 0.975
+                }
+                Some(LineSpacing::AtLeast(_)) => resolve_line_h_pt(base_size, para.line) * doc_mult,
+                other => resolve_line_h_pt(base_size, other),
+            }
         };
         // 點引 leads 展開（t_5dfc8ac7）：段落宣告右對齊製表位＋leader＋內含
         // w:tab run 時，於首個 tab run 前插入填充符串至「製表位 − 尾串寬」
@@ -3405,6 +3760,7 @@ impl Engine {
         // 表格槽：與正文同一映射層（styles 框線查表）；單 section 合成表。
         let sec_one = [SectionSpec { id: 0, geo: *geo }];
         // 頁首 part 內無圖片投影需求：空清單（build_slots 新簽名，t_a1397522）。
+        let hf_line_hs: Vec<f32> = part.metrics.iter().map(|m| m.1).collect();
         let slots_tbl = table_map::build_slots(
             &part.tables,
             &texts,
@@ -3413,6 +3769,7 @@ impl Engine {
             &sec_one,
             &[],
             &paragraphs,
+            &hf_line_hs,
             self.line_ref_bands,
         );
         // 流項＝段落行＋表格依序排列（簡化 packer：頁首本就一小節，不跨頁，
@@ -3837,7 +4194,23 @@ fn build_hf_layer(
                     .collect();
                 let (styles, metrics, _spacings, _marker_chars) = match style_table {
                     // 頁首尾不展開點引（widths 空＝不虛構；既有行為不變）。
-                    Some(st) => cascade_paragraphs(st, &paragraphs, def_size, &[], &[]),
+                    // 頁首尾無表格樣式插層，故傳空表。
+                    Some(st) => {
+                        let calibrated =
+                            st.has_fonts() && std::env::var_os("K6_AUTO_PITCH_BUGGY").is_none();
+                        cascade_paragraphs(
+                            st,
+                            &paragraphs,
+                            def_size,
+                            1.0,
+                            &[],
+                            &[],
+                            PitchCascade {
+                                table_styles: &HashMap::new(),
+                                calibrated,
+                            },
+                        )
+                    }
                     None => (paragraphs, Vec::new(), Vec::new(), Vec::new()),
                 };
                 hf_parts.insert(
@@ -4400,14 +4773,12 @@ mod tests {
                 "{w}x{h}"
             );
             assert!((x - 72.0).abs() < 1e-2, "版心左緣：{x}");
-            // 段落 0 帶 0 → 圖頂帶 1（吸收態：空行帶＝圖頂帶；本段行=空行）。
-            // M1-band：細化帶尺下空行段佔宣告行高的整帶數（＝宣告行高本體），
-            // 物理 y 不變：72＋15.4＝87.4。
-            let line_h = engine.params.line_h_pt();
-            let empty_bands = (11.0f32 * 1.4 / line_h).ceil();
+            // K6：前段 CJK 文字（PMingLiU→WQY）pitch＝11×1.3496（族表值）；
+            // 圖片錨在次行起點，故 y＝72＋該 pitch（舊粗尺 15.4 的「空行段
+            // 整帶數」算法已作廢——pitch 由 real-LH 決定）。
             assert!(
-                (y - (72.0 + empty_bands * line_h)).abs() < 1e-2,
-                "圖 y＝空行段末帶：{y}"
+                (y - (72.0 + 11.0 * 1.3496)).abs() < 0.6,
+                "圖 y＝前段 CJK 行 pitch 之後（72＋11×1.3496）：{y}"
             );
             assert_eq!(mime, "image/png", "副檔名 png → image/png");
             assert!(data_b64.starts_with("iVBORw0KGgo"), "PNG magic 直通");
@@ -5115,9 +5486,30 @@ mod tests {
         );
     }
 
-    /// (f) 只宣告字型不改變任何分頁幾何——page_breaks JSON 逐位元組等值。
+    /// 單段長文的頁內行距（相鄰文字行 y 差；同段內無段距干擾）。
+    fn first_page_line_pitch(engine: &Engine) -> f32 {
+        let dl = engine.page_display_list(0).expect("第 0 頁");
+        let mut ys: Vec<f32> = dl
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                DrawItem::Text { y, text, .. } if !text.trim().is_empty() => Some(*y),
+                _ => None,
+            })
+            .collect();
+        ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        ys.dedup_by(|a, b| (*a - *b).abs() < 0.05);
+        ys.windows(2)
+            .map(|w| w[1] - w[0])
+            .find(|d| *d > 1.0)
+            .expect("至少兩行文字才有 pitch")
+    }
+
+    /// (f) K6：字型宣告決定 real-LH pitch（不再是版面中性）。
+    /// 無字型宣告＝零宣告粗尺 12pt×1.4＝16.8；宣告 Calibri＝12×1.2207＝14.65。
+    /// 舊測試「宣告字型不得動分頁」是 K6 前的假設，已被校準報告 §1 取代。
     #[test]
-    fn font_declaration_does_not_change_page_breaks() {
+    fn font_declaration_sets_real_lh_pitch() {
         let long_text = "字型宣告不得影響分頁。".repeat(400);
         let doc = |rpr: &str| {
             format!(
@@ -5137,10 +5529,15 @@ mod tests {
         };
         let plain = build(doc(""));
         let with_font = build(doc(r#"<w:rPr><w:rFonts w:ascii="Calibri"/></w:rPr>"#));
-        assert_eq!(
-            plain.page_breaks_json(),
-            with_font.page_breaks_json(),
-            "新增字型宣告不得移動任何分頁斷點"
+        let plain_pitch = first_page_line_pitch(&plain);
+        let font_pitch = first_page_line_pitch(&with_font);
+        assert!(
+            (plain_pitch - 16.8).abs() < 0.3,
+            "無字型宣告＝零宣告粗尺 16.8，實得 {plain_pitch}"
+        );
+        assert!(
+            (font_pitch - 14.65).abs() < 0.3,
+            "Calibri 12pt real-LH＝12×1.2207＝14.65，實得 {font_pitch}"
         );
     }
 
@@ -5336,10 +5733,11 @@ mod tests {
         );
     }
 
-    /// (f) theme 版分頁零位移：宣告 `w:asciiTheme` 前後 page_breaks 等值
-    /// （G1 直接值守門測的同款口徑）。
+    /// (f) K6：theme 字型引用決定 real-LH pitch（不再是版面中性）。
+    /// `w:asciiTheme="minorHAnsi"` 解到 Calibri ⇒ 12×1.2207＝14.65；
+    /// 無宣告＝零宣告粗尺 16.8。舊「theme 引用不得動分頁」假設已作廢。
     #[test]
-    fn theme_font_declaration_does_not_change_page_breaks() {
+    fn theme_font_reference_sets_real_lh_pitch() {
         let long_text = "字型主題引用不得影響分頁。".repeat(400);
         let doc = |rpr: &str| {
             format!(
@@ -5362,10 +5760,15 @@ mod tests {
         let themed = build(doc(
             r#"<w:rPr><w:rFonts w:asciiTheme="minorHAnsi"/></w:rPr>"#,
         ));
-        assert_eq!(
-            plain.page_breaks_json(),
-            themed.page_breaks_json(),
-            "theme 字型引用不得移動任何分頁斷點"
+        let plain_pitch = first_page_line_pitch(&plain);
+        let themed_pitch = first_page_line_pitch(&themed);
+        assert!(
+            (plain_pitch - 16.8).abs() < 0.3,
+            "無 theme 引用＝零宣告粗尺 16.8，實得 {plain_pitch}"
+        );
+        assert!(
+            (themed_pitch - 14.65).abs() < 0.3,
+            "minorHAnsi→Calibri real-LH＝14.65，實得 {themed_pitch}"
         );
     }
 
@@ -5806,14 +6209,14 @@ mod tests {
             p3.iter().any(|l| !l.trim().is_empty()),
             "HC031 第 4 頁必須有實質內容（節末段不得被擠成獨立空頁）"
         );
-        // K2b：清單 marker 進投影後正文一度為 9 頁（原本 8 頁）；M1-band
-        // 帶尺細化收回量化過扣後回到 8 頁＝LO 同頁數（本卡設計目的：方向
-        // ＝向 LO 頁數收斂）；仍不得有「只含空段」的空頁（見
-        // `hc031_no_blank_body_page`）。
+        // K6：Normal 259 auto × Calibri 1.2207（11pt）＝14.49pt，正文回到 9 頁。
+        // LO 25.8 直接檔 render_lab 實測總頁 9（見交付報告）——舊「8＝LO」
+        // 是 K6 前粗尺 11.9pt 的巧合，已作廢。仍不得有「只含空段」的空頁
+        // （見 `hc031_no_blank_body_page`）。
         assert_eq!(
             engine.body_page_count(),
-            8,
-            "HC031 正文頁數＝8（M1-band 細化後與 LO 收斂）；實得 {}",
+            9,
+            "HC031 正文頁數＝9（K6 校準 pitch 後與 LO 25.8 直接檔實測一致）；實得 {}",
             engine.body_page_count()
         );
     }

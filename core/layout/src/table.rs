@@ -159,6 +159,14 @@ pub struct CellInput {
     /// 表格行網格帶高（格內逐帶量化屬後續卡，本卡老實近似）。
     #[serde(default)]
     pub text_size_pt: Option<f32>,
+    /// K6：與 `blocks` 中**文字 block 出現序**逐位對齊的宣告行高（pt，
+    /// 量化前；`cascade_paragraphs` 的 auto 基準字級×倍率）。格內一行
+    /// 文字改佔 `round(本值／帶尺)` 帶，不再吃全域 `line_ref_bands`——否則
+    /// 14pt 表格正文會被 docDefaults 11pt 的 pitch 壓成 12.65pt（fdo68607
+    /// LO 實測 17.1）。空／缺位＝沿用 `line_ref_bands`（未細化檔與舊
+    /// 序列化逐位元組不變）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_line_h_pt: Vec<f32>,
     /// run 級樣式標注（L2-cellruns）：與 `blocks` 中**文字 block 出現序**
     /// 逐位對齊的平行欄位——`run_spans[i]`＝第 i 個 `CellBlock::Text` 的
     /// run 標注（無標注＝空 vec，亦可整欄短於文字 block 數＝尾部缺位）。
@@ -336,6 +344,9 @@ enum CellBlockGeom {
     Text {
         lines: Vec<Line>,
         bands: u32,
+        /// K6：本 block 一行文字佔用的帶數（＝round(宣告行高／帶尺)；
+        /// 未細化／無宣告＝全域 `line_ref`＝舊行為）。
+        line_bands: u32,
         size_pt: Option<f32>,
         runs: Vec<CellRun>,
     },
@@ -678,6 +689,7 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                 CellBlockGeom::Text {
                     lines,
                     bands,
+                    line_bands,
                     size_pt,
                     runs,
                 } => {
@@ -718,8 +730,8 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                                 runs: line_runs,
                             });
                         }
-                        // M1-band：細尺下一行文字佔 lref 帶（粗尺 lref=1＝舊行為）。
-                        cur += tl.line_ref;
+                        // K6：逐 block 宣告行高（細尺下）或全域 lref（舊行為）。
+                        cur += *line_bands;
                     }
                     // bands 可多於 lines（空段佔帶）：游標補到 block 尾。
                     cur = cur.max(start + *bands);
@@ -884,10 +896,21 @@ pub fn layout_table(
             let mut blocks: Vec<CellBlockGeom> = Vec::new();
             // run_spans 以「文字 block 出現序」為尺：text 分支專用游標。
             let mut text_i = 0usize;
+            // K6：文字 block 的逐行帶數——有宣告行高且已細化時按
+            // `round(宣告行高／帶尺)`，否則落全域 `lref`（舊行為）。
+            let line_bands_for = |idx: usize| -> u32 {
+                match cell.text_line_h_pt.get(idx) {
+                    Some(h) if lref > 1 && h.is_finite() && *h > 0.0 => {
+                        ((*h / line_h).round() as u32).max(1)
+                    }
+                    _ => lref,
+                }
+            };
             if cell.blocks.is_empty() {
                 blocks.push(CellBlockGeom::Text {
                     lines: break_lines("", inner_w, &cell_m),
                     bands: lref,
+                    line_bands: lref,
                     size_pt: cell.text_size_pt,
                     runs: Vec::new(),
                 });
@@ -902,13 +925,16 @@ pub fn layout_table(
                                 blocks.push(CellBlockGeom::Text {
                                     lines: Vec::new(),
                                     bands: 0,
+                                    line_bands: lref,
                                     size_pt: cell.text_size_pt,
                                     runs: Vec::new(),
                                 });
                             } else {
                                 let ls = break_lines(t, inner_w, &cell_m);
-                                // M1-band：細尺下一行文字佔 lref 帶（粗尺 lref=1＝舊行為）。
-                                let bands = ls.len().max(1) as u32 * lref;
+                                // K6：細尺下按本段宣告行高佔帶；無宣告／
+                                // 未細化＝lref（M1 口徑，粗尺＝1 舊行為）。
+                                let line_bands = line_bands_for(text_i);
+                                let bands = ls.len().max(1) as u32 * line_bands;
                                 // run 標注（L2-cellruns）：run_spans 以「文字
                                 // block 出現序」為尺（跳過非文字 block），
                                 // 缺位＝空＝單樣式舊行為。
@@ -927,6 +953,7 @@ pub fn layout_table(
                                 blocks.push(CellBlockGeom::Text {
                                     lines: ls,
                                     bands,
+                                    line_bands,
                                     size_pt: cell.text_size_pt,
                                     runs: spans,
                                 });

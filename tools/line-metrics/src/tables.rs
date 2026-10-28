@@ -236,6 +236,7 @@ pub fn table_input(
     styles: &HashMap<String, EdgeSetInput>,
     cell_imgs: &HashMap<usize, Vec<(f32, f32)>>,
     sizes: &HashMap<usize, f32>,
+    line_hs: &HashMap<usize, f32>,
     line_ref_bands: u32,
 ) -> TableInput {
     let p = &t.props;
@@ -274,6 +275,8 @@ pub fn table_input(
                         // 子表各自入獨立 Vec 會丟失拓撲序，子表後的尾部段落
                         // 會被拉回頂部——流式堆疊的前提就在這裡。
                         let mut blocks = Vec::new();
+                        // K6：與文字 block 出現序平行的宣告行高（細化檔才填）。
+                        let mut text_line_h: Vec<f32> = Vec::new();
                         // 一格多段的級聯字級＝段內最大（斷行量測保守尺：
                         // 大字級少塞字，不虛構塞得下的行）。
                         let mut cell_size: Option<f32> = None;
@@ -283,6 +286,8 @@ pub fn table_input(
                                 Block::Paragraph { index } => {
                                     if let Some(s) = texts.get(*index) {
                                         blocks.push(CellBlock::Text(s.clone()));
+                                        text_line_h
+                                            .push(line_hs.get(index).copied().unwrap_or(0.0));
                                     }
                                     if let Some(sz) = sizes.get(index) {
                                         cell_size = Some(cell_size.map_or(*sz, |v| v.max(*sz)));
@@ -302,6 +307,7 @@ pub fn table_input(
                                         styles,
                                         cell_imgs,
                                         sizes,
+                                        line_hs,
                                         line_ref_bands,
                                     ))));
                                 }
@@ -324,6 +330,7 @@ pub fn table_input(
                             valign: c.props.valign.clone(),
                             margins: c.props.margins.as_ref().map(cell_margins),
                             text_size_pt: cell_size,
+                            text_line_h_pt: text_line_h,
                         }
                     })
                     .collect(),
@@ -520,6 +527,7 @@ pub fn build_slots(
     sections: &[SectionSpec],
     images: &[InlineImage],
     paras: &[quire_ooxml::Paragraph],
+    line_hs: &[f32],
     line_ref_bands: u32,
 ) -> Vec<TableSlot> {
     let styles = styles_xml.map(table_style_borders).unwrap_or_default();
@@ -531,6 +539,17 @@ pub fn build_slots(
             sizes.insert(i, sz);
         }
     }
+    // K6：段落索引 → 級聯量化前行高（僅細化檔消費）。
+    let line_h_map: HashMap<usize, f32> = if line_ref_bands > 1 {
+        line_hs
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.is_finite() && **h > 0.0)
+            .map(|(i, h)| (i, *h))
+            .collect()
+    } else {
+        HashMap::new()
+    };
     let m = TextMeasurer::new(params.font_size_pt);
     let line_h = params.line_h_pt();
     let mut prev_end = 0usize; // 逐槽正規化游標：槽區間必不重疊且 ≤ n_paras
@@ -544,6 +563,7 @@ pub fn build_slots(
                 &styles,
                 &cell_imgs,
                 &sizes,
+                &line_h_map,
                 line_ref_bands,
             );
             let avail_w = avail_w_for(sections, params, bt.para_start);
