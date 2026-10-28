@@ -36,7 +36,7 @@
 //! 邊界永不拆組合字元/連字（shaping.rs 的覆蓋校驗保證）——這是「任意文字
 //! 不斷字」性質在緊急路徑下的最終防線。
 
-use crate::shaping::{shape_advances, ClusterAdvance, TextMeasurer};
+use crate::shaping::{shape_advances_scaled, ClusterAdvance, TextMeasurer};
 use crate::uax14::{break_atoms, is_ignorable, Atom};
 use crate::{Line, EOL_CONTROLS};
 
@@ -338,7 +338,9 @@ pub(crate) fn kp_break_lines_at(
             hard_end: true,
         }];
     }
-    let clusters = shape_advances(text, m.size_pt());
+    // K7-cal：水平 advance 尺經 shaping 內部按 script 選擇性乘入
+    // （Latin/通用乘、CJK 方塊不乘）；scale≡1.0＝舊行為逐位元組不變。
+    let clusters = shape_advances_scaled(text, m.size_pt(), m.advance_scale());
     let pw = PrefixWidths::new(&clusters);
 
     // atoms：UAX#14 切分＋超寬 atom 的 cluster 緊急切分。

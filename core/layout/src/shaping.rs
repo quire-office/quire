@@ -57,10 +57,10 @@ fn is_common(c: char) -> bool {
     matches!(c.properties().script(), Script::Common | Script::Inherited)
 }
 
-/// 按 script 切 run：通用字元歸屬「當前有效 script」（初值 Latin，遇首個
+/// script run 切分：通用字元歸屬「當前有效 script」（初值 Latin，遇首個
 /// 非通用字元切換；換 script 時，掛在舊 script 下的通用字元自當前 char 起
 /// 歸新 run）。回傳 (位元組起點, 長度, shaping script)。
-fn script_runs(text: &str) -> Vec<(usize, usize, Script)> {
+pub(crate) fn script_runs(text: &str) -> Vec<(usize, usize, Script)> {
     let mut runs: Vec<(usize, usize, Script)> = Vec::new();
     let mut effective = Script::Latin;
     let mut start = 0usize;
@@ -91,10 +91,23 @@ fn script_runs(text: &str) -> Vec<(usize, usize, Script)> {
 /// 把一段文字 shape 成逐 cluster advances（pt@size_pt）。空串回傳空向量。
 /// 輸出依 `start` 嚴格遞增且完整覆蓋每個字元的起點。
 pub fn shape_advances(text: &str, size_pt: f32) -> Vec<ClusterAdvance> {
+    shape_advances_scaled(text, size_pt, 1.0)
+}
+
+/// K7-cal：帶水平 advance 尺的 shaping。`scale` 只乘 **Latin/通用** cluster
+/// （宣告族→LO 渲染 face 的寬比校準）；Han/Hangul 等 CJK cluster 走 em
+/// 方塊、LO 替代 face 同為方塊，**不乘**（乘了會把方塊字縮出裂縫）。
+/// `scale==1.0` 時與 [`shape_advances`] 逐位元組全等（舊行為守門）。
+pub fn shape_advances_scaled(
+    text: &str,
+    size_pt: f32,
+    scale: f32,
+) -> Vec<ClusterAdvance> {
     let mut out = Vec::new();
     if text.is_empty() {
         return out;
     }
+    let s = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
     let size = size_pt.max(0.001);
     let font = embedded_font();
     let m = font.metrics(&[]).scale(size);
@@ -105,6 +118,17 @@ pub fn shape_advances(text: &str, size_pt: f32) -> Vec<ClusterAdvance> {
     };
 
     for (rs, rl, script) in script_runs(text) {
+        // K7-cal：CJK（Han／Hangul／Kana）cluster 不乘尺（em 方塊，LO 替代
+        // face 同為方塊）；Latin/通用乘。
+        let run_scale = if matches!(
+            script,
+            Script::Han | Script::Hangul | Script::Hiragana | Script::Katakana
+        ) {
+            1.0
+        } else {
+            s
+        };
+        let run_start = out.len();
         SHAPE_CTX.with(|ctx| {
             let mut ctx = ctx.borrow_mut();
             let mut shaper = ctx.builder(font).script(script).size(size).build();
@@ -126,6 +150,12 @@ pub fn shape_advances(text: &str, size_pt: f32) -> Vec<ClusterAdvance> {
                     w,
                 });
             });
+            if run_scale != 1.0 {
+                // 只乘本 run 剛推入的 clusters（run_start 之後）。
+                for c in out[run_start..].iter_mut() {
+                    c.w *= run_scale;
+                }
+            }
         });
     }
 
@@ -162,24 +192,42 @@ pub fn shape_advances(text: &str, size_pt: f32) -> Vec<ClusterAdvance> {
     cov
 }
 
-/// 文字測量器：字級固定，餵給 `break_lines`。
+/// 文字測量器：字級＋水平 advance 尺（K7-cal），餵給 `break_lines`。
+/// `advance_scale`＝宣告族→LO 渲染 face 的字形寬比（見 engine-api
+/// `face_advance_scale`；1.0＝舊行為）。水平尺只影響 `text_width`，
+/// 不動 `size_pt`（KP 取 clusters 一律經本器，caret/發射路徑各自另製）。
 #[derive(Debug, Clone, Copy)]
 pub struct TextMeasurer {
     size_pt: f32,
+    advance_scale: f32,
 }
 
 impl TextMeasurer {
     pub fn new(size_pt: f32) -> Self {
-        Self { size_pt }
+        Self { size_pt, advance_scale: 1.0 }
+    }
+
+    /// K7-cal：帶水平 advance 尺的測量器（scale≡1.0 時與 [`Self::new`] 全等）。
+    pub fn with_advance_scale(size_pt: f32, advance_scale: f32) -> Self {
+        let s = if advance_scale.is_finite() && advance_scale > 0.0 { advance_scale } else { 1.0 };
+        Self { size_pt, advance_scale: s }
     }
 
     pub fn size_pt(&self) -> f32 {
         self.size_pt
     }
 
-    /// shaped 總寬（pt）。
+    /// K7-cal：水平 advance 尺（1.0＝未校準＝舊行為逐位元組不變）。
+    pub fn advance_scale(&self) -> f32 {
+        self.advance_scale
+    }
+
+    /// shaped 總寬（pt；K7-cal 尺按 script 選擇性乘入，與 KP 斷行同徑）。
     pub fn text_width(&self, s: &str) -> f32 {
-        shape_advances(s, self.size_pt).iter().map(|c| c.w).sum()
+        shape_advances_scaled(s, self.size_pt, self.advance_scale)
+            .iter()
+            .map(|c| c.w)
+            .sum()
     }
 }
 

@@ -672,6 +672,10 @@ pub struct ParaGrid {
     pub before_bands: Vec<u32>,
     /// 逐段段後距量化帶數（K1）：末行之後加這麼多帶。缺＝0（零變化守門）。
     pub after_bands: Vec<u32>,
+    /// K7-cal：逐段水平 advance 尺（宣告族→LO 渲染 face 的字形寬比，
+    /// engine 由級聯主宣告族查表餵入）。缺位/1.0＝舊行為逐位元組不變；
+    /// 只在 KP 斷行的 cluster 寬上乘入（不動 pitch／字級／發射幾何）。
+    pub advance_scale: Vec<f32>,
 }
 
 impl ParaGrid {
@@ -698,6 +702,11 @@ impl ParaGrid {
     /// 段落 i 的段後距帶數（缺＝0；未宣告／顯式零皆不佔帶）。
     pub fn after_of(&self, para: usize) -> u32 {
         self.after_bands.get(para).copied().unwrap_or(0)
+    }
+
+    /// 段落 i 的水平 advance 尺（K7-cal；缺位＝1.0＝舊行為）。
+    pub fn advance_scale_of(&self, para: usize) -> f32 {
+        self.advance_scale.get(para).copied().unwrap_or(1.0)
     }
 }
 
@@ -2056,7 +2065,8 @@ impl LayoutEngine {
     fn break_para(&self, i: usize) -> ParagraphLayout {
         let content_w = section_break_w_pt(&self.params, &self.sections, i);
         let size = self.grid.size_of(i, self.params.font_size_pt);
-        let m = TextMeasurer::new(size);
+        // K7-cal：逐段水平尺（缺位/1.0＝舊行為；KP 只在 cluster 寬上乘入）。
+        let m = TextMeasurer::with_advance_scale(size, self.grid.advance_scale_of(i));
         let (lines, para_breaks) = break_para_lines(
             &self.texts[i],
             content_w,

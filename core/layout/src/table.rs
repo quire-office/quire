@@ -159,6 +159,11 @@ pub struct CellInput {
     /// 表格行網格帶高（格內逐帶量化屬後續卡，本卡老實近似）。
     #[serde(default)]
     pub text_size_pt: Option<f32>,
+    /// K7-cal：格內斷行的水平 advance 尺（宣告族→LO 渲染 face 寬比；engine
+    /// 由格內段落主宣告族查表餵入）。`None`/1.0＝舊行為逐位元組不變。
+    /// 只在格內 KP 斷行的 cluster 寬上乘入；發射 x 累加不乘（發射幾何零擾動）。
+    #[serde(default)]
+    pub text_advance_scale: Option<f32>,
     /// K6：與 `blocks` 中**文字 block 出現序**逐位對齊的宣告行高（pt，
     /// 量化前；`cascade_paragraphs` 的 auto 基準字級×倍率）。格內一行
     /// 文字改佔 `round(本值／帶尺)` 帶，不再吃全域 `line_ref_bands`——否則
@@ -883,8 +888,13 @@ pub fn layout_table(
             let pad_bottom_bands = quant_bands(pad_bottom_pt, line_h);
             // 級聯字級（t_5dfc8ac7）：有宣告→本格斷行按自身尺量測（None＝
             // 全域 m，既有檔案逐位元組不變）。
+            // K7-cal：格內水平尺（None/1.0＝沿用全域尺＝舊行為）。
+            let cell_adv = cell.text_advance_scale.unwrap_or(1.0);
             let cell_m = match cell.text_size_pt {
-                Some(s) if s > 0.0 => TextMeasurer::new(s),
+                Some(s) if s > 0.0 => TextMeasurer::with_advance_scale(s, cell_adv),
+                _ if cell_adv != 1.0 => {
+                    TextMeasurer::with_advance_scale(m.size_pt(), cell_adv)
+                }
                 _ => *m,
             };
 
