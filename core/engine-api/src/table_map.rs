@@ -294,6 +294,8 @@ fn cell_run_spans(paras: &[quire_ooxml::Paragraph]) -> HashMap<usize, Vec<CellRu
 /// `sizes`（t_5dfc8ac7）：段落索引 → 級聯有效字級（一格多段取最大）。
 /// `run_spans`（L2-cellruns）：段落索引 → run 級樣式標注（只含確有多樣式
 /// 的段落）；依格內**文字 block 出現序**平行落入 `CellInput::run_spans`。
+/// `advs`（K7-cal）：段落索引 → 水平 advance 尺（一格多段取**最大**＝保守
+/// 少塞字，同 `sizes` 取最大哲學；缺位＝不入格內欄＝舊斷行）。
 #[allow(clippy::too_many_arguments)]
 pub fn table_input(
     t: &Table,
@@ -304,6 +306,7 @@ pub fn table_input(
     line_hs: &HashMap<usize, f32>,
     line_ref_bands: u32,
     run_spans: &HashMap<usize, Vec<CellRun>>,
+    advs: &HashMap<usize, f32>,
 ) -> TableInput {
     let p = &t.props;
     TableInput {
@@ -351,6 +354,8 @@ pub fn table_input(
                         // 一格多段的級聯字級＝段內最大（斷行量測保守尺：
                         // 大字級少塞字，不虛構塞得下的行）。
                         let mut cell_size: Option<f32> = None;
+                        // K7-cal：格內水平尺（一格多段取最大＝保守少塞字）。
+                        let mut cell_adv: Option<f32> = None;
                         for b in &c.blocks {
                             match b {
                                 // 段落索引引用扁平序列：越界＝畸形檔，跳過（容錯）。
@@ -365,6 +370,12 @@ pub fn table_input(
                                     }
                                     if let Some(sz) = sizes.get(index) {
                                         cell_size = Some(cell_size.map_or(*sz, |v| v.max(*sz)));
+                                    }
+                                    // K7-cal：格內水平尺＝有文字段的最大值
+                                    // （呼叫端已濾掉空文字段；未命中族＝1.0，
+                                    // 混排格保守走舊斷行，零誤窄）。
+                                    if let Some(a) = advs.get(index) {
+                                        cell_adv = Some(cell_adv.map_or(*a, |v: f32| v.max(*a)));
                                     }
                                     // 錨定在該段的格內圖（t_a1397522）：段落
                                     // 之後依序追加（文件序；查無尺寸＝老實跳過）。
@@ -384,6 +395,7 @@ pub fn table_input(
                                         line_hs,
                                         line_ref_bands,
                                         run_spans,
+                                        advs,
                                     ))));
                                 }
                             }
@@ -403,6 +415,7 @@ pub fn table_input(
                             valign: c.props.valign.clone(),
                             margins: c.props.margins.as_ref().map(cell_margins),
                             text_size_pt: cell_size,
+                            text_advance_scale: cell_adv,
                             text_line_h_pt: text_line_h,
                             run_spans: spans,
                         }
@@ -609,6 +622,7 @@ pub fn build_slots(
     paras: &[quire_ooxml::Paragraph],
     line_hs: &[f32],
     line_ref_bands: u32,
+    advance_scales: &[f32],
 ) -> Vec<TableSlot> {
     let styles = styles_xml.map(table_style_borders).unwrap_or_default();
     let cell_imgs = cell_image_map(images);
@@ -619,6 +633,18 @@ pub fn build_slots(
             sizes.insert(i, sz);
         }
     }
+    // K7-cal：段落索引 → 水平 advance 尺。**空文字段不參與**（空行不斷行、
+    // 不 demanded 寬——ECMA 子表尾部填充空段不得把整格推回 1.0）；有文字段
+    // 一律入表（未命中族＝1.0），格內取最大＝混排保守（最寬尺少塞字，
+    // 未校準族與校準族混排的格整體走舊斷行，零誤窄）。
+    let advs: HashMap<usize, f32> = advance_scales
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| {
+            a.is_finite() && texts.get(*i).is_some_and(|t| !t.trim().is_empty())
+        })
+        .map(|(i, a)| (i, *a))
+        .collect();
     // L2-cellruns：格內文字的 run 級樣式標注（只含確有多樣式的段落；
     // 單樣式段整段不入表＝發射端走舊路徑，金樣零位移）。
     let run_spans = cell_run_spans(paras);
@@ -650,6 +676,7 @@ pub fn build_slots(
                 &line_h_map,
                 line_ref_bands,
                 &run_spans,
+                &advs,
             );
             let avail_w = avail_w_for(sections, params, bt.para_start);
             let layout = quire_layout::table::layout_table(&input, avail_w, line_h, &m, 0);
@@ -847,6 +874,7 @@ mod tests {
                 &doc.paragraphs,
                 &[],
                 1,
+                &[],
             );
             assert!(!slots.is_empty(), "{rel}：標為 txbx-in-cell 檔應有表格槽");
             let mut prev_end = 0usize;

@@ -126,8 +126,10 @@ fn fdo68607_pitch_mode_is_17_1_not_page_count() {
         "pitch 口徑 {mode} 不得等於頁數 {pages}（斷言取的是行距，不是頁數）"
     );
     assert_eq!(
-        pages, 9,
-        "頁數紅燈暫記 9（LO 8；水平換行寬另立卡，fdo68607 總行數 358 vs LO 336）"
+        pages, 8,
+        "頁數紅燈 8（LO 8；K7-cal 水平 advance 寬表落地後收斂——原暫記 9 的 \
+         差額根因＝內嵌 Noto vs LO 替代 face 寬差，見 docs/k7-wrapwidth-diag.md §3；\
+         逐例註明：K7 t_919b8d54）"
     );
 }
 

@@ -502,6 +502,15 @@ impl Engine {
             .map(|xml| quire_ooxml::read_images(xml))
             .unwrap_or_default();
         let eff_refs: &[quire_ooxml::Paragraph] = paras_eff.as_deref().unwrap_or(&doc.paragraphs);
+        // K7-cal：逐段水平 advance 尺（級聯主宣告族→LO face 寬比查表；未宣告
+        // 族＝1.0 零擾動）。`K7_WRAP_WIDTH_BUGGY=1` 整表回 1.0＝回塞舊斷行
+        // （fdo68607 頁數回 9，紅燈 k7_wrap_width 回塞鎖）。
+        let adv_buggy = std::env::var_os("K7_WRAP_WIDTH_BUGGY").is_some();
+        let grid_adv_v: Vec<f32> = if adv_buggy {
+            vec![1.0; eff_refs.len()]
+        } else {
+            eff_refs.iter().map(|p| para_advance_scale(&p.runs)).collect()
+        };
         let slots = table_map::build_slots(
             &doc.tables,
             &texts,
@@ -512,6 +521,7 @@ impl Engine {
             eff_refs,
             &para_line_h_v,
             line_ref_bands,
+            &grid_adv_v,
         );
         let bands = table_map::build_images(&images, params.line_h_pt(), &params, &sections);
         // K4c-image：開檔期像素解析（純讀取）。正文流／浮動／格內圖一律沿
@@ -554,6 +564,7 @@ impl Engine {
             break_before: grid_break_v,
             before_bands: grid_before_v,
             after_bands: grid_after_v,
+            advance_scale: grid_adv_v,
         };
         let layout = LayoutEngine::with_breaks_grid(
             &texts,
@@ -2197,6 +2208,57 @@ fn has_cjk(text: &str) -> bool {
     })
 }
 
+/// K7-cal：宣告族 → LO 實際渲染 face 的水平 advance 寬比
+/// （`docs/k7-wrapwidth-diag.md` §3；K6 `face_line_factor` 的水平軸同構）。
+/// 鍵一律小寫；**未命中＝1.0＝零擾動守門**（比照 K6 `has_fonts()＋calibrated`
+/// 閘——表沒有實測值的族絕不猜數）。值＝A 軌（標準拉丁樣本串 hmtx 寬比
+/// LO face／quire 內嵌 Noto 子集，14pt），B 軌（真實行逐行寬比 median）覆核：
+/// Calibri 0.8834（B 軌 0.8747，fdo68607 n=418）；spread ±2.1% 屬可接受殘差。
+/// face 來源：`~/.local/share/fonts/k6cal`、系統 Liberation、LO 25.8 自帶
+/// Caladea／NotoSerif（矩陣重產：scratch `k7cal_faces2.py`）。
+fn face_advance_scale(face: &str) -> f32 {
+    let key = face.trim().to_lowercase();
+    match key.as_str() {
+        // Calibri → Carlito（LO 替換對，K6 §1 同基準）。
+        "calibri" | "carlito" => 0.8834,
+        // Cambria → Caladea（LO 自帶 face 實測；run67 記「待量」已清償）。
+        "cambria" | "caladea" => 0.9545,
+        // Liberation 系（Times New Roman／Arial 在本基準環境都替到它）。
+        "liberation serif" | "liberationserif" | "times new roman" | "times" => 0.9648,
+        "arial" | "liberation sans" | "liberationsans" | "helvetica" => 0.9950,
+        // theme 斷鏈 fallback（LO 落到自身預設 Noto Serif，K6 同口徑）。
+        "noto serif" | "notoserif" => 1.0328,
+        // TODO(K7-cal)：Tahoma→LO 實際替代 face 未實測（VCL 替代表本機查無
+        // 實據），**不虛構**——1.0 後備；補量後入表。
+        _ => 1.0,
+    }
+}
+
+/// K7-cal 總開關（回塞鎖）：`K7_WRAP_WIDTH_BUGGY=1` ⇒ 全表退 1.0＝舊斷行
+/// ＋舊發射累加（比照 R2_BUGGY／K6_AUTO_PITCH_BUGGY 的 env 慣例）。
+fn k7_advance_enabled() -> bool {
+    std::env::var_os("K7_WRAP_WIDTH_BUGGY").is_none()
+}
+
+/// K7-cal：段「主宣告族」的水平 advance 尺＝首個**有文字** run 的有效字型族
+/// 查表（無字 run 不決定主族；全無宣告＝1.0 零擾動）。僅乘 Latin/通用
+/// cluster（shaping 層守 CJK 方塊不動）；斷行（ParaGrid）與發射段 x 累加、
+/// caret 互逆對（同一量測模型）都走本函數，三者恆同尺。
+fn para_advance_scale(runs: &[quire_ooxml::Run]) -> f32 {
+    if !k7_advance_enabled() {
+        return 1.0;
+    }
+    let fam = runs
+        .iter()
+        .find(|r| !r.text.is_empty() && r.effective_fonts.is_some())
+        .or_else(|| runs.iter().find(|r| r.effective_fonts.is_some()))
+        .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
+    match fam {
+        Some(f) => face_advance_scale(&f),
+        None => 1.0,
+    }
+}
+
 /// 單一 run 的 real line-height 因子：有文字時按實際 script 選 face
 /// （CJK→eastAsia、其餘→ascii），無文字時退回 ascii/eastAsia 任一。
 /// theme 斷鏈優先走 Noto Serif 1.3620。
@@ -3223,6 +3285,9 @@ fn emit_line_run_items(
     line: &quire_layout::Line,
     para: Option<&quire_ooxml::Paragraph>,
 ) {
+    // K7-cal：段級水平尺（＝KP 斷行同尺——同由 para_advance_scale 出，行寬
+    // 與 x 累加恆等；未宣告族/回塞鎖＝1.0＝舊尺逐位元組不變）。
+    let adv = para.map_or(1.0, |p| para_advance_scale(&p.runs));
     let char_indices: Vec<(usize, char)> = line.text.char_indices().collect();
     let line_len_cp = char_indices.len();
     if line_len_cp == 0 {
@@ -3318,11 +3383,8 @@ fn emit_line_run_items(
             text: seg_text.to_string(),
         });
         // 零漂移契約：無宣告段（seg_size==size_pt）與舊實作同尺；宣告段按自身尺。
-        if (seg_size - size_pt).abs() < 1e-3 {
-            x_off += TextMeasurer::new(size_pt).text_width(seg_text);
-        } else {
-            x_off += TextMeasurer::new(seg_size).text_width(seg_text);
-        }
+        // K7-cal：水平尺經 measurer 選擇性乘入（與 KP 斷行同徑，adv=1.0 零擾動）。
+        x_off += TextMeasurer::with_advance_scale(seg_size, adv).text_width(seg_text);
     }
 }
 
@@ -3760,6 +3822,8 @@ impl Engine {
         // 表格槽：與正文同一映射層（styles 框線查表）；單 section 合成表。
         let sec_one = [SectionSpec { id: 0, geo: *geo }];
         // 頁首 part 內無圖片投影需求：空清單（build_slots 新簽名，t_a1397522）。
+        // K7-cal：水平尺傳空表＝頁首尾表格維持舊斷行（本卡範圍＝正文表；
+        // hf 表換算風險未量，老實零擾動，屬後續卡）。
         let hf_line_hs: Vec<f32> = part.metrics.iter().map(|m| m.1).collect();
         let slots_tbl = table_map::build_slots(
             &part.tables,
@@ -3771,6 +3835,7 @@ impl Engine {
             &paragraphs,
             &hf_line_hs,
             self.line_ref_bands,
+            &[],
         );
         // 流項＝段落行＋表格依序排列（簡化 packer：頁首本就一小節，不跨頁，
         // 表格整張放進自身帶高，超出部分由頁首自然向下延伸——重疊風險見模組注）。
@@ -6094,10 +6159,20 @@ mod tests {
             .expect("正文末頁必須存在");
         assert_eq!(dl.page, body - 1, "尾註接排在正文末頁");
         // 分隔線：版心左緣起、寬＝版心×1/3；y 在正文內容之後（不再是頁頂）。
-        let sep = dl.items.iter().find_map(|it| match it {
-            DrawItem::Rule { x1, y1, x2, y2, .. } => Some((*x1, *y1, *x2, *y2)),
-            _ => None,
-        });
+        // K7-cal（t_919b8d54）：水平尺落地後 K6 pitch 不變但每頁少塞字，正文
+        // 末頁頂部改由表格開頭（表格框線也是橫線且同寬）——选择器不得取
+        // 「第一條 Rule」，改取**最底**那條左緣起橫線（＝接排在正文之後者）。
+        let sep = dl
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                DrawItem::Rule { x1, y1, x2, y2, .. } if (y1 - y2).abs() < 0.01 => {
+                    Some((*x1, *y1, *x2, *y2))
+                }
+                _ => None,
+            })
+            .filter(|(x1, _, x2, _)| (x1 - 72.0).abs() < 0.6 && x2 - x1 > 10.0)
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         let (x1, y1, x2, y2) = sep.expect("正文末頁必須有尾註分隔線 Rule");
         assert_eq!(y1, y2, "分隔線是水平線");
         assert!(

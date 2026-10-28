@@ -108,6 +108,64 @@ fn run_line_factor(fonts: Option<&RunFonts>, text: &str) -> Option<f32> {
     Some(face_line_factor(face))
 }
 
+/// K7-cal：宣告族→LO 渲染 face 水平 advance 寬比（**與 engine-api
+/// `face_advance_scale` 同表同徑**，改表兩側必須同步；`docs/k7-wrapwidth-diag.md` §3）。
+fn face_advance_scale(face: &str) -> f32 {
+    let key = face.trim().to_lowercase();
+    match key.as_str() {
+        "calibri" | "carlito" => 0.8834,
+        "cambria" | "caladea" => 0.9545,
+        "liberation serif" | "liberationserif" | "times new roman" | "times" => 0.9648,
+        "arial" | "liberation sans" | "liberationsans" | "helvetica" => 0.9950,
+        "noto serif" | "notoserif" => 1.0328,
+        _ => 1.0,
+    }
+}
+
+/// K7-cal：選族口徑＝engine-api `select_text_family` 鏡像（hint_east_asian
+/// 優先 eastAsia，其次 ascii，全 CJK 時 eastAsia 兜底）。
+fn select_family(fonts: Option<&RunFonts>, text: &str) -> Option<String> {
+    let f = fonts?;
+    if f.hint_east_asian {
+        if let Some(ea) = &f.east_asia {
+            return Some(ea.clone());
+        }
+    }
+    if let Some(ascii) = &f.ascii {
+        return Some(ascii.clone());
+    }
+    if let Some(ea) = &f.east_asia {
+        if !text.is_empty() && text.chars().all(is_cjk_cp) {
+            return Some(ea.clone());
+        }
+    }
+    None
+}
+
+/// K7-cal：是否為 CJK 碼點（engine-api `is_cjk` 鏡像）。
+fn is_cjk_cp(c: char) -> bool {
+    matches!(c as u32,
+        0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF
+        | 0xFF00..=0xFFEF)
+}
+
+/// K7-cal：段「主宣告族」水平 advance 尺（engine-api `para_advance_scale`
+/// 鏡像：首個有文字 run 的選族查表；全無宣告＝1.0 零擾動）。
+fn para_advance_scale(runs: &[quire_ooxml::Run]) -> f32 {
+    if std::env::var_os("K7_WRAP_WIDTH_BUGGY").is_some() {
+        return 1.0;
+    }
+    let fam = runs
+        .iter()
+        .find(|r| !r.text.is_empty() && r.effective_fonts.is_some())
+        .or_else(|| runs.iter().find(|r| r.effective_fonts.is_some()))
+        .and_then(|r| select_family(r.effective_fonts.as_ref(), &r.text));
+    match fam {
+        Some(f) => face_advance_scale(&f),
+        None => 1.0,
+    }
+}
+
 /// K6：一組目標行高 → 文件帶尺（同引擎 `choose_grid_line_h`）。
 fn choose_grid_line_h(targets: &[f32]) -> Option<(f32, u32)> {
     // 計次後只留「有意義」的行高：單一空段／裝飾段的 14.04pt 不該把整份
@@ -316,6 +374,9 @@ fn cascade_paragraphs(
                 r2.color = eff.color;
             }
             r2.size_pt = eff.size_pt;
+            // K7-cal：級聯有效字型族烘焙進投影（engine 同徑——主宣告族查表
+            // 需要；line-metrics 純行量測，本欄只供 advance 尺查表）。
+            r2.effective_fonts = eff.fonts;
             eff_runs.push(r2);
         }
         let base_size = base.size_pt.unwrap_or(def_size);
@@ -594,6 +655,8 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         .unwrap_or_default();
     let styles_xml = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
     let eff_refs: &[Paragraph] = &eff_all;
+    // K7-cal：逐段水平尺（engine 同徑：主宣告族查表；回塞鎖退 1.0）。
+    let grid_adv_v: Vec<f32> = eff_all.iter().map(|p| para_advance_scale(&p.runs)).collect();
     let slots = tables::build_slots(
         &doc.tables,
         &texts,
@@ -604,6 +667,7 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         eff_refs,
         &para_line_h_v,
         line_ref_bands,
+        &grid_adv_v,
     );
     let bands = tables::build_images(&images_xml, params.line_h_pt(), &params, &sections);
     // br-page 硬斷點（ECMA-376 §17.4.3）：canonical 段落偏移直傳版面層。
@@ -672,6 +736,7 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         break_before: grid_break_v,
         before_bands: grid_before_v,
         after_bands: grid_after_v,
+        advance_scale: grid_adv_v,
     };
     Ok(DocInputs {
         texts,

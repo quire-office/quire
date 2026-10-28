@@ -12,8 +12,9 @@
 //! scale=0.8742 直接 8 頁），屬「水平寬度表」獨立校準軸（K6-cal 同紀律，
 //! K7-cal 卡），**嚴禁**在本檔用魔術常數湊 8 頁。K6 pitch 零觸碰。
 //!
-//! BUGGY 回塞鎖：`K7_WRAP_WIDTH_BUGGY=1` 回塞舊徑（壓版心＋貼左緣），
-//! 格線錨點必紅。測試進程內不設 env（避免平行污染），由外部執行
+//! BUGGY 回塞鎖：`K7_WRAP_WIDTH_BUGGY=1` 回塞舊徑（壓版心＋貼左緣，且
+//! K7-cal 水平尺全退 1.0），格線錨點與頁數必紅。測試進程內不設 env
+//! （避免平行污染），由外部執行
 //! `K7_WRAP_WIDTH_BUGGY=1 cargo test -p quire-engine --test k7_wrap_width` 驗證。
 
 use quire_engine::Engine;

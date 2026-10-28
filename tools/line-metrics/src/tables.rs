@@ -238,6 +238,7 @@ pub fn table_input(
     sizes: &HashMap<usize, f32>,
     line_hs: &HashMap<usize, f32>,
     line_ref_bands: u32,
+    advs: &HashMap<usize, f32>,
 ) -> TableInput {
     let p = &t.props;
     TableInput {
@@ -280,6 +281,8 @@ pub fn table_input(
                         // 一格多段的級聯字級＝段內最大（斷行量測保守尺：
                         // 大字級少塞字，不虛構塞得下的行）。
                         let mut cell_size: Option<f32> = None;
+                        // K7-cal：格內水平尺（一格多段取最大＝保守少塞字）。
+                        let mut cell_adv: Option<f32> = None;
                         for b in &c.blocks {
                             match b {
                                 // 段落索引引用扁平序列：越界＝畸形檔，跳過（容錯）。
@@ -291,6 +294,11 @@ pub fn table_input(
                                     }
                                     if let Some(sz) = sizes.get(index) {
                                         cell_size = Some(cell_size.map_or(*sz, |v| v.max(*sz)));
+                                    }
+                                    // K7-cal：格內水平尺＝有文字段最大值（鏡像
+                                    // engine table_map；呼叫端已濾空文字段）。
+                                    if let Some(a) = advs.get(index) {
+                                        cell_adv = Some(cell_adv.map_or(*a, |v: f32| v.max(*a)));
                                     }
                                     // 錨定在該段的格內圖：段落
                                     // 之後依序追加（文件序；查無尺寸＝老實跳過）。
@@ -309,6 +317,7 @@ pub fn table_input(
                                         sizes,
                                         line_hs,
                                         line_ref_bands,
+                                        advs,
                                     ))));
                                 }
                             }
@@ -330,6 +339,7 @@ pub fn table_input(
                             valign: c.props.valign.clone(),
                             margins: c.props.margins.as_ref().map(cell_margins),
                             text_size_pt: cell_size,
+                            text_advance_scale: cell_adv,
                             text_line_h_pt: text_line_h,
                         }
                     })
@@ -529,6 +539,7 @@ pub fn build_slots(
     paras: &[quire_ooxml::Paragraph],
     line_hs: &[f32],
     line_ref_bands: u32,
+    advance_scales: &[f32],
 ) -> Vec<TableSlot> {
     let styles = styles_xml.map(table_style_borders).unwrap_or_default();
     let cell_imgs = cell_image_map(images);
@@ -539,6 +550,15 @@ pub fn build_slots(
             sizes.insert(i, sz);
         }
     }
+    // K7-cal：段落索引 → 水平尺（空文字段不參與；engine build_slots 鏡像）。
+    let advs: HashMap<usize, f32> = advance_scales
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| {
+            a.is_finite() && texts.get(*i).is_some_and(|t| !t.trim().is_empty())
+        })
+        .map(|(i, a)| (i, *a))
+        .collect();
     // K6：段落索引 → 級聯量化前行高（僅細化檔消費）。
     let line_h_map: HashMap<usize, f32> = if line_ref_bands > 1 {
         line_hs
@@ -565,6 +585,7 @@ pub fn build_slots(
                 &sizes,
                 &line_h_map,
                 line_ref_bands,
+                &advs,
             );
             let avail_w = avail_w_for(sections, params, bt.para_start);
             let layout = quire_layout::table::layout_table(&input, avail_w, line_h, &m, 0);
