@@ -289,9 +289,11 @@ fn cascade_paragraphs(
             // 字級成形；本引擎斷行用單一尺，取大者保守不切字）。
             if let Some(sz) = eff.size_pt {
                 meas_size = meas_size.max(sz);
-                if let Some(lf) = run_line_factor(eff.fonts.as_ref(), &r.text) {
-                    run_pitch = run_pitch.max(sz * lf);
-                }
+            }
+            // 未宣告字級的 run 仍吃文件基準字級（ECMA 預設），字型已宣告
+            // 就必須進 real-LH（與引擎同步）。
+            if let Some(lf) = run_line_factor(eff.fonts.as_ref(), &r.text) {
+                run_pitch = run_pitch.max(eff.size_pt.unwrap_or(def_size) * lf);
             }
             let mut r2 = r.clone();
             r2.bold = eff.bold.unwrap_or(false);

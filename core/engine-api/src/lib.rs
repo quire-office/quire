@@ -350,8 +350,10 @@ impl Engine {
             doc_mult,
             &widths,
             &list_markers,
-            &table_styles_of,
-            calibrated,
+            PitchCascade {
+                table_styles: &table_styles_of,
+                calibrated,
+            },
         );
         let grid_size_v: Vec<f32> = metrics.iter().map(|m| m.0).collect();
         // K6：逐段量化前行高（格內文字行距基準；細化檔由 table_map 消費）。
@@ -854,8 +856,10 @@ impl Engine {
             1.0,
             &widths,
             &[],
-            &HashMap::new(),
-            fn_calibrated,
+            PitchCascade {
+                table_styles: &HashMap::new(),
+                calibrated: fn_calibrated,
+            },
         );
         let mut by_id: HashMap<i64, footnotes::NoteEntry> = HashMap::new();
         for (id, (p, (size, line_h))) in ids.iter().zip(eff.into_iter().zip(metrics)) {
@@ -2393,6 +2397,13 @@ type CascadeResult = (
 /// `def_size`＝文件基準字級（級聯全無宣告時）。
 /// `widths`＝逐段可用寬（pt）：製表位點引填補的計算尺；短/空＝該段不展開
 /// （無錨點不虛構——頁首尾 part 走空表＝tab 維持原樣，既有行為不變）。
+/// K6：級聯的 auto-pitch 輸入束（表格樣式層＋是否走校準路徑）。綁成一個
+/// 參數是為了讓 `cascade_paragraphs` 的參數數目守住 clippy 上限，語義不變。
+struct PitchCascade<'a> {
+    table_styles: &'a HashMap<usize, String>,
+    calibrated: bool,
+}
+
 fn cascade_paragraphs(
     st: &StyleTable,
     paras: &[quire_ooxml::Paragraph],
@@ -2400,8 +2411,7 @@ fn cascade_paragraphs(
     doc_mult: f32,
     widths: &[f32],
     list_markers: &[Option<lists::ListMarker>],
-    table_styles: &HashMap<usize, String>,
-    calibrated: bool,
+    pitch: PitchCascade<'_>,
 ) -> CascadeResult {
     let mut eff_all: Vec<quire_ooxml::Paragraph> = Vec::with_capacity(paras.len());
     let mut metrics: Vec<(f32, f32)> = Vec::with_capacity(paras.len());
@@ -2421,7 +2431,7 @@ fn cascade_paragraphs(
         // K6：表格樣式插在「段落＞Normal 樣式＞表格樣式＞docDefaults」第三層。
         // 只有段落樣式鏈（含 Normal）完全沒宣告時才讓表格樣式露面——
         // effective_para 已把 docDefaults 兜進來，這裡用鏈查詢分辨層級。
-        if let (true, Some(tid)) = (calibrated, table_styles.get(&pi)) {
+        if let (true, Some(tid)) = (pitch.calibrated, pitch.table_styles.get(&pi)) {
             if inline.line.is_none() && st.para_chain_line(p.style.as_deref()).is_none() {
                 if let Some(line) = st.table_style_line(tid) {
                     para.line = Some(line);
@@ -2460,9 +2470,11 @@ fn cascade_paragraphs(
             // 字級成形；本引擎斷行用單一尺，取大者保守不切字）。
             if let Some(sz) = eff.size_pt {
                 meas_size = meas_size.max(sz);
-                if let Some(lf) = run_line_factor(eff.fonts.as_ref(), &r.text) {
-                    run_pitch = run_pitch.max(sz * lf);
-                }
+            }
+            // 未宣告字級的 run 仍吃文件基準字級（ECMA 預設），字型已宣告
+            // 就必須進 real-LH（否則「只宣告字型」的檔會被舊 ×1.4 吃掉）。
+            if let Some(lf) = run_line_factor(eff.fonts.as_ref(), &r.text) {
+                run_pitch = run_pitch.max(eff.size_pt.unwrap_or(def_size) * lf);
             }
             let mut r2 = r.clone();
             // 三態 None＝全鏈未宣告＝未開（與舊「rPr 不見即 false」等價——
@@ -2509,7 +2521,7 @@ fn cascade_paragraphs(
         // None ≡ 240（宣告倍率 1.0）；混排已在上方 max-over-runs 完成。
         // 無任何字型可查時退回舊徑（1.4／AtLeast 需求），零宣告守門不變。
         // K6_AUTO_PITCH_BUGGY=1 強制舊徑（紅燈回塞鎖）。
-        let line_h = if calibrated && run_pitch > 0.0 {
+        let line_h = if pitch.calibrated && run_pitch > 0.0 {
             match para.line {
                 Some(LineSpacing::Auto(m)) => run_pitch * m.max(0.1),
                 Some(LineSpacing::Exact(v)) => v,
@@ -4183,8 +4195,10 @@ fn build_hf_layer(
                             1.0,
                             &[],
                             &[],
-                            &HashMap::new(),
-                            calibrated,
+                            PitchCascade {
+                                table_styles: &HashMap::new(),
+                                calibrated,
+                            },
                         )
                     }
                     None => (paragraphs, Vec::new(), Vec::new(), Vec::new()),
@@ -4749,14 +4763,12 @@ mod tests {
                 "{w}x{h}"
             );
             assert!((x - 72.0).abs() < 1e-2, "版心左緣：{x}");
-            // 段落 0 帶 0 → 圖頂帶 1（吸收態：空行帶＝圖頂帶；本段行=空行）。
-            // M1-band：細化帶尺下空行段佔宣告行高的整帶數（＝宣告行高本體），
-            // 物理 y 不變：72＋15.4＝87.4。
-            let line_h = engine.params.line_h_pt();
-            let empty_bands = (11.0f32 * 1.4 / line_h).ceil();
+            // K6：前段 CJK 文字（PMingLiU→WQY）pitch＝11×1.3496＝14.85pt；
+            // 圖片錨在次行起點，故 y＝72＋14.85＝86.85（舊粗尺 15.4 的
+            // 「空行段整帶數」算法已作廢——pitch 由 real-LH 決定）。
             assert!(
-                (y - (72.0 + empty_bands * line_h)).abs() < 1e-2,
-                "圖 y＝空行段末帶：{y}"
+                (y - (72.0 + 11.0 * 1.3496)).abs() < 0.6,
+                "圖 y＝前段 CJK 行 pitch 之後（72＋11×1.3496）：{y}"
             );
             assert_eq!(mime, "image/png", "副檔名 png → image/png");
             assert!(data_b64.starts_with("iVBORw0KGgo"), "PNG magic 直通");
@@ -5464,9 +5476,30 @@ mod tests {
         );
     }
 
-    /// (f) 只宣告字型不改變任何分頁幾何——page_breaks JSON 逐位元組等值。
+    /// 單段長文的頁內行距（相鄰文字行 y 差；同段內無段距干擾）。
+    fn first_page_line_pitch(engine: &Engine) -> f32 {
+        let dl = engine.page_display_list(0).expect("第 0 頁");
+        let mut ys: Vec<f32> = dl
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                DrawItem::Text { y, text, .. } if !text.trim().is_empty() => Some(*y),
+                _ => None,
+            })
+            .collect();
+        ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        ys.dedup_by(|a, b| (*a - *b).abs() < 0.05);
+        ys.windows(2)
+            .map(|w| w[1] - w[0])
+            .find(|d| *d > 1.0)
+            .expect("至少兩行文字才有 pitch")
+    }
+
+    /// (f) K6：字型宣告決定 real-LH pitch（不再是版面中性）。
+    /// 無字型宣告＝零宣告粗尺 12pt×1.4＝16.8；宣告 Calibri＝12×1.2207＝14.65。
+    /// 舊測試「宣告字型不得動分頁」是 K6 前的假設，已被校準報告 §1 取代。
     #[test]
-    fn font_declaration_does_not_change_page_breaks() {
+    fn font_declaration_sets_real_lh_pitch() {
         let long_text = "字型宣告不得影響分頁。".repeat(400);
         let doc = |rpr: &str| {
             format!(
@@ -5486,10 +5519,15 @@ mod tests {
         };
         let plain = build(doc(""));
         let with_font = build(doc(r#"<w:rPr><w:rFonts w:ascii="Calibri"/></w:rPr>"#));
-        assert_eq!(
-            plain.page_breaks_json(),
-            with_font.page_breaks_json(),
-            "新增字型宣告不得移動任何分頁斷點"
+        let plain_pitch = first_page_line_pitch(&plain);
+        let font_pitch = first_page_line_pitch(&with_font);
+        assert!(
+            (plain_pitch - 16.8).abs() < 0.3,
+            "無字型宣告＝零宣告粗尺 16.8，實得 {plain_pitch}"
+        );
+        assert!(
+            (font_pitch - 14.65).abs() < 0.3,
+            "Calibri 12pt real-LH＝12×1.2207＝14.65，實得 {font_pitch}"
         );
     }
 
@@ -5685,10 +5723,11 @@ mod tests {
         );
     }
 
-    /// (f) theme 版分頁零位移：宣告 `w:asciiTheme` 前後 page_breaks 等值
-    /// （G1 直接值守門測的同款口徑）。
+    /// (f) K6：theme 字型引用決定 real-LH pitch（不再是版面中性）。
+    /// `w:asciiTheme="minorHAnsi"` 解到 Calibri ⇒ 12×1.2207＝14.65；
+    /// 無宣告＝零宣告粗尺 16.8。舊「theme 引用不得動分頁」假設已作廢。
     #[test]
-    fn theme_font_declaration_does_not_change_page_breaks() {
+    fn theme_font_reference_sets_real_lh_pitch() {
         let long_text = "字型主題引用不得影響分頁。".repeat(400);
         let doc = |rpr: &str| {
             format!(
@@ -5711,10 +5750,15 @@ mod tests {
         let themed = build(doc(
             r#"<w:rPr><w:rFonts w:asciiTheme="minorHAnsi"/></w:rPr>"#,
         ));
-        assert_eq!(
-            plain.page_breaks_json(),
-            themed.page_breaks_json(),
-            "theme 字型引用不得移動任何分頁斷點"
+        let plain_pitch = first_page_line_pitch(&plain);
+        let themed_pitch = first_page_line_pitch(&themed);
+        assert!(
+            (plain_pitch - 16.8).abs() < 0.3,
+            "無 theme 引用＝零宣告粗尺 16.8，實得 {plain_pitch}"
+        );
+        assert!(
+            (themed_pitch - 14.65).abs() < 0.3,
+            "minorHAnsi→Calibri real-LH＝14.65，實得 {themed_pitch}"
         );
     }
 
@@ -6155,14 +6199,14 @@ mod tests {
             p3.iter().any(|l| !l.trim().is_empty()),
             "HC031 第 4 頁必須有實質內容（節末段不得被擠成獨立空頁）"
         );
-        // K2b：清單 marker 進投影後正文一度為 9 頁（原本 8 頁）；M1-band
-        // 帶尺細化收回量化過扣後回到 8 頁＝LO 同頁數（本卡設計目的：方向
-        // ＝向 LO 頁數收斂）；仍不得有「只含空段」的空頁（見
-        // `hc031_no_blank_body_page`）。
+        // K6：Normal 259 auto × Calibri 1.2207（11pt）＝14.49pt，正文回到 9 頁。
+        // LO 25.8 直接檔 render_lab 實測總頁 9（見交付報告）——舊「8＝LO」
+        // 是 K6 前粗尺 11.9pt 的巧合，已作廢。仍不得有「只含空段」的空頁
+        // （見 `hc031_no_blank_body_page`）。
         assert_eq!(
             engine.body_page_count(),
-            8,
-            "HC031 正文頁數＝8（M1-band 細化後與 LO 收斂）；實得 {}",
+            9,
+            "HC031 正文頁數＝9（K6 校準 pitch 後與 LO 25.8 直接檔實測一致）；實得 {}",
             engine.body_page_count()
         );
     }
