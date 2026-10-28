@@ -158,8 +158,11 @@ def run_pipeline(args):
     print(f"抽樣 {len(targets)} 檔 (seed={args.seed})", flush=True)
 
     soffice = RL.find_soffice()
-    scratch, profile_uri = RL.lo_scratch(soffice)
+    scratch, profile_uri, needle = RL.lo_scratch(soffice)
     RL.kill_stale_lo()
+    # 收場必殺：本輪自己拉起的 soffice 全部清掉（崩潰/異常也照清，atexit 語意）。
+    import atexit
+    atexit.register(RL.kill_own_lo, needle)
 
     rows = []
     lo_fail = 0
