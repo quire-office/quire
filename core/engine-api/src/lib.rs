@@ -2239,7 +2239,17 @@ fn choose_grid_line_h(targets: &[f32]) -> Option<(f32, u32)> {
     }
     vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
     vals.dedup_by(|a, b| (*a - *b).abs() <= 0.02);
-    let modal = modal_line_h(targets, 0.0);
+    // 取「最常見值」本身而非 0.1pt 量化後的值：12.65pt 若先捨成 12.7pt，
+    // 216 行的累積位移足以讓 Bug51170 的換頁跑掉（內容相似度 0.757→0.677）。
+    let modal = bins
+        .values()
+        .max_by_key(|(_, c)| *c)
+        .map(|(h, _)| *h)
+        .unwrap_or(0.0);
+    // 版面座標以 twip（1/20pt）為單位：錨點先落到 0.05pt 再切帶尺。
+    // 12.6489pt（Times 11pt×1.1499）若不落 12.65，`spacing_band_vectors`
+    // 的 f64 餘數會逐步漂移，Bug51170 的 10pt 段距樓梯在十幾段後翻帶。
+    let modal = (modal * 20.0).round() / 20.0;
     if vals.len() == 1 {
         return Some(refine_band_h(modal, true));
     }
