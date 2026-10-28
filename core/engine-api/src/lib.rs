@@ -810,6 +810,8 @@ impl Engine {
         let styles = self.doc.parts.get("word/styles.xml").map(|s| s.as_slice());
         let sec_one = [SectionSpec { id: 0, geo: *geo }];
         let hf_line_hs: Vec<f32> = part.metrics.iter().map(|m| m.1).collect();
+        // K7-cal：水平尺空表＝頁首表格維持舊斷行（main 09da233 同口徑；
+        // 合併時分支調用點滯留 9 參數舊簽名，PM fix-forward 補齊）。
         let slots_tbl = table_map::build_slots(
             &part.tables,
             &texts,
@@ -820,6 +822,7 @@ impl Engine {
             &part.styles,
             &hf_line_hs,
             self.line_ref_bands,
+            &[],
         );
         let grid: Vec<(f32, f32)> = part.metrics.clone();
         let pls = quire_layout::layout_paragraphs_grid(&texts, hf_params, &[], &grid);
