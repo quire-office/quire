@@ -15,6 +15,7 @@ soffice 自動偵測：Linux soffice/libreoffice，或 WSL 下的 Windows soffic
 """
 
 import argparse
+import atexit
 import datetime
 import difflib
 import json
@@ -87,17 +88,20 @@ def win_scratch_dir() -> pathlib.Path:
     sys.exit(f"Windows 暫存目錄不可寫（試過：{[str(c) for c in cands]}）；可用 TEMP_WIN 指定")
 
 
-def lo_scratch(soffice: pathlib.Path) -> tuple[pathlib.Path, str]:
-    """回傳 (LO 讀寫用目錄, UserInstallation URI)。Windows exe → C: 本機暫存。"""
+def lo_scratch(soffice: pathlib.Path) -> tuple[pathlib.Path, str, str]:
+    """回傳 (LO 讀寫用目錄, UserInstallation URI, kill 判別用 path 字串)。
+    Windows exe → C: 本機暫存；第三項是 soffice 命令列實際帶的路徑形式（供
+    kill_own_lo 精準判別本輪自己的實例）。"""
     if str(soffice).endswith(".exe"):
         d = win_scratch_dir()
         prof = d / "profile"
         prof.mkdir(exist_ok=True)
         r = subprocess.run(["wslpath", "-w", str(prof)], capture_output=True, text=True)
         win = r.stdout.strip().replace("\\", "/") if r.returncode == 0 else str(prof)
-        return d, "file:///" + win.lstrip("/")
+        # soffice 命令列帶的是這個 Windows 形式路徑（正斜線版）＝判別錨點。
+        return d, "file:///" + win.lstrip("/"), win
     d = pathlib.Path(tempfile.mkdtemp(prefix="quire-lo-"))
-    return d, d.absolute().as_uri()
+    return d, d.absolute().as_uri(), str(d)
 
 
 def kill_stale_lo() -> None:
@@ -107,6 +111,41 @@ def kill_stale_lo() -> None:
         subprocess.run(["taskkill.exe", "/IM", "soffice.bin.exe"], capture_output=True)
         subprocess.run(["taskkill.exe", "/IM", "soffice.exe"], capture_output=True)
         time.sleep(1.5)
+
+
+def kill_own_lo(needle: str) -> int:
+    """收場用：**只殺本輪自己拉起的** soffice（命令列含本 scratch profile 路徑者）。
+
+    背景（2026-10-28 事故）：`kill_stale_lo` 只在開跑前掃，跑完不清場；Windows 版
+    soffice 轉換崩潰後會留下「Press Enter to continue」模態視窗，温和 taskkill 砍不動
+    → 兩日累積 142 個 soffice.exe ＋ 71 個 soffice.bin，吃 RAM 連帶把 C 槽 pagefile／
+    WSL swap.vhdx 撐爆（用戶 C 槽一度只剩 219GB）。
+
+    判別用 **命令列帶本輪 profile 路徑**＝精準只殺自己的，使用者自己開的 LO 一律不碰。
+    回傳殺掉的進程數（非 Windows 環境回 0）。
+    """
+    if not shutil.which("powershell.exe"):
+        return 0
+    try:
+        # needle＝本 scratch 的 Windows 形式 profile 路徑（含 quire-render-lab 前綴，
+        # 使用者自己開的 LO 命令列不會帶這種路徑）。反斜線/正斜線兩種寫法都納。
+        alt = needle.replace("/", "\\\\")
+        ps = (
+            "$ErrorActionPreference='SilentlyContinue';"
+            "$p = Get-CimInstance Win32_Process -Filter \"Name='soffice.exe' or Name='soffice.bin.exe'\" |"
+            f" Where-Object {{ $_.CommandLine -like '*{needle}*' -or $_.CommandLine -like '*{alt}*' }};"
+            "$n = ($p | Measure-Object).Count;"
+            "$p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force };"
+            "$n"
+        )
+        r = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps],
+                           capture_output=True, text=True, timeout=120)
+        killed = int((r.stdout or "0").strip().splitlines()[-1])
+    except Exception:
+        return 0
+    if killed:
+        print(f"（收場：清掉本輪殘留 LibreOffice 進程 {killed} 個）", flush=True)
+    return killed
 
 
 def lo_to_pdf(soffice: pathlib.Path, docx: pathlib.Path, scratch: pathlib.Path,
@@ -562,8 +601,10 @@ def main() -> int:
         sys.exit(f"找不到檔案：{missing[:3]} ...")
 
     soffice = find_soffice()
-    scratch, profile_uri = lo_scratch(soffice)
+    scratch, profile_uri, needle = lo_scratch(soffice)
     kill_stale_lo()
+    # 收場必殺：本輪自己拉起的 soffice 全部清掉（崩潰/異常也照清，atexit 語意）。
+    atexit.register(kill_own_lo, needle)
     rows, lo_fail = [], 0
     for docx in targets:
         rel = str(docx.relative_to(REPO)) if docx.is_relative_to(REPO) else str(docx)
