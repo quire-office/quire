@@ -6,7 +6,7 @@
 > 原始數據落盤 `docs/k6-lineheight-matrix.csv`（本卡唯一數據附件）；探索腳本在
 > `~/.hermes/profiles/ow-qa/cache/scratch/k6-cal/`（gen_matrix.py／measure.py／step6d_real_linux.py 等）。
 > PM 收尾註記：本報告由 PM 依 worker 兩 run 的實測數據（pitch_raw.csv 185 列）獨立重算覆核後代為成稿入庫
-> （run1/run2/run3 皆 3h 燒盡於 13.75 追兇；矩陣與擬合在 run3 前已完成，逐格殘差 PM 以 awk 重算＝本報告數字）。
+> （本卡 run1/run2 皆 3h 燒盡於 13.75 追兇；矩陣與擬合在兩 run 期間已完成，逐格殘差 PM 以 awk 重算覆核＝本報告數字）。
 
 ## 1. 核心結論（K6-impl 直接照抄的口徑）
 
