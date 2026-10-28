@@ -16,8 +16,8 @@ use quire_layout::{
     TextMeasurer, MAX_PAGE_BANDS,
 };
 use quire_ooxml::{
-    parse, read_images, read_sections_per_paragraph, LineSpacing, OoxmlError, ParaStyle, Paragraph,
-    StyleTable, ThemeColors,
+    parse, read_images, read_rels, read_sections_per_paragraph, LineSpacing, OoxmlError, ParaStyle,
+    Paragraph, RunFonts, StyleTable, ThemeColors, ThemeFonts,
 };
 
 use crate::tables;
@@ -71,6 +71,123 @@ fn modal_line_h(line_hs: &[f32], floor: f32) -> f32 {
     mode.max(floor)
 }
 
+/// K6：宣告族 → LO 實際渲染 face 的 real line-height 因子（同步引擎
+/// `face_line_factor`；`docs/k6-lineheight-calibration.md` §1）。
+fn face_line_factor(face: &str) -> f32 {
+    let key = face.trim().to_lowercase();
+    match key.as_str() {
+        "calibri" | "carlito" => 1.2207,
+        "cambria" | "caladea" => 1.1720,
+        "liberation serif" | "liberationserif" | "times new roman" | "times" => 1.1499,
+        "arial" | "liberation sans" | "liberationsans" | "helvetica" => 1.1499,
+        "noto serif" | "notoserif" => 1.3620,
+        "pmingliu" | "新細明體" | "kaititc" | "標楷體" | "msyahei" | "microsoft yahei"
+        | "微軟雅黑" | "wenquanyi zen hei" | "wenquanyizenhei" => 1.3496,
+        _ => 1.1499,
+    }
+}
+
+fn has_cjk(text: &str) -> bool {
+    text.chars().any(|c| {
+        matches!(c as u32,
+            0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF
+            | 0xFF00..=0xFFEF)
+    })
+}
+
+fn run_line_factor(fonts: Option<&RunFonts>, text: &str) -> Option<f32> {
+    let f = fonts?;
+    if f.theme_unresolved {
+        return Some(1.3620);
+    }
+    let face = if has_cjk(text) {
+        f.east_asia.as_deref().or(f.ascii.as_deref())
+    } else {
+        f.ascii.as_deref().or(f.east_asia.as_deref())
+    }?;
+    Some(face_line_factor(face))
+}
+
+/// K6：一組目標行高 → 文件帶尺（同引擎 `choose_grid_line_h`）。
+fn choose_grid_line_h(targets: &[f32]) -> Option<(f32, u32)> {
+    // 計次後只留「有意義」的行高：單一空段／裝飾段的 14.04pt 不該把整份
+    // 17.1pt 表格拖去 0.25pt 細尺（fdo68607 實測 7 vs 8 頁）。低於主值
+    // 1/10 出現次數者視為離群，各自按整數帶就近落帶。
+    let mut bins: std::collections::BTreeMap<i32, (f32, u32)> = std::collections::BTreeMap::new();
+    for &h in targets {
+        if h.is_finite() && h > 0.0 {
+            let e = bins.entry((h * 10.0).round() as i32).or_insert((h, 0));
+            e.1 += 1;
+        }
+    }
+    let max_count = bins.values().map(|(_, c)| *c).max().unwrap_or(0);
+    let mut vals: Vec<f32> = bins
+        .values()
+        .filter(|(_, c)| *c * 10 >= max_count)
+        .map(|(h, _)| *h)
+        .collect();
+    if vals.is_empty() {
+        return None;
+    }
+    vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    vals.dedup_by(|a, b| (*a - *b).abs() <= 0.02);
+    let modal = modal_line_h(targets, 0.0);
+    if vals.len() == 1 {
+        return Some(refine_band_h(modal, true));
+    }
+    let max_n = (modal / 0.25).ceil().max(1.0) as u32;
+    for n in 1..=max_n {
+        let g = modal / n as f32;
+        if g > BAND_REFINE_MAX_PT {
+            continue;
+        }
+        let err = vals
+            .iter()
+            .map(|h| ((h / g).round().max(1.0) * g - h).abs())
+            .fold(0.0, f32::max);
+        if err <= 0.12 {
+            let lref = (modal / g).round().max(1.0) as u32;
+            return Some((g, lref.min(MAX_PAGE_BANDS)));
+        }
+    }
+    let g = 0.25f32;
+    let lref = (modal / g).round().max(1.0) as u32;
+    Some((g, lref.min(MAX_PAGE_BANDS)))
+}
+
+fn styles_referenced(parts: &std::collections::BTreeMap<String, Vec<u8>>) -> bool {
+    parts
+        .get("word/_rels/document.xml.rels")
+        .map(|xml| {
+            read_rels(xml)
+                .iter()
+                .any(|r| r.target_part.as_deref() == Some("word/styles.xml"))
+        })
+        .unwrap_or(false)
+}
+
+fn collect_table_styles(
+    t: &quire_ooxml::Table,
+    inherit: Option<&str>,
+    out: &mut std::collections::HashMap<usize, String>,
+) {
+    let sid = t.props.style.as_deref().or(inherit);
+    for row in &t.rows {
+        for cell in &row.cells {
+            for b in &cell.blocks {
+                match b {
+                    quire_ooxml::Block::Paragraph { index } => {
+                        if let Some(s) = sid {
+                            out.entry(*index).or_insert_with(|| s.to_string());
+                        }
+                    }
+                    quire_ooxml::Block::Table(inner) => collect_table_styles(inner, sid, out),
+                }
+            }
+        }
+    }
+}
+
 /// 帶尺細化上限（pt；與引擎側 `BAND_REFINE_MAX_PT` 同值鏡像）。
 const BAND_REFINE_MAX_PT: f32 = 2.8;
 
@@ -114,6 +231,8 @@ fn cascade_paragraphs(
     def_size: f32,
     doc_mult: f32,
     widths: &[f32],
+    table_styles: &std::collections::HashMap<usize, String>,
+    calibrated: bool,
 ) -> (
     Vec<Paragraph>,
     Vec<(f32, f32)>,
@@ -132,8 +251,30 @@ fn cascade_paragraphs(
             spacing_after_pt: p.spacing_after_pt,
             align: p.jc,
         };
-        let (base, para) = st.effective_para(p.style.as_deref(), inline);
+        let (base, mut para) = st.effective_para(p.style.as_deref(), inline.clone());
+        if let (true, Some(tid)) = (calibrated, table_styles.get(&pi)) {
+            if inline.line.is_none() && st.para_chain_line(p.style.as_deref()).is_none() {
+                if let Some(line) = st.table_style_line(tid) {
+                    para.line = Some(line);
+                }
+            }
+            let (cb, ca) = st.para_chain_spacing(p.style.as_deref());
+            if inline.spacing_before_pt.is_none()
+                && inline.spacing_after_pt.is_none()
+                && cb.is_none()
+                && ca.is_none()
+            {
+                let (tb, ta) = st.table_style_spacing(tid);
+                if tb.is_some() {
+                    para.spacing_before_pt = tb;
+                }
+                if ta.is_some() {
+                    para.spacing_after_pt = ta;
+                }
+            }
+        }
         let mut meas_size = base.size_pt.unwrap_or(def_size);
+        let mut run_pitch = 0.0f32;
         let mut eff_runs: Vec<quire_ooxml::Run> = Vec::with_capacity(p.runs.len());
         for r in &p.runs {
             let mut b = base.clone();
@@ -148,6 +289,9 @@ fn cascade_paragraphs(
             // 字級成形；本引擎斷行用單一尺，取大者保守不切字）。
             if let Some(sz) = eff.size_pt {
                 meas_size = meas_size.max(sz);
+                if let Some(lf) = run_line_factor(eff.fonts.as_ref(), &r.text) {
+                    run_pitch = run_pitch.max(sz * lf);
+                }
             }
             let mut r2 = r.clone();
             r2.bold = eff.bold.unwrap_or(false);
@@ -163,20 +307,29 @@ fn cascade_paragraphs(
             eff_runs.push(r2);
         }
         let base_size = base.size_pt.unwrap_or(def_size);
-        // K6：auto 行距基準字級＝段內 run 有效字級最大值（rPr 級聯），
-        // 與引擎 `cascade_paragraphs` 同款；`K6_AUTO_PITCH_BUGGY=1` 回塞
-        // 舊的段落基準字級（紅燈回塞鎖，lm 必須與引擎同報）。
-        let auto_buggy = std::env::var_os("K6_AUTO_PITCH_BUGGY").is_some();
-        let line_h = match para.line {
-            Some(LineSpacing::AtLeast(_)) if meas_size > base_size => {
-                resolve_line_h_pt(meas_size * 1.4, para.line) * doc_mult
+        if let Some(lf) = run_line_factor(base.fonts.as_ref(), "") {
+            run_pitch = run_pitch.max(base_size * lf);
+        }
+        let line_h = if calibrated && run_pitch > 0.0 {
+            match para.line {
+                Some(LineSpacing::Auto(m)) => run_pitch * m.max(0.1),
+                Some(LineSpacing::Exact(v)) => v,
+                Some(LineSpacing::AtLeast(v)) => v.max(run_pitch),
+                None => run_pitch,
             }
-            Some(LineSpacing::Auto(_)) if !auto_buggy => {
-                let size = meas_size.max(base_size);
-                resolve_line_h_pt(size, para.line) * 0.975
+        } else {
+            let auto_buggy = std::env::var_os("K6_AUTO_PITCH_BUGGY").is_some();
+            match para.line {
+                Some(LineSpacing::AtLeast(_)) if meas_size > base_size => {
+                    resolve_line_h_pt(meas_size * 1.4, para.line) * doc_mult
+                }
+                Some(LineSpacing::Auto(_)) if !auto_buggy => {
+                    let size = meas_size.max(base_size);
+                    resolve_line_h_pt(size, para.line) * 0.975
+                }
+                Some(LineSpacing::AtLeast(_)) => resolve_line_h_pt(base_size, para.line) * doc_mult,
+                other => resolve_line_h_pt(base_size, other),
             }
-            Some(LineSpacing::AtLeast(_)) => resolve_line_h_pt(base_size, para.line) * doc_mult,
-            other => resolve_line_h_pt(base_size, other),
         };
         // 點引 leads 展開：段落宣告右對齊製表位＋leader＋內含
         // w:tab run 時，於首個 tab run 前插入填充符串至「製表位 − 尾串寬」
@@ -238,11 +391,15 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
     // 樣式級聯層：開啟時一次性解析 styles.xml（無 part 仍給空表＝超連結
     // 兜底與後備值路徑與引擎逐欄同徑）。
     let theme = ThemeColors::from_parts(&doc.parts);
-    let style_table = doc
-        .parts
-        .get("word/styles.xml")
-        .map(|s| StyleTable::parse_with_theme(s.as_slice(), &theme))
-        .unwrap_or_else(|| StyleTable::parse_with_theme(&[], &theme));
+    let theme_fonts = ThemeFonts::from_parts(&doc.parts);
+    let style_table = if styles_referenced(&doc.parts) {
+        doc.parts
+            .get("word/styles.xml")
+            .map(|s| StyleTable::parse_with_fonts(s.as_slice(), &theme, Some(&theme_fonts)))
+            .unwrap_or_else(|| StyleTable::parse_with_fonts(&[], &theme, Some(&theme_fonts)))
+    } else {
+        StyleTable::parse_with_fonts(&[], &theme, Some(&theme_fonts))
+    };
     let (doc_size, doc_line) = style_table.doc_grid();
     // 文件基準字級：docDefaults∪Normal 鏈的有效 sz（ECMA 無宣告時 Word
     // 預設 12pt 兜底）。
@@ -319,50 +476,73 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         Some(LineSpacing::Auto(m)) => m,
         _ => 1.0,
     };
-    let (eff_all, metrics, para_lines, spacings) =
-        cascade_paragraphs(&style_table, &doc.paragraphs, def_size, doc_mult, &widths);
+    let font_metrics = style_table.has_fonts()
+        || doc.paragraphs.iter().any(|p| {
+            p.prun.as_ref().and_then(|r| r.fonts.as_ref()).is_some()
+                || p.runs.iter().any(|r| {
+                    r.direct.as_ref().and_then(|d| d.fonts.as_ref()).is_some()
+                        || r.effective_fonts.is_some()
+                })
+        });
+    let auto_buggy = std::env::var_os("K6_AUTO_PITCH_BUGGY").is_some();
+    let calibrated = font_metrics && !auto_buggy;
+    let mut table_styles_of: std::collections::HashMap<usize, String> =
+        std::collections::HashMap::new();
+    for bt in &doc.tables {
+        collect_table_styles(&bt.table, None, &mut table_styles_of);
+    }
+    let (eff_all, metrics, para_lines, spacings) = cascade_paragraphs(
+        &style_table,
+        &doc.paragraphs,
+        def_size,
+        doc_mult,
+        &widths,
+        &table_styles_of,
+        calibrated,
+    );
     let grid_size_v: Vec<f32> = metrics.iter().map(|m| m.0).collect();
     // K6：逐段量化前行高（格內文字行距基準；細化檔由 tables 消費）。
     let mut para_line_h_v: Vec<f32> = metrics.iter().map(|m| m.1).collect();
-    let modal_h = if refine {
-        modal_line_h(&para_line_h_v, doc_grid_h)
+    let (grid_line_h, line_ref_bands) = if calibrated {
+        choose_grid_line_h(&para_line_h_v).unwrap_or_else(|| refine_band_h(doc_grid_h, refine))
+    } else if font_metrics && doc_line.is_none() && doc_size.is_none() && doc.tables.is_empty() {
+        let target = modal_line_h(&para_line_h_v, 0.0);
+        refine_band_h(target, true)
     } else {
-        0.0
-    };
-    if refine {
-        for (i, p) in doc.paragraphs.iter().enumerate() {
-            let inline = ParaStyle {
-                run: p.prun.clone().unwrap_or_default(),
-                line: p.line,
-                spacing_before_pt: p.spacing_before_pt,
-                spacing_after_pt: p.spacing_after_pt,
-                align: p.jc,
-            };
-            let eff_line = style_table
-                .effective_para(p.style.as_deref(), inline)
-                .1
-                .line;
-            if matches!(eff_line, Some(LineSpacing::Auto(_))) {
-                para_line_h_v[i] = para_line_h_v[i].max(modal_h);
+        let modal_h = if refine {
+            modal_line_h(&para_line_h_v, doc_grid_h)
+        } else {
+            0.0
+        };
+        if refine {
+            for (i, p) in doc.paragraphs.iter().enumerate() {
+                let inline = ParaStyle {
+                    run: p.prun.clone().unwrap_or_default(),
+                    line: p.line,
+                    spacing_before_pt: p.spacing_before_pt,
+                    spacing_after_pt: p.spacing_after_pt,
+                    align: p.jc,
+                };
+                let eff_line = style_table
+                    .effective_para(p.style.as_deref(), inline)
+                    .1
+                    .line;
+                if matches!(eff_line, Some(LineSpacing::Auto(_))) {
+                    para_line_h_v[i] = para_line_h_v[i].max(modal_h);
+                }
             }
         }
-    }
-    // K6：錨行高若已是粗尺的整數倍（常見＝與 docDefaults 行距相同，
-    // 如 Bug51170 全部 atLeast 12.65pt），再細分只會改變段前／段後距的
-    // 量化（10pt 距由 1 帶 12.65 縮成 4 帶 10.12），純文字流反而偏離
-    // LO；此時保留原粗尺。只有錨行高無法用粗尺整除時才細化。
-    let anchor_h = modal_h.max(modal_line_h(&para_line_h_v, doc_grid_h));
-    let anchor_is_grid_multiple = {
-        let r = anchor_h / doc_grid_h;
-        r.is_finite() && (r - r.round()).abs() * doc_grid_h <= 0.11
-    };
-    // 含表格檔的 trHeight／格內行高仍需細尺（M1 紅燈），跳過細化只限
-    // 純文字檔：存量粗尺已能整除其行高。
-    let keep_coarse = doc.tables.is_empty() && anchor_is_grid_multiple;
-    let (grid_line_h, line_ref_bands) = if refine && !keep_coarse {
-        refine_band_h(anchor_h, true)
-    } else {
-        refine_band_h(doc_grid_h, false)
+        let anchor_h = modal_h.max(modal_line_h(&para_line_h_v, doc_grid_h));
+        let anchor_is_grid_multiple = {
+            let r = anchor_h / doc_grid_h;
+            r.is_finite() && (r - r.round()).abs() * doc_grid_h <= 0.11
+        };
+        let keep_coarse = doc.tables.is_empty() && anchor_is_grid_multiple;
+        if refine && !keep_coarse {
+            refine_band_h(anchor_h, true)
+        } else {
+            refine_band_h(doc_grid_h, false)
+        }
     };
     let params = LayoutParams {
         font_size_pt: def_size,
@@ -377,7 +557,11 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
     let grid_bands_v: Vec<u32> = para_line_h_v
         .iter()
         .map(|h| {
-            let b = (*h / grid_line_h).ceil();
+            let b = if calibrated {
+                (*h / grid_line_h).round()
+            } else {
+                (*h / grid_line_h).ceil()
+            };
             if !b.is_finite() {
                 MAX_PAGE_BANDS
             } else {

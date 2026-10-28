@@ -2204,6 +2204,7 @@ mod tests {
                 east_asia: Some("標楷體".to_string()),
                 cs: None,
                 hint_east_asian: true,
+                ..Default::default()
             }),
             ..Default::default()
         };
