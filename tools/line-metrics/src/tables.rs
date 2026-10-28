@@ -554,9 +554,7 @@ pub fn build_slots(
     let advs: HashMap<usize, f32> = advance_scales
         .iter()
         .enumerate()
-        .filter(|(i, a)| {
-            a.is_finite() && texts.get(*i).is_some_and(|t| !t.trim().is_empty())
-        })
+        .filter(|(i, a)| a.is_finite() && texts.get(*i).is_some_and(|t| !t.trim().is_empty()))
         .map(|(i, a)| (i, *a))
         .collect();
     // K6：段落索引 → 級聯量化前行高（僅細化檔消費）。

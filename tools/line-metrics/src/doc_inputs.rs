@@ -656,7 +656,10 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
     let styles_xml = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
     let eff_refs: &[Paragraph] = &eff_all;
     // K7-cal：逐段水平尺（engine 同徑：主宣告族查表；回塞鎖退 1.0）。
-    let grid_adv_v: Vec<f32> = eff_all.iter().map(|p| para_advance_scale(&p.runs)).collect();
+    let grid_adv_v: Vec<f32> = eff_all
+        .iter()
+        .map(|p| para_advance_scale(&p.runs))
+        .collect();
     let slots = tables::build_slots(
         &doc.tables,
         &texts,

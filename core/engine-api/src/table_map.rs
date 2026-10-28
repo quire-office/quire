@@ -640,9 +640,7 @@ pub fn build_slots(
     let advs: HashMap<usize, f32> = advance_scales
         .iter()
         .enumerate()
-        .filter(|(i, a)| {
-            a.is_finite() && texts.get(*i).is_some_and(|t| !t.trim().is_empty())
-        })
+        .filter(|(i, a)| a.is_finite() && texts.get(*i).is_some_and(|t| !t.trim().is_empty()))
         .map(|(i, a)| (i, *a))
         .collect();
     // L2-cellruns：格內文字的 run 級樣式標注（只含確有多樣式的段落；

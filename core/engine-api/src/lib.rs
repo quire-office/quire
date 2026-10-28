@@ -509,7 +509,10 @@ impl Engine {
         let grid_adv_v: Vec<f32> = if adv_buggy {
             vec![1.0; eff_refs.len()]
         } else {
-            eff_refs.iter().map(|p| para_advance_scale(&p.runs)).collect()
+            eff_refs
+                .iter()
+                .map(|p| para_advance_scale(&p.runs))
+                .collect()
         };
         let slots = table_map::build_slots(
             &doc.tables,

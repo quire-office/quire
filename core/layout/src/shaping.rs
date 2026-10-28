@@ -98,16 +98,16 @@ pub fn shape_advances(text: &str, size_pt: f32) -> Vec<ClusterAdvance> {
 /// （宣告族→LO 渲染 face 的寬比校準）；Han/Hangul 等 CJK cluster 走 em
 /// 方塊、LO 替代 face 同為方塊，**不乘**（乘了會把方塊字縮出裂縫）。
 /// `scale==1.0` 時與 [`shape_advances`] 逐位元組全等（舊行為守門）。
-pub fn shape_advances_scaled(
-    text: &str,
-    size_pt: f32,
-    scale: f32,
-) -> Vec<ClusterAdvance> {
+pub fn shape_advances_scaled(text: &str, size_pt: f32, scale: f32) -> Vec<ClusterAdvance> {
     let mut out = Vec::new();
     if text.is_empty() {
         return out;
     }
-    let s = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let s = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     let size = size_pt.max(0.001);
     let font = embedded_font();
     let m = font.metrics(&[]).scale(size);
@@ -204,13 +204,23 @@ pub struct TextMeasurer {
 
 impl TextMeasurer {
     pub fn new(size_pt: f32) -> Self {
-        Self { size_pt, advance_scale: 1.0 }
+        Self {
+            size_pt,
+            advance_scale: 1.0,
+        }
     }
 
     /// K7-cal：帶水平 advance 尺的測量器（scale≡1.0 時與 [`Self::new`] 全等）。
     pub fn with_advance_scale(size_pt: f32, advance_scale: f32) -> Self {
-        let s = if advance_scale.is_finite() && advance_scale > 0.0 { advance_scale } else { 1.0 };
-        Self { size_pt, advance_scale: s }
+        let s = if advance_scale.is_finite() && advance_scale > 0.0 {
+            advance_scale
+        } else {
+            1.0
+        };
+        Self {
+            size_pt,
+            advance_scale: s,
+        }
     }
 
     pub fn size_pt(&self) -> f32 {

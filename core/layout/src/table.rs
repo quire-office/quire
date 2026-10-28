@@ -892,9 +892,7 @@ pub fn layout_table(
             let cell_adv = cell.text_advance_scale.unwrap_or(1.0);
             let cell_m = match cell.text_size_pt {
                 Some(s) if s > 0.0 => TextMeasurer::with_advance_scale(s, cell_adv),
-                _ if cell_adv != 1.0 => {
-                    TextMeasurer::with_advance_scale(m.size_pt(), cell_adv)
-                }
+                _ if cell_adv != 1.0 => TextMeasurer::with_advance_scale(m.size_pt(), cell_adv),
                 _ => *m,
             };
 
