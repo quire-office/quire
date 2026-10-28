@@ -370,6 +370,8 @@ fn snap_packer_cross_page() -> String {
         // 逐頁預留空表：golden 鎖的是「無逐頁預留」的既有版面（空表逐位元組不變）。
         footnote_reserves_pt: Vec::new(),
         endnote_reserves_pt: Vec::new(),
+        // 頁首推下空表：golden 鎖的是「無頁首推下」的既有版面（空表逐位元組不變）。
+        header_pushes_pt: Vec::new(),
     };
     let input = TableInput {
         grid_pt: vec![100.0],

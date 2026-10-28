@@ -122,15 +122,19 @@ fn r2_no_spurious_repeat() {
     );
 }
 
-/// 守門（L3 鐵律＋卡面綠燈）：RA001 頁數維持 6 頁、delText
-/// 'Chromatpgrams' 照發 ×1——本卡不得回退 L3-revisions 成果。
+/// 守門（L3 鐵律＋卡面綠燈）：delText 'Chromatpgrams' 照發 ×1——本卡
+/// 不得回退 L3-revisions 成果。頁數錨點 6→7（K7b）：LO 真值實測＝7 頁
+/// （soffice 25.8 本機轉 PDF 逐頁覆核，scratch/k7b/lo/…pdf），修前我方
+/// 6 頁＝頁首表（header2/header3 含 w:tbl）越 margin 未推正文起點、尾部
+/// 吸乾所致；K7b 推下後 7 頁與 LO 對齊——向 LO 收斂更新錨點（比照
+/// af3bf34 K6 先例），非本卡改頁數。
 #[test]
 fn ra001_page_count_and_l3_locked() {
     let eng = ra001();
     assert_eq!(
         eng.page_count(),
-        6,
-        "RA001 頁數＝6（M1-band 基線；本卡不改頁數）"
+        7,
+        "RA001 頁數＝7（K7b 頁首推下後與 LO 真值 7 頁對齊；推前 6＝舊缺陷）"
     );
     let (deltext, _) = pages_with(&eng, "Chromatpgrams");
     assert_eq!(deltext, 1, "L3 delText 'Chromatpgrams' ×1 不得回退");
