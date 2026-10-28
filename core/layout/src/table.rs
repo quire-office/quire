@@ -1309,7 +1309,12 @@ fn table_x_off(input: &TableInput, width: f32, avail_w: f32) -> f32 {
         // （fdo68607 鐵證：自然 550.8pt、版心 540pt，格線 30.1/580.9＝兩側
         // 各越界 ~5.4pt；我方舊路逕貼左緣＝整表右移半個越界量）。僅預設
         // 左對齊且無顯式 tblInd 時套用（宣告寬表走上面兩支路）。
-        _ if width > avail_w && input.indent_pt.unwrap_or(0.0) == 0.0 && input.width.is_none() => {
+        // K7_WRAP_WIDTH_BUGGY=1 回塞舊徑（貼左緣），紅燈 k7_wrap_width 必紅。
+        _ if width > avail_w
+            && input.indent_pt.unwrap_or(0.0) == 0.0
+            && input.width.is_none()
+            && std::env::var("K7_WRAP_WIDTH_BUGGY").is_err() =>
+        {
             (avail_w - width) * 0.5
         }
         _ => ind.min(avail_w.max(0.0)),
