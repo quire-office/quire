@@ -123,8 +123,8 @@ fn r7_single_page_cell_note_unchanged() {
         hit.1
     );
 
-    // ooxmlexport/tdf104354-2：1 頁；'Footnote text.' 條目 y≈527.5
-    // （K6 前 524.5）。
+    // ooxmlexport/tdf104354-2：1 頁；'Footnote text.' 條目 y≈526.3
+    // （K6 前 524.5；LO 真值 528.9——細化後距 LO 由 4.4 收斂至 2.6，PM 實測錨定）。
     let eng = load("ooxmlexport/tdf104354-2.docx");
     assert_eq!(eng.page_count(), 1);
     let hit = page_texts(&eng, 0)
@@ -132,8 +132,8 @@ fn r7_single_page_cell_note_unchanged() {
         .find(|(_, _, t)| t.contains("Footnote text."))
         .expect("格內註腳條目必須保留");
     assert!(
-        (hit.1 - 527.5).abs() < 1.0,
-        "單頁格內註腳 y 位移：{} ≠ 527.5（K6 pitch 後實測）",
+        (hit.1 - 526.3).abs() < 1.0,
+        "單頁格內註腳 y 位移：{} ≠ 526.3（K6 pitch 後實測）",
         hit.1
     );
 }
