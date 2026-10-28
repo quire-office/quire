@@ -1286,7 +1286,12 @@ fn resolve_columns(input: &TableInput, avail_w: f32) -> Vec<f32> {
         }
     }
     let total: f32 = cols.iter().sum();
-    if total > avail_w && total > 0.0 {
+    // K7-wrapwidth：無宣告 `w:tblW`（auto/缺）時 LO **不壓自然寬**——格線總寬
+    // 超版心照排（置中越界；fdo68607 鐵證：LO 格線 30.1/580.9，自然 550.8pt
+    // 原封不動）。壓回 avail 會縮窄儲存格內寬（fdo68607 右欄 414.2→405.9pt）
+    // → 早換行 → 頁數膨脹。宣告寬（dxa/pct）維持舊路徑（含上面等比縮放）。
+    let k7_buggy = std::env::var("K7_WRAP_WIDTH_BUGGY").is_ok();
+    if total > avail_w && total > 0.0 && (input.width.is_some() || k7_buggy) {
         let k = avail_w / total;
         for c in cols.iter_mut() {
             *c *= k;
