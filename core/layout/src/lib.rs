@@ -85,6 +85,22 @@ pub struct LayoutParams {
     /// serde default：舊快照（無此欄）反序列化時得空表＝舊行為。
     #[serde(default)]
     pub endnote_reserves_pt: Vec<f32>,
+    /// 逐頁**頁首推下量**（pt，索引＝頁序）：K7b——頁首內容塊底端越過
+    /// top margin 時，LO 把該頁正文起點下推、容量同步扣（Bug51170 頁首大圖
+    /// 鐵證：正文起點 125.65＝margin 106.35＋19.3 推下＝圖底 113.45＋一行
+    /// 清距 12.65；LO 每頁正文行 [29,36,30,33,30,28,12]）。
+    /// 空表＝無頁首推下（現況零變化，`section_capacity` 走舊算式逐位元組全等）；
+    /// 負值／NaN 元素視同 0；值為 raw pt（容量由 `per_page_lines` 統一 floor
+    /// 到帶），正文起點（margin_top＋推下量）經頁蓋章
+    /// `Page::margin_top_pt` 傳遍下游——表格／圖片／caret 等一切座標系自動
+    /// 跟隨，不需第二份真相。
+    ///
+    /// 出處＋公式：`docs/k7-wrapwidth-diag.md` §4（LO 口徑＝正文起點取
+    /// max(margin_top, 頁首塊底端＋一行界)）；逐頁表由引擎端按實際頁首內容
+    /// 高度算好灌入（比照 `footnote_reserves_pt` 的收斂紀律）。
+    /// serde default：舊快照（無此欄）反序列化時得空表＝舊行為。
+    #[serde(default)]
+    pub header_pushes_pt: Vec<f32>,
 }
 
 /// `w:cols` 分欄宣告（ECMA-376 §17.18.6／§17.18.7）——`sectpr::SectionCols`
@@ -258,6 +274,9 @@ impl LayoutParams {
             footnote_reserves_pt: Vec::new(),
             // 尾註接排逐頁預留恆空：由引擎端在尾註支路收斂後灌入。
             endnote_reserves_pt: Vec::new(),
+            // 頁首推下逐頁表恆空：由引擎端按實際頁首內容高度算好灌入（K7b）；
+            // `from_section` 只負責頁面幾何，既有構造語義不變。
+            header_pushes_pt: Vec::new(),
         }
     }
 
@@ -338,6 +357,8 @@ impl Default for LayoutParams {
             // 逐頁預留：後備值無逐頁預留需求＝空表（現況行為，逐位元組零變化）。
             footnote_reserves_pt: Vec::new(),
             endnote_reserves_pt: Vec::new(),
+            // 頁首推下：後備值無頁首推下需求＝空表（現況行為，逐位元組零變化）。
+            header_pushes_pt: Vec::new(),
         }
     }
 }
@@ -584,6 +605,12 @@ pub fn section_capacity(p: &LayoutParams, geo: &SectionGeometry, page_index: usi
     // J1-fix：尾註接排區疊在頁底註腳區**之上**（同一頁底部兩塊不同區域），
     // 故兩者相加；空表＝0（既有路徑逐位元組不變）。
     sp.footnote_reserve_pt = foot_reserve + page_endnote_reserve_pt(p, page_index);
+    // K7b：頁首推下自**頂**扣（正文起點下移＝版心變矮）——空表/全零時
+    // `page_header_push_pt` 恆 0，加 0.0 逐位元組等價舊算式（零擾動守門）。
+    let push = page_header_push_pt(p, page_index);
+    if push > 0.0 {
+        sp.margins_pt[MARGIN_TOP] += push;
+    }
     sp.per_page_lines()
 }
 
@@ -610,6 +637,16 @@ fn page_endnote_reserve_pt(p: &LayoutParams, page_index: usize) -> f32 {
 /// 算兩次。正規化後再取 max（負值／NaN 視同 0，防呆口徑同款）。
 fn effective_reserve_pt(p: &LayoutParams, page_index: usize) -> f32 {
     reserve_or_zero(p.footnote_reserve_pt).max(page_reserve_pt(p, page_index))
+}
+
+/// 逐頁頁首推下量（pt）：索引＝頁序，超出表長的頁視同 0；負值／NaN 視同 0
+/// （與 `page_reserve_pt` 同款防呆口徑）。K7b——頁首內容底端越過 top margin
+/// 時該頁正文起點的下推量（由引擎端按實際頁首內容高度算好灌入）。
+fn page_header_push_pt(p: &LayoutParams, page_index: usize) -> f32 {
+    p.header_pushes_pt
+        .get(page_index)
+        .map(|v| reserve_or_zero(*v))
+        .unwrap_or(0.0)
 }
 
 /// 錨點段落 para 的有效 section（無 section 清單時由 `p` 合成——單幾何文件，id=0）。
@@ -1056,7 +1093,11 @@ fn pack_run(
             width_pt: s.geo.page_w_pt,
             height_pt: s.geo.page_h_pt,
             margin_left_pt: s.geo.margin_left_pt,
-            margin_top_pt: s.geo.margin_top_pt,
+            // K7b：頁首推下寫進頁蓋章（正文起點＝margin_top＋推下量）——
+            // 下游一切讀 `Page::margin_top_pt` 的座標系（正文行／圖片／caret／
+            // 引擎發射）自動跟隨，不需第二份真相。推下 0（空表/未宣告）＝
+            // 舊蓋章逐位元組全等。
+            margin_top_pt: s.geo.margin_top_pt + page_header_push_pt(p, out.len()),
             section_id: s.id,
         });
         out_starts.push(st.page_start);
@@ -1315,7 +1356,11 @@ fn pack_run(
                 }
                 // 切片 y 蓋章：頁內絕對＝上邊界＋已佔帶數×行高。列內偏移由
                 // 繪製端累加 RowFrag.height_pt（切片內列序決定，不另存欄位）。
-                frag.y_pt = spec.geo.margin_top_pt + place_band as f32 * line_h;
+                // K7b：上邊界含該頁頁首推下（與 fresh_page 的頁蓋章同值——
+                // 同一 `page_header_push_pt(p, out.len())`；推下 0＝舊算式全等）。
+                frag.y_pt = spec.geo.margin_top_pt
+                    + page_header_push_pt(p, out.len())
+                    + place_band as f32 * line_h;
                 st.cur_tables.push(TablePlacement {
                     slot: *slot,
                     anchor_para: tables[*slot].para_start,
@@ -1537,7 +1582,8 @@ fn paginate_flow(
             width_pt: geo.geo.page_w_pt,
             height_pt: geo.geo.page_h_pt,
             margin_left_pt: geo.geo.margin_left_pt,
-            margin_top_pt: geo.geo.margin_top_pt,
+            // K7b：合成空頁同款推下口徑（頁序 0；推下 0＝舊值逐位元組全等）。
+            margin_top_pt: geo.geo.margin_top_pt + page_header_push_pt(p, 0),
             section_id: geo.id,
         });
         starts.push((0, 0, 0)); // 合成空頁＝流首（starts/pages 同步不變量）
@@ -3305,6 +3351,7 @@ mod tests {
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
             endnote_reserves_pt: Vec::new(),
+            header_pushes_pt: Vec::new(),
         };
         let input = tall_table_input(10);
         let mut texts = vec!["前段".to_string()];
@@ -3406,6 +3453,7 @@ mod tests {
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
             endnote_reserves_pt: Vec::new(),
+            header_pushes_pt: Vec::new(),
         };
         let inner = TableInput {
             grid_pt: vec![80.0],
@@ -3501,6 +3549,7 @@ mod tests {
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
             endnote_reserves_pt: Vec::new(),
+            header_pushes_pt: Vec::new(),
         }
     }
 
@@ -3787,6 +3836,7 @@ mod tests {
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
             endnote_reserves_pt: Vec::new(),
+            header_pushes_pt: Vec::new(),
         };
         // 容量＝4 行/頁；三段各 80 碼點＝2 行。無 br：6 行→2 頁（4＋2）。
         let texts: Vec<String> = (0..3).map(|_| "字".repeat(80)).collect();
@@ -3865,6 +3915,7 @@ mod tests {
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
             endnote_reserves_pt: Vec::new(),
+            header_pushes_pt: Vec::new(),
         };
         // 段內 20 碼點，行寬 400pt/字寬 10pt＝40 字/行 → 全段一行；br 放碼點
         // 8 → 斷行硬收：前 8 字一行、後 12 字另起一行，且該行落新頁。
@@ -4016,6 +4067,7 @@ mod tests {
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
             endnote_reserves_pt: Vec::new(),
+            header_pushes_pt: Vec::new(),
         };
         let texts = vec!["前段一行".to_string()];
         // 容量＝(200−80)/16.8＝7 帶：前段 1＋表 6 恰好同頁；段尾 br 後表格
@@ -4082,6 +4134,7 @@ mod tests {
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
             endnote_reserves_pt: Vec::new(),
+            header_pushes_pt: Vec::new(),
         };
         let texts: Vec<String> = (0..4).map(|i| format!("第{i}段內容")).collect();
 
@@ -4201,6 +4254,7 @@ mod tests {
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
             endnote_reserves_pt: Vec::new(),
+            header_pushes_pt: Vec::new(),
         }
     }
 
@@ -4542,6 +4596,7 @@ mod tests {
             // 逐頁預留空表：既有測試尺不逐頁預留（空表逐位元組不變）。
             footnote_reserves_pt: Vec::new(),
             endnote_reserves_pt: Vec::new(),
+            header_pushes_pt: Vec::new(),
         }
     }
 
@@ -4949,6 +5004,7 @@ mod tests {
             footnote_reserve_pt: 0.0,
             footnote_reserves_pt: Vec::new(),
             endnote_reserves_pt: Vec::new(),
+            header_pushes_pt: Vec::new(),
         }
     }
 

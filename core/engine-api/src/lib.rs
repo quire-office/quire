@@ -645,9 +645,213 @@ impl Engine {
     ///
     /// 順序：先讓頁底註腳收斂定案（它會動正文分頁），再用定案後的版面
     /// 排尾註（尾註只接排末頁／追加續頁，不回頭動正文分頁）。
+    ///
+    /// K7b：頁首推下在註腳**之前**收斂（它同樣動正文分頁——容量自頂扣）；
+    /// 註腳收斂可能改變頁數/節邊界（推下表以頁序索引），定案後再校一次
+    /// 推下——表未變 ⇒ `set_header_pushes` 早退、零重排（常見路徑零成本）。
     fn recompute_notes(&mut self) {
+        self.compute_header_push();
         self.compute_footnotes();
         self.compute_endnotes();
+        self.compute_header_push();
+    }
+
+    // ---------------- K7b：頁首推下层（Bug51170 尾部流動）----------------
+    //
+    // LO 口徑（docs/k7-wrapwidth-diag.md §4）：頁首內容塊底端越過 top margin
+    // 時，正文起點不再是 margin_top，而是被頁首推到「頁首底端＋一行清距」
+    // ——Bug51170 鐵證：頁首圖底 113.45（圖 146×78pt 掛 header 距 35.45），
+    // margin 106.35，LO p1+ 正文首行 y=125.65（＝圖底＋12.65 行距清距，
+    // 推下 19.3；p0 titlePg 無頁首＝不推，y=106.7）。每頁容量同步扣：
+    // LO 逐頁 [29,36,30,33,30,28,14]，我方修前 p1+ 未推 → 每頁多吸 1–2 行、
+    // 尾頁 p6 被吸乾（僅頁碼＋頁首）。
+    //
+    // 實裝＝逐頁推下表（`LayoutParams::header_pushes_pt`，比照 F2b 預留紀律）：
+    // 容量與頁蓋章（`Page::margin_top_pt`）都讀同一張表 ⇒ 正文行、表格切片、
+    // 圖片、caret 自動跟隨，不需第二份真相。零擾動守門：無頁首宣告檔、
+    // 頁首未越界檔（seed25 多數）表恆空 ⇒ layout 一個位元組不動。
+    //
+    // titlePg 互動：首節首頁選 first slot（Bug51170 無 first ⇒ None ⇒ 不推，
+    // p0 起點 106.35 不動——LO p0=106.7 同形）。footer 掛載（y=809）與 R7
+    // 尾註掛載頁腳語義不經本層，零觸碰。
+    //
+    // BUGGY 回塞鎖：`K7B_HDR_PUSH_BUGGY=1` 整組機制停擺（清空表＋不收斂）
+    // ⇒ p1+ 起點回 106.35、p6 吸乾——紅燈回舊徑必紅（比照
+    // `K6_AUTO_PITCH_BUGGY`／`R6_CLIP_BUGGY` 先例；測試進程內不設 env，
+    // 由外部執行驗證）。
+
+    /// 推下收斂主體：「設表→分頁→量頁首底端→新表」直至逐頁推下表穩定
+    /// （≤`MAX_CONVERGE_ROUNDS` 輪）。不变量：結束時版面就是按
+    /// `self.params.header_pushes_pt` 分頁的結果（發射↔分頁自洽）。
+    fn compute_header_push(&mut self) {
+        if std::env::var_os("K7B_HDR_PUSH_BUGGY").is_some() {
+            if !self.params.header_pushes_pt.is_empty() {
+                self.set_header_pushes(Vec::new());
+            }
+            return; // 回塞鎖：舊口徑（不推）。
+        }
+        if self.hf.is_empty() {
+            return; // 無頁首/頁尾宣告：快路徑零擾動。
+        }
+        let mut applied: Vec<f32> = Vec::new();
+        for _round in 1..=quire_layout::MAX_CONVERGE_ROUNDS {
+            self.set_header_pushes(applied.clone());
+            let desired = self.header_push_desired();
+            if footnotes::reserves_stable(&desired, &applied) {
+                return; // 版面已按 applied 分頁且計算值==套用值：定案。
+            }
+            applied = desired;
+        }
+        // 輪數用盡仍震盪（罕見；推下只加頁、單調，未見）：保留以末輪
+        // `applied` 分頁的版面（不變量優先）。
+        self.set_header_pushes(applied);
+    }
+
+    /// 套用逐頁推下表（值未變 ⇒ 早退零重排——`recompute_notes` 二校的成本閘）。
+    fn set_header_pushes(&mut self, table: Vec<f32>) {
+        if footnotes::reserves_stable(&table, &self.params.header_pushes_pt)
+            && table.len() == self.params.header_pushes_pt.len()
+        {
+            return;
+        }
+        let mut p = self.params.clone();
+        p.header_pushes_pt = table;
+        self.params = p.clone();
+        self.layout.update_params(p);
+    }
+
+    /// 以**當前版面**逐頁量「該推多少」：頁首內容底端越過 margin 的頁，
+    /// 推下＝底端＋一行清距 − margin（帶尺 ceil 量化；見 `header_push_for_page`）。
+    /// 清距＝全域一行（`line_ref_bands`×帶尺＝正文行距，Bug51170 實測 12.65）。
+    fn header_push_desired(&self) -> Vec<f32> {
+        let pages = self.layout.pages();
+        if pages.is_empty() {
+            return Vec::new();
+        }
+        let pitch = self.params.line_h_pt() * self.line_ref_bands.max(1) as f32;
+        let mut out = vec![0.0f32; pages.len()];
+        for pg in pages {
+            out[pg.index] = self.header_push_for_page(pg, pitch);
+        }
+        out
+    }
+
+    /// 單頁推下量（pt）：該頁所選頁首 slot 的內容底端 `bottom`（頁頂系）——
+    /// - `bottom <= margin_top`（頁首短於 margin，seed25 多數）⇒ **0**：
+    ///   零擾動守門，LO 對此亦不推。
+    /// - 越界 ⇒ 推下＝`spill ＋ 正文行距`（LO max() 口徑的直接重建；正文行距
+    ///   ＝`line_ref_bands`×帶尺＝全域一行——LO 實測：Bug51170 圖底 113.45
+    ///   ＋12.65 − 106.35＝19.75，正文首行 126.10 vs LO 125.65，差 0.45pt）。
+    fn header_push_for_page(&self, pg: &Page, pitch: f32) -> f32 {
+        let Some(sec) = self.hf.get(&pg.section_id) else {
+            return 0.0;
+        };
+        let is_first = self.is_section_first_page(pg.index);
+        let is_even = (pg.index + 1).is_multiple_of(2); // 與發射層同口徑
+        let Some(path) = pick_slot(
+            &sec.header,
+            sec.title_pg && is_first,
+            self.even_odd && is_even,
+        ) else {
+            return 0.0; // titlePg 首頁無 first slot＝空白頁首（不虛構、不推）
+        };
+        let Some(part) = self.hf_parts.get(path) else {
+            return 0.0;
+        };
+        // sec_geo 在頁首頁尾宣告檔恆命中（build_hf_layer 同條件灌入）；後備
+        // 從 params 原始邊界合成——**不可**用 `pg.margin_top_pt`（推下後它已
+        // 含推下量，會自我震盪）。
+        let geo = self
+            .sec_geo
+            .get(&pg.section_id)
+            .copied()
+            .unwrap_or(SectionGeometry {
+                page_w_pt: self.params.page_w_pt,
+                page_h_pt: self.params.page_h_pt,
+                margin_top_pt: self.params.margin(MARGIN_TOP),
+                margin_bottom_pt: self.params.margin(quire_layout::MARGIN_BOTTOM),
+                margin_left_pt: self.params.margin(MARGIN_LEFT),
+                margin_right_pt: self.params.margin(quire_layout::MARGIN_RIGHT),
+                landscape: false,
+                continuous: false,
+                cols: Default::default(),
+            });
+        let hf_params =
+            LayoutParams::from_section(&geo, self.params.font_size_pt, self.params.line_spacing);
+        let bottom = self.hf_content_bottom_pt(part, &hf_params, &geo, sec.header_dist_pt);
+        let spill = bottom - geo.margin_top_pt;
+        if spill <= 0.0 {
+            return 0.0;
+        }
+        // LO 口徑 max(margin_top, 頁首底端＋一行清距)：推下＝spill＋pitch
+        // （raw pt 不量化——容量由 `section_capacity` 統一 floor 到帶，量化
+        // 只會讓起點錨點再偏 ≤帶尺；Bug51170 7.10＋12.65＝19.75 → 首行
+        // 126.10 vs LO 125.65＝0.45pt）。
+        spill + pitch
+    }
+
+    /// 頁首 part 內容底端（pt，自頁頂）：發射層 `push_hf_slot` 的帶游標鏡像
+    /// （段落行＋表格整塊＋逐圖 y=h 底緣取 max）。**只量不發**——發射路徑
+    /// 零觸碰（顯示列表逐位元組不受影響）；兩處若未來分叉，推下量偏保守
+    /// （正文起點偏下 ≤帶尺），記錄在案。
+    fn hf_content_bottom_pt(
+        &self,
+        part: &HfPart,
+        hf_params: &LayoutParams,
+        geo: &SectionGeometry,
+        emit_y: f32,
+    ) -> f32 {
+        let line_h = hf_params.line_h_pt();
+        let texts: Vec<String> = part
+            .styles
+            .iter()
+            .map(|pp| pp.runs.iter().map(|r| r.text.as_str()).collect())
+            .collect();
+        let styles = self.doc.parts.get("word/styles.xml").map(|s| s.as_slice());
+        let sec_one = [SectionSpec { id: 0, geo: *geo }];
+        let hf_line_hs: Vec<f32> = part.metrics.iter().map(|m| m.1).collect();
+        let slots_tbl = table_map::build_slots(
+            &part.tables,
+            &texts,
+            styles,
+            hf_params,
+            &sec_one,
+            &[],
+            &part.styles,
+            &hf_line_hs,
+            self.line_ref_bands,
+        );
+        let grid: Vec<(f32, f32)> = part.metrics.clone();
+        let pls = quire_layout::layout_paragraphs_grid(&texts, hf_params, &[], &grid);
+        let mut cursor_bands: u32 = 0;
+        let mut ti = 0usize;
+        let mut skip_until = 0usize;
+        let mut bottom = emit_y;
+        for (pi, pl) in pls.iter().enumerate() {
+            while ti < slots_tbl.len() && slots_tbl[ti].para_start <= pi {
+                let tb = slots_tbl[ti].layout.total_bands.max(1);
+                bottom = bottom.max(emit_y + (cursor_bands + tb) as f32 * line_h);
+                cursor_bands += tb;
+                skip_until = skip_until.max(slots_tbl[ti].para_end);
+                ti += 1;
+            }
+            if pi < skip_until {
+                continue;
+            }
+            cursor_bands += pl.lines.len().max(1) as u32;
+            bottom = bottom.max(emit_y + cursor_bands as f32 * line_h);
+        }
+        while ti < slots_tbl.len() {
+            let tb = slots_tbl[ti].layout.total_bands.max(1);
+            bottom = bottom.max(emit_y + (cursor_bands + tb) as f32 * line_h);
+            cursor_bands += tb;
+            ti += 1;
+        }
+        for im in part.images.iter().filter(|im| !im.in_cell) {
+            let y = emit_y + im.para_index as f32 * line_h;
+            bottom = bottom.max(y + im.h_pt);
+        }
+        bottom
     }
 
     /// 收斂主體。不變量（發射↔分頁自洽）：結束時
@@ -1057,7 +1261,10 @@ impl Engine {
                 &spec,
             );
             let inline_bands: u32 = lay.inline.iter().map(|i| i.bands.max(1)).sum();
-            let content_bottom = geo.margin_top_pt + cap as f32 * band;
+            // K7b：原點與正文行同基準（末頁實際 margin_top_pt 含推下；cap
+            // 已由 `section_capacity` 自頂扣推下 ⇒ 底端與 packer 一致）。
+            // 推下 0＝舊 geo 值逐位元組全等。
+            let content_bottom = pages[last_page].margin_top_pt + cap as f32 * band;
             let inline_top_y = content_bottom - (foot_bands as f32 + inline_bands as f32) * band;
             lay.inline_top_y = (!lay.inline.is_empty()).then_some(inline_top_y);
             // 下一輪該套的預留（接排區＝分隔線＋條目帶）。
@@ -1117,7 +1324,9 @@ impl Engine {
             used = used.max(im.band.saturating_add(bands));
         }
         for fm in &p.floating_images {
-            let bands = ((fm.y_pt + fm.h_pt - geo.margin_top_pt).max(0.0) / band).ceil() as u32;
+            // K7b：基準與浮圖 y_pt 同原點（pg.margin_top_pt 含推下；推下 0＝
+            // 舊 geo 值逐位元組全等）。
+            let bands = ((fm.y_pt + fm.h_pt - p.margin_top_pt).max(0.0) / band).ceil() as u32;
             used = used.max(bands);
         }
         (used as usize).min(cap)
@@ -1183,7 +1392,10 @@ impl Engine {
                     content_left_pt: pg.margin_left_pt,
                     content_w_pt: (geo.page_w_pt - geo.margin_left_pt - geo.margin_right_pt)
                         .max(1.0),
-                    content_bottom_pt: geo.margin_top_pt + cap as f32 * band,
+                    // K7b：起算原點用頁實際 `margin_top_pt`（含頁首推下）——
+                    // 正文行實際起點在此，版心底必須同原點才對齊；推下 0＝
+                    // 舊 `geo.margin_top_pt` 值逐位元組全等（零擾動）。
+                    content_bottom_pt: pg.margin_top_pt + cap as f32 * band,
                     band_pt: band,
                     // F2c：拆分預算錨定「未扣預留的固定容量」——逐輪預留浮動
                     // 不得進入拆分子（否則收斂自我震盪）。
