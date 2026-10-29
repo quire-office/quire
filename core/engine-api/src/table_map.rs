@@ -101,7 +101,11 @@ fn has_any_edges(e: &EdgeSetInput) -> bool {
 /// ——卡片語義；不合併，合併會虛構容量）。
 fn cell_image_map(images: &[quire_ooxml::InlineImage]) -> HashMap<usize, Vec<(f32, f32)>> {
     let mut m: HashMap<usize, Vec<(f32, f32)>> = HashMap::new();
-    for im in images.iter().filter(|im| im.in_cell) {
+    let buggy = std::env::var_os("K10_CELL_ANCHOR_BUGGY").is_some();
+    for im in images
+        .iter()
+        .filter(|im| im.in_cell && (buggy || !im.floating))
+    {
         m.entry(im.para_index).or_default().push((im.w_pt, im.h_pt));
     }
     m
@@ -487,6 +491,46 @@ fn v_align_y(align: &str, frame_h: f32, h_pt: f32) -> Option<f32> {
     }
 }
 
+/// K10：查詢段落 `para_index` 在表格中的儲存格頁面原點與寬度：
+/// 回傳 `Some((cell_x_pt, cell_y_pt, cell_w_pt))`。
+pub fn find_cell_for_para(
+    tables: &[BodyTable],
+    slots: &[TableSlot],
+    sections: &[SectionSpec],
+    params: &LayoutParams,
+    para_index: usize,
+) -> Option<(f32, f32, f32)> {
+    for (bt, slot) in tables.iter().zip(slots.iter()) {
+        if para_index < slot.para_start || para_index >= slot.para_end {
+            continue;
+        }
+        for (r_idx, row) in bt.table.rows.iter().enumerate() {
+            for (c_idx, cell) in row.cells.iter().enumerate() {
+                let found = cell.blocks.iter().any(|b| match b {
+                    Block::Paragraph { index } => *index == para_index,
+                    _ => false,
+                });
+                if found {
+                    let geom = slot.layout.cell_geom(r_idx, c_idx)?;
+                    let (margin_l, margin_t) = match sections.get(slot.para_start) {
+                        Some(s) => (s.geo.margin_left_pt, s.geo.margin_top_pt),
+                        None => (
+                            params.margin(quire_layout::MARGIN_LEFT),
+                            params.margin(quire_layout::MARGIN_TOP),
+                        ),
+                    };
+                    let tblp_y = twip_pt(bt.table.props.tblp_y_raw.as_deref()).unwrap_or(0.0);
+                    let cell_x = margin_l + geom.0;
+                    let cell_y = margin_t + tblp_y + geom.1;
+                    let cell_w = geom.2;
+                    return Some((cell_x, cell_y, cell_w));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// 浮動圖座標解析（t_1a79f1c5）：`wp:positionH/V` 的 posOffset 與 align 是
 /// **互斥兩式**（ECMA-376 §20.4.2.8）——OOXMLExport 對整頁封面圖（wrapNone
 /// ＋`<wp:align>center</wp:align>`）只寫 align 不寫 posOffset，舊口徑把缺
@@ -502,6 +546,7 @@ fn resolved_anchor(
     avail_w: f32,
     avail_h: f32,
     anchor_para_w: Option<f32>,
+    cell_info: Option<(f32, f32, f32)>,
 ) -> Option<quire_layout::FloatingAnchor> {
     // 逐軸可解析才成錨：posOffset 或 `<wp:align>` 兩式任一即可（互斥但
     // 不必同時存在）；relativeFrom 缺＝段落系近似（origin_of 同款容錯）。
@@ -510,19 +555,35 @@ fn resolved_anchor(
     }
     let x_origin = quire_ooxml::origin_of(im.pos_x_rel.as_deref());
     let y_origin = quire_ooxml::origin_of(im.pos_y_rel.as_deref());
-    let frame_w = match x_origin {
-        "page" => page_w,
-        "column" | "margin" => avail_w,
-        _ => anchor_para_w.unwrap_or(avail_w),
-    };
-    let frame_h = match y_origin {
-        "page" => page_h,
-        _ => avail_h.max(1.0),
-    };
+
+    // K10：若身處表格儲存格內且非 page 原點系，以儲存格幾何為基準換算頁絕對原點
+    let (frame_w, x_base, x_is_page) =
+        if let (Some((cx, _, cw)), true) = (cell_info, x_origin != "page") {
+            (cw, cx, true)
+        } else {
+            let fw = match x_origin {
+                "page" => page_w,
+                "column" | "margin" => avail_w,
+                _ => anchor_para_w.unwrap_or(avail_w),
+            };
+            (fw, 0.0, false)
+        };
+
+    let (frame_h, y_base, y_is_page) =
+        if let (Some((_, cy, _)), true) = (cell_info, y_origin != "page") {
+            (avail_h.max(1.0), cy, true)
+        } else {
+            let fh = match y_origin {
+                "page" => page_h,
+                _ => avail_h.max(1.0),
+            };
+            (fh, 0.0, false)
+        };
+
     // 逐軸三式平滑退檔：posOffset → `<wp:align>` → `<wp14:pctPos*Offset>`。
     // align 值不被識別（如 insideLeft／非法字串）只算該式落空，不可短路
     // 整個錨點——否則第三式 pct 永遠退不到（S2）。
-    let x_pt = im
+    let x_offset = im
         .pos_x_pt
         .or_else(|| {
             im.pos_x_align
@@ -530,7 +591,7 @@ fn resolved_anchor(
                 .and_then(|a| h_align_x(a, frame_w, im.w_pt))
         })
         .or_else(|| im.pos_x_pct.map(|p| frame_w * p / 100_000.0))?;
-    let y_pt = im
+    let y_offset = im
         .pos_y_pt
         .or_else(|| {
             im.pos_y_align
@@ -538,11 +599,23 @@ fn resolved_anchor(
                 .and_then(|a| v_align_y(a, frame_h, im.h_pt))
         })
         .or_else(|| im.pos_y_pct.map(|p| frame_h * p / 100_000.0))?;
+
+    let x_pt = x_base + x_offset;
+    let y_pt = y_base + y_offset;
+
     Some(quire_layout::FloatingAnchor {
         x_pt,
         y_pt,
-        x_frame: quire_layout::origin_frame(x_origin),
-        y_frame: quire_layout::origin_frame(y_origin),
+        x_frame: if x_is_page {
+            quire_layout::OriginFrame::Page
+        } else {
+            quire_layout::origin_frame(x_origin)
+        },
+        y_frame: if y_is_page {
+            quire_layout::OriginFrame::Page
+        } else {
+            quire_layout::origin_frame(y_origin)
+        },
     })
 }
 
@@ -563,10 +636,13 @@ pub fn build_images(
     line_h: f32,
     params: &LayoutParams,
     sections: &[SectionSpec],
+    tables: &[BodyTable],
+    slots: &[TableSlot],
 ) -> Vec<quire_layout::ImageBand> {
+    let buggy = std::env::var_os("K10_CELL_ANCHOR_BUGGY").is_some();
     let mut out: Vec<quire_layout::ImageBand> = images
         .iter()
-        .filter(|im| !im.in_cell)
+        .filter(|im| !im.in_cell || (!buggy && im.floating))
         .map(|im| {
             // 錨定段落的頁面幾何：page 系 frame 用頁寬高，margin 系用版心寬高。
             let (page_w, page_h, avail_w, avail_h) = match sections.get(im.para_index) {
@@ -586,7 +662,12 @@ pub fn build_images(
                     .max(1.0),
                 ),
             };
-            let anchor = resolved_anchor(im, page_w, page_h, avail_w, avail_h, None);
+            let cell_info = if !buggy {
+                find_cell_for_para(tables, slots, sections, params, im.para_index)
+            } else {
+                None
+            };
+            let anchor = resolved_anchor(im, page_w, page_h, avail_w, avail_h, None, cell_info);
             let bands = if anchor.is_none() {
                 // 帶量化鉗上限（t_c1fb4c69 S1-4）：病態 extent（源頭值域
                 // 拒絕後仍可能漏進投影層）不得量化出天量帶數拖垮分頁。
@@ -737,6 +818,7 @@ mod tests {
             txbx_texts: Vec::new(),
             txbx_start: 0,
             txbx_children: Vec::new(),
+            txbx_align: None,
             // K4c 新增欄位（全部老實缺省＝舊行為；本測試只吃幾何）。
             fill_argb: None,
             filled: None,
@@ -772,7 +854,7 @@ mod tests {
         let mut im = anchored_img();
         im.pos_x_align = Some("insideLeft".into());
         im.pos_x_pct = Some(50_000.0);
-        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None)
+        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None, None)
             .expect("align 落空後應退到 pct，不得整體回 None");
         assert!((a.x_pt - 300.0).abs() < 1e-4, "pct 半頁 x={}", a.x_pt);
     }
@@ -782,7 +864,7 @@ mod tests {
     fn left_align_computes_zero_x() {
         let mut im = anchored_img();
         im.pos_x_align = Some("left".into());
-        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None).expect("left 應可解");
+        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None, None).expect("left 應可解");
         assert_eq!(a.x_pt, 0.0);
     }
 
@@ -792,7 +874,8 @@ mod tests {
     fn uppercase_center_align_matches_center_formula() {
         let mut im = anchored_img();
         im.pos_x_align = Some("Center".into());
-        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None).expect("Center 應可解");
+        let a =
+            resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None, None).expect("Center 應可解");
         assert!((a.x_pt - 250.0).abs() < 1e-4, "置中 x={}", a.x_pt);
     }
 
@@ -803,14 +886,14 @@ mod tests {
         let mut im = anchored_img();
         im.pos_x_align = Some("inside".into());
         assert_eq!(
-            resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None)
+            resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None, None)
                 .expect("inside 應可解")
                 .x_pt,
             0.0
         );
         im.pos_x_align = Some("outside".into());
         assert_eq!(
-            resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None)
+            resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None, None)
                 .expect("outside 應可解")
                 .x_pt,
             500.0
@@ -835,6 +918,8 @@ mod tests {
             &[img(0, f32::MAX), img(1, f32::INFINITY)],
             16.8,
             &params,
+            &[],
+            &[],
             &[],
         );
         assert_eq!(out.len(), 2);

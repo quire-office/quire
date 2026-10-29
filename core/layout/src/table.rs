@@ -472,6 +472,20 @@ impl TableLayout {
         self.rows.iter().take_while(|r| r.header).count()
     }
 
+    /// K10：取得指定儲存格（row, col）之幾何：(cell_x_in_table, cell_y_in_table, cell_w)。
+    /// cell_x_in_table 已計入 self.x_off。
+    pub fn cell_geom(&self, row: usize, col: usize) -> Option<(f32, f32, f32)> {
+        if row >= self.rows.len() {
+            return None;
+        }
+        let y: f32 = self.rows[..row]
+            .iter()
+            .map(|r| r.bands as f32 * self.line_h + r.extra_pt)
+            .sum();
+        let cell = self.rows[row].cells.get(col)?;
+        Some((self.x_off + cell.x, y, cell.w))
+    }
+
     /// 全域帶序 → (row, band) 游標（跨列跳帶用；越界＝(rows.len(), 0)）。
     /// `fragment(row, band, …)` 不代為跨列正規化 band，呼叫端先過此換算。
     fn cursor_at_band(&self, band: u32) -> (usize, u32) {
