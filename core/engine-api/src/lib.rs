@@ -2442,11 +2442,12 @@ fn has_cjk(text: &str) -> bool {
 /// - Arial **0.9627**（B 軌 Bug51170 n=188；A 軌 0.9950 Δ3.2%＞容差→B 軌定案，
 ///   run73 判別鐵證見報告 §6；A 軌大寫串 1.0656 為元凶）
 /// - NotoSerif 1.0328（theme 斷鏈，A 軌獨撐）
+///
 /// 本基準環境（k6cal 真 MS face 裝機後）LO span font 實據渲染**真 MS face**
 /// （Calibri／ArialMT／PMingLiU），且 Carlito==Calibri、Caladea==Cambria、
 /// LibSerif==TNR hmtx 逐位元組同寬＝表值對「真 face 環境」與「克隆環境」
-/// 兩邊都成立（環境穩性實證，報告 §6.1）。
-/// face 來源：`~/.local/share/fonts/k6cal`、系統 Liberation、LO 25.8 自帶
+/// 兩邊都成立（環境穩性實證，報告 §6.1）。face 來源：
+/// `~/.local/share/fonts/k6cal`、系統 Liberation、LO 25.8 自帶
 /// Caladea／NotoSerif（矩陣重產：scratch `k7cal/gen_csv.py`）。
 fn face_advance_scale(face: &str) -> f32 {
     let key = face.trim().to_lowercase();
