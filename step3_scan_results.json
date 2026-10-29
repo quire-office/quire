@@ -1,0 +1,253 @@
+[
+  {
+    "file": "corpus/ooxmlexport/fdo68607.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "IGCSE Drama Glossary",
+        "keyword": "IGCSE",
+        "in_cell": true,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/fdo69636.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "Vertical Text",
+        "keyword": "Vertical",
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/fdo77117.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "S 1",
+        "keyword": "S 1",
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/fdo78651.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "7",
+        "keyword": "7",
+        "in_cell": true,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/fdo78957.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "Bull on the Run",
+        "keyword": "Bull",
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/floattable-anchorpos.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "B",
+        "keyword": "B",
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/tdf105688.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "“ x",
+        "keyword": "“ x",
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/tdf119800.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "ABCD EFGH IJKL",
+        "keyword": "ABCD",
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/tdf129888dml.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "7",
+        "keyword": "7",
+        "in_cell": true,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/tdf130120.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "7",
+        "keyword": "7",
+        "in_cell": true,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlimport/tdf101627.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "1",
+        "keyword": "1",
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlimport/tdf117843.docx",
+    "total_wps_txbx": 2,
+    "missing_count": 2,
+    "missing_details": [
+      {
+        "text": "test",
+        "keyword": "test",
+        "in_cell": false,
+        "is_anchor": true
+      },
+      {
+        "text": "test",
+        "keyword": "test",
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlimport/tdf118693.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "E 2",
+        "keyword": "E 2",
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/xopt/TestFiles_DB_HeadersFooters_Dest_Fax.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "Legal Entity CVR-nr .  xxxx Address Phone :  Fax :",
+        "keyword": "Legal",
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/xopt/TestFiles_DB_HeadersFooters_Dest_Fax__content_control_.docx",
+    "total_wps_txbx": 1,
+    "missing_count": 1,
+    "missing_details": [
+      {
+        "text": "Legal Entity CVR-nr .  xxxx Address Phone :  Fax :",
+        "keyword": "Legal",
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/xopt/TestFiles_WC_WC048-Text-Box-in-Cell-Mod.docx",
+    "total_wps_txbx": 3,
+    "missing_count": 3,
+    "missing_details": [
+      {
+        "text": "Textbox1 a",
+        "keyword": "Textbox1",
+        "in_cell": true,
+        "is_anchor": true
+      },
+      {
+        "text": "Textbox2 a",
+        "keyword": "Textbox2",
+        "in_cell": true,
+        "is_anchor": true
+      },
+      {
+        "text": "Textbox3 a",
+        "keyword": "Textbox3",
+        "in_cell": true,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/xopt/TestFiles_WC_WC048-Text-Box-in-Cell.docx",
+    "total_wps_txbx": 3,
+    "missing_count": 3,
+    "missing_details": [
+      {
+        "text": "Textbox1",
+        "keyword": "Textbox1",
+        "in_cell": true,
+        "is_anchor": true
+      },
+      {
+        "text": "Textbox2",
+        "keyword": "Textbox2",
+        "in_cell": true,
+        "is_anchor": true
+      },
+      {
+        "text": "Textbox3",
+        "keyword": "Textbox3",
+        "in_cell": true,
+        "is_anchor": true
+      }
+    ]
+  }
+]

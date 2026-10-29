@@ -1,0 +1,178 @@
+[
+  {
+    "file": "corpus/ooxmlexport/fdo68607.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "IGCSE",
+        "text": "IGCSE Drama Glossary",
+        "found_in_lo": true,
+        "in_cell": true,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/fdo69636.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "Vertical",
+        "text": "Vertical Text",
+        "found_in_lo": true,
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/fdo77117.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "S 1",
+        "text": "S 1",
+        "found_in_lo": false,
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/fdo78651.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "7",
+        "text": "7",
+        "found_in_lo": true,
+        "in_cell": true,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/fdo78957.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "Bull",
+        "text": "Bull on the Run",
+        "found_in_lo": false,
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/floattable-anchorpos.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "B",
+        "text": "B",
+        "found_in_lo": true,
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/tdf105688.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "“ x",
+        "text": "“ x",
+        "found_in_lo": true,
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/tdf119800.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "ABCD",
+        "text": "ABCD EFGH IJKL",
+        "found_in_lo": false,
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/tdf129888dml.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "7",
+        "text": "7",
+        "found_in_lo": true,
+        "in_cell": true,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlexport/tdf130120.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "7",
+        "text": "7",
+        "found_in_lo": true,
+        "in_cell": true,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlimport/tdf101627.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "1",
+        "text": "1",
+        "found_in_lo": true,
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlimport/tdf117843.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "test",
+        "text": "test",
+        "found_in_lo": true,
+        "in_cell": false,
+        "is_anchor": true
+      },
+      {
+        "keyword": "test",
+        "text": "test",
+        "found_in_lo": true,
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  },
+  {
+    "file": "corpus/ooxmlimport/tdf118693.docx",
+    "lo_success": true,
+    "items": [
+      {
+        "keyword": "E 2",
+        "text": "E 2",
+        "found_in_lo": false,
+        "in_cell": false,
+        "is_anchor": true
+      }
+    ]
+  }
+]
