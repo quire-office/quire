@@ -25,22 +25,20 @@ use quire_ooxml::{
 };
 use quire_render_trait::{FLAG_BOLD, FLAG_ITALIC, FLAG_STRIKE, FLAG_UNDERLINE};
 
-/// K8-shd：條件底紋求值上下文＝[`ShadingCtx`]（表格樣式表＋主題色表）。
-///
-/// 規則全部由 fdo68607 LO 實測釘死（紅燈 k8_shd 檔頭四條鐵證＋本卡
-/// `k8_rects_all` 逐頁 F/B 矩形計數）：
-/// 1. 生效閘＝`w:tblLook`（六旗標；缺件走 ECMA 預設 0x04A0——縱帶預設關）；
-/// 2. 優先序（低→高，ECMA-376 §17.4.75 順序表）：firstRow < lastRow <
-///    firstCol < lastCol < band1Horz < band2Horz < band1Vert < band2Vert <
-///    四角——後者覆蓋前者，**逐屬性**級聯非整條件覆蓋（fdo68607：
-///    firstColumn 粗體格仍 gets band1Horz 底色；[`ShdDecision::Pass`] 續條）；
-/// 3. 帶序＝**排除特殊列**（firstRow 列／lastRow 列）後按文件序 1-based：
-///    奇數→band1Horz、偶數→band2Horz（縱帶同理按欄序）；跨頁**不重置**
-///    （LO p1 首列 W、p2 首列 F，全域列序自然產生反相）；
-/// 4. 色值＝cache `@w:fill`（hex6）優先於 theme 推導（corpus 1007 tint 例
-///    975 逐位元組命中、32 分歧例 LO 全讀 cache）；無 cache 才走
-///    `themeFill` 槽色 × `themeFillTint`/`themeFillShade` 變換
-///    （[`apply_shading_transform`]，floor 口徑）。
+// K8-shd：條件底紋求值（`ShadingCtx`＝表格樣式表＋主題色表）。規則全部由
+// fdo68607 LO 實測釘死（紅燈 k8_shd 檔頭四條鐵證＋LO PDF 逐頁 F/B 矩形計數）：
+// 1. 生效閘＝`w:tblLook`（六旗標；缺件走 ECMA 預設 0x04A0——縱帶預設關）；
+// 2. 優先序（低→高，ECMA-376 §17.4.75 順序表）：firstRow < lastRow <
+//    firstCol < lastCol < band1Horz < band2Horz < band1Vert < band2Vert <
+//    四角——後者覆蓋前者，逐屬性級聯非整條件覆蓋（fdo68607：firstColumn
+//    粗體格仍 gets band1Horz 底色；`ShdDecision::Pass` 續條）；
+// 3. 帶序＝排除特殊列（firstRow 列／lastRow 列）後按文件序 1-based：
+//    奇數→band1Horz、偶數→band2Horz（縱帶同理按欄序）；跨頁不重置
+//    （LO p1 首列 W、p2 首列 F，全域列序自然產生反相）；
+// 4. 色值＝cache `@w:fill`（hex6）優先於 theme 推導（corpus 1007 tint 例
+//    975 逐位元組命中、32 分歧例 LO 全讀 cache）；無 cache 才走
+//    `themeFill` 槽色 × `themeFillTint`/`themeFillShade` 變換
+//    （`apply_shading_transform`，floor 口徑）。
 
 /// 條件優先序（低→高；ECMA-376 §17.4.75 順序表，四角最高）。
 const COND_PRIORITY: [&str; 12] = [
