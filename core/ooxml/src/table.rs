@@ -272,12 +272,16 @@ impl TableLook {
         // 正向旗標：具名 > 位元 > ECMA 預設（0x04A0：firstRow／firstColumn
         // 開、lastRow／lastColumn 關）。
         let pick = |named: Option<bool>, mask: u32, dflt: bool| -> bool {
-            named.or_else(|| Self::bit(self.val.as_deref(), mask)).unwrap_or(dflt)
+            named
+                .or_else(|| Self::bit(self.val.as_deref(), mask))
+                .unwrap_or(dflt)
         };
         // 反相旗標（no*）：1＝關。ECMA 預設 noHBand=0（橫帶開）、
         // noVBand=1（縱帶關）——取回值後一律取反換成正向「開」。
         let pick_off = |named: Option<bool>, mask: u32, dflt_off: bool| -> bool {
-            !named.or_else(|| Self::bit(self.val.as_deref(), mask)).unwrap_or(dflt_off)
+            !named
+                .or_else(|| Self::bit(self.val.as_deref(), mask))
+                .unwrap_or(dflt_off)
         };
         EffectiveLook {
             first_row: pick(self.first_row, 0x20, true),

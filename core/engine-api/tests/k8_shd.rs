@@ -65,7 +65,14 @@ fn table_bbox(eng: &Engine, page: usize) -> Option<(f32, f32, f32, f32)> {
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     let mut any = false;
     for it in &dl.items {
-        if let DrawItem::Rule { x1: bx1, y1: by1, x2, y2, .. } = it {
+        if let DrawItem::Rule {
+            x1: bx1,
+            y1: by1,
+            x2,
+            y2,
+            ..
+        } = it
+        {
             for (px, py) in [(*bx1, *by1), (*x2, *y2)] {
                 x0 = x0.min(px);
                 y0 = y0.min(py);
@@ -129,9 +136,16 @@ fn fdo68607_p0_band_present() {
         .into_iter()
         .filter(|(_, _, _, _, c)| *c == d3)
         .count();
-    assert!(n >= 8, "fdo68607 p0 D3DFEE 背景條目應 ≥8（LO p0 頁級 32.6%），實得 {n}");
+    assert!(
+        n >= 8,
+        "fdo68607 p0 D3DFEE 背景條目應 ≥8（LO p0 頁級 32.6%），實得 {n}"
+    );
     // 頁數零位移鎖（K7-cal 成果不得被 K8 動搖）
-    assert_eq!(eng.page_count(), 8, "fdo68607 頁數必須仍為 8＝LO（K8 純發射面，零幾何位移）");
+    assert_eq!(
+        eng.page_count(),
+        8,
+        "fdo68607 頁數必須仍為 8＝LO（K8 純發射面，零幾何位移）"
+    );
 }
 
 /// 零宣告守門：無任何 shd 宣告（含樣式條件）的表格檔，顯示列表零背景項
@@ -168,5 +182,8 @@ fn tbl_header_direct_shd_still_emitted() {
             .into_iter()
             .any(|(_, _, _, _, c)| c == want)
     });
-    assert!(found, "tdf129575-directBefore 應發射表頭行 E0E0E0 背景（直接 shd 路徑零回歸）");
+    assert!(
+        found,
+        "tdf129575-directBefore 應發射表頭行 E0E0E0 背景（直接 shd 路徑零回歸）"
+    );
 }
