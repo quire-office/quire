@@ -154,6 +154,14 @@ pub struct Shading {
     pub theme_fill: Option<String>,
     /// `@w:themeColor`（不吞；紋路色，見上欄 TODO）。
     pub theme_color: Option<String>,
+    /// `@w:themeFillTint`（K8-shd：底色朝白混合量，ST_PosPercentage 的
+    /// 十六進位 byte 寫法，`3F`＝63/255）。變換實作見 `crate::theme::apply_tint`
+    /// ＋`table_map` 的底色級聯；cache `@w:fill` 優先於主題推導值。
+    #[serde(default)]
+    pub theme_fill_tint: Option<String>,
+    /// `@w:themeFillShade`（K8-shd：底色朝黑混合量，同上色序寫法）。
+    #[serde(default)]
+    pub theme_fill_shade: Option<String>,
 }
 
 impl Shading {
@@ -164,6 +172,8 @@ impl Shading {
             && self.fill.is_none()
             && self.theme_fill.is_none()
             && self.theme_color.is_none()
+            && self.theme_fill_tint.is_none()
+            && self.theme_fill_shade.is_none()
     }
 }
 
@@ -222,9 +232,80 @@ impl Margins {
     }
 }
 
-/// `w:tblPr`（表格屬性，§17.4.79）。未列出的屬性（如 `w:tblLook`、
-/// `w:cnfStyle`、custom:* 自訂命名空間）不在本投影——它們原樣活在
-/// `parts` 明文（唯讀來源隔離，PM 補正 1）。
+/// `w:tblLook`（表格條件格式開關，§17.4.75）：**條件樣式的生效閘**。
+///
+/// K8-shd：`w:tblStylePr` 的條件底紋（firstRow／band1Horz／band1Vert…）
+/// 只有一律經本閘才可生效——fdo68607 實測 `noVBand="1"` 把縱帶整體閘死
+/// （LO p2 像素剖面：evenHBand 行在 band1Vert 宣告欄仍白），`noHBand="0"`
+/// 讓橫帶放行。只讀不看錯位（`w:cnfStyle` 未投影）。
+///
+/// 兩種寫法（ECMA-376 §17.4.75）：`@w:val` 是位元旗標、六個具名屬性是
+/// 同意義的人讀形式——**具名屬性優先**，缺位才從 `@w:val` 解位；兩者全缺
+/// 走 ECMA 預設（=0x04A0：firstRow／firstColumn 開、縱帶關）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TableLook {
+    /// `@w:val` 原字串（4 位 hex 旗標；不歸一化大小寫）。
+    pub val: Option<String>,
+    pub first_row: Option<bool>,
+    pub last_row: Option<bool>,
+    pub first_column: Option<bool>,
+    pub last_column: Option<bool>,
+    /// `@w:noHBand`：**反相**旗標（1＝橫帶關）。
+    pub no_h_band: Option<bool>,
+    /// `@w:noVBand`：**反相**旗標（1＝縱帶關）。
+    pub no_v_band: Option<bool>,
+}
+
+impl TableLook {
+    /// `@w:val` 的位元旗標（ECMA-376 §17.4.75 位對照）。未知低位元老實忽略
+    /// （corpus 實測有 `00B7` 等帶保留位的寫法，不得因它猜不出而放棄整條）。
+    fn bit(val: Option<&str>, mask: u32) -> Option<bool> {
+        let raw = val?.trim().trim_start_matches("0x").trim();
+        let v = u32::from_str_radix(raw, 16).ok()?;
+        Some(v & mask != 0)
+    }
+
+    /// 六項生效旗標：具名屬性 > `@w:val` 位元 > ECMA 預設（0x04A0）。
+    ///
+    /// 回傳值已把 noHBand／noVBand **反相**成正向語義（`h_band`＝橫帶開）。
+    pub fn effective(&self) -> EffectiveLook {
+        // 正向旗標：具名 > 位元 > ECMA 預設（0x04A0：firstRow／firstColumn
+        // 開、lastRow／lastColumn 關）。
+        let pick = |named: Option<bool>, mask: u32, dflt: bool| -> bool {
+            named.or_else(|| Self::bit(self.val.as_deref(), mask)).unwrap_or(dflt)
+        };
+        // 反相旗標（no*）：1＝關。ECMA 預設 noHBand=0（橫帶開）、
+        // noVBand=1（縱帶關）——取回值後一律取反換成正向「開」。
+        let pick_off = |named: Option<bool>, mask: u32, dflt_off: bool| -> bool {
+            !named.or_else(|| Self::bit(self.val.as_deref(), mask)).unwrap_or(dflt_off)
+        };
+        EffectiveLook {
+            first_row: pick(self.first_row, 0x20, true),
+            last_row: pick(self.last_row, 0x40, false),
+            first_column: pick(self.first_column, 0x80, true),
+            last_column: pick(self.last_column, 0x100, false),
+            h_band: pick_off(self.no_h_band, 0x200, false),
+            v_band: pick_off(self.no_v_band, 0x400, true),
+        }
+    }
+}
+
+/// [`TableLook::effective`] 的落地結果（正向語義；缺件走 ECMA 預設）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EffectiveLook {
+    pub first_row: bool,
+    pub last_row: bool,
+    pub first_column: bool,
+    pub last_column: bool,
+    /// 橫帶（band1Horz／band2Horz）放行。
+    pub h_band: bool,
+    /// 縱帶（band1Vert／band2Vert）放行。
+    pub v_band: bool,
+}
+
+/// `w:tblPr`（表格屬性，§17.4.79）。未列出的屬性（`w:cnfStyle`、custom:*
+/// 自訂命名空間）不在本投影——它們原樣活在 `parts` 明文（唯讀來源隔離，
+/// PM 補正 1）。`w:tblLook` K8-shd 起投影（條件底紋的生效閘）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TableProps {
     /// `w:tblStyle/@w:val`：樣式 id。
@@ -246,6 +327,9 @@ pub struct TableProps {
     /// `w:tblpPr/@w:tblpY` 原字串（浮動表格垂直偏移）。
     #[serde(default)]
     pub tblp_y_raw: Option<String>,
+    /// `w:tblLook`（K8-shd：條件底紋的生效閘；缺＝None，下游走 ECMA 預設）。
+    #[serde(default)]
+    pub look: Option<TableLook>,
 }
 
 /// `w:trPr`（列屬性，§17.4.77）。
@@ -701,6 +785,23 @@ impl TableParser {
                     t.props.indent_typ = ty;
                 }
             }
+            b"tblLook" if self.top_is(&[b"tblPr"]) => {
+                // K8-shd：條件底紋的生效閘（§17.4.75）。只讀不看錯位
+                // （`w:cnfStyle` 未投影）；round-trip 仍走 parts 明文，本
+                // 投影純讀取。
+                let look = TableLook {
+                    val: attr(e, b"val"),
+                    first_row: attr_bool(e, b"firstRow"),
+                    last_row: attr_bool(e, b"lastRow"),
+                    first_column: attr_bool(e, b"firstColumn"),
+                    last_column: attr_bool(e, b"lastColumn"),
+                    no_h_band: attr_bool(e, b"noHBand"),
+                    no_v_band: attr_bool(e, b"noVBand"),
+                };
+                if let Some(t) = self.innermost_table() {
+                    t.props.look = Some(look);
+                }
+            }
             b"tblShd" | b"shd" if self.top_is(&[b"tblPr"]) => {
                 let s = read_shd(e);
                 if let Some(t) = self.innermost_table() {
@@ -1085,6 +1186,8 @@ fn read_shd(e: &quick_xml::events::BytesStart) -> Shading {
         fill: attr(e, b"fill"),
         theme_fill: attr(e, b"themeFill"),
         theme_color: attr(e, b"themeColor"),
+        theme_fill_tint: attr(e, b"themeFillTint"),
+        theme_fill_shade: attr(e, b"themeFillShade"),
     }
 }
 
@@ -1100,6 +1203,16 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
             None
         }
     })
+}
+
+/// 布林屬性取值（ST_OnOff）：`1`/`true`/`on` → Some(true)、`0`/`false`/`off`
+/// → Some(false)、缺／非法 → None（呼叫端走預設，不猜）。
+fn attr_bool(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<bool> {
+    match attr(e, key)?.trim() {
+        "1" | "true" | "on" => Some(true),
+        "0" | "false" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 /// 事件流單趟餵入（read_body_tables／count_flat_paras 共用，口徑必然一致）。
