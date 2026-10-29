@@ -27,11 +27,18 @@ fn twip_pt(raw: Option<&str>) -> Option<f32> {
 
 /// `w:tblW`/`w:tcW` → `WidthSpec`。dxa→Pt；pct→Pct（pct 單位是 1/50%，
 /// ECMA-376 §17.18.90）；auto/nil/缺＝None（由 layout 退回自然寬）。
+/// K7c-3：`num<=0` 亦回 None——`<w:tblW w:w="0" w:type="dxa"/>` 是歷史檔
+/// 把 auto 寫成 dxa 的變體（Word 自身也會產出），並非宣告零寬：誤判成
+/// `Some(Pt(0))` 讓 is_some()=true 走壓版心心路徑、又失去 K7 自然寬均分
+/// 資格。零/負寬在版面上無意義（寬 0 表不可見），依容錯鐵律退回自然寬。
 fn width_spec(tw: &TblWidth) -> Option<WidthSpec> {
     let num = tw.num()? as f32;
+    if num <= 0.0 {
+        return None;
+    }
     match tw.typ.as_deref() {
-        Some("dxa") => Some(WidthSpec::Pt((num / 20.0).max(0.0))),
-        Some("pct") => Some(WidthSpec::Pct((num / 50.0).max(0.0))),
+        Some("dxa") => Some(WidthSpec::Pt(num / 20.0)),
+        Some("pct") => Some(WidthSpec::Pct(num / 50.0)),
         _ => None,
     }
 }
@@ -915,5 +922,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// K7c-3：`w:w="0" w:type="dxa"`（歷史 auto 變體）與負值一律 None＝
+    /// 退回自然寬——不再誤判 `Some(Pt(0))` 走壓版心路徑＋失去 K7 均分資格。
+    #[test]
+    fn k7c_nonpositive_dxa_width_is_none() {
+        let zero = TblWidth {
+            w: Some("0".into()),
+            typ: Some("dxa".into()),
+        };
+        assert_eq!(width_spec(&zero), None, "w:w=0 dxa 應視同 auto→None");
+        let neg = TblWidth {
+            w: Some("-120".into()),
+            typ: Some("dxa".into()),
+        };
+        assert_eq!(width_spec(&neg), None, "負寬無版面意義→None");
+        let pct0 = TblWidth {
+            w: Some("0".into()),
+            typ: Some("pct".into()),
+        };
+        assert_eq!(width_spec(&pct0), None, "pct 0% 亦 None");
+        // 回歸保護：正值不受影響。
+        let ok = TblWidth {
+            w: Some("200".into()),
+            typ: Some("dxa".into()),
+        };
+        assert_eq!(width_spec(&ok), Some(WidthSpec::Pt(10.0)));
     }
 }

@@ -1308,24 +1308,64 @@ fn resolve_columns(input: &TableInput, avail_w: f32) -> Vec<f32> {
     cols
 }
 
+/// K7c：tblInd「視為無縮排」容差（pt）。1 twip＝0.05pt 是 OOXML 整數網格
+/// 的最小非零值（`w:w` 以 twip 計，round-trip 後縮排必然落在 0.05pt 整數倍
+/// 上，不會出現亞 twip 真值），取 2 twip＝0.1pt 做容差：低於此值的顯式
+/// tblInd 在 LO/Word 視覺上不可辨（0.05pt≪1px），若仍用 `== 0.0` 精確比較
+/// 會造成位移函數在 ind 0→0.05 處 20pt 級階躍（K7 均分臂整臂失效）。
+const INDENT_EPS_PT: f32 = 0.1;
+
 fn table_x_off(input: &TableInput, width: f32, avail_w: f32) -> f32 {
-    let ind = input.indent_pt.unwrap_or(0.0).max(0.0);
+    // K7c-2：負 tblInd 合法（Word 常以負縮排讓表格對齊正文邊界外側，
+    // corpus 命中 8 檔，如 tdf102466 −9.15pt）——不再 `.max(0.0)` 截斷。
+    let ind = input.indent_pt.unwrap_or(0.0);
+    let ind_none = ind.abs() < INDENT_EPS_PT;
     match input.justify.as_deref() {
-        Some("center") => (((avail_w - width) * 0.5).max(0.0)).max(ind),
-        Some("right") => (avail_w - width).max(ind).max(0.0),
+        // K7c-1：center 超寬（width＞avail_w）時置中偏移為**負值**，允許
+        // 越界——LO/Word 口徑：center 必左右對稱越界。舊式 `.max(0.0)` 把
+        // 負偏移截 0 → 貼左緣單邊右溢，且與 K7 未宣告 jc 自然寬均分臂方向
+        // 倒置（宣告 center 的貼左、沒宣告的反而置中）。K7c-2 後 ind 可為
+        // 負：縮排顯式時（|ind|≧容差）以 ind 為準（max(ind) 語義保留），
+        // 否則純置中。right 同族口徑取捨：右緣釘版心右界（avail−width），
+        // 超寬時往**左**溢出、不再被 `.max(0.0)`／`.max(ind)` 鉗回貼左
+        // （LO 對 right 超寬表同樣兩側外溢、以右界為準）。
+        Some("center") => {
+            let c = (avail_w - width) * 0.5;
+            if ind_none {
+                c
+            } else {
+                c.max(ind)
+            }
+        }
+        Some("right") => {
+            let r = avail_w - width;
+            if ind_none {
+                r
+            } else {
+                r.max(ind)
+            }
+        }
         // K7-wrapwidth：無宣告寬的自然寬表超版心時，LO 把越界量**左右均分**
         // （fdo68607 鐵證：自然 550.8pt、版心 540pt，格線 30.1/580.9＝兩側
         // 各越界 ~5.4pt；我方舊路逕貼左緣＝整表右移半個越界量）。僅預設
-        // 左對齊且無顯式 tblInd 時套用（宣告寬表走上面兩支路）。
+        // 左對齊且無顯式 tblInd（容差比較，見 INDENT_EPS_PT；舊 `== 0.0`
+        // 精確比較讓 1 twip 縮排整臂失效——K7c-2）時套用（宣告寬表走上兩支路）。
         // K7_WRAP_WIDTH_BUGGY=1 回塞舊徑（貼左緣），紅燈 k7_wrap_width 必紅。
         _ if width > avail_w
-            && input.indent_pt.unwrap_or(0.0) == 0.0
+            && ind_none
             && input.width.is_none()
             && std::env::var("K7_WRAP_WIDTH_BUGGY").is_err() =>
         {
             (avail_w - width) * 0.5
         }
-        _ => ind.min(avail_w.max(0.0)),
+        // K7c-2：負 ind 直送（左移越界合法）；正值維持「不越右版心」舊鉗制。
+        _ => {
+            if ind < 0.0 {
+                ind
+            } else {
+                ind.min(avail_w.max(0.0))
+            }
+        }
     }
 }
 
@@ -1917,6 +1957,80 @@ mod tests {
         assert!(
             (t.x_off - 100.0).abs() < 0.01,
             "200 寬置中於 400 可用寬 → x=100"
+        );
+    }
+
+    /// K7c-1：center 超版心自然寬表→置中**負偏移**保留（左右對稱越界）。
+    /// 舊式 `.max(0.0)` 截 0→x_off=0 貼左單邊右溢＝紅。
+    #[test]
+    fn k7c_center_oversized_keeps_negative_offset() {
+        let mut inp = simple_input(); // grid 200pt
+        inp.grid_pt = vec![300.0, 300.0]; // 自然 600pt ＞ 400 版心
+        inp.justify = Some("center".into());
+        let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
+        assert!(
+            (t.x_off + 100.0).abs() < 0.01,
+            "600 寬置中於 400：(400-600)/2 = -100（左右各越界 100pt），實得 {}",
+            t.x_off
+        );
+    }
+
+    /// K7c-1（right 臂口徑取捨）：right 超版心→右緣釘版心右界（x=avail−width
+    /// 為負、往左溢出），不再被 `.max(0.0)` 鉗回貼左。
+    #[test]
+    fn k7c_right_oversized_pins_right_edge() {
+        let mut inp = simple_input();
+        inp.grid_pt = vec![250.0, 250.0]; // 自然 500pt
+        inp.justify = Some("right".into());
+        let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
+        assert!(
+            (t.x_off + 100.0).abs() < 0.01,
+            "500 寬 right 於 400：右緣釘 400、左溢 → x=-100，實得 {}",
+            t.x_off
+        );
+    }
+
+    /// K7c-2：合法負 tblInd（宣告寬表預設左對齊）→ x_off 負值直送。
+    /// 舊 `ind.max(0.0)` 吞負縮排→0 貼左＝紅（corpus 負 tblInd 8 檔）。
+    #[test]
+    fn k7c_negative_indent_shifts_left() {
+        let mut inp = simple_input();
+        inp.grid_pt = vec![150.0, 150.0]; // 300pt＜400，走預設臂
+        inp.indent_pt = Some(-18.0);
+        let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
+        assert!(
+            (t.x_off + 18.0).abs() < 0.01,
+            "tblInd −18pt 應左移 18pt，實得 {}",
+            t.x_off
+        );
+    }
+
+    /// K7c-2（容差）：1 twip＝0.05pt 微縮排仍屬「無顯式縮排」→K7 自然寬
+    /// 均分臂生效。舊 `== 0.0` 精確比較→整臂失效→x=0.05pt（20pt 級階躍）＝紅。
+    #[test]
+    fn k7c_sub_tolerance_indent_keeps_even_split() {
+        let mut inp = simple_input();
+        inp.grid_pt = vec![280.0, 280.0]; // 自然 560pt ＞ 400
+        inp.indent_pt = Some(0.05); // 1 twip
+        let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
+        assert!(
+            (t.x_off + 80.0).abs() < 0.01,
+            "0.05pt 縮排應仍在容差內→均分越界 (400-560)/2=-80，實得 {}",
+            t.x_off
+        );
+    }
+
+    /// K7c-2（邊界）：縮排 ≥ 容差（0.1pt）視為顯式→走預設臂（負值左移）。
+    #[test]
+    fn k7c_indent_at_tolerance_counts_as_explicit() {
+        let mut inp = simple_input();
+        inp.grid_pt = vec![280.0, 280.0];
+        inp.indent_pt = Some(-0.2); // 4 twip：超容差
+        let t = layout_table(&inp, 400.0, 16.8, &measurer(), 0);
+        assert!(
+            (t.x_off + 0.2).abs() < 0.01,
+            "−0.2pt（超容差）顯式縮排→預設臂直送，實得 {}",
+            t.x_off
         );
     }
 
