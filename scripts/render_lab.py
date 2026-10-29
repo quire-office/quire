@@ -473,6 +473,13 @@ def _label(mask: "np.ndarray"):
 def image_boxes(img: "np.ndarray") -> list[tuple[int, int, int, int]]:
     """彩色像素（sat≥SAT_MIN）連通域 → bbox (x0,y0,x1,y1)（像素，x1/y1 為開區間端點）。
     先做小幅膨脹把照片內被灰階/暗部切碎的彩色塊併成一塊，bbox 仍以原彩色像素為準。"""
+    return [b for b, _ in image_blobs(img)]
+
+
+def image_blobs(img: "np.ndarray") -> list[tuple[tuple[int, int, int, int], float]]:
+    """同 image_boxes，另附填充密度（連通域彩色像素數 / bbox 面積，0..1）——
+    區分「整塊實心底紋」與「只有彩色邊框（空心框）」：fdo68607 我方只畫了彩色表格線，
+    bbox 與 LO 整頁底紋一模一樣，單看 bbox 會被放水。依面積由大到小。"""
     sat, _, _ = _sat_hue(img)
     mask = sat >= SAT_MIN
     if not mask.any():
@@ -496,8 +503,8 @@ def image_boxes(img: "np.ndarray") -> list[tuple[int, int, int, int]]:
         x0, x1 = sl[1].start + int(xs.min()), sl[1].start + int(xs.max()) + 1
         y0, y1 = sl[0].start + int(ys.min()), sl[0].start + int(ys.max()) + 1
         if x1 - x0 >= IMG_MIN_SIDE_PX and y1 - y0 >= IMG_MIN_SIDE_PX:
-            boxes.append((x0, y0, x1, y1))
-    return sorted(boxes, key=lambda b: -(b[2] - b[0]) * (b[3] - b[1]))
+            boxes.append(((x0, y0, x1, y1), float(sub.sum()) / ((x1 - x0) * (y1 - y0))))
+    return sorted(boxes, key=lambda bd: -(bd[0][2] - bd[0][0]) * (bd[0][3] - bd[0][1]))
 
 
 def _norm_box(b, shape):
@@ -517,10 +524,13 @@ def _iou(a, b) -> float:
 
 def score_image(lo_img: "np.ndarray", ow_img: "np.ndarray") -> float:
     """圖片軸 0..1：兩頁彩色連通域 bbox（以頁尺寸正規化）左右對照。
-    配對＝貪心取 IoU 最大者（IoU=0 不配對＝缺圖/錯位）；配對分 = 0.6·IoU + 0.4·尺寸相似
-    （寬比×高比）；整頁分以 bbox 面積加權，未配對者以 0 分計入。兩邊皆無彩色塊 → 1.0。"""
-    la = [_norm_box(b, lo_img.shape) for b in image_boxes(lo_img)]
-    lb = [_norm_box(b, ow_img.shape) for b in image_boxes(ow_img)]
+    配對＝貪心取 IoU 最大者（IoU=0 不配對＝缺圖/錯位）；配對分 = (0.6·IoU + 0.4·尺寸相似
+    〔寬比×高比〕) × 填充密度相似（空心彩框 vs 實心底紋會被壓低）；整頁分以 bbox 面積加權，
+    未配對者以 0 分計入。兩邊皆無彩色塊 → 1.0。"""
+    ba, bb = image_blobs(lo_img), image_blobs(ow_img)
+    la = [_norm_box(b, lo_img.shape) for b, _ in ba]
+    lb = [_norm_box(b, ow_img.shape) for b, _ in bb]
+    da, db = [d for _, d in ba], [d for _, d in bb]
     if not la and not lb:
         return 1.0
     if not la or not lb:
@@ -538,7 +548,8 @@ def score_image(lo_img: "np.ndarray", ow_img: "np.ndarray") -> float:
         size = (min(a[2] - a[0], b[2] - b[0]) / max(a[2] - a[0], b[2] - b[0])) * \
                (min(a[3] - a[1], b[3] - b[1]) / max(a[3] - a[1], b[3] - b[1]))
         w = max(area(a), area(b))
-        num += w * (0.6 * iou + 0.4 * size)
+        dens = min(da[i], db[j]) / max(da[i], db[j])
+        num += w * (0.6 * iou + 0.4 * size) * dens
         den += w
     den += sum(area(b) for k, b in enumerate(la) if k not in used_a)
     den += sum(area(b) for k, b in enumerate(lb) if k not in used_b)

@@ -78,6 +78,17 @@ def test_image_missing_and_misplaced_are_low():
     assert rl.score_image(blank(), blank()) > 0.99
 
 
+def test_image_hollow_frame_vs_solid_fill_is_low():
+    """fdo68607 型：LO 整塊實心底紋、我方只畫了同 bbox 的彩色空心框 ⇒ 不得被 bbox 放水。"""
+    solid = fill(blank(), 20, 20, 280, 380, LIGHT_BLUE)
+    frame = blank()
+    for rgb in ((0x80, 0x64, 0x4D),):
+        fill(frame, 20, 20, 280, 24, rgb); fill(frame, 20, 376, 280, 380, rgb)
+        fill(frame, 20, 20, 24, 380, rgb); fill(frame, 276, 20, 280, 380, rgb)
+    assert rl.score_image(solid, frame) < 0.3
+    assert rl.score_image(frame, frame.copy()) > 0.99
+
+
 def test_image_boxes_bbox():
     a = fill(blank(), 20, 30, 180, 120, (200, 40, 40))
     boxes = rl.image_boxes(a)
