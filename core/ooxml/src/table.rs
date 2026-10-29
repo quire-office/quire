@@ -243,6 +243,9 @@ pub struct TableProps {
     pub indent_raw: Option<String>,
     /// `w:tblInd/@w:type`。
     pub indent_typ: Option<String>,
+    /// `w:tblpPr/@w:tblpY` 原字串（浮動表格垂直偏移）。
+    #[serde(default)]
+    pub tblp_y_raw: Option<String>,
 }
 
 /// `w:trPr`（列屬性，§17.4.77）。
@@ -702,6 +705,12 @@ impl TableParser {
                 let s = read_shd(e);
                 if let Some(t) = self.innermost_table() {
                     t.props.shading = Some(s);
+                }
+            }
+            b"tblpPr" if self.top_is(&[b"tblPr"]) => {
+                let y = attr(e, b"tblpY");
+                if let Some(t) = self.innermost_table() {
+                    t.props.tblp_y_raw = y;
                 }
             }
             b"tblBorders" if self.top_is(&[b"tblPr"]) => self.frames.push(Frame::TblBorders),

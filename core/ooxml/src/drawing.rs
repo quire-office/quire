@@ -129,6 +129,9 @@ pub struct InlineImage {
     /// 發射層據此對齊抽取序。單子框／VML 群組維持空＝舊行為零擾動。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub txbx_children: Vec<usize>,
+    /// 框內文字對齊（例如 "center"；K10）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub txbx_align: Option<String>,
     // ---- K4c：填充／描邊／虛線／框內幾何（全部 serde default；欄位不存在
     // ＝None＝舊行為，舊顯示列表 JSON 與序列化位元組零位移）----
     /// 填色（0xAARRGGBB）：`v:fill/@color` > `o:fillcolor`（VML）；
@@ -854,6 +857,8 @@ struct Pending {
     txbx_para_depth: usize,
     /// R5：框內每個 `w:txbxContent` 子框的段落數（DrawingML 群組子框序用）。
     txbx_children: Vec<usize>,
+    /// 框內文字對齊（例如 "center"；K10）。
+    txbx_align: Option<String>,
     // ---- K4c：填色／描邊／框內幾何累積（首見為準，與 w/h 同款口徑）----
     /// `v:fill/@color`（主）與 DrawingML `spPr/solidFill/srgbClr`。
     fill: Option<u32>,
@@ -948,6 +953,7 @@ impl Pending {
             txbx_in_t: false,
             txbx_para_depth: 0,
             txbx_children: Vec::new(),
+            txbx_align: None,
             fill: None,
             fill_attr: None,
             filled_f: false,
@@ -1013,6 +1019,8 @@ struct DrawingParser {
     /// 閂退化為「run 與非 run 都採納」——紅燈 1（錯置 pict 消失）必須轉紅。
     /// 只在 `new()` 讀一次，熱路徑零 env 查詢。
     buggy: bool,
+    /// K10 表內浮動錨點回塞鎖：`K10_CELL_ANCHOR_BUGGY=1` 時回退舊 in_cell 判定。
+    cell_anchor_buggy: bool,
 }
 
 impl DrawingParser {
@@ -1033,6 +1041,7 @@ impl DrawingParser {
             txbx_seen: Vec::new(),
             ac_stack: Vec::new(),
             buggy: std::env::var("K4D_BUGGY").is_ok(),
+            cell_anchor_buggy: std::env::var("K10_CELL_ANCHOR_BUGGY").is_ok(),
         }
     }
 
@@ -1074,6 +1083,7 @@ impl DrawingParser {
             txbx_texts: p.txbx.clone(),
             txbx_start,
             txbx_children: p.txbx_children.clone(),
+            txbx_align: p.txbx_align.clone(),
             // 卡片契約 2 優先序：v:fill/@color（p.fill）> shape 屬性
             // fillcolor/o:fillcolor（p.fill_attr）> docDefaults（未接＝不發）。
             fill_argb: p.fill.or(p.fill_attr),
@@ -1284,6 +1294,21 @@ impl DrawingParser {
                 self.p_count += 1;
             }
             return;
+        }
+
+        // K10：文字框內對齊（例如 <w:jc w:val="center"/>）。
+        if self.txbx_depth > 0 && name == b"jc" {
+            let val = attr_local(e, b"val");
+            if let Some(v) = self.vml.as_mut() {
+                if v.txbx_align.is_none() {
+                    v.txbx_align = val.clone();
+                }
+            }
+            if let Some(g) = self.graphic.as_mut() {
+                if g.txbx_align.is_none() {
+                    g.txbx_align = val;
+                }
+            }
         }
 
         // ---- VML 累積（pict 內或裸 shape）----
@@ -1517,7 +1542,14 @@ impl DrawingParser {
                 } else {
                     None
                 };
-                let mut p = Pending::new(self.cur_para(), self.tc_depth > 0);
+                // K10：只有非浮動的 inline 圖形才視為占用格內流的 in_cell；
+                // 浮動 anchor 即令錨在儲存格段落，仍走頁面浮動層定位管線。
+                let in_cell = if self.cell_anchor_buggy {
+                    self.tc_depth > 0
+                } else {
+                    self.tc_depth > 0 && !floating
+                };
+                let mut p = Pending::new(self.cur_para(), in_cell);
                 p.overlap = overlap;
                 p.floating = floating;
                 // R6：z 序（LO 抽取序）——anchor 的 relativeHeight；inline 無。
@@ -1596,6 +1628,22 @@ impl DrawingParser {
         if self.skip_tag.is_some() {
             return; // 自閉合 w:p 於主解析器同樣不計
         }
+
+        // K10：文字框內對齊（例如 <w:jc w:val="center"/>）。
+        if self.txbx_depth > 0 && name == b"jc" {
+            let val = attr_local(e, b"val");
+            if let Some(v) = self.vml.as_mut() {
+                if v.txbx_align.is_none() {
+                    v.txbx_align = val.clone();
+                }
+            }
+            if let Some(g) = self.graphic.as_mut() {
+                if g.txbx_align.is_none() {
+                    g.txbx_align = val;
+                }
+            }
+        }
+
         if self.pict_depth > 0 || self.vml.is_some() {
             match name {
                 b"imagedata" => {
