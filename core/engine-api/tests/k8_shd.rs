@@ -82,7 +82,7 @@ fn table_bbox(eng: &Engine, page: usize) -> Option<(f32, f32, f32, f32)> {
             }
         }
     }
-    any.then(|| (x0, y0, x1, y1))
+    any.then_some((x0, y0, x1, y1))
 }
 
 /// 紅燈 1：fdo68607 p2 顯示列表含 fill≈D3DFEE(211,223,238) 且面積覆蓋
