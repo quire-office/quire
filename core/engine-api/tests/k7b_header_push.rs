@@ -157,12 +157,15 @@ fn k7b_no_push_when_header_within_margin() {
     assert_eq!(eng.page_count(), 5, "短頁首檔頁數 5 不得動（修前基線）");
     // 無頁首檔：fdo68607 p0 正文起點＝margin_top 36.0、頁數 9（暫記態，
     // k7_wrap_width 紅燈 3 口徑——9 或 8 皆合法，此處只鎖推下不摻與）。
+    // K10 附註：表內浮動封面文字框修復後，首個文字項為 y≈21.6 之大標；
+    // 正文起點（表格文字）仍為 margin_top 36.0 不受頁首推下干擾。
     let eng2 = load("ooxmlexport/fdo68607.docx");
     let ys2 = page_ys(&eng2, 0);
+    let body_y0 = ys2.iter().copied().find(|&y| y >= 30.0).unwrap_or(0.0);
     assert!(
-        (ys2[0] - 36.0).abs() < 0.6,
+        (body_y0 - 36.0).abs() < 0.6,
         "無頁首檔正文起點＝margin_top 36.0 不得動，實得 {}",
-        ys2[0]
+        body_y0
     );
     assert!(
         eng2.page_count() == 9 || eng2.page_count() == 8,

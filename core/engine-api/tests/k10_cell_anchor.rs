@@ -63,11 +63,7 @@ fn fdo68607_cover_textbox_emitted_and_placeholder_disappears() {
     // 斷言 2：灰底佔位 Rect（115×33.75 @y92.19）消失
     let has_gray_placeholder = dl.items.iter().any(|it| match it {
         DrawItem::Rect {
-            y,
-            w,
-            h,
-            fill_argb,
-            ..
+            y, w, h, fill_argb, ..
         } => {
             *fill_argb == 0xFFF0_F0F0
                 && (*w - 115.0).abs() < 1.0

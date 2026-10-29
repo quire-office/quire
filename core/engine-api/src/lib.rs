@@ -526,7 +526,14 @@ impl Engine {
             line_ref_bands,
             &grid_adv_v,
         );
-        let bands = table_map::build_images(&images, params.line_h_pt(), &params, &sections);
+        let bands = table_map::build_images(
+            &images,
+            params.line_h_pt(),
+            &params,
+            &sections,
+            &doc.tables,
+            &slots,
+        );
         // K4c-image：開檔期像素解析（純讀取）。正文流／浮動／格內圖一律沿
         // 候選 rId 走 `word/_rels/document.xml.rels` 查 media part；可渲染
         // 格式優先（PNG/JPEG/…）＞不可渲染（EMF/WMF/PDF）。解析成功才入池
@@ -3179,21 +3186,32 @@ fn emit_txbx_texts(
             // 尺同用本段字級（正文 cascade_paragraphs 同款思路的框內近似）。
             let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
             let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+            let adv = para_advance_scale(own_runs);
             // R6：wps 標註用 run 自帶字級量寬（LO 實據：8pt 文字按 8pt 排），
             // 不再被文件基準字級（11pt）放大而多斷行；其餘路徑維持舊尺。
-            let m = TextMeasurer::new(if wps { seg_size } else { seg_size.max(size_pt) });
+            let m = TextMeasurer::with_advance_scale(
+                if wps { seg_size } else { seg_size.max(size_pt) },
+                adv,
+            );
             // 行→run 邊界對位借用一個「假段落」（runs＝本框段 runs），讓
             // emit_line_run_items 直接產出粗/斜/色/字級/字型族的同質段。
             let fake = quire_ooxml::Paragraph {
                 runs: own_runs.to_vec(),
                 ..Default::default()
             };
+            let center = shape.and_then(|s| s.txbx_align.as_deref()) == Some("center");
             for l in quire_layout::break_lines(t, inner_w, &m) {
                 // R6：標註矩形越出宿主框底線 → 該行起不發（LO 默認視圖裁切）。
                 if yy + line_h > clip_bottom + 0.01 {
                     break;
                 }
-                emit_line_run_items(&mut block, inner_x, yy, seg_size, &l, Some(&fake));
+                let shift = if center {
+                    let line_w = m.text_width(&l.text);
+                    ((inner_w - line_w) * 0.5).max(0.0)
+                } else {
+                    0.0
+                };
+                emit_line_run_items(&mut block, inner_x + shift, yy, seg_size, &l, Some(&fake));
                 yy += line_h;
             }
             blocks.push(block);
@@ -3823,12 +3841,17 @@ fn push_frag_items(
                         im.h_pt,
                     )
                 });
+                let buggy = std::env::var_os("K10_CELL_ANCHOR_BUGGY").is_some();
                 let hit = shape.as_mut().and_then(|(boxes, used)| {
                     boxes.iter().enumerate().find(|(i, (bp, b))| {
                         !used[*i]
                             && *bp >= para_range.0
                             && *bp < para_range.1
-                            && (b.w_pt - im.w_pt).abs() < 0.01
+                            && if buggy {
+                                (b.w_pt - im.w_pt).abs() < 0.01
+                            } else {
+                                b.w_pt >= im.w_pt - 0.01
+                            }
                     })
                 });
                 match pix {
