@@ -503,9 +503,11 @@ impl Engine {
             .unwrap_or_default();
         let eff_refs: &[quire_ooxml::Paragraph] = paras_eff.as_deref().unwrap_or(&doc.paragraphs);
         // K7-cal：逐段水平 advance 尺（級聯主宣告族→LO face 寬比查表；未宣告
-        // 族＝1.0 零擾動）。`K7_WRAP_WIDTH_BUGGY=1` 整表回 1.0＝回塞舊斷行
-        // （fdo68607 頁數回 9，紅燈 k7_wrap_width 回塞鎖）。
-        let adv_buggy = std::env::var_os("K7_WRAP_WIDTH_BUGGY").is_some();
+        // 族＝1.0 零擾動）。`K7_WRAP_WIDTH_BUGGY=1` 或 `K7_ADVANCE_SCALE_BUGGY=1`
+        // 整表回 1.0＝回塞舊斷行（fdo68607 頁數回 9；後者只退水平尺、幾何軸
+        // 不動——紅燈 k7_advance_scale 機制分離鎖）。
+        let adv_buggy = std::env::var_os("K7_WRAP_WIDTH_BUGGY").is_some()
+            || std::env::var_os("K7_ADVANCE_SCALE_BUGGY").is_some();
         let grid_adv_v: Vec<f32> = if adv_buggy {
             vec![1.0; eff_refs.len()]
         } else {
@@ -2427,23 +2429,37 @@ fn has_cjk(text: &str) -> bool {
 }
 
 /// K7-cal：宣告族 → LO 實際渲染 face 的水平 advance 寬比
-/// （`docs/k7-wrapwidth-diag.md` §3；K6 `face_line_factor` 的水平軸同構）。
+/// （`docs/k7-wrapwidth-diag.md` §3／§6＋`docs/k7-advance-matrix.csv`；
+/// K6 `face_line_factor` 的水平軸同構）。
 /// 鍵一律小寫；**未命中＝1.0＝零擾動守門**（比照 K6 `has_fonts()＋calibrated`
 /// 閘——表沒有實測值的族絕不猜數）。值＝A 軌（標準拉丁樣本串 hmtx 寬比
-/// LO face／quire 內嵌 Noto 子集，14pt），B 軌（真實行逐行寬比 median）覆核：
-/// Calibri 0.8834（B 軌 0.8747，fdo68607 n=418）；spread ±2.1% 屬可接受殘差。
+/// LO face／quire 內嵌 Noto 子集，14pt）＋B 軌（真實行逐行寬比 median）雙軌，
+/// 兩軌差 ≤容差 2.1% 用 A 軌、超出以 B 軌為準（A 軌大寫樣本把 Arial 抬到
+/// 1.0656，真實行文 mostly 小寫）：
+/// - Calibri 0.8834（B 軌 0.8747，fdo68607 n=419；Δ0.9% ✓A 軌）
+/// - Cambria 0.9545（B 軌缺樣本，A 軌獨撐如實記帳）
+/// - TNR 0.9648（A 軌獨撐）
+/// - Arial **0.9627**（B 軌 Bug51170 n=188；A 軌 0.9950 Δ3.2%＞容差→B 軌定案，
+///   run73 判別鐵證見報告 §6；A 軌大寫串 1.0656 為元凶）
+/// - NotoSerif 1.0328（theme 斷鏈，A 軌獨撐）
+/// 本基準環境（k6cal 真 MS face 裝機後）LO span font 實據渲染**真 MS face**
+/// （Calibri／ArialMT／PMingLiU），且 Carlito==Calibri、Caladea==Cambria、
+/// LibSerif==TNR hmtx 逐位元組同寬＝表值對「真 face 環境」與「克隆環境」
+/// 兩邊都成立（環境穩性實證，報告 §6.1）。
 /// face 來源：`~/.local/share/fonts/k6cal`、系統 Liberation、LO 25.8 自帶
-/// Caladea／NotoSerif（矩陣重產：scratch `k7cal_faces2.py`）。
+/// Caladea／NotoSerif（矩陣重產：scratch `k7cal/gen_csv.py`）。
 fn face_advance_scale(face: &str) -> f32 {
     let key = face.trim().to_lowercase();
     match key.as_str() {
-        // Calibri → Carlito（LO 替換對，K6 §1 同基準）。
+        // Calibri → Carlito／真 Calibri（本環境 LO 渲真 MS face，克隆同寬）。
         "calibri" | "carlito" => 0.8834,
         // Cambria → Caladea（LO 自帶 face 實測；run67 記「待量」已清償）。
         "cambria" | "caladea" => 0.9545,
-        // Liberation 系（Times New Roman／Arial 在本基準環境都替到它）。
+        // Liberation 系（Times New Roman 在本基準環境替到 LibSerif）。
         "liberation serif" | "liberationserif" | "times new roman" | "times" => 0.9648,
-        "arial" | "liberation sans" | "liberationsans" | "helvetica" => 0.9950,
+        // Arial→真 Arial／LiberationSans：0.9627＝B 軌真實行 median（A 軌
+        // 0.9950 被大寫樣本抬高 3.2%，超容差——run73 判別以 B 軌覆核定案）。
+        "arial" | "liberation sans" | "liberationsans" | "helvetica" => 0.9627,
         // theme 斷鏈 fallback（LO 落到自身預設 Noto Serif，K6 同口徑）。
         "noto serif" | "notoserif" => 1.0328,
         // TODO(K7-cal)：Tahoma→LO 實際替代 face 未實測（VCL 替代表本機查無
@@ -2452,10 +2468,13 @@ fn face_advance_scale(face: &str) -> f32 {
     }
 }
 
-/// K7-cal 總開關（回塞鎖）：`K7_WRAP_WIDTH_BUGGY=1` ⇒ 全表退 1.0＝舊斷行
-/// ＋舊發射累加（比照 R2_BUGGY／K6_AUTO_PITCH_BUGGY 的 env 慣例）。
+/// K7-cal 總開關（回塞鎖）：`K7_WRAP_WIDTH_BUGGY=1`（幾何＋水平尺全回塞）
+/// 或 `K7_ADVANCE_SCALE_BUGGY=1`（**只**回塞水平 advance 查表，幾何軸不動
+/// ——紅燈 k7_advance_scale 的機制分離鎖）⇒ 全表退 1.0＝舊斷行＋舊發射
+/// 累加（比照 R2_BUGGY／K6_AUTO_PITCH_BUGGY 的 env 慣例）。
 fn k7_advance_enabled() -> bool {
     std::env::var_os("K7_WRAP_WIDTH_BUGGY").is_none()
+        && std::env::var_os("K7_ADVANCE_SCALE_BUGGY").is_none()
 }
 
 /// K7-cal：段「主宣告族」的水平 advance 尺＝首個**有文字** run 的有效字型族
