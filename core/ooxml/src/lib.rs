@@ -66,6 +66,10 @@ impl From<ZipError> for OoxmlError {
     }
 }
 
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Run {
     pub text: String,
@@ -103,6 +107,12 @@ pub struct Run {
     /// engine 投影時以「前綴→點導引填補」展開（TOC 點引leads）。
     #[serde(default)]
     pub tab: bool,
+    /// run 內 w:tab 的出現次數（0 表示無 tab）。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub tab_count: u8,
+    /// run 內含絕對製表符（`w:ptab`，ECMA-376 §17.3.1.26）：alignment 對齊目標。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ptab: Option<styles::Align>,
     /// 級聯合成的**有效字型族**（`w:rFonts` 逐欄級聯結果；engine 開啟文件
     /// 時烘焙寫入，仿 `size_pt` 的做法；theme 引用已在解析層落地成直接值）。
     /// `None`＝整鏈未宣告任何字型。純派生欄位：顯示列表／SVG 選族消費它，
@@ -243,6 +253,9 @@ pub struct Paragraph {
     /// TOC 點引leads 的對齊目標；無宣告＝None。
     #[serde(default)]
     pub tab_right_pt: Option<f32>,
+    /// 首個居中製表位（`w:pPr/w:tabs/w:tab/@w:pos`，pt；val="center"）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_center_pt: Option<f32>,
     /// 該製表位導引字元（`w:tab/@w:leader` 原值：dot/hyphen/underscore/…）。
     #[serde(default)]
     pub tab_leader: Option<String>,
@@ -425,21 +438,12 @@ fn apply_break_tab_tag(
             p.page_break |= toggle_attr_on(e);
         }
         b"tab" => {
-            if cur_run.is_some() {
+            if let Some(r) = cur_run.as_mut() {
                 // run 內 w:tab：run 級標記（無文字產出；投影層展開）。
-                cur_run.as_mut().expect("剛查 some").tab = true;
-            } else if ppr_depth == 1
-                && ppr_rpr_depth == 0
-                && p.tab_right_pt.is_none()
-                && attr_val(e, "val").as_deref() == Some("right")
-            {
-                // pPr/w:tabs/w:tab：只取首個右對齊位（本引擎 leads 錨點）。
-                // ppr_depth 守門：tblPr/w:tblTabs 的 w:tab（表格尺度）不收。
-                // 數值守衛（t_16a13211 R2）：parse::<f64> 對 "1e45"/
-                // "Infinity"/"NaN" 都成功，病態值直進 tab_right_pt 會讓
-                // engine leads 展開算出 inf→ usize 飽和、4000 字元填充撐爆
-                // 版面。口徑同 styles.rs MAX_OOXML_LONG 族：f64 值域＋鏡像
-                // f32 後再驗 finite。
+                r.tab = true;
+                r.tab_count = r.tab_count.saturating_add(1);
+            } else if ppr_depth == 1 && ppr_rpr_depth == 0 {
+                let val = attr_val(e, "val");
                 if let Some(pt) = attr_val(e, "pos")
                     .as_deref()
                     .and_then(|v| v.trim().parse::<f64>().ok())
@@ -447,9 +451,24 @@ fn apply_break_tab_tag(
                     .map(|v| (v / 20.0) as f32)
                     .filter(|v| v.is_finite())
                 {
-                    p.tab_right_pt = Some(pt);
-                    p.tab_leader = attr_val(e, "leader");
+                    match val.as_deref() {
+                        Some("right") if p.tab_right_pt.is_none() => {
+                            p.tab_right_pt = Some(pt);
+                            p.tab_leader = attr_val(e, "leader");
+                        }
+                        Some("center") if p.tab_center_pt.is_none() => {
+                            p.tab_center_pt = Some(pt);
+                        }
+                        _ => {}
+                    }
                 }
+            }
+        }
+        b"ptab" => {
+            if let Some(r) = cur_run.as_mut() {
+                r.tab = true;
+                let align_str = attr_val(e, "alignment");
+                r.ptab = styles::align_of(align_str.as_deref());
             }
         }
         _ => {}
@@ -759,9 +778,16 @@ fn parse_document_xml_with_fonts(
                             p.jc = styles::align_of(attr_val(&e, "val").as_deref());
                         }
                     }
+                    b"framePr" if ppr_depth == 1 && ppr_rpr_depth == 0 => {
+                        if let Some((_, p, _)) = stack.last_mut() {
+                            if p.jc.is_none() {
+                                p.jc = styles::align_of(attr_val(&e, "xAlign").as_deref());
+                            }
+                        }
+                    }
                     // 顯式分頁開關＋製表位（t_5dfc8ac7）：w:br 已由上方細分臂
-                    // 攔截，此臂收 pPr/w:pageBreakBefore 與 w:tabs/w:tab。
-                    b"pageBreakBefore" | b"tab" if ppr_rpr_depth == 0 => {
+                    // 攔截，此臂收 pPr/w:pageBreakBefore 與 w:tabs/w:tab / w:ptab。
+                    b"pageBreakBefore" | b"tab" | b"ptab" if ppr_rpr_depth == 0 => {
                         if let Some((_, p, _)) = stack.last_mut() {
                             apply_break_tab_tag(
                                 name.as_slice(),
@@ -963,8 +989,16 @@ fn parse_document_xml_with_fonts(
                     if let Some((_, p, _)) = stack.last_mut() {
                         p.jc = styles::align_of(attr_val(&e, "val").as_deref());
                     }
-                } else if matches!(name.as_slice(), b"br" | b"tab" | b"pageBreakBefore")
-                    && ppr_rpr_depth == 0
+                } else if name == b"framePr" && ppr_depth == 1 && ppr_rpr_depth == 0 {
+                    if let Some((_, p, _)) = stack.last_mut() {
+                        if p.jc.is_none() {
+                            p.jc = styles::align_of(attr_val(&e, "xAlign").as_deref());
+                        }
+                    }
+                } else if matches!(
+                    name.as_slice(),
+                    b"br" | b"tab" | b"ptab" | b"pageBreakBefore"
+                ) && ppr_rpr_depth == 0
                 {
                     // 顯式分頁開關/製表符（Word 產出恆為自閉合；t_5dfc8ac7）。
                     // w:br type="page" 已在上方 record_page_break 細分記錄，
