@@ -245,6 +245,29 @@ struct OwnStyle {
     #[allow(dead_code)]
     link: Option<String>,
     kind: StyleKind,
+    /// K8-shd：表格樣式（`w:type="table"`）的 `w:tblStylePr` 條件底紋宣告
+    /// （條件名 → `w:tcPr/w:shd` 四欄）。`w:tblStyle` 條件格式是 corpus
+    /// 表格底紋的主宣告面（實測 26 檔、2606 條 shd——直接 `w:shd` 只佔
+    /// 少數），缺這層就整頁斑馬紋全缺（fdo68607 鐵證）。
+    /// 只收 `w:tcPr/w:shd`；同條件重複宣告＝首見為準。
+    cond_shading: Vec<(String, CondShading)>,
+}
+
+/// `w:tblStylePr/@w:type` 條件下的 `w:tcPr/w:shd` 四欄（K8-shd）。
+/// 原字串直存（RRGGBB／theme 槽名／hex byte tint），換色在 engine 級聯層
+/// （與 `Shading` 欄位口徑一致；本層不做色彩數學）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CondShading {
+    /// `w:shd/@w:val`（clear／nil／solid…）。`nil`＝明確不著色。
+    pub val: Option<String>,
+    /// `w:shd/@w:fill`：生產者 cache 的字面色（LO 優先讀它）。
+    pub fill: Option<String>,
+    /// `w:shd/@w:themeFill`（槽名，如 accent1）。
+    pub theme_fill: Option<String>,
+    /// `w:shd/@w:themeFillTint`（hex byte）。
+    pub theme_fill_tint: Option<String>,
+    /// `w:shd/@w:themeFillShade`（hex byte）。
+    pub theme_fill_shade: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -651,6 +674,95 @@ fn parse_ppr_default(
     }
 }
 
+/// K8-shd：吃掉一棵 `w:tblStylePr` 子樹（`Start` 已_consumed_，本函式從其
+/// 內容讀到配對 `End`），只取 `w:tcPr/w:shd` 四欄（首見為準）。
+///
+/// 只認 `tcPr` 直系子女——`tblPr/w:shd`（表層底紋）是另一種語意（整表一塊
+/// 色而非逐格），本卡不做，混收會讓「表層無色、格層有帶」的檔案錯色。
+/// 巢狀深度計數容忍 `tcPr` 內的未知包裝元素（`w:sdt` 類）。
+fn parse_tbl_style_pr_shd(reader: &mut quick_xml::Reader<&[u8]>) -> Option<CondShading> {
+    // 深度不变式：`depth`＝相对 tblStylePr 的**当前嵌套层**（进入 tblStylePr
+    // 内容＝1；每个非自闭合 Start +1、其配對 End −1）。`tcpr_depth`＝进入
+    // tcPr 后的层（离开＝深度跌回该值以下）。
+    //
+    // 早期版本把 tcpr_depth 记成「进入 tcPr 前的深度」，于是 tcPr 的**兄弟
+    // 子女先关闭**（fdo68607 band1Horz 的 `<w:tcPr><w:tcBorders/>…<w:shd/>`
+    // ——tcBorders 先 End）就被当成 tcPr 结束，其后的 shd 全漏（實測
+    // firstRow／band1Horz 解析 None、只有 band1Vert 命中）。
+    let mut depth = 1usize;
+    let mut tcpr_depth: Option<usize> = None;
+    loop {
+        match reader.read_event() {
+            Err(_) | Ok(Event::Eof) => return None,
+            Ok(Event::Start(e)) => {
+                let name = e.local_name();
+                if tcpr_depth.is_some() && name.as_ref() == b"shd" {
+                    let shd = CondShading {
+                        val: attr_val(&e, "val"),
+                        fill: attr_val(&e, "fill"),
+                        theme_fill: attr_val(&e, "themeFill"),
+                        theme_fill_tint: attr_val(&e, "themeFillTint"),
+                        theme_fill_shade: attr_val(&e, "themeFillShade"),
+                    };
+                    // 仍要把子樹讀乾淨（shd 自閉合居多，但 Empty 與
+                    // Start 兩寫法都得支持），故不在此 return。
+                    skip_element(reader, b"shd");
+                    return Some(shd);
+                }
+                if !e.is_empty() {
+                    depth += 1;
+                    if tcpr_depth.is_none() && name.as_ref() == b"tcPr" {
+                        tcpr_depth = Some(depth);
+                    }
+                }
+            }
+            Ok(Event::Empty(e)) => {
+                if tcpr_depth.is_some() && e.local_name().as_ref() == b"shd" {
+                    return Some(CondShading {
+                        val: attr_val(&e, "val"),
+                        fill: attr_val(&e, "fill"),
+                        theme_fill: attr_val(&e, "themeFill"),
+                        theme_fill_tint: attr_val(&e, "themeFillTint"),
+                        theme_fill_shade: attr_val(&e, "themeFillShade"),
+                    });
+                }
+            }
+            Ok(Event::End(_)) => {
+                depth -= 1;
+                if depth == 0 {
+                    return None; // 整棵 tblStylePr 讀盡而無 tcPr/shd
+                }
+                if tcpr_depth.is_some_and(|d| depth < d) {
+                    tcpr_depth = None; // tcPr 自身結束（其子女結束不影響）
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 讀到配對 `End` 為止（自閉合寫法已被呼叫端以 `Empty` 分支處理）。
+fn skip_element(reader: &mut quick_xml::Reader<&[u8]>, close: &[u8]) {
+    let mut depth = 1usize;
+    loop {
+        match reader.read_event() {
+            Err(_) | Ok(Event::Eof) => return,
+            Ok(Event::Start(e)) if !e.is_empty() => {
+                if e.local_name().as_ref() == close {
+                    depth += 1;
+                }
+            }
+            Ok(Event::End(e)) if e.local_name().as_ref() == close => {
+                depth -= 1;
+                if depth == 0 {
+                    return;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn attr_val(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
     e.attributes().flatten().find_map(|a| {
         if a.key.local_name().as_ref() == key.as_bytes() {
@@ -719,6 +831,22 @@ impl StyleTable {
                             t.para_default_align = a;
                             t.para_default_run = r;
                             t.empty = false;
+                        }
+                        b"tblStylePr" if cur.is_some() => {
+                            // K8-shd：條件底紋（`w:tblStylePr/@w:type` 下的
+                            // `w:tcPr/w:shd`）。整棵子樹就地吃掉（pPr/rPr/
+                            // tblPr 本卡不認——框線條件另有 `table_style_borders`
+                            // 平行路徑，互不干預）。
+                            let cond = attr_val(&e, "type").unwrap_or_default();
+                            if let Some(shd) = parse_tbl_style_pr_shd(&mut reader) {
+                                if let Some((_, own)) = cur.as_mut() {
+                                    if !cond.is_empty()
+                                        && !own.cond_shading.iter().any(|(k, _)| k == &cond)
+                                    {
+                                        own.cond_shading.push((cond, shd));
+                                    }
+                                }
+                            }
                         }
                         b"style" => {
                             let id = attr_val(&e, "styleId").unwrap_or_default();
@@ -1111,6 +1239,27 @@ impl StyleTable {
                 .filter(|b| self.style_kind(b) == Some(StyleKind::Paragraph) && b != &key);
         }
         (None, None)
+    }
+
+    /// K8-shd：表格樣式鏈（不含 docDefaults）上，某條件（`w:tblStylePr/@w:type`
+    /// 如 `firstRow`／`band1Horz`）的 `w:tcPr/w:shd` 宣告。沿 **basedOn 鏈**
+    /// 取第一個命中者（ECMA §17.7.2.3 級聯口徑，與 [`table_style_line`] 同源）。
+    ///
+    /// 呼叫端（engine 級聯層）負責疊 `w:tblLook` 生效閘與優先序：
+    /// 直接 `w:shd`（tcPr 級）＞ 本表條件帶。查無 id／無宣告＝None。
+    pub fn table_style_cond_shading(&self, id: &str, cond: &str) -> Option<CondShading> {
+        let mut cur = Some(id.to_string());
+        for _ in 0..MAX_CHAIN {
+            let Some(key) = cur else { break };
+            let Some(own) = self.table_styles.get(&key) else {
+                break;
+            };
+            if let Some((_, shd)) = own.cond_shading.iter().find(|(k, _)| k == cond) {
+                return Some(shd.clone());
+            }
+            cur = own.based_on.clone().filter(|b| b != &key);
+        }
+        None
     }
 
     /// K6：表格樣式鏈（不含 docDefaults）的第一個段前／段後距宣告。

@@ -146,6 +146,51 @@ impl ThemeColors {
     }
 }
 
+/// `w:shd/@w:themeFillTint`／`@w:themeFillShade` 的色彩變換（K8-shd）。
+///
+/// 屬性寫法是**十六進位 byte**（ST_PosPercentage 的 2 位 hex 形式：`3F`＝
+/// 63/255≈24.7%），不是 `12345` 式十萬分比——語意見 ECMA-376 §2.8.22。
+///
+/// 公式來自 corpus 實測校準（1007 個帶 tint 的 `w:shd`，LO 實渲對照）：
+///   tint（朝白）：`c' = 255 − (255 − c) × (byte/255)`，逐通道 **floor**
+///   shade（朝黑）：`c' = c × (byte/255)`，逐通道 **floor**（DrawingML
+///     標準式；corpus 僅 115 例且全部有 cache `@w:fill` 贏過它，故本式
+///     只在無 cache 值的檔案才可能被消費，未逐例校準——老實標明）
+///
+/// 命中數：tint 式 975/1007 逐位元組命中（其餘 32 例是生產者 cache 的
+/// `@w:fill` 與 theme 現值分歧，LO 照讀 cache 值——呼叫端「cache 優先」
+/// 口徑即由此來）。**floor 不可換成 round**：accent1(#4F81BD)+`3F` 的
+/// 紅通道 211.5，round 會得 212（0xD4）與 LO 實渲 0xD3 差一級。
+pub fn apply_shading_transform(
+    argb: u32,
+    tint_hex: Option<&str>,
+    shade_hex: Option<&str>,
+) -> Option<u32> {
+    let byte = |s: &str| -> Option<u32> { u32::from_str_radix(s.trim(), 16).ok() };
+    let floor_mix = |c: u32, b: u32, toward_white: bool| -> u32 {
+        let v = if toward_white {
+            255.0 - (255.0 - f64::from(c)) * (f64::from(b) / 255.0)
+        } else {
+            f64::from(c) * (f64::from(b) / 255.0)
+        };
+        v.floor() as u32
+    };
+    // 兩者並存（罕見畸形宣告）：ECMA 無優先序定義，依 Word 行為先 tint 再
+    // shade（先朝白再朝黑），故這裡**兩個都套**而非二選一。
+    let mut out = argb;
+    for (hex, white) in [(tint_hex, true), (shade_hex, false)] {
+        let Some(b) = hex.and_then(byte) else {
+            continue;
+        };
+        let b = b.min(255);
+        let r = floor_mix((out >> 16) & 0xFF, b, white);
+        let g = floor_mix((out >> 8) & 0xFF, b, white);
+        let bl = floor_mix(out & 0xFF, b, white);
+        out = (out & 0xFF00_0000) | (r << 16) | (g << 8) | bl;
+    }
+    (tint_hex.is_some() || shade_hex.is_some()).then_some(out)
+}
+
 /// theme part 的慣例落點找不到時，改取 `word/theme/theme*.xml` 的字典序
 /// 首見者（異名主題 part 如 theme2.xml）。無 theme part → None。
 ///
@@ -670,5 +715,38 @@ mod tests {
         assert_eq!(t.minor_east_asia.as_deref(), Some("新細明體"));
         // 無 theme part → 空表。
         assert!(ThemeFonts::from_parts(&BTreeMap::new()).is_empty());
+    }
+
+    /// K8-shd 單元鎖：tint 變換逐位元組命中 LO 實渲（fdo68607 鐵證）。
+    /// accent1 #4F81BD ＋ tint `3F` → 0xD3DFEE（211/223/238）；floor 語意
+    /// 是關鍵——紅通道 211.5 若 round 會錯成 0xD4，與 LO 差一級。
+    #[test]
+    fn shading_tint_matches_lo_render_floor_semantics() {
+        let got = apply_shading_transform(0xFF4F_81BD, Some("3F"), None);
+        assert_eq!(
+            got,
+            Some(0xFFD3_DFEE),
+            "accent1+3F 必須精確命中 D3DFEE（floor 非 round）"
+        );
+        // 邊界（byte 是保留因子）：FF＝不動、00＝全白；全白經任何 tint 不動。
+        assert_eq!(
+            apply_shading_transform(0xFFFF_FFFF, Some("3F"), None),
+            Some(0xFFFF_FFFF)
+        );
+        assert_eq!(
+            apply_shading_transform(0xFF08_1A2C, Some("FF"), None),
+            Some(0xFF08_1A2C)
+        );
+        assert_eq!(
+            apply_shading_transform(0xFF08_1A2C, Some("00"), None),
+            Some(0xFFFF_FFFF)
+        );
+        // shade（朝黑）DrawingML 標準式：0x80×0x80/0xFF=0x40。
+        assert_eq!(
+            apply_shading_transform(0xFF80_8080, None, Some("80")),
+            Some(0xFF40_4040)
+        );
+        // 兩者全缺＝None（呼叫端保持原值，不虛構變換）。
+        assert_eq!(apply_shading_transform(0xFF11_2233, None, None), None);
     }
 }
