@@ -2928,6 +2928,7 @@ fn cascade_paragraphs(
         metrics.push((meas_size, line_h));
         spacings.push((para.spacing_before_pt, para.spacing_after_pt));
         let mut ep = p.clone();
+        ep.jc = para.align;
         ep.runs = eff_runs;
         if !baked_txbx.is_empty() {
             ep.txbx_runs = baked_txbx;
@@ -4063,6 +4064,10 @@ impl Engine {
         let mut cursor_bands: u32 = 0;
         let mut ti = 0usize;
         let mut skip_until = 0usize;
+        let buggy = std::env::var_os("K9_HF_ALIGN_BUGGY").is_some();
+        let content_w = hf_params.content_w_pt();
+        let margin_left = hf_params.margin(MARGIN_LEFT);
+
         for (pi, pl) in pls.iter().enumerate() {
             while ti < slots_tbl.len() && slots_tbl[ti].para_start <= pi {
                 self.emit_hf_table(
@@ -4087,14 +4092,34 @@ impl Engine {
                               // render-lab 前 8 行比對視窗、稀釋相似度。
                 }
                 let y = emit_y + (cursor_bands + li as u32) as f32 * line_h;
-                emit_line_run_items(
-                    items,
-                    hf_params.margin(MARGIN_LEFT),
-                    y,
-                    hf_params.font_size_pt,
-                    l,
-                    paragraphs.get(l.para_index),
-                );
+                let para = paragraphs.get(l.para_index);
+                if buggy {
+                    emit_line_run_items(items, margin_left, y, hf_params.font_size_pt, l, para);
+                } else if let Some(p) = para {
+                    if p.runs.iter().any(|r| r.tab || r.ptab.is_some()) {
+                        emit_hf_tab_zones(items, y, hf_params, l, p);
+                    } else {
+                        let line_base_x = match p.jc {
+                            Some(quire_ooxml::Align::Center) => {
+                                margin_left + (content_w - l.width_pt).max(0.0) / 2.0
+                            }
+                            Some(quire_ooxml::Align::Right) => {
+                                margin_left + (content_w - l.width_pt).max(0.0)
+                            }
+                            _ => margin_left,
+                        };
+                        emit_line_run_items(
+                            items,
+                            line_base_x,
+                            y,
+                            hf_params.font_size_pt,
+                            l,
+                            Some(p),
+                        );
+                    }
+                } else {
+                    emit_line_run_items(items, margin_left, y, hf_params.font_size_pt, l, None);
+                }
             }
             cursor_bands += pl.lines.len().max(1) as u32;
         }
@@ -4120,6 +4145,18 @@ impl Engine {
                 continue;
             }
             let y = emit_y + im.para_index as f32 * line_h;
+            let para = paragraphs.get(im.para_index);
+            let img_x = if buggy {
+                margin_left
+            } else {
+                match para.and_then(|p| p.jc) {
+                    Some(quire_ooxml::Align::Center) => {
+                        margin_left + (content_w - im.w_pt).max(0.0) / 2.0
+                    }
+                    Some(quire_ooxml::Align::Right) => margin_left + (content_w - im.w_pt).max(0.0),
+                    _ => margin_left,
+                }
+            };
             // K4c 合併語意：HF 圖像素＝開檔期按本 part 自家 .rels 解析（part.pixels
             // 與 images 逐位對齊；Bug51170 Choice→pdf 不可渲染、Fallback→png 可
             // 渲染即在此翻綠）。命中發真像素並跳過發框；未命中發 emit_image_shape
@@ -4131,7 +4168,7 @@ impl Engine {
                     }
                     let bytes = self.doc.parts.get(path)?;
                     Some(DrawItem::Image {
-                        x: hf_params.margin(MARGIN_LEFT),
+                        x: img_x,
                         y,
                         w: im.w_pt,
                         h: im.h_pt,
@@ -4143,14 +4180,7 @@ impl Engine {
             );
             match pix {
                 Some(it) => items.push(it),
-                None => emit_image_shape(
-                    items,
-                    hf_params.margin(MARGIN_LEFT),
-                    y,
-                    im.w_pt,
-                    im.h_pt,
-                    Some(im),
-                ),
+                None => emit_image_shape(items, img_x, y, im.w_pt, im.h_pt, Some(im)),
             }
         }
     }
@@ -4194,6 +4224,101 @@ impl Engine {
             // 路徑的 push_hf_slot 圖；格內 HF 圖屬後續卡，零擾動守門）。
             None,
             hf_params.line_h_pt(),
+        );
+    }
+}
+
+/// K9：頁首/頁尾含 tab/ptab 之段落發射。按製表符劃分區域，停靠於 CENTER/RIGHT 停靠點。
+fn emit_hf_tab_zones(
+    items: &mut Vec<DrawItem>,
+    y: f32,
+    hf_params: &LayoutParams,
+    line: &quire_layout::Line,
+    para: &quire_ooxml::Paragraph,
+) {
+    let content_w = hf_params.content_w_pt();
+    let margin_left = hf_params.margin(MARGIN_LEFT);
+
+    let mut zones: Vec<(Option<quire_ooxml::Align>, Vec<quire_ooxml::Run>)> = Vec::new();
+    let mut cur_runs = Vec::new();
+    let mut cur_align = para.jc;
+    let mut tab_count = 0usize;
+
+    for r in &para.runs {
+        if r.tab || r.ptab.is_some() {
+            let n_tabs = if r.tab {
+                r.tab_count.max(1) as usize
+            } else {
+                1
+            };
+            for _ in 0..n_tabs {
+                zones.push((cur_align, std::mem::take(&mut cur_runs)));
+                let tab_align = if let Some(a) = r.ptab {
+                    a
+                } else if tab_count == 0 {
+                    if para.tab_center_pt.is_some() {
+                        quire_ooxml::Align::Center
+                    } else if para.tab_right_pt.is_some() {
+                        quire_ooxml::Align::Right
+                    } else {
+                        quire_ooxml::Align::Center
+                    }
+                } else {
+                    quire_ooxml::Align::Right
+                };
+                cur_align = Some(tab_align);
+                tab_count += 1;
+            }
+            if !r.text.is_empty() {
+                let mut text_r = r.clone();
+                text_r.tab = false;
+                text_r.tab_count = 0;
+                text_r.ptab = None;
+                cur_runs.push(text_r);
+            }
+        } else {
+            cur_runs.push(r.clone());
+        }
+    }
+    zones.push((cur_align, cur_runs));
+
+    for (align, z_runs) in zones {
+        let text: String = z_runs.iter().map(|r| r.text.as_str()).collect();
+        if text.trim().is_empty() {
+            continue;
+        }
+        let adv = para_advance_scale(&z_runs);
+        let mut z_width = 0.0f32;
+        for r in &z_runs {
+            if r.text.is_empty() {
+                continue;
+            }
+            let sz = r.size_pt.unwrap_or(hf_params.font_size_pt);
+            z_width += TextMeasurer::with_advance_scale(sz, adv).text_width(&r.text);
+        }
+        let z_x = match align {
+            Some(quire_ooxml::Align::Center) => margin_left + (content_w - z_width).max(0.0) / 2.0,
+            Some(quire_ooxml::Align::Right) => margin_left + (content_w - z_width).max(0.0),
+            _ => margin_left,
+        };
+        let z_line = quire_layout::Line {
+            text,
+            width_pt: z_width,
+            para_index: line.para_index,
+            char_offset: 0,
+            col: 0,
+        };
+        let z_para = quire_ooxml::Paragraph {
+            runs: z_runs,
+            ..para.clone()
+        };
+        emit_line_run_items(
+            items,
+            z_x,
+            y,
+            hf_params.font_size_pt,
+            &z_line,
+            Some(&z_para),
         );
     }
 }
