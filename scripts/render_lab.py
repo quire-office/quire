@@ -20,12 +20,14 @@ import datetime
 import difflib
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import pathlib
 from collections import Counter
 
@@ -33,6 +35,15 @@ try:
     import pymupdf
 except ImportError:
     sys.exit("需要 pymupdf：python3 -m pip install --user pymupdf")
+
+try:  # J3 色彩/圖片軸需 numpy；scipy 缺席時圖片軸退回自實作 flood-fill。
+    import numpy as np
+except ImportError:
+    sys.exit("需要 numpy：python3 -m pip install --user numpy")
+try:
+    from scipy import ndimage as _ndi
+except ImportError:
+    _ndi = None
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 LINE_RE = re.compile(r"\s+")
@@ -389,8 +400,277 @@ def compare(name: str, lo: list[dict], ow: dict, sect_pr: int | None = None) -> 
     return row
 
 
+# ───────────────────────── J3：色彩軸／圖片軸／真缺字對账 ─────────────────────────
+# 既有 J2 內容/版面分只看文字行，完全看不到色塊與圖片（fdo68607 表格底紋整頁全缺
+# 卻仍 0.93）。以下三軸為「函式級新增」，不動 compare() 既有欄位語意。
+
+J3_DPI = 150
+J3_MAX_PAGES = 6          # 與報告「首 6 頁」口徑一致
+SAT_MIN = 25              # 飽和度（0..255）低於此視為黑白灰，不進色彩/圖片軸
+COLOR_FLOOR = 0.0005      # 兩邊彩色覆蓋率都低於此＝視為「皆無彩色」（濾抗鋸齒雜訊）
+IMG_MIN_SIDE_PX = 20      # 圖片連通域 bbox 最小邊長（150dpi 約 3.4mm）
+IMG_MIN_PIXELS = 400      # 圖片連通域最少彩色像素
+
+
+def _sat_hue(img: "np.ndarray"):
+    """RGB uint8 (H,W,3) → (sat 0..255, hue 0..360, value 0..255)。"""
+    a = img[..., :3].astype(np.int32)
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    mx, mn = a.max(axis=2), a.min(axis=2)
+    delta = (mx - mn).astype(np.float64)
+    sat = np.where(mx > 0, (mx - mn) * 255 // np.maximum(mx, 1), 0)
+    safe = np.where(delta == 0, 1.0, delta)
+    h = np.where(mx == r, ((g - b) / safe) % 6,
+                 np.where(mx == g, (b - r) / safe + 2, (r - g) / safe + 4)) * 60.0
+    return sat, np.where(delta == 0, 0.0, h), mx
+
+
+def color_hist(img: "np.ndarray") -> "np.ndarray":
+    """非白彩色像素（sat≥SAT_MIN）的 24 bin 粗量化直方圖：12 色相 × 2 明度，
+    每格＝佔**整頁像素**比例（保留面積資訊，不是只比色種）。黑白灰一律忽略。"""
+    sat, hue, val = _sat_hue(img)
+    m = sat >= SAT_MIN
+    hist = np.zeros(24)
+    if m.any():
+        hb = (hue[m] // 30).astype(int) % 12
+        vb = (val[m] >= 200).astype(int)
+        hist = np.bincount(hb * 2 + vb, minlength=24).astype(np.float64)
+    return hist / max(img.shape[0] * img.shape[1], 1)
+
+
+def score_color(lo_img: "np.ndarray", ow_img: "np.ndarray") -> float:
+    """色彩軸 0..1：兩頁彩色直方圖的加權交集 Σmin/Σmax。
+    LO 有整頁底紋、我方無色塊 → ≈0；兩邊都沒彩色（純黑白灰頁）→ 1.0。"""
+    a, b = color_hist(lo_img), color_hist(ow_img)
+    if max(a.sum(), b.sum()) < COLOR_FLOOR:
+        return 1.0
+    return float(np.minimum(a, b).sum() / np.maximum(a, b).sum())
+
+
+def _label(mask: "np.ndarray"):
+    """連通域標記（8-鄰接）。優先 scipy.ndimage；缺席時自實作 BFS flood-fill。"""
+    if _ndi is not None:
+        return _ndi.label(mask, structure=np.ones((3, 3), dtype=int))
+    labels = np.zeros(mask.shape, dtype=np.int32)
+    n = 0
+    h, w = mask.shape
+    for y, x in zip(*np.nonzero(mask)):
+        if labels[y, x]:
+            continue
+        n += 1
+        stack = [(y, x)]
+        labels[y, x] = n
+        while stack:
+            cy, cx = stack.pop()
+            for ny in range(max(cy - 1, 0), min(cy + 2, h)):
+                for nx in range(max(cx - 1, 0), min(cx + 2, w)):
+                    if mask[ny, nx] and not labels[ny, nx]:
+                        labels[ny, nx] = n
+                        stack.append((ny, nx))
+    return labels, n
+
+
+def image_boxes(img: "np.ndarray") -> list[tuple[int, int, int, int]]:
+    """彩色像素（sat≥SAT_MIN）連通域 → bbox (x0,y0,x1,y1)（像素，x1/y1 為開區間端點）。
+    先做小幅膨脹把照片內被灰階/暗部切碎的彩色塊併成一塊，bbox 仍以原彩色像素為準。"""
+    sat, _, _ = _sat_hue(img)
+    mask = sat >= SAT_MIN
+    if not mask.any():
+        return []
+    grown = mask
+    if _ndi is not None:
+        grown = _ndi.binary_dilation(mask, structure=np.ones((3, 3), dtype=bool), iterations=4)
+    labels, n = _label(grown)
+    if _ndi is not None:
+        slices = _ndi.find_objects(labels)
+    else:  # 無 scipy：以整頁範圍當 slice（慢但正確）
+        slices = [(slice(0, labels.shape[0]), slice(0, labels.shape[1]))] * n
+    boxes = []
+    for k, sl in enumerate(slices, start=1):
+        if sl is None:
+            continue
+        sub = (labels[sl] == k) & mask[sl]
+        if sub.sum() < IMG_MIN_PIXELS:
+            continue
+        ys, xs = np.nonzero(sub)
+        x0, x1 = sl[1].start + int(xs.min()), sl[1].start + int(xs.max()) + 1
+        y0, y1 = sl[0].start + int(ys.min()), sl[0].start + int(ys.max()) + 1
+        if x1 - x0 >= IMG_MIN_SIDE_PX and y1 - y0 >= IMG_MIN_SIDE_PX:
+            boxes.append((x0, y0, x1, y1))
+    return sorted(boxes, key=lambda b: -(b[2] - b[0]) * (b[3] - b[1]))
+
+
+def _norm_box(b, shape):
+    h, w = shape[:2]
+    return (b[0] / w, b[1] / h, b[2] / w, b[3] / h)
+
+
+def _iou(a, b) -> float:
+    iw = min(a[2], b[2]) - max(a[0], b[0])
+    ih = min(a[3], b[3]) - max(a[1], b[1])
+    if iw <= 0 or ih <= 0:
+        return 0.0
+    inter = iw * ih
+    ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / ua if ua > 0 else 0.0
+
+
+def score_image(lo_img: "np.ndarray", ow_img: "np.ndarray") -> float:
+    """圖片軸 0..1：兩頁彩色連通域 bbox（以頁尺寸正規化）左右對照。
+    配對＝貪心取 IoU 最大者（IoU=0 不配對＝缺圖/錯位）；配對分 = 0.6·IoU + 0.4·尺寸相似
+    （寬比×高比）；整頁分以 bbox 面積加權，未配對者以 0 分計入。兩邊皆無彩色塊 → 1.0。"""
+    la = [_norm_box(b, lo_img.shape) for b in image_boxes(lo_img)]
+    lb = [_norm_box(b, ow_img.shape) for b in image_boxes(ow_img)]
+    if not la and not lb:
+        return 1.0
+    if not la or not lb:
+        return 0.0
+    pairs = sorted(((_iou(x, y), i, j) for i, x in enumerate(la) for j, y in enumerate(lb)),
+                   reverse=True)
+    used_a, used_b, num, den = set(), set(), 0.0, 0.0
+    area = lambda b: (b[2] - b[0]) * (b[3] - b[1])   # noqa: E731
+    for iou, i, j in pairs:
+        if iou <= 0 or i in used_a or j in used_b:
+            continue
+        used_a.add(i)
+        used_b.add(j)
+        a, b = la[i], lb[j]
+        size = (min(a[2] - a[0], b[2] - b[0]) / max(a[2] - a[0], b[2] - b[0])) * \
+               (min(a[3] - a[1], b[3] - b[1]) / max(a[3] - a[1], b[3] - b[1]))
+        w = max(area(a), area(b))
+        num += w * (0.6 * iou + 0.4 * size)
+        den += w
+    den += sum(area(b) for k, b in enumerate(la) if k not in used_a)
+    den += sum(area(b) for k, b in enumerate(lb) if k not in used_b)
+    return float(num / den) if den > 0 else 1.0
+
+
+def _pix_array(page) -> "np.ndarray":
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(J3_DPI / 72, J3_DPI / 72), alpha=False)
+    return np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)[..., :3].copy()
+
+
+# ── token 對账（真缺字偵測）──────────────────────────────────────────────
+
+_HYPHENS = "-\u2010\u2011\u2012\u2013\u2014"
+_CJK_RE = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af"
+_TOK_RE = re.compile(f"[{_CJK_RE}]|[^\\s{_CJK_RE}]+")
+
+
+def tokenize(text: str) -> list[tuple[str, str]]:
+    """全文 → [(顯示形, 正規形)]。NFKC＋casefold；CJK 逐字成 token（換行位置無關）；
+    其餘以空白切；去頭尾標點（連字號保留，供斷行拼接判定）；無任何字母數字者
+    （項目符號 \\uf0b7、純標點）丟棄。"""
+    out = []
+    for raw in _TOK_RE.findall(unicodedata.normalize("NFKC", text)):
+        t = raw
+        while t and unicodedata.category(t[0])[0] in "PS" and t[0] not in _HYPHENS:
+            t = t[1:]
+        while t and unicodedata.category(t[-1])[0] in "PS" and t[-1] not in _HYPHENS:
+            t = t[:-1]
+        if t and any(c.isalnum() for c in t):
+            out.append((t, t.casefold()))
+    return out
+
+
+def _key(n: str) -> str:
+    return n.strip(_HYPHENS)
+
+
+def _concats(norms: list[str]) -> set[str]:
+    """相鄰 2～3 段拼接（保留連字號／去連字號兩形），供斷行切片判定。"""
+    res = set()
+    for i in range(len(norms)):
+        for span in (2, 3):
+            seg = norms[i:i + span]
+            if len(seg) < span:
+                break
+            res.add(_key("".join(seg)))
+            res.add(_key("".join(s.rstrip(_HYPHENS) for s in seg[:-1]) + seg[-1]))
+    return res
+
+
+def token_audit(lo_text: str, ow_text: str) -> dict:
+    """LO 全文 token 集 vs 我方全文 token 集 → 真缺字對账。
+    - true_missing：LO 有、我方無，且不是斷行切片（我方相鄰「前段＋後段」拼接命中 LO token，
+      或反向 LO 被切我方連著，皆算切片、不算缺）
+    - split_ok：判為斷行切片而排除的 LO token（供人覆核）
+    以集合語意對账（同詞重複只算一次），順序依 LO 首次出現。"""
+    lo, ow = tokenize(lo_text), tokenize(ow_text)
+    ow_norms = [n for _, n in ow]
+    ow_set = {n for n in ow_norms} | {_key(n) for n in ow_norms}
+    ow_cat = _concats(ow_norms)
+    lo_norms = [n for _, n in lo]
+    # LO 相鄰切片：(i, i+span) 拼接命中我方 → 區段內各 token 皆算切片
+    lo_split_idx = set()
+    for i in range(len(lo_norms)):
+        for span in (2, 3):
+            seg = lo_norms[i:i + span]
+            if len(seg) < span:
+                break
+            cands = {_key("".join(seg)),
+                     _key("".join(s.rstrip(_HYPHENS) for s in seg[:-1]) + seg[-1])}
+            if cands & ow_set:
+                lo_split_idx.update(range(i, i + span))
+    missing, split_ok, seen = [], [], set()
+    for idx, (disp, n) in enumerate(lo):
+        k = _key(n)
+        if k in seen:
+            continue
+        seen.add(k)
+        if n in ow_set or k in ow_set:
+            continue
+        if k in ow_cat or idx in lo_split_idx:
+            split_ok.append(disp)
+        else:
+            missing.append(disp)
+    return {"true_missing": missing, "split_ok": split_ok,
+            "lo_tokens": len(seen), "ow_tokens": len(set(ow_norms))}
+
+
+def j3_metrics(lo_pdf: pathlib.Path, out_dir: pathlib.Path, lo_pages: list[dict],
+               ow: dict, max_pages: int = J3_MAX_PAGES) -> dict:
+    """單檔 J3 三軸：逐頁色/圖分（LO PDF 頁 vs 我方同頁 SVG，皆 150dpi）＋全文真缺字。
+    回傳 dict 供 row.update()；單頁光柵化失敗該頁記 None，不中斷整檔。"""
+    color, image = [], []
+    ow_pages = ow["pages"]
+    n = min(max(len(lo_pages), len(ow_pages)), max_pages)
+    d = pymupdf.open(lo_pdf)
+    try:
+        for i in range(n):
+            try:
+                lo_arr = _pix_array(d[i]) if i < d.page_count else None
+                ow_arr = None
+                if i < len(ow_pages) and ow_pages[i].get("svg"):
+                    sd = pymupdf.open(out_dir / ow_pages[i]["svg"])
+                    try:
+                        ow_arr = _pix_array(sd[0])
+                    finally:
+                        sd.close()
+                # 單邊無此頁 ⇒ 視為空白頁（LO 有色而我方無頁＝0；兩邊皆無色＝1）
+                if lo_arr is None:
+                    lo_arr = np.full_like(ow_arr, 255)
+                if ow_arr is None:
+                    ow_arr = np.full_like(lo_arr, 255)
+                color.append(round(score_color(lo_arr, ow_arr), 3))
+                image.append(round(score_image(lo_arr, ow_arr), 3))
+            except Exception:  # noqa: BLE001 —— 單頁度量失敗不拖垮整檔
+                color.append(None)
+                image.append(None)
+    finally:
+        d.close()
+    lo_text = "\n".join(l for pg in lo_pages for l in pg["lines"])
+    ow_text = "\n".join(l for pg in ow_pages for l in pg["lines"])
+    ta = token_audit(lo_text, ow_text)
+    return {"color_scores": color, "image_scores": image,
+            "true_missing": ta["true_missing"], "true_missing_n": len(ta["true_missing"]),
+            "split_ok_n": len(ta["split_ok"])}
+
+
 def render_report(rows: list[dict], meta: dict, out_md: pathlib.Path) -> None:
     ok = sum(1 for r in rows if r.get("status", "ok") == "ok" and r["page_count_match"])
+    miss_total = sum(r.get("true_missing_n") or 0 for r in rows)
+    miss_files = sum(1 for r in rows if r.get("true_missing_n"))
     lines = [
         "# render-lab 差異報告（LO 基線 vs quire）",
         "",
@@ -398,21 +678,31 @@ def render_report(rows: list[dict], meta: dict, out_md: pathlib.Path) -> None:
         f"- LibreOffice：`{meta['soffice']}`",
         f"- 對象：{meta['target']}（{len(rows)} 檔）",
         f"- 頁數一致：{ok}/{len(rows)}；LO 轉換失敗：{meta['lo_fail']}",
+        f"- 真缺字 {miss_total}（{miss_files} 檔有；LO 有我方無、已排除斷行切片）",
         "",
-        "| 檔案 | LO 頁 | OW 頁 | 頁數 | 內容相似度（首 6 頁） | 版面相似度（首 6 頁） | 首個內容分歧頁 | 備註 |",
-        "|---|---|---|---|---|---|---|---|",
+        "| 檔案 | LO 頁 | OW 頁 | 頁數 | 內容相似度（首 6 頁） | 版面相似度（首 6 頁） | 首個內容分歧頁 | 備註 | 色相似度（首 6 頁） | 圖相似度（首 6 頁） | 真缺字 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         if r.get("status") == "lo_fail":
-            lines.append(f"| {r['file']} | — | — | — | — | — | — | LO 轉換失敗/逾時 |")
+            lines.append(f"| {r['file']} | — | — | — | — | — | — | LO 轉換失敗/逾時 | — | — | — |")
             continue
         cs = ", ".join("—" if s is None else str(s) for s in r["content_scores"][:6])
         ls = ", ".join("—" if s is None else str(s) for s in r["layout_scores"][:6])
         div = "—" if r["first_divergence"] is None else f"第 {r['first_divergence'] + 1} 頁"
         note = "; ".join(r["notes"]) or "—"
+        j3c = ", ".join("—" if s is None else str(s) for s in (r.get("color_scores") or [])[:6]) or "—"
+        j3i = ", ".join("—" if s is None else str(s) for s in (r.get("image_scores") or [])[:6]) or "—"
+        tm = r.get("true_missing")
+        if tm is None:
+            j3m = "—"
+        else:
+            shown = ", ".join(f"`{t}`" for t in tm[:6]) + ("…" if len(tm) > 6 else "")
+            j3m = f"{len(tm)}" + (f"：{shown}" if tm else "")
         lines.append(
             f"| {r['file']} | {r['lo_pages']} | {r['ow_pages']} | "
-            f"{'✓' if r['page_count_match'] else '✗'} | {cs} | {ls} | {div} | {note} |")
+            f"{'✓' if r['page_count_match'] else '✗'} | {cs} | {ls} | {div} | {note} | "
+            f"{j3c} | {j3i} | {j3m} |")
     lines += [
         "",
         "說明（J2 校正）：**內容相似度**＝整頁全部行正規化後拼成單一詞序列、",
@@ -422,8 +712,30 @@ def render_report(rows: list[dict], meta: dict, out_md: pathlib.Path) -> None:
         "而版面分低只進備註（僅換行位置不同），不記分歧。",
         "本報告追蹤的是**頁數收斂速度**與**斷點位置**，作為排版演進的量化基線。",
         "",
+        "說明（J3 新增三欄，文字分完全看不到色塊/圖片，故另立）：",
+        "- **色相似度**＝LO PDF 頁 vs 我方同頁（皆 150dpi 光柵）取非白彩色像素（飽和度≥25，黑白灰忽略）",
+        "  的 24 bin（12 色相×2 明度）面積直方圖，算加權交集 Σmin/Σmax；LO 有色塊我方全無≈0，",
+        "  兩邊皆無彩色＝1.0。",
+        "- **圖相似度**＝彩色像素連通域 bbox 左右對照（0.6·IoU＋0.4·尺寸相似，面積加權，缺圖/錯位計 0）。",
+        "- **真缺字**＝LO 全文 token 集有、我方全文 token 集無，且非斷行切片（我方相鄰「前段＋後段」",
+        "  拼接命中 LO token，或反向 LO 被切我方連著，不算缺）；CJK 逐字比；頁首「真缺字 n」為總計。",
+        "- 三欄為舊欄位之外的增量；內容/版面/頁數欄位語意與計算零變動。",
+        "",
     ]
+    miss_detail = [(r["file"], r["true_missing"]) for r in rows if r.get("true_missing")]
+    if miss_detail:
+        lines += ["## 真缺字清單（逐檔）", ""]
+        for f, toks in miss_detail:
+            lines.append(f"- `{f}`（{len(toks)}）：" + ", ".join(f"`{t}`" for t in toks[:60])
+                         + ("…" if len(toks) > 60 else ""))
+        lines.append("")
     out_md.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _gray_page() -> "np.ndarray":
+    g = np.full((400, 300, 3), 255, dtype=np.uint8)
+    g[10:40, 10:200] = (60, 60, 60)
+    return g
 
 
 def selftest() -> int:
@@ -568,6 +880,37 @@ def selftest() -> int:
           and r8["first_divergence"] == 1 and not r8["measurement_artifacts"],
           f"scores={r8['content_scores']} div={r8['first_divergence']}")
 
+    # ── J3 三軸（色/圖/真缺字）合成案例 ──────────────────────────────
+    def _blank():
+        return np.full((400, 300, 3), 255, dtype=np.uint8)
+
+    lo_c = _blank()
+    lo_c[0:200, :] = (0xD3, 0xDF, 0xEE)          # fdo68607 LO 側表格底紋色
+    sc = score_color(lo_c, _blank())
+    check("5 色彩軸：LO 有底紋我方全白≈0（fdo68607 型）", sc < 0.05, f"color={sc:.3f}")
+    check("5b 色彩軸：同圖＝1、純灰字頁 vs 白頁＝1（黑白灰不計）",
+          score_color(lo_c, lo_c.copy()) > 0.99
+          and score_color(_gray_page(), _blank()) > 0.99)
+
+    lo_i = _blank()
+    lo_i[20:120, 20:180] = (200, 40, 40)
+    ow_i = _blank()
+    ow_i[20:70, 130:250] = (200, 40, 40)           # Bug51170 型：尺寸小且位置偏
+    si = score_image(lo_i, ow_i)
+    check("6 圖片軸：同圖＝1、缺圖＝0、錯位縮小圖 <0.5",
+          score_image(lo_i, lo_i.copy()) > 0.99 and score_image(lo_i, _blank()) < 0.05 and si < 0.5,
+          f"錯位縮小={si:.3f}")
+
+    ta = token_audit("Drama sharp-edged blade IGCSE glossary of terms",
+                     "Drama sharp-\nedged blade of terms")
+    miss = {t.casefold() for t in ta["true_missing"]}
+    check("7 真缺字：IGCSE/glossary 真缺、sharp-edged 斷行切片不算缺",
+          miss == {"igcse", "glossary"} and "sharp-edged" in {t.casefold() for t in ta["split_ok"]},
+          f"true_missing={ta['true_missing']} split_ok={ta['split_ok']}")
+    ta2 = token_audit("well-\nknown Result.", "Well-known result")
+    check("7b 真缺字：LO 被切我方連著／標點大小寫差不算缺", ta2["true_missing"] == [],
+          f"true_missing={ta2['true_missing']}")
+
     print("SELFTEST", "ALL-PASS" if fails == 0 else f"{fails}-FAIL")
     return 0 if fails == 0 else 1
 
@@ -579,6 +922,8 @@ def main() -> int:
                     help="跑 J2 度量自測（不碰 LO/引擎，純函式驗證）後退出")
     ap.add_argument("--corpus", default=str(REPO / "corpus"))
     ap.add_argument("--n", type=int, default=10)
+    ap.add_argument("--seed", type=int, default=None,
+                    help="給定時自 corpus manifest 以此 seed 隨機抽 n 檔（預設取前 n 檔）")
     ap.add_argument("--out", default=str(REPO / "out" / "render-lab"))
     ap.add_argument("--report", default=None, help="報告輸出路徑（預設 <out>/report.md）")
     a = ap.parse_args()
@@ -594,8 +939,13 @@ def main() -> int:
         target_desc = f"自訂 {len(targets)} 檔"
     else:
         manifest = json.loads((pathlib.Path(a.corpus) / "manifest.json").read_text(encoding="utf-8"))
-        targets = [pathlib.Path(a.corpus) / f["file"] for f in manifest["files"][: a.n]]
-        target_desc = f"corpus manifest 前 {len(targets)} 檔"
+        if a.seed is None:
+            picked = manifest["files"][: a.n]
+            target_desc = f"corpus manifest 前 {len(picked)} 檔"
+        else:
+            picked = random.Random(a.seed).sample(manifest["files"], a.n)
+            target_desc = f"corpus manifest 隨機 {len(picked)} 檔（seed {a.seed}）"
+        targets = [pathlib.Path(a.corpus) / f["file"] for f in picked]
     missing = [t for t in targets if not t.exists()]
     if missing:
         sys.exit(f"找不到檔案：{missing[:3]} ...")
@@ -635,6 +985,13 @@ def main() -> int:
         r = rows[-1]
         print(f"   LO {r['lo_pages']} 頁 / OW {r['ow_pages']} 頁，"
               f"內容相似度 {r['content_scores'][:4]}（版面 {r['layout_scores'][:4]}）")
+        try:  # J3 三軸：失敗只記錄、不影響既有欄位
+            r.update(j3_metrics(pdf, out_dir, lo, ow))
+            print(f"   色 {r['color_scores']} 圖 {r['image_scores']} "
+                  f"真缺字 {r['true_missing_n']}（斷行切片已排除 {r['split_ok_n']}）："
+                  f"{r['true_missing'][:12]}")
+        except Exception as e:  # noqa: BLE001
+            print(f"   ✗ J3 度量異常（舊欄位不受影響）：{e}")
 
     meta = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
             "soffice": str(soffice), "target": target_desc, "lo_fail": lo_fail}
