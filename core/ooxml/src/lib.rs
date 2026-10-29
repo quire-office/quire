@@ -30,10 +30,10 @@ pub use sectpr::{
 };
 pub use styles::{Align, CondShading, LineSpacing, ParaStyle, RunFonts, RunStyle, StyleTable};
 pub use table::{
-    Block, BodyTable, Border, Borders, CellProps, GridCol, Margins, RowProps, Shading, Table,
-    TableCell, TableProps, TableRow, TblWidth,
+    Block, BodyTable, Border, Borders, CellProps, EffectiveLook, GridCol, Margins, RowProps,
+    Shading, Table, TableCell, TableLook, TableProps, TableRow, TblWidth,
 };
-pub use theme::{theme_slot_for, ThemeColors, ThemeFonts};
+pub use theme::{apply_shading_transform, theme_slot_for, ThemeColors, ThemeFonts};
 pub use zip_struct::{Change, ZipBundle, ZipEntry, ZipError};
 
 pub use notes::{

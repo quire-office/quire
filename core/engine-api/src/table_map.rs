@@ -6,8 +6,11 @@
 //!
 //! 樣式框線：`w:tblStyle` 查 `word/styles.xml` 的 `w:style[@w:type='table']`
 //! → `w:tblPr/w:tblBorders`，並沿 `w:basedOn` 鏈向上繼承（鏈環／斷鏈停住，
-//! 容錯不 panic）。這是 v1 的最小查表——`tblStylePr` 條件底紋/條件框線
-//! （firstRow/band1Horz 等）不實作，與 layout 層头注的取捨一致。
+//! 容錯不 panic）。這是 v1 的最小查表——條件框線（firstRow/band1Horz 等）
+//! 不實作，與 layout 層头注的取捨一致。
+//!
+//! 條件**底紋**（K8-shd）：`tblStylePr/w:tcPr/w:shd` 經 `w:tblLook` 生效閘
+//! 逐屬性級聯消費（見 [`ShadingCtx`]），條件框線仍走 v1 最小查表不變。
 
 use std::collections::HashMap;
 
@@ -16,13 +19,236 @@ use quire_layout::table::{
     WidthSpec,
 };
 use quire_layout::{LayoutParams, SectionSpec, TableSlot, TextMeasurer};
-use quire_ooxml::{Block, BodyTable, Borders, Margins, Table, TblWidth};
+use quire_ooxml::{
+    apply_shading_transform, Block, BodyTable, Borders, Margins, StyleTable, Table, TblWidth,
+    ThemeColors,
+};
 use quire_render_trait::{FLAG_BOLD, FLAG_ITALIC, FLAG_STRIKE, FLAG_UNDERLINE};
+
+/// K8-shd：條件底紋求值上下文＝[`ShadingCtx`]（表格樣式表＋主題色表）。
+///
+/// 規則全部由 fdo68607 LO 實測釘死（紅燈 k8_shd 檔頭四條鐵證＋本卡
+/// `k8_rects_all` 逐頁 F/B 矩形計數）：
+/// 1. 生效閘＝`w:tblLook`（六旗標；缺件走 ECMA 預設 0x04A0——縱帶預設關）；
+/// 2. 優先序（低→高，ECMA-376 §17.4.75 順序表）：firstRow < lastRow <
+///    firstCol < lastCol < band1Horz < band2Horz < band1Vert < band2Vert <
+///    四角——後者覆蓋前者，**逐屬性**級聯非整條件覆蓋（fdo68607：
+///    firstColumn 粗體格仍 gets band1Horz 底色；[`ShdDecision::Pass`] 續條）；
+/// 3. 帶序＝**排除特殊列**（firstRow 列／lastRow 列）後按文件序 1-based：
+///    奇數→band1Horz、偶數→band2Horz（縱帶同理按欄序）；跨頁**不重置**
+///    （LO p1 首列 W、p2 首列 F，全域列序自然產生反相）；
+/// 4. 色值＝cache `@w:fill`（hex6）優先於 theme 推導（corpus 1007 tint 例
+///    975 逐位元組命中、32 分歧例 LO 全讀 cache）；無 cache 才走
+///    `themeFill` 槽色 × `themeFillTint`/`themeFillShade` 變換
+///    （[`apply_shading_transform`]，floor 口徑）。
+
+/// 條件優先序（低→高；ECMA-376 §17.4.75 順序表，四角最高）。
+const COND_PRIORITY: [&str; 12] = [
+    "firstRow",
+    "lastRow",
+    "firstCol",
+    "lastCol",
+    "band1Horz",
+    "band2Horz",
+    "band1Vert",
+    "band2Vert",
+    "neCell",
+    "nwCell",
+    "seCell",
+    "swCell",
+];
+
+/// 一格命中的條件集合（布爾序＝`COND_PRIORITY` 下標；true＝該格此條件生效）。
+#[derive(Clone, Copy, Default)]
+struct CellConds([bool; 12]);
+
+impl CellConds {
+    /// 轉成 `cond_band_fill` 要的 (條件名, 生效) 陣列。
+    fn gates(&self) -> [(&'static str, bool); 12] {
+        let mut out = [("firstRow", false); 12];
+        for (i, on) in self.0.iter().enumerate() {
+            out[i] = (COND_PRIORITY[i], *on);
+        }
+        out
+    }
+}
+
+/// 一表的逐列逐格條件閘（`table_input` 用；`w:tblLook` 缺件走 ECMA 預設）。
+///
+/// 欄序知識閘（不虛構）：無 `w:tblGrid`（corpus selfgen 檔如此）時欄位無從
+/// 判定——firstCol／lastCol／縱帶整體關，只放行列級條件。
+fn compute_cond_gates(t: &Table) -> Vec<Vec<CellConds>> {
+    let l = t.props.look.clone().unwrap_or_default().effective();
+    let n_rows = t.rows.len();
+    let ncols = t.grid.len() as u32;
+    let mut rows = Vec::with_capacity(n_rows);
+    let mut band = 0u32; // 帶序計數（排除特殊列，見模組注釋規則 3）
+    for (ri, row) in t.rows.iter().enumerate() {
+        let first_row = ri == 0 && l.first_row;
+        let last_row = ri + 1 == n_rows && l.last_row;
+        let in_band = !first_row && !last_row;
+        if in_band {
+            band += 1;
+        }
+        let horz = if !l.h_band || !in_band {
+            0
+        } else if band % 2 == 1 {
+            1
+        } else {
+            2
+        };
+        let mut col = 0u32;
+        let cells = row
+            .cells
+            .iter()
+            .map(|c| {
+                let span = c.props.grid_span().max(1);
+                let start = col;
+                col += span;
+                let mut a = [false; 12];
+                a[0] = first_row;
+                a[1] = last_row;
+                a[2] = ncols > 0 && l.first_column && start == 0;
+                a[3] = ncols > 0 && l.last_column && col >= ncols;
+                a[4] = horz == 1;
+                a[5] = horz == 2;
+                // 縱帶序同理排除 firstCol／lastCol 特殊欄（與橫帶對稱口徑；
+                // corpus 無縱帶活例可實證——fdo68607 noVBand=1，老實標明）。
+                let v_ord = if l.v_band && ncols > 0 && !a[2] && !a[3] {
+                    Some((start + 1) % 2)
+                } else {
+                    None
+                };
+                a[6] = v_ord == Some(1); // band1Vert（1-based 奇數欄）
+                a[7] = v_ord == Some(0); // band2Vert
+                a[8] = first_row && a[3]; // neCell
+                a[9] = first_row && a[2]; // nwCell
+                a[10] = last_row && a[3]; // seCell
+                a[11] = last_row && a[2]; // swCell
+                CellConds(a)
+            })
+            .collect();
+        rows.push(cells);
+    }
+    rows
+}
 
 /// twip → pt。非法／缺＝None（容錯鐵律：不猜、不虚構）。
 fn twip_pt(raw: Option<&str>) -> Option<f32> {
     raw.and_then(|s| s.trim().parse::<f32>().ok())
         .map(|v| v / 20.0)
+}
+
+// ---------------------------------------------------------------------------
+// K8-shd：儲存格底色級聯（直接 tcPr shd ＞ tblStylePr 條件帶（經 tblLook 閘））
+// ---------------------------------------------------------------------------
+
+/// K8-shd：底色級聯上下文（表格樣式表＋主題色表）。純讀取派生資料——
+/// 存檔路徑完全不經本層（round-trip 零影響）。`None`＝無級聯資訊
+/// （頁首尾表格呼叫端傳 None＝維持舊「只認直接 fill」行為，零擾動）。
+#[derive(Clone, Copy)]
+pub struct ShadingCtx<'a> {
+    pub styles: &'a StyleTable,
+    pub theme: &'a ThemeColors,
+}
+
+/// `w:shd` 一棵宣告的判讀結果（逐屬性級聯用——PM 鐵證②：條件命中但
+/// 未宣告 fill 時必須**續往下條條件**找，不得整條件覆蓋）。
+enum ShdDecision {
+    /// 決定底色（0xAARRGGBB，alpha 恆 FF）。
+    Color(u32),
+    /// 明確不著色（`@w:val="nil"`／`@w:fill="auto"`）：壓掉更低優先條條件。
+    Nil,
+    /// 本條無 fill 意見（續下一条／退回下層）。
+    Pass,
+}
+
+fn parse_hex6(s: &str) -> Option<u32> {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(s, 16).ok()
+}
+
+/// 一棵 `w:shd`（直接 tcPr 或 tblStylePr 條件帶同口徑）→ 判讀。
+///
+/// 口徑（PM 四條鐵證）：
+/// - `@w:val="nil"`＝明確不著色（Nil）；`@w:fill="auto"`／空字串＝明確
+///   無底色（Nil，壓掉下層——與舊直接路徑「auto＝無填色」結果一致）。
+/// - **cache `@w:fill` 優先於 theme 推導值**（corpus 32/1007 例生產者
+///   cache 與 theme 現值分歧，LO 照讀 cache）。
+/// - theme 推導＝`themeFill` 查 clrScheme ＋ `themeFillTint/Shade` 變換
+///   （`apply_shading_transform`，floor 非 round）。查無主題色＝Pass
+///   （不虚構）。
+/// - `K8_SHD_BUGGY=1`：theme 推導**與條件帶全滅**（呼叫端另跳過條件迴圈），
+///   只留 cache fill 舊路徑——紅燈 k8_shd 燈 1/2/3 必紅的機制分離鎖。
+fn shd_decision(
+    val: Option<&str>,
+    fill: Option<&str>,
+    theme_fill: Option<&str>,
+    tint: Option<&str>,
+    shade: Option<&str>,
+    ctx: Option<&ShadingCtx>,
+) -> ShdDecision {
+    if val.is_some_and(|v| v.eq_ignore_ascii_case("nil")) {
+        return ShdDecision::Nil;
+    }
+    if let Some(f) = fill.map(str::trim).filter(|f| !f.is_empty()) {
+        if f.eq_ignore_ascii_case("auto") {
+            return ShdDecision::Nil;
+        }
+        if let Some(rgb) = parse_hex6(f) {
+            return ShdDecision::Color(0xFF00_0000 | rgb);
+        }
+        // fill 是非法字串（畸形檔）：不得因它放棄 theme 路徑，續往下。
+    }
+    let buggy = std::env::var_os("K8_SHD_BUGGY").is_some();
+    if buggy {
+        return ShdDecision::Pass;
+    }
+    if let (Some(ctx), Some(tok)) = (ctx, theme_fill.map(str::trim)) {
+        if !tok.is_empty() && !tok.eq_ignore_ascii_case("none") {
+            if let Some(base) = ctx.theme.resolve(tok) {
+                return ShdDecision::Color(
+                    apply_shading_transform(base, tint, shade).unwrap_or(base),
+                );
+            }
+        }
+    }
+    ShdDecision::Pass
+}
+
+/// 條件帶查表結果（含 Nil 壓下層語義）。
+fn cond_band_fill(style_id: &str, conds: &[(&str, bool)], ctx: &ShadingCtx) -> Option<u32> {
+    // K8_SHD_BUGGY=1：條件帶全滅（紅燈 k8_shd 燈 1/2/3 的 BUGGY 鎖）。
+    if std::env::var_os("K8_SHD_BUGGY").is_some() {
+        return None;
+    }
+    for (cond, gate) in conds {
+        if !gate {
+            continue;
+        }
+        let Some(cs) = ctx.styles.table_style_cond_shading(style_id, cond) else {
+            continue;
+        };
+        match shd_decision(
+            cs.val.as_deref(),
+            cs.fill.as_deref(),
+            cs.theme_fill.as_deref(),
+            cs.theme_fill_tint.as_deref(),
+            cs.theme_fill_shade.as_deref(),
+            Some(ctx),
+        ) {
+            ShdDecision::Color(c) => return Some(c),
+            // 明確不著色＝本條件宣告壓掉更低優先條（逐屬性級聯）。
+            ShdDecision::Nil => return None,
+            // 該條件未宣告 fill：續下一條（PM 鐵證②實測：firstCol 粗體
+            // 格仍 gets band1Horz 底色）。
+            ShdDecision::Pass => continue,
+        }
+    }
+    None
 }
 
 /// `w:tblW`/`w:tcW` → `WidthSpec`。dxa→Pt；pct→Pct（pct 單位是 1/50%，
@@ -318,8 +544,20 @@ pub fn table_input(
     line_ref_bands: u32,
     run_spans: &HashMap<usize, Vec<CellRun>>,
     advs: &HashMap<usize, f32>,
+    // K8-shd：條件底紋上下文（None＝頁首尾表格／診斷鏡像零擾動路徑；Some
+    // ＝正文表消费 tblStylePr 條件層）。`style_inherit`＝巢狀表未自帶
+    // `w:tblStyle` 時繼承的外層樣式 id（ECMA §17.4.65：子表無宣告沿父表）。
+    cond: Option<&ShadingCtx<'_>>,
+    style_inherit: Option<&str>,
 ) -> TableInput {
     let p = &t.props;
+    // K8-shd：本表（含巢狀）逐列逐格條件閘；巢狀表無自己的閘資料時不虛構
+    // （`cond` 為 None 即整棵零擾動）。樣式 id：自帶 > 繼承外層。
+    let style_id = p.style.as_deref().or(style_inherit);
+    let gates: Option<Vec<Vec<CellConds>>> = match (cond, style_id) {
+        (Some(_), Some(_)) => Some(compute_cond_gates(t)),
+        _ => None,
+    };
     TableInput {
         // M1-band：細尺份數逐層直送（巢狀表同尺；粗尺＝0/1＝舊行為）。
         line_ref_bands,
@@ -342,7 +580,8 @@ pub fn table_input(
         rows: t
             .rows
             .iter()
-            .map(|r| RowInput {
+            .enumerate()
+            .map(|(ri, r)| RowInput {
                 cant_split: r.props.cant_split,
                 height_pt: twip_pt(r.props.height_raw.as_deref()),
                 height_exact: r.props.height_rule.as_deref() == Some("exact"),
@@ -350,7 +589,8 @@ pub fn table_input(
                 cells: r
                     .cells
                     .iter()
-                    .map(|c| {
+                    .enumerate()
+                    .map(|(ci, c)| {
                         // 格內 block **保持文件序**交錯映射（根因 1）：段落與
                         // 子表各自入獨立 Vec 會丟失拓撲序，子表後的尾部段落
                         // 會被拉回頂部——流式堆疊的前提就在這裡。
@@ -407,22 +647,50 @@ pub fn table_input(
                                         line_ref_bands,
                                         run_spans,
                                         advs,
+                                        // K8-shd：巢狀表沿用同一 ctx；樣式未自帶
+                                        // 時繼承本表（子表常不重複宣告 tblStyle）。
+                                        cond,
+                                        style_id,
                                     ))));
                                 }
                             }
                         }
+                        // K8-shd：底色級聯（直接 `tcPr/w:shd` 判讀優先：Color
+                        // 即定案、`nil`／`auto`＝明確無底色（壓掉條件帶）、
+                        // Pass＝本條無意見續查條件帶；直接 shd 也支援 theme
+                        // 推導——舊路徑只認 cache hex，此為能力補齊）。
+                        let band = || match (cond, style_id, gates.as_ref()) {
+                            (Some(ctx), Some(sid), Some(g)) => g
+                                .get(ri)
+                                .and_then(|row| row.get(ci))
+                                .and_then(|cd| cond_band_fill(sid, &cd.gates(), ctx))
+                                // `Color` 帶 alpha（0xFF…）；CellInput.fill 契約＝
+                                // 6 位 RRGGBB（layout `parse_hex6` 恰 6 位才收）。
+                                .map(|argb| format!("{:06X}", argb & 0xFF_FFFF)),
+                            _ => None,
+                        };
+                        let fill: Option<String> = match c.props.shading.as_ref() {
+                            Some(sh) => match shd_decision(
+                                sh.val.as_deref(),
+                                sh.fill.as_deref(),
+                                sh.theme_fill.as_deref(),
+                                sh.theme_fill_tint.as_deref(),
+                                sh.theme_fill_shade.as_deref(),
+                                cond,
+                            ) {
+                                ShdDecision::Color(a) => Some(format!("{:06X}", a & 0xFF_FFFF)),
+                                ShdDecision::Nil => None,
+                                ShdDecision::Pass => band(),
+                            },
+                            None => band(),
+                        };
                         CellInput {
                             width: c.props.width.as_ref().and_then(width_spec),
                             grid_span: c.props.grid_span(),
                             vmerge: c.props.vmerge_restart(),
                             blocks,
                             borders: c.props.borders.as_ref().map(edge_set),
-                            fill: c
-                                .props
-                                .shading
-                                .as_ref()
-                                .and_then(|s| s.fill.clone())
-                                .filter(|f| !f.is_empty() && f != "auto"),
+                            fill,
                             valign: c.props.valign.clone(),
                             margins: c.props.margins.as_ref().map(cell_margins),
                             text_size_pt: cell_size,
@@ -711,6 +979,8 @@ pub fn build_slots(
     line_hs: &[f32],
     line_ref_bands: u32,
     advance_scales: &[f32],
+    // K8-shd：條件底紋 ctx（`None`＝零擾動：頁首尾表格／診斷鏡像／回塞鎖）。
+    cond_ctx: Option<&ShadingCtx<'_>>,
 ) -> Vec<TableSlot> {
     let styles = styles_xml.map(table_style_borders).unwrap_or_default();
     let cell_imgs = cell_image_map(images);
@@ -763,6 +1033,10 @@ pub fn build_slots(
                 line_ref_bands,
                 &run_spans,
                 &advs,
+                // 正文表：頂層無繼承樣式（每表自帶 `w:tblStyle`；巢狀繼承
+                // 在 table_input 內部遞迴處理）。
+                cond_ctx,
+                None,
             );
             let avail_w = avail_w_for(sections, params, bt.para_start);
             let layout = quire_layout::table::layout_table(&input, avail_w, line_h, &m, 0);
@@ -965,6 +1239,8 @@ mod tests {
                 &[],
                 1,
                 &[],
+                // K8-shd：本測只鎖槽錨點口徑——條件底紋傳 None＝零擾動路徑。
+                None,
             );
             assert!(!slots.is_empty(), "{rel}：標為 txbx-in-cell 檔應有表格槽");
             let mut prev_end = 0usize;

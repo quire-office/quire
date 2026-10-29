@@ -681,38 +681,43 @@ fn parse_ppr_default(
 /// 色而非逐格），本卡不做，混收會讓「表層無色、格層有帶」的檔案錯色。
 /// 巢狀深度計數容忍 `tcPr` 內的未知包裝元素（`w:sdt` 類）。
 fn parse_tbl_style_pr_shd(reader: &mut quick_xml::Reader<&[u8]>) -> Option<CondShading> {
-    let mut depth = 1usize; // 進入時已在 tblStylePr 內
-    let mut in_tcpr = false;
-    let mut tcpr_depth = 0usize;
+    // 深度不变式：`depth`＝相对 tblStylePr 的**当前嵌套层**（进入 tblStylePr
+    // 内容＝1；每个非自闭合 Start +1、其配對 End −1）。`tcpr_depth`＝进入
+    // tcPr 后的层（离开＝深度跌回该值以下）。
+    //
+    // 早期版本把 tcpr_depth 记成「进入 tcPr 前的深度」，于是 tcPr 的**兄弟
+    // 子女先关闭**（fdo68607 band1Horz 的 `<w:tcPr><w:tcBorders/>…<w:shd/>`
+    // ——tcBorders 先 End）就被当成 tcPr 结束，其后的 shd 全漏（實測
+    // firstRow／band1Horz 解析 None、只有 band1Vert 命中）。
+    let mut depth = 1usize;
+    let mut tcpr_depth: Option<usize> = None;
     loop {
         match reader.read_event() {
             Err(_) | Ok(Event::Eof) => return None,
             Ok(Event::Start(e)) => {
                 let name = e.local_name();
-                match name.as_ref() {
-                    b"tcPr" if !in_tcpr => {
-                        in_tcpr = true;
-                        tcpr_depth = depth;
+                if tcpr_depth.is_some() && name.as_ref() == b"shd" {
+                    let shd = CondShading {
+                        val: attr_val(&e, "val"),
+                        fill: attr_val(&e, "fill"),
+                        theme_fill: attr_val(&e, "themeFill"),
+                        theme_fill_tint: attr_val(&e, "themeFillTint"),
+                        theme_fill_shade: attr_val(&e, "themeFillShade"),
+                    };
+                    // 仍要把子樹讀乾淨（shd 自閉合居多，但 Empty 與
+                    // Start 兩寫法都得支持），故不在此 return。
+                    skip_element(reader, b"shd");
+                    return Some(shd);
+                }
+                if !e.is_empty() {
+                    depth += 1;
+                    if tcpr_depth.is_none() && name.as_ref() == b"tcPr" {
+                        tcpr_depth = Some(depth);
                     }
-                    b"shd" if in_tcpr => {
-                        let shd = CondShading {
-                            val: attr_val(&e, "val"),
-                            fill: attr_val(&e, "fill"),
-                            theme_fill: attr_val(&e, "themeFill"),
-                            theme_fill_tint: attr_val(&e, "themeFillTint"),
-                            theme_fill_shade: attr_val(&e, "themeFillShade"),
-                        };
-                        // 仍要把子樹讀乾淨（shd 自閉合居多，但 Empty 與
-                        // Start 兩寫法都得支持），故不在此 return。
-                        skip_element(reader, b"shd");
-                        return Some(shd);
-                    }
-                    _ if !e.is_empty() => depth += 1,
-                    _ => {}
                 }
             }
             Ok(Event::Empty(e)) => {
-                if in_tcpr && e.local_name().as_ref() == b"shd" {
+                if tcpr_depth.is_some() && e.local_name().as_ref() == b"shd" {
                     return Some(CondShading {
                         val: attr_val(&e, "val"),
                         fill: attr_val(&e, "fill"),
@@ -722,13 +727,13 @@ fn parse_tbl_style_pr_shd(reader: &mut quick_xml::Reader<&[u8]>) -> Option<CondS
                     });
                 }
             }
-            Ok(Event::End(e)) => {
+            Ok(Event::End(_)) => {
                 depth -= 1;
-                if in_tcpr && depth == tcpr_depth {
-                    in_tcpr = false;
-                }
                 if depth == 0 {
                     return None; // 整棵 tblStylePr 讀盡而無 tcPr/shd
+                }
+                if tcpr_depth.is_some_and(|d| depth < d) {
+                    tcpr_depth = None; // tcPr 自身結束（其子女結束不影響）
                 }
             }
             _ => {}

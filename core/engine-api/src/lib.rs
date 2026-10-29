@@ -516,6 +516,15 @@ impl Engine {
                 .map(|p| para_advance_scale(&p.runs))
                 .collect()
         };
+        // K8-shd：正文表的底色級聯 ctx（樣式表＋主題色）。樣式表用已過
+        // rels 閘的 `style_table`（K6 口徑：無關聯 styles.xml 的檔案條件帶
+        // 不生效——LO 對未關聯樣式表整支忽略）。回塞鎖 `K8_SHD_BUGGY=1`
+        // 由 `shd_decision`／`cond_band_fill` 內部消費（條件帶＋theme 推導
+        // 全滅、cache hex fill 舊路徑保留）。
+        let cond_ctx = table_map::ShadingCtx {
+            styles: &style_table,
+            theme: &theme,
+        };
         let slots = table_map::build_slots(
             &doc.tables,
             &texts,
@@ -527,6 +536,7 @@ impl Engine {
             &para_line_h_v,
             line_ref_bands,
             &grid_adv_v,
+            Some(&cond_ctx),
         );
         let bands = table_map::build_images(
             &images,
@@ -832,6 +842,9 @@ impl Engine {
             &hf_line_hs,
             self.line_ref_bands,
             &[],
+            // K8-shd：頁首尾表格走零擾動路徑（條件帶只作用正文表；
+            // hf 表換算風險未量，比照 K7-cal 水平尺老實不接，屬後續卡）。
+            None,
         );
         let grid: Vec<(f32, f32)> = part.metrics.clone();
         let pls = quire_layout::layout_paragraphs_grid(&texts, hf_params, &[], &grid);
@@ -4098,6 +4111,8 @@ impl Engine {
             &hf_line_hs,
             self.line_ref_bands,
             &[],
+            // K8-shd：頁首尾表格零擾動路徑（同上 8-3 注）。
+            None,
         );
         // 流項＝段落行＋表格依序排列（簡化 packer：頁首本就一小節，不跨頁，
         // 表格整張放進自身帶高，超出部分由頁首自然向下延伸——重疊風險見模組注）。
