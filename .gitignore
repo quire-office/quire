@@ -12,3 +12,6 @@ scripts/corpus/xlsx-work/
 # PM 工作檔（任務卡/臨時腳本，本機保留不入庫）
 .task-cards/
 tmp/
+
+# LO UserInstallation 副產物（lo2pdf/render_lab 誤落 CWD，PM 0311 記帳）
+None/
