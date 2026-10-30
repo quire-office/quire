@@ -194,6 +194,12 @@ pub struct RowInput {
     pub height_exact: bool,
     /// `w:tblHeader`：跨頁切片時逐頁重貼（R2；連頭段，見 `TableLayout::header_count`）。
     pub header: bool,
+    /// K17：錨定框撐列地板（pt；`docs/k18-lo-rowgrow-calibration.md` §6）。
+    /// 列高 = max(natural/trHeight 計算值, 此值)。None／≤0＝無錨定框撐列
+    /// （serde default＋RowInput 預設＝舊行為逐位元組不變）。由 engine 層
+    /// （table_map）算出 `grow = posV + eff_h` 後送入；本層只吃最終地板。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grow_floor_pt: Option<f32>,
 }
 
 /// 表格輸入（欄寬已換算成 pt）。
@@ -1201,6 +1207,25 @@ fn compute_row_heights(tl: &mut TableLayout, input: &TableInput) {
                     bands = bands.max(need);
                     extra = (natural_pt - bands as f32 * line_h).max(0.0);
                 }
+            }
+        }
+        // K17：錨定框撐列地板（grow = posV + eff_h，規格 docs/k18-lo-rowgrow-
+        // calibration.md §6；engine 層算好送入）。**地板不是天花板**：只在
+        // 高于自然高時抬升（比照 trHeight atLeast 紀律，絕不压低）。精確
+        // 口徑：bands/extra 同步換算（ceil 帶數＋負餘量，與垂直邊距同款），
+        // 橫線 y＝bands×line_h＋extra 直接命中 posV+eff_h＋ε（ε≤0.6 由紅燈
+        // ±1 容差吸收，勿把 ε 寫進實作——K18 §6 防過度擬合警示）。
+        if let Some(grow) = input
+            .rows
+            .get(ri)
+            .and_then(|r| r.grow_floor_pt)
+            .filter(|g| g.is_finite() && *g > 0.0)
+        {
+            let cur_pt = bands as f32 * line_h + extra;
+            if grow > cur_pt + 0.01 {
+                let need = quant_bands(grow, line_h);
+                bands = need.max(bands);
+                extra = grow - bands as f32 * line_h;
             }
         }
         rg.bands = bands;

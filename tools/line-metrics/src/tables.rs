@@ -270,6 +270,8 @@ pub fn table_input(
                 height_pt: twip_pt(r.props.height_raw.as_deref()),
                 height_exact: r.props.height_rule.as_deref() == Some("exact"),
                 header: r.props.header,
+                // K17：本工具是斷行量測鏡像，不吃錨定框撐列地板（None＝舊行為）。
+                grow_floor_pt: None,
                 cells: r
                     .cells
                     .iter()

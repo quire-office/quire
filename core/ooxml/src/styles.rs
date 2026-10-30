@@ -993,6 +993,13 @@ impl StyleTable {
         )
     }
 
+    /// 文件級預設西文字型族（docDefaults ∪ pPrDefault/rPr 合成的 `w:rFonts/@w:ascii`；
+    /// theme 引用在解析期已落地成直接值）。K17 撐列 pitch 的框內字族退檔
+    /// （K18 鐵則：框內吃不到族才退此 doc 級值）。無任何宣告＝None。
+    pub fn doc_face(&self) -> Option<String> {
+        self.doc_base().0.fonts.and_then(|f| f.ascii.clone())
+    }
+
     /// 文件級預設段前／段後距（pt；未宣告＝None）。K1 的「主開關」：
     /// 文件層級毫無段落距宣告時，呼叫端保持舊分頁路徑（零變化守門）。
     ///

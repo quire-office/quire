@@ -177,7 +177,9 @@ fn k17_lamp5_textbox3_still_anchored_to_cell_top() {
 #[test]
 fn k17_buggy_regression_lock() {
     if std::env::var_os("K17_ANCHOR_ROWGROW_BUGGY").is_none() {
-        eprintln!("未設 K17_ANCHOR_ROWGROW_BUGGY：跳過回塞檢驗（以 K17_ANCHOR_ROWGROW_BUGGY=1 跑）。");
+        eprintln!(
+            "未設 K17_ANCHOR_ROWGROW_BUGGY：跳過回塞檢驗（以 K17_ANCHOR_ROWGROW_BUGGY=1 跑）。"
+        );
         return;
     }
     let eng = load_corpus(WC048);
