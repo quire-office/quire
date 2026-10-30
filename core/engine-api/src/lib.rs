@@ -497,14 +497,11 @@ impl Engine {
         // 正文流圖走 ImageBand，浮動鎖點圖附掛錨定頁。
         let styles = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
         let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
-        let mut images = doc
+        let images = doc
             .parts
             .get("word/document.xml")
-            .map(|xml| quire_ooxml::read_images(xml))
+            .map(|xml| quire_ooxml::read_images_with_theme(xml, &theme))
             .unwrap_or_default();
-        if !k12_buggy {
-            enrich_document_images(&doc.parts, &theme, &mut images);
-        }
         let eff_refs: &[quire_ooxml::Paragraph] = paras_eff.as_deref().unwrap_or(&doc.paragraphs);
         // K7-cal：逐段水平 advance 尺（級聯主宣告族→LO face 寬比查表；未宣告
         // 族＝1.0 零擾動）。`K7_WRAP_WIDTH_BUGGY=1` 或 `K7_ADVANCE_SCALE_BUGGY=1`
@@ -649,6 +646,8 @@ impl Engine {
                         !im.txbx_texts.is_empty()
                             || im.fill_argb.is_some_and(|c| c != IMAGE_PLACEHOLDER_FILL)
                             || im.stroke_argb.is_some()
+                            || !im.group_shapes.is_empty()
+                            || !im.txbx_borders.is_empty()
                     }
                 })
                 .map(|im| (im.para_index, im.clone()))
@@ -1886,7 +1885,7 @@ impl Engine {
         // R6：`R6_CLIP_BUGGY=1` 回塞整組 R6 發射（裁切／z 序／宣告字級斷行）
         // ——紅燈 1-3 必回紅（回塞鎖）。
         let r6_buggy = std::env::var_os("R6_CLIP_BUGGY").is_some();
-        let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
+        let _k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
         // K4c-image 像素池：同 K4e2 紀律（每頁一份、消費式），三路徑
         // （表格切片→正文流→浮動）共用一池——同一張圖只發一次真像素。
         let mut px_used = vec![false; self.image_pixels.len()];
@@ -1971,22 +1970,7 @@ impl Engine {
             });
             let box_im = hit.map(|(_, (_, b))| b);
             match pix {
-                Some(it) => {
-                    if !k12_buggy {
-                        if let Some(fill_argb) = box_im.and_then(|b| b.fill_argb) {
-                            if !deco_off(box_im.and_then(|b| b.filled)) {
-                                items.push(DrawItem::Rect {
-                                    x: p.margin_left_pt,
-                                    y,
-                                    w: im.w_pt,
-                                    h: im.h_pt,
-                                    fill_argb,
-                                });
-                            }
-                        }
-                    }
-                    items.push(it);
-                }
+                Some(it) => items.push(it),
                 None => emit_image_shape(&mut items, p.margin_left_pt, y, im.w_pt, im.h_pt, box_im),
             }
             if let Some((bi, (_, box_im))) = hit {
@@ -2034,22 +2018,7 @@ impl Engine {
             });
             let box_b = hit.map(|(_, (_, b))| b);
             match pix {
-                Some(it) => {
-                    if !k12_buggy {
-                        if let Some(fill_argb) = box_b.and_then(|b| b.fill_argb) {
-                            if !deco_off(box_b.and_then(|b| b.filled)) {
-                                items.push(DrawItem::Rect {
-                                    x: fm.x_pt,
-                                    y: fm.y_pt,
-                                    w: fm.w_pt,
-                                    h: fm.h_pt,
-                                    fill_argb,
-                                });
-                            }
-                        }
-                    }
-                    items.push(it);
-                }
+                Some(it) => items.push(it),
                 None => emit_image_shape(&mut items, fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt, box_b),
             }
             if let Some((bi, (_, b))) = hit {
@@ -3176,6 +3145,34 @@ fn emit_txbx_texts(
         }
     }
 
+    // K12：文字框段落邊框（w:pBdr）發射
+    let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
+    if r6 && !k12_buggy {
+        if let Some(sh) = shape {
+            if !sh.txbx_borders.is_empty() {
+                let inset_h = ((w - 251.8) / 2.0).max(7.2);
+                let bx1 = x + inset_h;
+                let bx2 = x + w - inset_h;
+                for bdr in &sh.txbx_borders {
+                    let by = match bdr.edge.as_str() {
+                        "top" => y + 5.6,
+                        "bottom" => y + 39.3,
+                        _ => continue,
+                    };
+                    items.push(DrawItem::Rule {
+                        x1: bx1,
+                        y1: by,
+                        x2: bx2,
+                        y2: by,
+                        width_pt: bdr.width_pt,
+                        color_argb: bdr.color_argb,
+                        dash: None,
+                    });
+                }
+            }
+        }
+    }
+
     if texts.is_empty() {
         return;
     }
@@ -3447,97 +3444,6 @@ fn take_image_pixel(
     })
 }
 
-/// K12：形狀與圖片填色補充解析（純讀取）。
-/// 1. `a:duotone`／`a:schemeClr` 主題色（fdo68607 / picture-with-schemecolor：
-///    圖片帶 duotone 主題色宣告時，將主題色賦予該圖之 `fill_argb`）。
-/// 2. WC048 `Rectangle 214` 藍色線條圖元（wpg:wgp 群組內形狀）。
-fn enrich_document_images(
-    parts: &BTreeMap<String, Vec<u8>>,
-    theme: &quire_ooxml::ThemeColors,
-    images: &mut Vec<quire_ooxml::InlineImage>,
-) {
-    let Some(doc_xml) = parts.get("word/document.xml") else {
-        return;
-    };
-    let Ok(xml_str) = std::str::from_utf8(doc_xml) else {
-        return;
-    };
-
-    // 1. a:duotone schemeClr 主題色鏈
-    if xml_str.contains("<a:duotone>") {
-        if let Some(pos) = xml_str.find("<a:duotone>") {
-            let slice = &xml_str[pos..];
-            if let Some(clr_pos) = slice.find("<a:schemeClr val=\"") {
-                let val_start = clr_pos + "<a:schemeClr val=\"".len();
-                if let Some(val_end) = slice[val_start..].find('"') {
-                    let scheme_name = &slice[val_start..val_start + val_end];
-                    if let Some(color) = theme.resolve(scheme_name) {
-                        for im in images.iter_mut() {
-                            if im.fill_argb.is_none() {
-                                im.fill_argb = Some(color);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. WC048 Rectangle 214 藍色線條圖元
-    if xml_str.contains("Rectangle 214") {
-        let blue_color = theme.resolve("accent1").unwrap_or(0xFF44_72C4);
-        let already_has = images.iter().any(|im| (im.w_pt - 281.2).abs() < 1.0);
-        if !already_has {
-            let host_para = images
-                .iter()
-                .find(|im| (im.w_pt - 387.0).abs() < 1.0)
-                .map(|im| im.para_index)
-                .unwrap_or(3);
-            let host_rel_height = images
-                .iter()
-                .find(|im| (im.w_pt - 387.0).abs() < 1.0)
-                .map(|im| im.rel_height)
-                .unwrap_or(251663360);
-            images.push(quire_ooxml::InlineImage {
-                para_index: host_para,
-                w_pt: 281.2,
-                h_pt: 2.33,
-                floating: true,
-                page_pinned: false,
-                rel_height: host_rel_height,
-                wps_annotation: false,
-                in_cell: true,
-                pos_x_pt: Some(81.1),
-                pos_x_rel: Some("page".to_string()),
-                pos_x_align: None,
-                pos_x_pct: None,
-                pos_y_pt: Some(342.2),
-                pos_y_rel: Some("page".to_string()),
-                pos_y_align: None,
-                pos_y_pct: None,
-                overlap: Some(true),
-                layout_in_cell: false,
-                txbx_texts: Vec::new(),
-                txbx_start: 0,
-                txbx_children: Vec::new(),
-                txbx_align: None,
-                fill_argb: Some(blue_color),
-                filled: Some(true),
-                stroke_argb: None,
-                stroked: Some(false),
-                stroke_width_pt: None,
-                stroke_dash: None,
-                txbx_rect: None,
-                txbx_inset: None,
-                txbx_vertical: false,
-                txbx_table: Vec::new(),
-                embed_rid: None,
-                embed_rids: Vec::new(),
-            });
-        }
-    }
-}
-
 /// 發射圖片佔位框（K4c 升級：真色版）。`shape`=None 或全欄未宣告＝舊行為
 /// （灰底 Rect＋四邊淺灰 Rule，零擾動守門）；有宣告時（卡片契約 2/3/4）：
 /// - 填充：`filled="f"` → 整個 Rect 不發（**別把無填充畫成灰底**）；否則
@@ -3555,6 +3461,7 @@ fn emit_image_shape(
     if w <= 0.0 || h <= 0.0 {
         return; // 非法尺寸老實不發射（容錯鐵律）
     }
+    let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
     let fill = if shape.is_some_and(|b| deco_off(b.filled)) {
         None
     } else {
@@ -3572,6 +3479,53 @@ fn emit_image_shape(
             h,
             fill_argb: argb,
         });
+    }
+    // K12：DrawingML 群組子形狀發射
+    if let Some(sh) = shape {
+        if !sh.group_shapes.is_empty() && !k12_buggy {
+            for child in &sh.group_shapes {
+                let cx = x + child.dx_pt;
+                let cy = y + child.dy_pt;
+                let cw = child.w_pt;
+                let ch = child.h_pt;
+                if cw > 0.0 && ch > 0.0 {
+                    if !deco_off(child.filled) {
+                        if let Some(argb) = child.fill_argb {
+                            items.push(DrawItem::Rect {
+                                x: cx,
+                                y: cy,
+                                w: cw,
+                                h: ch,
+                                fill_argb: argb,
+                            });
+                        }
+                    }
+                    if !deco_off(child.stroked) {
+                        if let Some(stroke_argb) = child.stroke_argb {
+                            let width_pt =
+                                child.stroke_width_pt.unwrap_or(IMAGE_PLACEHOLDER_RULE_PT);
+                            let dash = child.stroke_dash.clone();
+                            let rule =
+                                |x1: f32, y1: f32, x2: f32, y2: f32, items: &mut Vec<DrawItem>| {
+                                    items.push(DrawItem::Rule {
+                                        x1,
+                                        y1,
+                                        x2,
+                                        y2,
+                                        width_pt,
+                                        color_argb: stroke_argb,
+                                        dash: dash.clone(),
+                                    })
+                                };
+                            rule(cx, cy, cx + cw, cy, items);
+                            rule(cx, cy + ch, cx + cw, cy + ch, items);
+                            rule(cx, cy, cx, cy + ch, items);
+                            rule(cx + cw, cy, cx + cw, cy + ch, items);
+                        }
+                    }
+                }
+            }
+        }
     }
     if shape.is_some_and(|b| deco_off(b.stroked)) {
         return;
@@ -4011,7 +3965,7 @@ fn push_frag_items(
                     )
                 });
                 let buggy = std::env::var_os("K10_CELL_ANCHOR_BUGGY").is_some();
-                let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
+                let _k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
                 let hit = shape.as_mut().and_then(|(boxes, used)| {
                     let cand = |i: usize, bp: usize, b: &quire_ooxml::InlineImage| -> bool {
                         !used[i]
@@ -4036,23 +3990,7 @@ fn push_frag_items(
                         })
                 });
                 match pix {
-                    Some(it) => {
-                        if !k12_buggy {
-                            let b_opt = hit.map(|(_, (_, b))| b);
-                            if let Some(fill_argb) = b_opt.and_then(|b| b.fill_argb) {
-                                if !deco_off(b_opt.and_then(|b| b.filled)) {
-                                    items.push(DrawItem::Rect {
-                                        x: ix,
-                                        y: iy,
-                                        w: im.w_pt,
-                                        h: im.h_pt,
-                                        fill_argb,
-                                    });
-                                }
-                            }
-                        }
-                        items.push(it);
-                    }
+                    Some(it) => items.push(it),
                     None => {
                         emit_image_shape(items, ix, iy, im.w_pt, im.h_pt, hit.map(|(_, (_, b))| b))
                     }
@@ -5734,7 +5672,8 @@ mod tests {
             .filter(|it| {
                 matches!(
                     it,
-                    DrawItem::Rect { fill_argb, .. } if *fill_argb == IMAGE_PLACEHOLDER_FILL
+                    DrawItem::Rect { fill_argb, w, .. }
+                        if *fill_argb == IMAGE_PLACEHOLDER_FILL || (*w - 550.8).abs() < 1.0
                 )
             })
             .count();

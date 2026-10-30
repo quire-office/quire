@@ -1142,6 +1142,8 @@ mod tests {
             rel_height: 0,
             wps_annotation: false,
             layout_in_cell: false,
+            group_shapes: Vec::new(),
+            txbx_borders: Vec::new(),
         }
     }
 

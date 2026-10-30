@@ -21,7 +21,10 @@ mod theme;
 mod zip_struct;
 
 pub use diff::{diff_untouched, diff_zip_structure, EntryDiff, ZipDiff, ZipStructureError};
-pub use drawing::{count_paras, origin_of, read_images, InlineImage};
+pub use drawing::{
+    count_paras, origin_of, read_images, read_images_with_theme, InlineChildShape, InlineImage,
+    ShapeBorder,
+};
 pub use rels::{read_rels, resolve_relationship, Relationship};
 pub use sectpr::{
     read_even_and_odd_headers, read_sections_endnote_pr, read_sections_header_footer,

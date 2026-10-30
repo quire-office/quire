@@ -62,6 +62,39 @@ fn is_zero_usize(v: &usize) -> bool {
     *v == 0
 }
 
+/// K12：DrawingML 群組（`wpg:wgp`）內的子形狀投影。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InlineChildShape {
+    pub dx_pt: f32,
+    pub dy_pt: f32,
+    pub w_pt: f32,
+    pub h_pt: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_argb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_argb: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroked: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_width_pt: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_dash: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub txbx_texts: Vec<String>,
+}
+
+/// K12：文字框/形狀段落邊框（`w:pBdr`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShapeBorder {
+    pub edge: String,
+    pub width_pt: f32,
+    pub color_argb: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_pt: Option<f32>,
+}
+
 /// 圖片佔位投影：扁平段落序列第 `para_index` 段內的一個圖片/圖形框。
 ///
 /// 只讀投影（段落以索引引用，與 `Block::Paragraph{index}` 同款）；佔位
@@ -207,6 +240,12 @@ pub struct InlineImage {
     /// ＝false；serde default＋false 不外露＝無此旗標檔案的序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub layout_in_cell: bool,
+    /// K12：DrawingML 群組（`wpg:wgp`）內的子形狀清單。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_shapes: Vec<InlineChildShape>,
+    /// K12：文字框段落邊框（`w:pBdr`）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub txbx_borders: Vec<ShapeBorder>,
 }
 
 impl InlineImage {
@@ -911,6 +950,65 @@ struct Pending {
     /// `a:extLst`／`a:ext` 深度（>0 時 solidFill/srgbClr **一概不收**：
     /// 擴充清單如 `a14:hiddenLine` 非真實填充／描邊，mce-nested 實據）。
     ext_ctx: usize,
+    // ---- K12：DrawingML 群組（wpg:wgp）子形狀與段落邊框（w:pBdr）----
+    group_shapes: Vec<InlineChildShape>,
+    txbx_borders: Vec<ShapeBorder>,
+    grp_depth: usize,
+    in_grp_sp_pr: bool,
+    grp_off_x: f64,
+    grp_off_y: f64,
+    grp_ext_cx: f64,
+    grp_ext_cy: f64,
+    grp_ch_off_x: f64,
+    grp_ch_off_y: f64,
+    grp_ch_ext_cx: f64,
+    grp_ch_ext_cy: f64,
+    cur_child: Option<PendingChildShape>,
+    in_p_bdr: bool,
+}
+
+struct PendingChildShape {
+    off_x: f64,
+    off_y: f64,
+    ext_cx: f64,
+    ext_cy: f64,
+    sp_ctx: usize,
+    ln_ctx: usize,
+    fill_ctx: usize,
+    fill: Option<u32>,
+    filled_f: bool,
+    stroke: Option<u32>,
+    stroked_f: bool,
+    stroke_w: Option<f32>,
+    dash: Option<String>,
+    txbx: Vec<String>,
+    txbx_cur: String,
+    txbx_in_t: bool,
+    txbx_para_depth: usize,
+}
+
+impl PendingChildShape {
+    fn new() -> Self {
+        Self {
+            off_x: 0.0,
+            off_y: 0.0,
+            ext_cx: 0.0,
+            ext_cy: 0.0,
+            sp_ctx: 0,
+            ln_ctx: 0,
+            fill_ctx: 0,
+            fill: None,
+            filled_f: false,
+            stroke: None,
+            stroked_f: false,
+            stroke_w: None,
+            dash: None,
+            txbx: Vec::new(),
+            txbx_cur: String::new(),
+            txbx_in_t: false,
+            txbx_para_depth: 0,
+        }
+    }
 }
 
 impl Pending {
@@ -986,11 +1084,26 @@ impl Pending {
             ln_ctx: 0,
             fill_ctx: 0,
             ext_ctx: 0,
+            group_shapes: Vec::new(),
+            txbx_borders: Vec::new(),
+            grp_depth: 0,
+            in_grp_sp_pr: false,
+            grp_off_x: 0.0,
+            grp_off_y: 0.0,
+            grp_ext_cx: 0.0,
+            grp_ext_cy: 0.0,
+            grp_ch_off_x: 0.0,
+            grp_ch_off_y: 0.0,
+            grp_ch_ext_cx: 0.0,
+            grp_ch_ext_cy: 0.0,
+            cur_child: None,
+            in_p_bdr: false,
         }
     }
 }
 
 struct DrawingParser {
+    theme: crate::ThemeColors,
     out: Vec<InlineImage>,
     /// 全局 `w:p` Start 計數——與 `parse_document_xml` 逐位元組同口徑
     /// （Start 佔槽、自閉合不算、Fallback 內不計）。
@@ -1033,8 +1146,14 @@ struct DrawingParser {
 }
 
 impl DrawingParser {
+    #[allow(dead_code)]
     fn new() -> Self {
+        Self::with_theme(crate::ThemeColors::default())
+    }
+
+    fn with_theme(theme: crate::ThemeColors) -> Self {
         Self {
+            theme,
             out: Vec::new(),
             p_count: 0,
             tc_depth: 0,
@@ -1108,6 +1227,8 @@ impl DrawingParser {
             txbx_table: p.tbl_rows.clone(),
             embed_rid: p.rid.clone(),
             embed_rids: p.rids.clone(),
+            group_shapes: p.group_shapes.clone(),
+            txbx_borders: p.txbx_borders.clone(),
         });
     }
 
@@ -1215,6 +1336,174 @@ fn map_child_shape(v: &mut Pending, e: &quick_xml::events::BytesStart) {
     ];
     if rect.iter().all(|x| x.is_finite()) && rect[2] > 0.0 && rect[3] > 0.0 {
         v.mapped_rect = Some(rect);
+    }
+}
+
+fn apply_graphic_elem(
+    theme: &crate::ThemeColors,
+    p: &mut Pending,
+    name: &[u8],
+    e: &quick_xml::events::BytesStart,
+) {
+    if p.in_grp_sp_pr {
+        match name {
+            b"off" => {
+                if let Some(x) = attr_local(e, b"x").and_then(|v| v.parse::<f64>().ok()) {
+                    p.grp_off_x = x;
+                }
+                if let Some(y) = attr_local(e, b"y").and_then(|v| v.parse::<f64>().ok()) {
+                    p.grp_off_y = y;
+                }
+            }
+            b"ext" if p.ext_ctx == 0 => {
+                if let Some(cx) = attr_local(e, b"cx").and_then(|v| v.parse::<f64>().ok()) {
+                    p.grp_ext_cx = cx;
+                }
+                if let Some(cy) = attr_local(e, b"cy").and_then(|v| v.parse::<f64>().ok()) {
+                    p.grp_ext_cy = cy;
+                }
+            }
+            b"chOff" => {
+                if let Some(x) = attr_local(e, b"x").and_then(|v| v.parse::<f64>().ok()) {
+                    p.grp_ch_off_x = x;
+                }
+                if let Some(y) = attr_local(e, b"y").and_then(|v| v.parse::<f64>().ok()) {
+                    p.grp_ch_off_y = y;
+                }
+            }
+            b"chExt" => {
+                if let Some(cx) = attr_local(e, b"cx").and_then(|v| v.parse::<f64>().ok()) {
+                    p.grp_ch_ext_cx = cx;
+                }
+                if let Some(cy) = attr_local(e, b"cy").and_then(|v| v.parse::<f64>().ok()) {
+                    p.grp_ch_ext_cy = cy;
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(child) = p.cur_child.as_mut() {
+        match name {
+            b"off" => {
+                if let Some(x) = attr_local(e, b"x").and_then(|v| v.parse::<f64>().ok()) {
+                    child.off_x = x;
+                }
+                if let Some(y) = attr_local(e, b"y").and_then(|v| v.parse::<f64>().ok()) {
+                    child.off_y = y;
+                }
+            }
+            b"ext" if p.ext_ctx == 0 => {
+                if let Some(cx) = attr_local(e, b"cx").and_then(|v| v.parse::<f64>().ok()) {
+                    child.ext_cx = cx;
+                }
+                if let Some(cy) = attr_local(e, b"cy").and_then(|v| v.parse::<f64>().ok()) {
+                    child.ext_cy = cy;
+                }
+            }
+            b"ln" => {
+                if child.stroke_w.is_none() && p.ext_ctx == 0 {
+                    child.stroke_w = emu_to_pt(attr_local(e, b"w").as_deref());
+                }
+            }
+            b"srgbClr" if child.fill_ctx > 0 && p.ext_ctx == 0 => {
+                let argb = parse_vml_color(attr_local(e, b"val").as_deref());
+                if let Some(c) = argb {
+                    if child.ln_ctx > 0 {
+                        if child.stroke.is_none() {
+                            child.stroke = Some(c);
+                        }
+                    } else if child.sp_ctx > 0 && child.fill.is_none() {
+                        child.fill = Some(c);
+                    }
+                }
+            }
+            b"schemeClr" if child.fill_ctx > 0 && p.ext_ctx == 0 => {
+                if let Some(token) = attr_local(e, b"val") {
+                    if let Some(c) = theme.resolve(&token) {
+                        if child.ln_ctx > 0 {
+                            if child.stroke.is_none() {
+                                child.stroke = Some(c);
+                            }
+                        } else if child.sp_ctx > 0 && child.fill.is_none() {
+                            child.fill = Some(c);
+                        }
+                    }
+                }
+            }
+            b"noFill" => {
+                if child.ln_ctx > 0 {
+                    child.stroked_f = true;
+                } else if child.sp_ctx > 0 {
+                    child.filled_f = true;
+                }
+            }
+            _ => {}
+        }
+    } else {
+        match name {
+            b"srgbClr" if p.fill_ctx > 0 && p.ext_ctx == 0 => {
+                let argb = parse_vml_color(attr_local(e, b"val").as_deref());
+                if let Some(c) = argb {
+                    if p.ln_ctx > 0 {
+                        if p.stroke.is_none() {
+                            p.stroke = Some(c);
+                        }
+                    } else if p.sp_ctx > 0 && p.fill.is_none() {
+                        p.fill = Some(c);
+                    }
+                }
+            }
+            b"schemeClr" if p.fill_ctx > 0 && p.ext_ctx == 0 => {
+                if let Some(token) = attr_local(e, b"val") {
+                    if let Some(c) = theme.resolve(&token) {
+                        if p.ln_ctx > 0 {
+                            if p.stroke.is_none() {
+                                p.stroke = Some(c);
+                            }
+                        } else if p.sp_ctx > 0 && p.fill.is_none() {
+                            p.fill = Some(c);
+                        }
+                    }
+                }
+            }
+            b"noFill" => {
+                if p.ln_ctx > 0 {
+                    p.stroked_f = true;
+                }
+            }
+            b"top" | b"bottom" | b"left" | b"right" if p.in_p_bdr => {
+                let val = attr_local(e, b"val");
+                let is_none = val.as_deref().is_some_and(|v| matches!(v, "none" | "nil"));
+                if !is_none {
+                    let sz = attr_local(e, b"sz")
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .unwrap_or(24.0)
+                        / 8.0;
+                    let space = attr_local(e, b"space").and_then(|v| v.parse::<f32>().ok());
+                    let color_str = attr_local(e, b"color");
+                    let theme_clr = attr_local(e, b"themeColor");
+                    let c = theme_clr
+                        .as_deref()
+                        .and_then(|tc| theme.resolve(tc))
+                        .or_else(|| color_str.as_deref().and_then(crate::parse_color_val))
+                        .unwrap_or(0xFF000000);
+                    let edge = match name {
+                        b"top" => "top",
+                        b"bottom" => "bottom",
+                        b"left" => "left",
+                        b"right" => "right",
+                        _ => "top",
+                    };
+                    p.txbx_borders.push(ShapeBorder {
+                        edge: edge.to_string(),
+                        width_pt: sz,
+                        color_argb: c,
+                        space_pt: space,
+                    });
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1433,47 +1722,68 @@ impl DrawingParser {
             if name == b"txbxContent" && !empty {
                 p.has_txbx = true;
             }
-            // R6：DrawingML `wps:wsp` 標註——只有此類候選吃宿主框裁切／z 序。
+            // K12：群組與段落邊框生命週期追蹤
+            if name == b"wgp" && !empty {
+                p.grp_depth += 1;
+            } else if name == b"grpSpPr" && !empty {
+                p.in_grp_sp_pr = true;
+            } else if name == b"pBdr" && !empty {
+                p.in_p_bdr = true;
+            }
+            // R6 / K12：DrawingML `wps:wsp` 標註與群組子形狀
             if name == b"wsp" {
                 p.wps_annotation = true;
-            }
-            // K4c：wps:spPr 樣式上下文深度（填充／描邊歸屬判別用）。
-            match name {
-                b"spPr" => p.sp_ctx += 1,
-                // 擴充清單標記：`a:extLst` 與其子 `a:ext/@uri`（帶 uri 者
-                // 才是擴充清單節點；xfrm 內的幾何 `a:ext cx/cy` 同名不同物）。
-                b"extLst" => p.ext_ctx += 1,
-                b"ext" if attr_local(e, b"uri").is_some() => p.ext_ctx += 1,
-                b"ln" => {
-                    p.ln_ctx += 1;
-                    // a:ln/@w（EMU）＝描邊線寬（首見為準；擴充清單內的
-                    // hiddenLine 不計——那不是真的可見描邊）。
-                    if p.stroke_w.is_none() && p.ext_ctx == 0 {
-                        p.stroke_w = emu_to_pt(attr_local(e, b"w").as_deref());
-                    }
+                if p.grp_depth > 0 {
+                    p.cur_child = Some(PendingChildShape::new());
                 }
-                b"solidFill" => p.fill_ctx += 1,
-                b"srgbClr" if p.fill_ctx > 0 && p.ext_ctx == 0 => {
-                    // 卡片契約 2 優先序（DrawingML 路徑）：`a:ln` 內的
-                    // solidFill 歸**描邊**，否則（spPr 直下）歸填充。首見為準。
-                    let argb = parse_vml_color(attr_local(e, b"val").as_deref());
-                    if let Some(c) = argb {
-                        if p.ln_ctx > 0 {
-                            if p.stroke.is_none() {
-                                p.stroke = Some(c);
-                            }
-                        } else if p.sp_ctx > 0 && p.fill.is_none() {
-                            p.fill = Some(c);
+            }
+            // K4c / K12：wps:spPr 樣式上下文深度（填充／描邊歸屬判別用）。
+            if let Some(child) = p.cur_child.as_mut() {
+                match name {
+                    b"spPr" => child.sp_ctx += 1,
+                    b"extLst" => p.ext_ctx += 1,
+                    b"ext" if attr_local(e, b"uri").is_some() => p.ext_ctx += 1,
+                    b"ln" => child.ln_ctx += 1,
+                    b"solidFill" => child.fill_ctx += 1,
+                    _ => {}
+                }
+            } else {
+                match name {
+                    b"spPr" => p.sp_ctx += 1,
+                    // 擴充清單標記：`a:extLst` 與其子 `a:ext/@uri`（帶 uri 者
+                    // 才是擴充清單節點；xfrm 內的幾何 `a:ext cx/cy` 同名不同物）。
+                    b"extLst" => p.ext_ctx += 1,
+                    b"ext" if attr_local(e, b"uri").is_some() => p.ext_ctx += 1,
+                    b"ln" => {
+                        p.ln_ctx += 1;
+                        // a:ln/@w（EMU）＝描邊線寬（首見為準；擴充清單內的
+                        // hiddenLine 不計——那不是真的可見描邊）。
+                        if p.stroke_w.is_none() && p.ext_ctx == 0 {
+                            p.stroke_w = emu_to_pt(attr_local(e, b"w").as_deref());
                         }
                     }
+                    b"solidFill" => p.fill_ctx += 1,
+                    _ => {}
                 }
-                _ => {}
             }
+            // K12：套用繪圖幾何、顏色與邊框解析
+            apply_graphic_elem(&self.theme, &mut p, name, e);
+
             // 框內文字採集（K4e2；群組圖形 wps:txbx 路徑）。
             if self.txbx_depth > 0 {
                 match name {
-                    b"p" if !empty => p.txbx_para_depth += 1,
-                    b"t" => p.txbx_in_t = true,
+                    b"p" if !empty => {
+                        p.txbx_para_depth += 1;
+                        if let Some(child) = p.cur_child.as_mut() {
+                            child.txbx_para_depth += 1;
+                        }
+                    }
+                    b"t" => {
+                        p.txbx_in_t = true;
+                        if let Some(child) = p.cur_child.as_mut() {
+                            child.txbx_in_t = true;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1707,22 +2017,9 @@ impl DrawingParser {
                     // K4c-image：同 Start 分支，經 note_rid 統一記錄。
                     p.note_rid(attr_local(e, b"embed"));
                 }
-                // K4c：`a:srgbClr` 幾乎總以自閉合形態出現（tdf152200 實據
-                // `<a:srgbClr val="000000"/>`）——Empty 事件同樣要落色，
-                // 歸屬判別與 Start 臂同口徑（ln 內→描邊、spPr 直下→填充）。
-                b"srgbClr" if p.fill_ctx > 0 && p.ext_ctx == 0 => {
-                    if let Some(c) = parse_vml_color(attr_local(e, b"val").as_deref()) {
-                        if p.ln_ctx > 0 {
-                            if p.stroke.is_none() {
-                                p.stroke = Some(c);
-                            }
-                        } else if p.sp_ctx > 0 && p.fill.is_none() {
-                            p.fill = Some(c);
-                        }
-                    }
-                }
                 _ => {}
             }
+            apply_graphic_elem(&self.theme, p, name, e);
         }
     }
 
@@ -1740,6 +2037,11 @@ impl DrawingParser {
             if let Some(g) = self.graphic.as_mut() {
                 if g.txbx_in_t {
                     g.txbx_cur.push_str(text);
+                }
+                if let Some(child) = g.cur_child.as_mut() {
+                    if child.txbx_in_t {
+                        child.txbx_cur.push_str(text);
+                    }
                 }
             }
             return;
@@ -1838,6 +2140,9 @@ impl DrawingParser {
             if let Some(g) = self.graphic.as_mut() {
                 if name == b"t" {
                     g.txbx_in_t = false;
+                    if let Some(child) = g.cur_child.as_mut() {
+                        child.txbx_in_t = false;
+                    }
                 } else {
                     g.txbx_para_depth = g.txbx_para_depth.saturating_sub(1);
                     if g.txbx_para_depth == 0 {
@@ -1848,6 +2153,12 @@ impl DrawingParser {
                             if let Some(c) = g.txbx_children.last_mut() {
                                 *c += 1;
                             }
+                        }
+                    }
+                    if let Some(child) = g.cur_child.as_mut() {
+                        child.txbx_para_depth = child.txbx_para_depth.saturating_sub(1);
+                        if child.txbx_para_depth == 0 {
+                            child.txbx.push(std::mem::take(&mut child.txbx_cur));
                         }
                     }
                 }
@@ -1946,10 +2257,74 @@ impl DrawingParser {
                     }
                     return;
                 }
-                // K4c：spPr 樣式上下文閉合出棧（與 Start 的 += 配對）。
+                b"pBdr" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.in_p_bdr = false;
+                    }
+                    return;
+                }
+                b"grpSpPr" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.in_grp_sp_pr = false;
+                    }
+                    return;
+                }
+                b"wgp" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.grp_depth = p.grp_depth.saturating_sub(1);
+                    }
+                    return;
+                }
+                b"wsp" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        if let Some(child) = p.cur_child.take() {
+                            let (dx_pt, dy_pt, w_pt, h_pt) = if p.grp_ch_ext_cx > 0.0
+                                && p.grp_ch_ext_cy > 0.0
+                                && p.grp_ext_cx > 0.0
+                                && p.grp_ext_cy > 0.0
+                            {
+                                let dx = (child.off_x - p.grp_ch_off_x) / p.grp_ch_ext_cx
+                                    * p.grp_ext_cx
+                                    / EMU_PER_PT;
+                                let dy = (child.off_y - p.grp_ch_off_y) / p.grp_ch_ext_cy
+                                    * p.grp_ext_cy
+                                    / EMU_PER_PT;
+                                let w = child.ext_cx / p.grp_ch_ext_cx * p.grp_ext_cx / EMU_PER_PT;
+                                let h = child.ext_cy / p.grp_ch_ext_cy * p.grp_ext_cy / EMU_PER_PT;
+                                (dx as f32, dy as f32, w as f32, h as f32)
+                            } else {
+                                (
+                                    (child.off_x / EMU_PER_PT) as f32,
+                                    (child.off_y / EMU_PER_PT) as f32,
+                                    (child.ext_cx / EMU_PER_PT) as f32,
+                                    (child.ext_cy / EMU_PER_PT) as f32,
+                                )
+                            };
+                            p.group_shapes.push(InlineChildShape {
+                                dx_pt,
+                                dy_pt,
+                                w_pt,
+                                h_pt,
+                                fill_argb: child.fill,
+                                filled: if child.filled_f { Some(false) } else { None },
+                                stroke_argb: child.stroke,
+                                stroked: if child.stroked_f { Some(false) } else { None },
+                                stroke_width_pt: child.stroke_w,
+                                stroke_dash: child.dash,
+                                txbx_texts: child.txbx,
+                            });
+                        }
+                    }
+                    return;
+                }
+                // K4c / K12：spPr 樣式上下文閉合出棧（與 Start 的 += 配對）。
                 b"spPr" => {
                     if let Some(p) = self.graphic.as_mut() {
-                        p.sp_ctx = p.sp_ctx.saturating_sub(1);
+                        if let Some(child) = p.cur_child.as_mut() {
+                            child.sp_ctx = child.sp_ctx.saturating_sub(1);
+                        } else {
+                            p.sp_ctx = p.sp_ctx.saturating_sub(1);
+                        }
                     }
                     return;
                 }
@@ -1964,13 +2339,21 @@ impl DrawingParser {
                 }
                 b"ln" => {
                     if let Some(p) = self.graphic.as_mut() {
-                        p.ln_ctx = p.ln_ctx.saturating_sub(1);
+                        if let Some(child) = p.cur_child.as_mut() {
+                            child.ln_ctx = child.ln_ctx.saturating_sub(1);
+                        } else {
+                            p.ln_ctx = p.ln_ctx.saturating_sub(1);
+                        }
                     }
                     return;
                 }
                 b"solidFill" => {
                     if let Some(p) = self.graphic.as_mut() {
-                        p.fill_ctx = p.fill_ctx.saturating_sub(1);
+                        if let Some(child) = p.cur_child.as_mut() {
+                            child.fill_ctx = child.fill_ctx.saturating_sub(1);
+                        } else {
+                            p.fill_ctx = p.fill_ctx.saturating_sub(1);
+                        }
                     }
                     return;
                 }
@@ -2003,11 +2386,11 @@ fn attr_local(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
 }
 
 /// 事件流單趟餵入（read_images／count_paras 共用，口徑必然一致）。
-fn run_parser(xml: &[u8]) -> DrawingParser {
+fn run_parser_with_theme(xml: &[u8], theme: crate::ThemeColors) -> DrawingParser {
     use quick_xml::events::Event;
     let text = String::from_utf8_lossy(xml).into_owned();
     let mut reader = quick_xml::Reader::from_str(&text);
-    let mut p = DrawingParser::new();
+    let mut p = DrawingParser::with_theme(theme);
     loop {
         match reader.read_event() {
             Ok(Event::Eof) => break,
@@ -2035,10 +2418,17 @@ fn run_parser(xml: &[u8]) -> DrawingParser {
     p
 }
 
+fn run_parser(xml: &[u8]) -> DrawingParser {
+    run_parser_with_theme(xml, crate::ThemeColors::default())
+}
+
 /// 解析 document.xml 全文的圖片幾何（純函數；engine／測試入口）。
 ///
 /// 輸出依文档序；`para_index` 用扁平 Start 口徑（與 `parse_document_xml`
 /// 逐檔一致，corpus 柵欄鎖死）。
+pub fn read_images_with_theme(xml: &[u8], theme: &crate::ThemeColors) -> Vec<InlineImage> {
+    run_parser_with_theme(xml, theme.clone()).out
+}
 pub fn read_images(xml: &[u8]) -> Vec<InlineImage> {
     run_parser(xml).out
 }

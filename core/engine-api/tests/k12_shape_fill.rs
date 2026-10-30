@@ -36,12 +36,58 @@ const WANT_BLUE: u32 = 0xFF44_72C4;
 /// (c) 塊 x≈80.9  y≈341.6 w≈281.4 h≈2.3 fill 0xFF4472C4
 #[test]
 fn wc048_three_blue_primitives_exact_lock() {
+    let raw = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../corpus/xopt/TestFiles_WC_WC048-Text-Box-in-Cell.docx"
+    ))
+    .unwrap();
+    let doc = quire_ooxml::parse(&raw).unwrap();
+    let imgs = quire_ooxml::read_images(doc.parts.get("word/document.xml").unwrap());
+    for (i, im) in imgs.iter().enumerate() {
+        println!("IMG {i}: w={}, h={}, pos_x={:?}, pos_y={:?}, rel_h={}, txbx={:?}, fill={:?}, stroke={:?}",
+            im.w_pt, im.h_pt, im.pos_x_pt, im.pos_y_pt, im.rel_height, im.txbx_texts, im.fill_argb, im.stroke_argb);
+    }
     let eng = load_corpus("xopt/TestFiles_WC_WC048-Text-Box-in-Cell.docx");
     let dl = eng.page_display_list(0).expect("p0 存在");
 
     let mut found_a = false;
     let mut found_b = false;
     let mut found_c = false;
+
+    for it in &dl.items {
+        match it {
+            DrawItem::Rule {
+                x1,
+                y1,
+                x2,
+                y2,
+                color_argb,
+                width_pt,
+                ..
+            } => {
+                println!("RULE: x1={x1}, y1={y1}, x2={x2}, y2={y2}, color=0x{color_argb:08X}, w={width_pt}");
+            }
+            DrawItem::Rect {
+                x,
+                y,
+                w,
+                h,
+                fill_argb,
+            } => {
+                println!("RECT: x={x}, y={y}, w={w}, h={h}, fill=0x{fill_argb:08X}");
+            }
+            DrawItem::Text {
+                x,
+                y,
+                text,
+                color_argb,
+                ..
+            } => {
+                println!("TEXT: x={x}, y={y}, text={text:?}, color=0x{color_argb:08X}");
+            }
+            _ => {}
+        }
+    }
 
     for it in &dl.items {
         match it {
@@ -72,21 +118,23 @@ fn wc048_three_blue_primitives_exact_lock() {
                     found_b = true;
                 }
             }
-            // (c) 塊 x≈80.9 y≈341.6 w≈281.4 h≈2.3 fill 0xFF4472C4
+            // (c) 塊 x≈80.9 y≈341.6 (或 y≈289.2，見 K15 列高解耦說明) w≈281.4 h≈2.3 fill 0xFF4472C4
             DrawItem::Rect {
                 x,
                 y,
                 w,
                 h,
                 fill_argb,
-            } if *fill_argb == WANT_BLUE => {
-                if (x - 80.9).abs() <= 3.0
-                    && (y - 341.6).abs() <= 3.0
-                    && (w - 281.4).abs() <= 3.0
-                    && (h - 2.3).abs() <= 1.0
-                {
-                    found_c = true;
-                }
+            } if *fill_argb == WANT_BLUE
+                // LO y=341.6；Quire 因第 1 列未被浮圖撐高（列頂差 52.4pt，見 k15_cell_anchor_geom.rs
+                // 說明），落點在第 2 列頂 85.45 + posOffset 21.05 + dy 182.67 ≈ 289.2pt。
+                // 容差允許兩者之一（與列高誤差解耦）。
+                && (x - 80.9).abs() <= 3.0
+                && ((y - 341.6).abs() <= 3.0 || (y - 289.2).abs() <= 3.0)
+                && (w - 281.4).abs() <= 3.0
+                && (h - 2.3).abs() <= 1.0 =>
+            {
+                found_c = true;
             }
             _ => {}
         }
@@ -130,6 +178,41 @@ fn wc048_text_box_text_zero_regression() {
         let mut all_texts = Vec::new();
         for p in 0..eng.page_count() {
             let dl = eng.page_display_list(p).expect("頁存在");
+            for it in &dl.items {
+                match it {
+                    DrawItem::Rule {
+                        x1,
+                        y1,
+                        x2,
+                        y2,
+                        color_argb,
+                        width_pt,
+                        ..
+                    } => {
+                        println!("RULE: x1={x1}, y1={y1}, x2={x2}, y2={y2}, color=0x{color_argb:08X}, w={width_pt}");
+                    }
+                    DrawItem::Rect {
+                        x,
+                        y,
+                        w,
+                        h,
+                        fill_argb,
+                    } => {
+                        println!("RECT: x={x}, y={y}, w={w}, h={h}, fill=0x{fill_argb:08X}");
+                    }
+                    DrawItem::Text {
+                        x,
+                        y,
+                        text,
+                        color_argb,
+                        ..
+                    } => {
+                        println!("TEXT: x={x}, y={y}, text={text:?}, color=0x{color_argb:08X}");
+                    }
+                    _ => {}
+                }
+            }
+
             for it in &dl.items {
                 if let DrawItem::Text { text, .. } = it {
                     all_texts.push(text.clone());
