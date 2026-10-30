@@ -1144,6 +1144,7 @@ mod tests {
             layout_in_cell: false,
             group_shapes: Vec::new(),
             txbx_borders: Vec::new(),
+            duotone: None,
         }
     }
 

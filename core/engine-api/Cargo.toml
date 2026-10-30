@@ -17,6 +17,11 @@ quire-crdt = { workspace = true, optional = true }
 # xlsx 程式碼；quire-cli（native 開發頭）開此 feature 取 round-trip 閘門面。
 quire-xlsx = { workspace = true, optional = true }
 
+[dev-dependencies]
+# K19 紅燈測試需在測試內解 PNG（deflate 解 IDAT）；dev-only，不進 wasm 首包
+# （cargo tree -e normal 不含 dev-deps，分層/體積閘門不受影響）。
+flate2 = { workspace = true }
+
 [features]
 default = []
 # 協作面（CRDT 會話）。主 wasm 預設**不帶**此 feature——拆包閘門

@@ -13,6 +13,7 @@ mod diff;
 mod drawing;
 mod notes;
 mod numbering;
+mod png_duotone;
 mod rels;
 mod sectpr;
 mod styles;
@@ -22,9 +23,10 @@ mod zip_struct;
 
 pub use diff::{diff_untouched, diff_zip_structure, EntryDiff, ZipDiff, ZipStructureError};
 pub use drawing::{
-    count_paras, origin_of, read_images, read_images_with_theme, InlineChildShape, InlineImage,
-    ShapeBorder,
+    count_paras, origin_of, read_images, read_images_with_theme, DuotoneEffect, InlineChildShape,
+    InlineImage, ShapeBorder,
 };
+pub use png_duotone::duotone_png_bytes;
 pub use rels::{read_rels, resolve_relationship, Relationship};
 pub use sectpr::{
     read_even_and_odd_headers, read_sections_endnote_pr, read_sections_header_footer,

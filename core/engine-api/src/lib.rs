@@ -139,6 +139,8 @@ struct PixelSource {
     w_pt: f32,
     /// 像素來源（`word/media/*` part 路徑＋MIME）。
     src: (String, String),
+    /// K19：宿主候選的 duotone 宣告（Some→發射前像素變換＋欄位透傳）。
+    duotone: Option<[u32; 2]>,
 }
 
 /// 頁首／頁尾 part 的已解析投影（開啟文件時一次性解析；純讀取）。
@@ -564,6 +566,8 @@ impl Engine {
                     para: im.para_index,
                     w_pt: im.w_pt,
                     src,
+                    // K19：宿主候選的 duotone 宣告隨池項走（發射時才變換像素）。
+                    duotone: im.duotone.map(|d| [d.color1, d.color2]),
                 })
             })
             .collect();
@@ -3433,15 +3437,35 @@ fn take_image_pixel(
         .find(|(i, s)| !used[*i] && pred(s))?;
     let bytes = parts.get(&src.src.0)?; // parts 被編輯抽掉 → 退佔位框（誠實）
     used[i] = true;
+    let (data_b64, duotone) = k19_duotone_pixels(bytes, src.duotone);
     Some(DrawItem::Image {
         x,
         y,
         w,
         h,
         mime: src.src.1.clone(),
-        data_b64: base64_encode(bytes),
+        data_b64,
         alt: None,
+        duotone,
     })
+}
+
+/// K19：發射期 duotone 像素變換。有宣告且 PNG 可解 → 回（變換後 base64,
+/// Some([c1,c2]))；無宣告 → （原樣 base64, None）＝舊位元組逐位不變；
+/// 有宣告但像素不可調色（EMF 已在解析層退佔位框；非 PNG／16bit／交錯／
+/// 调色板）→ 原樣直出**且不透傳欄位**（欄位語意＝「像素已變換」，不虛構）。
+///
+/// 回塞鎖在上游解析層（`DrawingParser::duotone_buggy`，`K19_DUOTONE_BUGGY=1`
+/// → `InlineImage.duotone` 永不落地 → 本函數收 None → 燈1/燈2 必紅；照
+/// `K4D_BUGGY` 在 `new()` 讀一次 env 的先例，熱路徑零 env 查詢）。
+fn k19_duotone_pixels(bytes: &[u8], duotone: Option<[u32; 2]>) -> (String, Option<[u32; 2]>) {
+    let Some([c1, c2]) = duotone else {
+        return (base64_encode(bytes), None);
+    };
+    match quire_ooxml::duotone_png_bytes(bytes, c1, c2) {
+        Some(px) => (base64_encode(&px), Some([c1, c2])),
+        None => (base64_encode(bytes), None),
+    }
 }
 
 /// 發射圖片佔位框（K4c 升級：真色版）。`shape`=None 或全欄未宣告＝舊行為
@@ -4326,14 +4350,17 @@ impl Engine {
                         return None;
                     }
                     let bytes = self.doc.parts.get(path)?;
+                    let (data_b64, duotone) =
+                        k19_duotone_pixels(bytes, im.duotone.map(|d| [d.color1, d.color2]));
                     Some(DrawItem::Image {
                         x: img_x,
                         y,
                         w: im.w_pt,
                         h: im.h_pt,
                         mime: mime.clone(),
-                        data_b64: base64_encode(bytes),
+                        data_b64,
                         alt: None,
+                        duotone,
                     })
                 },
             );

@@ -55,6 +55,12 @@ pub enum DrawItem {
         /// 替代文字（`wp:docPr/@descr` 等；本卡不讀述欄＝None，留給後續卡）。
         #[serde(default)]
         alt: Option<String>,
+        /// K19：像素級雙色調宣告（`[color1, color2]`，0xAARRGGBB）。發射層的
+        /// `data_b64` **已是變換後像素**（`quire_ooxml::duotone_png_bytes`），
+        /// 本欄是宣告的診斷透傳（渲染端可據此做等效濾鏡；SVG 端不需再變換）。
+        /// serde default＋None 不外露＝無 duotone 檔案的顯示列表 JSON 零位移。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duotone: Option<[u32; 2]>,
     },
     /// 筆畫（表格框線等）：寬度/顏色/虛線樣式齊備（Phase3-1b）。
     /// 新增欄位全部帶 serde default——舊顯示列表 JSON 仍可解析（向後兼容）。
