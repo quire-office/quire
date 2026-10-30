@@ -102,9 +102,9 @@ def test_artifact_2_wc048_vector_vs_image_calibration():
     assert score_matched > 0.99, f"雙方有圖且匹配時應為 1.0，實得: {score_matched}"
 
     # (c) 向量 Rect 不應污染真正圖片比對
-    # 我方即使另有向量 Rect，但只要圖片區域匹配，圖片分仍應為 1.0
+    # 我方即使另有向量 Rect（如 y=200..230 的藍色 Rect），只要圖片區域（y=20..120）匹配，圖片分仍應為 1.0
     ow_with_vector = matched_ow.copy()
-    ow_with_vector[100:130, 50:200] = (0x44, 0x72, 0xC4)
+    ow_with_vector[200:230, 50:200] = (0x44, 0x72, 0xC4)
     score_vector_masked = rl.score_image(matched_lo, ow_with_vector, lo_rects=[rect], ow_rects=[rect])
     assert score_vector_masked > 0.99, f"矢量 Rect 不應扣除圖分，實得: {score_vector_masked}"
 

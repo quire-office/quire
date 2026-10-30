@@ -257,10 +257,12 @@ def run_quire(docx: pathlib.Path, out_dir: pathlib.Path) -> dict:
     for dl in json.loads(d.stdout):
         lines = [norm(it["Text"]["text"]) for it in dl["items"] if "Text" in it]
         lines = [l for l in lines if l]
+        images = [it["Image"] for it in dl["items"] if "Image" in it]
         pages.append({
             "lines": lines,
             "line_count": len(lines),
             "svg": f"quire/{docx.stem}/{docx.stem}-p{dl['page']}.svg",
+            "images": images,
         })
     return {"pages": pages, "breaks": brks, "n_svg": len(pages)}
 
@@ -522,11 +524,41 @@ def _iou(a, b) -> float:
     return inter / ua if ua > 0 else 0.0
 
 
-def score_image(lo_img: "np.ndarray", ow_img: "np.ndarray") -> float:
-    """圖片軸 0..1：兩頁彩色連通域 bbox（以頁尺寸正規化）左右對照。
-    配對＝貪心取 IoU 最大者（IoU=0 不配對＝缺圖/錯位）；配對分 = (0.6·IoU + 0.4·尺寸相似
-    〔寬比×高比〕) × 填充密度相似（空心彩框 vs 實心底紋會被壓低）；整頁分以 bbox 面積加權，
-    未配對者以 0 分計入。兩邊皆無彩色塊 → 1.0。"""
+def _mask_to_rects(arr: "np.ndarray", rects: list[tuple[float, float, float, float]], dpi: int = J3_DPI) -> "np.ndarray":
+    """把非圖片 rect 區域（文字、向量 Rect、邊框 Rule）填白，只保留圖片區域。
+    rects 為 pt 座標 (x0, y0, x1, y1)。"""
+    if not rects:
+        return np.full_like(arr, 255)
+    masked = np.full_like(arr, 255)
+    h, w = arr.shape[:2]
+    scale = dpi / 72.0
+    for x0, y0, x1, y1 in rects:
+        px0, py0 = max(0, int(x0 * scale) - 2), max(0, int(y0 * scale) - 2)
+        px1, py1 = min(w, int(x1 * scale) + 3), min(h, int(y1 * scale) + 3)
+        masked[py0:py1, px0:px1] = arr[py0:py1, px0:px1]
+    return masked
+
+
+def score_image(lo_img: "np.ndarray", ow_img: "np.ndarray",
+                lo_rects: list[tuple[float, float, float, float]] | None = None,
+                ow_rects: list[tuple[float, float, float, float]] | None = None) -> float | None:
+    """圖片軸 0..1（J4 校準）：
+    若傳入 lo_rects 與 ow_rects（pt 座標）：
+      - 雙方皆無鑲嵌圖（lo_rects=[] 且 ow_rects=[]，如 WC048 全矢量頁）⇒ 回傳 None（量測不可比/無圖可比）；
+      - 一方有圖而另一方無圖 ⇒ 回傳 0.0（真缺圖或我方多圖）；
+      - 雙方皆有圖 ⇒ 分別以 rects 遮罩過濾非圖片之矢量圖元/文字，比較真實圖片連通域。
+    若未傳入 rects（相容 J3 合成測試純 numpy 呼叫）：
+      - 兩邊皆無彩色塊 → 1.0；單邊無彩色塊 → 0.0。"""
+    if lo_rects is not None or ow_rects is not None:
+        lo_has = bool(lo_rects)
+        ow_has = bool(ow_rects)
+        if not lo_has and not ow_has:
+            return None
+        if not lo_has or not ow_has:
+            return 0.0
+        lo_img = _mask_to_rects(lo_img, lo_rects or [])
+        ow_img = _mask_to_rects(ow_img, ow_rects or [])
+
     ba, bb = image_blobs(lo_img), image_blobs(ow_img)
     la = [_norm_box(b, lo_img.shape) for b, _ in ba]
     lb = [_norm_box(b, ow_img.shape) for b, _ in bb]
@@ -566,21 +598,25 @@ def _pix_array(page) -> "np.ndarray":
 _HYPHENS = "-\u2010\u2011\u2012\u2013\u2014"
 _CJK_RE = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af"
 _TOK_RE = re.compile(f"[{_CJK_RE}]|[^\\s{_CJK_RE}]+")
+_LEADER_RE = re.compile(r"\.{2,}|[\u00b7\u2022]{2,}")
 
 
 def tokenize(text: str) -> list[tuple[str, str]]:
     """全文 → [(顯示形, 正規形)]。NFKC＋casefold；CJK 逐字成 token（換行位置無關）；
-    其餘以空白切；去頭尾標點（連字號保留，供斷行拼接判定）；無任何字母數字者
-    （項目符號 \\uf0b7、純標點）丟棄。"""
+    其餘以空白切；連續點引導符（..、··）自邊界切開（J4 校準：免 How.....2 黏連誤報）；
+    去頭尾標點（連字號保留，供斷行拼接判定）；無任何字母數字者
+    （項目符號 \uf0b7、純標點）丟棄。"""
     out = []
-    for raw in _TOK_RE.findall(unicodedata.normalize("NFKC", text)):
-        t = raw
-        while t and unicodedata.category(t[0])[0] in "PS" and t[0] not in _HYPHENS:
-            t = t[1:]
-        while t and unicodedata.category(t[-1])[0] in "PS" and t[-1] not in _HYPHENS:
-            t = t[:-1]
-        if t and any(c.isalnum() for c in t):
-            out.append((t, t.casefold()))
+    norm_text = unicodedata.normalize("NFKC", text)
+    for raw in _TOK_RE.findall(norm_text):
+        for part in _LEADER_RE.split(raw):
+            t = part
+            while t and unicodedata.category(t[0])[0] in "PS" and t[0] not in _HYPHENS:
+                t = t[1:]
+            while t and unicodedata.category(t[-1])[0] in "PS" and t[-1] not in _HYPHENS:
+                t = t[:-1]
+            if t and any(c.isalnum() for c in t):
+                out.append((t, t.casefold()))
     return out
 
 
@@ -601,11 +637,25 @@ def _concats(norms: list[str]) -> set[str]:
     return res
 
 
+def _is_field_artifact(token: str) -> bool:
+    """LO 側欄位產物判定（如 FILENAME \\p 渲染成本機 scratch 路徑）。
+    實例：C:\\Users\\me\\AppData\\Local\\Temp\\quire-render-lab\\ooxmlexport__2129393649.docx
+    """
+    t = token.replace("/", "\\")
+    if re.match(r"^[a-zA-Z]:\\", t) or t.startswith("\\tmp\\") or "\\quire-render-lab\\" in t:
+        if any(seg in t.lower() for seg in ("appdata", "temp", "quire-render-lab", "tmp")) and (
+            t.lower().endswith(".docx") or t.lower().endswith(".pdf") or "quire-render-lab" in t.lower()
+        ):
+            return True
+    return False
+
+
 def token_audit(lo_text: str, ow_text: str) -> dict:
     """LO 全文 token 集 vs 我方全文 token 集 → 真缺字對账。
     - true_missing：LO 有、我方無，且不是斷行切片（我方相鄰「前段＋後段」拼接命中 LO token，
       或反向 LO 被切我方連著，皆算切片、不算缺）
     - split_ok：判為斷行切片而排除的 LO token（供人覆核）
+    - field_artifacts：LO 展開本機 scratch 路徑等欄位產物而豁免的 token（J4 校準）
     以集合語意對账（同詞重複只算一次），順序依 LO 首次出現。"""
     lo, ow = tokenize(lo_text), tokenize(ow_text)
     ow_norms = [n for _, n in ow]
@@ -623,7 +673,7 @@ def token_audit(lo_text: str, ow_text: str) -> dict:
                      _key("".join(s.rstrip(_HYPHENS) for s in seg[:-1]) + seg[-1])}
             if cands & ow_set:
                 lo_split_idx.update(range(i, i + span))
-    missing, split_ok, seen = [], [], set()
+    missing, split_ok, field_artifacts, seen = [], [], [], set()
     for idx, (disp, n) in enumerate(lo):
         k = _key(n)
         if k in seen:
@@ -631,11 +681,14 @@ def token_audit(lo_text: str, ow_text: str) -> dict:
         seen.add(k)
         if n in ow_set or k in ow_set:
             continue
-        if k in ow_cat or idx in lo_split_idx:
+        if _is_field_artifact(disp):
+            field_artifacts.append(disp)
+        elif k in ow_cat or idx in lo_split_idx:
             split_ok.append(disp)
         else:
             missing.append(disp)
     return {"true_missing": missing, "split_ok": split_ok,
+            "field_artifacts": field_artifacts,
             "lo_tokens": len(seen), "ow_tokens": len(set(ow_norms))}
 
 
@@ -664,7 +717,32 @@ def j3_metrics(lo_pdf: pathlib.Path, out_dir: pathlib.Path, lo_pages: list[dict]
                 if ow_arr is None:
                     ow_arr = np.full_like(lo_arr, 255)
                 color.append(round(score_color(lo_arr, ow_arr), 3))
-                image.append(round(score_image(lo_arr, ow_arr), 3))
+
+                # J4 圖軸校準：提取 LO 鑲嵌圖 vs 我方 Image 項，矢量圖元不入圖軸
+                lo_rects = []
+                if i < d.page_count:
+                    try:
+                        lo_rects = [info["bbox"] for info in d[i].get_image_info() if "bbox" in info]
+                    except Exception:
+                        lo_rects = [d[i].rect] if len(d[i].get_images()) > 0 else []
+
+                ow_rects = []
+                if i < len(ow_pages):
+                    imgs = ow_pages[i].get("images")
+                    if imgs is not None:
+                        ow_rects = [(im["x"], im["y"], im["x"] + im["w"], im["y"] + im["h"]) for im in imgs]
+                    elif ow_pages[i].get("svg"):
+                        svg_file = out_dir / ow_pages[i]["svg"]
+                        if svg_file.exists():
+                            for m in re.finditer(r'<image\b[^>]*\bx="([^"]+)"[^>]*\by="([^"]+)"[^>]*\bwidth="([^"]+)"[^>]*\bheight="([^"]+)"', svg_file.read_text(encoding="utf-8")):
+                                try:
+                                    ix, iy, iw, ih = float(m.group(1)), float(m.group(2)), float(m.group(3)), float(m.group(4))
+                                    ow_rects.append((ix, iy, ix + iw, iy + ih))
+                                except ValueError:
+                                    pass
+
+                si = score_image(lo_arr, ow_arr, lo_rects=lo_rects, ow_rects=ow_rects)
+                image.append(None if si is None else round(si, 3))
             except Exception:  # noqa: BLE001 —— 單頁度量失敗不拖垮整檔
                 color.append(None)
                 image.append(None)
@@ -912,6 +990,18 @@ def selftest() -> int:
           score_image(lo_i, lo_i.copy()) > 0.99 and score_image(lo_i, _blank()) < 0.05 and si < 0.5,
           f"錯位縮小={si:.3f}")
 
+    # (6b) J4 校準：WC048 型——LO 全矢量頁（零鑲嵌圖）vs 我方彩色矢量 Region（Rect）
+    #      雙方皆無鑲嵌圖時圖分記 None；1.0 僅限雙方皆有圖且匹配的情形
+    lo_wc = _blank()
+    ow_wc = _blank()
+    ow_wc[100:130, 50:200] = (0x44, 0x72, 0xC4)  # K12 藍色向量 Rect
+    swc = score_image(lo_wc, ow_wc, lo_rects=[], ow_rects=[])
+    rect = (20 * 72 / 150, 20 * 72 / 150, 180 * 72 / 150, 120 * 72 / 150)
+    s_matched = score_image(lo_i, lo_i.copy(), lo_rects=[rect], ow_rects=[rect])
+    check("6b 圖軸口徑（WC048 型）：LO 全矢量頁 vs 我方彩色矢量 Region ⇒ None 偽影；1.0 僅限雙方皆有圖且匹配",
+          swc is None and s_matched > 0.99,
+          f"swc={swc} s_matched={s_matched}")
+
     ta = token_audit("Drama sharp-edged blade IGCSE glossary of terms",
                      "Drama sharp-\nedged blade of terms")
     miss = {t.casefold() for t in ta["true_missing"]}
@@ -921,6 +1011,22 @@ def selftest() -> int:
     ta2 = token_audit("well-\nknown Result.", "Well-known result")
     check("7b 真缺字：LO 被切我方連著／標點大小寫差不算缺", ta2["true_missing"] == [],
           f"true_missing={ta2['true_missing']}")
+
+    # (7c) J4 校準：2129393649 型——LO 展開 FILENAME \\p 本機 scratch 路徑豁免
+    ta3 = token_audit(
+        "CONTROLLED DOCUMENT\nC:\\Users\\me\\AppData\\Local\\Temp\\quire-render-lab\\ooxmlexport__2129393649.docx\nPURPOSE",
+        "CONTROLLED DOCUMENT\nPURPOSE",
+    )
+    check("7c 真缺字：FILENAME 欄位本機 scratch 路徑不計缺（2129393649 型）",
+          ta3["true_missing"] == [] and len(ta3.get("field_artifacts", [])) == 1,
+          f"true_missing={ta3['true_missing']} field_artifacts={ta3.get('field_artifacts')}")
+
+    # (7d) J4 校準：fdo77129 型——TOC 目錄引導點（連續 .／·）邊界切開
+    ta4 = token_audit("How........................................................................................................................................................................2",
+                      "How ...............................................................................................................................................2")
+    check("7d 真缺字：TOC 點引導符黏連切開不計缺（fdo77129 型）",
+          ta4["true_missing"] == [],
+          f"true_missing={ta4['true_missing']}")
 
     print("SELFTEST", "ALL-PASS" if fails == 0 else f"{fails}-FAIL")
     return 0 if fails == 0 else 1
