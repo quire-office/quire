@@ -3516,6 +3516,7 @@ fn enrich_document_images(
                 pos_y_align: None,
                 pos_y_pct: None,
                 overlap: Some(true),
+                layout_in_cell: false,
                 txbx_texts: Vec::new(),
                 txbx_start: 0,
                 txbx_children: Vec::new(),
