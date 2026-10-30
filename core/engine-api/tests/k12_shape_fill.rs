@@ -1,17 +1,23 @@
-//! K12 紅燈：形狀填色鏈修復——無文字色塊不再被過濾丟棄（K11 Top1）。
+//! K12 紅燈（第 2 輪返工版）：形狀填色鏈與群組子形狀實發（K11 Top1）。
 //!
-//! 背景：
-//! `core/engine-api/src/lib.rs` 的 `shape_boxes` 構造以 `!im.txbx_texts.is_empty()`
-//! 過濾，把「無文字但有填色/描邊」的色塊形狀全數丟棄，退化為 `0xFFF0F0F0` 佔位灰或缺發。
-//! WC048 頁面上 LO 的藍色粗線（VML 線狀圖元）我方完全沒發，即此病灶（實測色分 0.072）。
+//! # PM 實測真值出處（pymupdf：LO 7.6 實渲 WC048 p0）：
+//! ```text
+//! type=s x= 171.7 y=  99.2 w= 251.8 h= 0.0 color=(0.267,0.447,0.769) w/=3.0   ← 描邊線 1
+//! type=s x= 171.7 y= 132.9 w= 251.8 h= 0.0 color=(0.267,0.447,0.769) w/=3.0   ← 描邊線 2
+//! type=f x=  80.9 y= 341.6 w= 281.4 h= 2.3              fill=(0.267,0.447,0.769) ← 實心細條
+//! ```
+//! 色值 (0.267,0.447,0.769) = 0x44 0x72 0xC4 = accent1。
 //!
-//! 紅燈規格：
-//! 1. 燈1：`corpus/ooxmlexport/picture-with-schemecolor.docx` 發射清單中必須出現
-//!    非佔位灰的填色 Rect（fill_argb 不是 0xFFF0F0F0 且來自該檔宣告色 0xFF5B9BD5）。
-//! 2. 燈2：`corpus/xopt/TestFiles_WC_WC048-Text-Box-in-Cell.docx` 的藍色線狀圖元
-//!    （LO 實渲有、我方現缺）發射且描邊/填色色值與 OOXML 宣告一致（0xFF4472C4）。
+//! 紅燈規格（PM 第 2 輪覆核裁決）：
+//! 1. 燈1（幾何＋色值精確鎖）：WC048 p0 必須發射 LO 那三個藍圖元，逐個斷言（容差 ±3pt／±1pt）：
+//!    (a) 線 x≈171.7 y≈99.2  w≈251.8  stroke 0xFF4472C4
+//!    (b) 線 x≈171.7 y≈132.9 w≈251.8  stroke 0xFF4472C4
+//!    (c) 塊 x≈80.9  y≈341.6 w≈281.4 h≈2.3 fill 0xFF4472C4
+//!    只發 (c) 時燈1 必須紅（逐條存在性檢查，不可用 any 模糊過關）。
+//! 2. 燈2：`corpus/ooxmlexport/picture-with-schemecolor.docx` 不回退鎖
+//!    （像素級 duotone 需求已移至跨卡需求 K18，刪除全文圖片大錘底塊，本燈鎖定解析不崩且無回退）。
 //! 3. 燈3：既有含文字文字框檔（WC048 原版與 Mod 檔）文字發射零回退（回歸鎖）。
-//! 4. `K12_SHAPE_FILL_BUGGY=1` 環境變數把放寬還原成舊過濾 → 燈1/燈2 必須紅。
+//! 4. `K12_SHAPE_FILL_BUGGY=1` 環境變數讓燈1 必紅。
 
 use quire_engine::Engine;
 use quire_render_trait::DrawItem;
@@ -22,53 +28,94 @@ fn load_corpus(name: &str) -> Engine {
     Engine::from_docx_bytes(&bytes).expect("open corpus")
 }
 
-/// 燈 1：picture-with-schemecolor.docx 發射清單中必須出現非佔位灰的填色 Rect
-/// （fill_argb 不是 0xFFF0F0F0 且來自該檔宣告色 0xFF5B9BD5 accent1）。
+const WANT_BLUE: u32 = 0xFF44_72C4;
+
+/// 燈 1：WC048 p0 必須發射 LO 那三個藍圖元（精確幾何與色值鎖）
+/// (a) 線 x≈171.7 y≈99.2  w≈251.8  stroke 0xFF4472C4
+/// (b) 線 x≈171.7 y≈132.9 w≈251.8  stroke 0xFF4472C4
+/// (c) 塊 x≈80.9  y≈341.6 w≈281.4 h≈2.3 fill 0xFF4472C4
 #[test]
-fn picture_with_schemecolor_emits_colored_rect() {
-    let eng = load_corpus("ooxmlexport/picture-with-schemecolor.docx");
-    let dl = eng.page_display_list(0).expect("p0 存在");
-
-    let want_color: u32 = 0xFF5B_9BD5;
-    let found = dl.items.iter().any(|it| match it {
-        DrawItem::Rect { fill_argb, .. } => *fill_argb != 0xFFF0_F0F0 && *fill_argb == want_color,
-        _ => false,
-    });
-
-    assert!(
-        found,
-        "picture-with-schemecolor.docx 必須發射非佔位灰的填色 Rect（宣告色 0xFF5B9BD5），實測項目清單為：{:?}",
-        dl.items
-    );
-}
-
-/// 燈 2：WC048 的藍色線狀圖元（LO 實渲有、我方現缺）發射且描邊/填色色值與 OOXML 宣告一致（0xFF4472C4）。
-#[test]
-fn wc048_blue_linear_primitive_emitted() {
+fn wc048_three_blue_primitives_exact_lock() {
     let eng = load_corpus("xopt/TestFiles_WC_WC048-Text-Box-in-Cell.docx");
     let dl = eng.page_display_list(0).expect("p0 存在");
 
-    let want_blue: u32 = 0xFF44_72C4;
-    // 藍色線狀圖元：寬度 > 100pt，高度 <= 20pt，色值為 0xFF4472C4
-    let found = dl.items.iter().any(|it| match it {
-        DrawItem::Rect {
-            w, h, fill_argb, ..
-        } => *fill_argb == want_blue && *w >= 100.0 && *h <= 20.0,
-        DrawItem::Rule {
-            x1,
-            x2,
-            y1,
-            y2,
-            color_argb,
-            ..
-        } => *color_argb == want_blue && (x2 - x1).abs() >= 100.0 && (y2 - y1).abs() <= 20.0,
-        _ => false,
-    });
+    let mut found_a = false;
+    let mut found_b = false;
+    let mut found_c = false;
+
+    for it in &dl.items {
+        match it {
+            // (a) 線 x≈171.7 y≈99.2 w≈251.8 stroke 0xFF4472C4
+            DrawItem::Rule {
+                x1,
+                y1,
+                x2,
+                y2,
+                color_argb,
+                width_pt,
+                ..
+            } if *color_argb == WANT_BLUE => {
+                let rx = x1.min(*x2);
+                let rw = (x2 - x1).abs();
+                let ry = y1.min(*y2);
+                if (rx - 171.7).abs() <= 3.0
+                    && (ry - 99.2).abs() <= 3.0
+                    && (rw - 251.8).abs() <= 3.0
+                    && (*width_pt - 3.0).abs() <= 1.0
+                {
+                    found_a = true;
+                } else if (rx - 171.7).abs() <= 3.0
+                    && (ry - 132.9).abs() <= 3.0
+                    && (rw - 251.8).abs() <= 3.0
+                    && (*width_pt - 3.0).abs() <= 1.0
+                {
+                    found_b = true;
+                }
+            }
+            // (c) 塊 x≈80.9 y≈341.6 w≈281.4 h≈2.3 fill 0xFF4472C4
+            DrawItem::Rect {
+                x,
+                y,
+                w,
+                h,
+                fill_argb,
+            } if *fill_argb == WANT_BLUE => {
+                if (x - 80.9).abs() <= 3.0
+                    && (y - 341.6).abs() <= 3.0
+                    && (w - 281.4).abs() <= 3.0
+                    && (h - 2.3).abs() <= 1.0
+                {
+                    found_c = true;
+                }
+            }
+            _ => {}
+        }
+    }
 
     assert!(
-        found,
-        "WC048 必須發射藍色線狀圖元（0xFF4472C4, w>=100, h<=20），實測項目清單為：{:?}",
-        dl.items
+        found_a,
+        "WC048 p0 缺少 (a) 線 x≈171.7 y≈99.2 w≈251.8 stroke 0xFF4472C4（LO 描邊線 1）"
+    );
+    assert!(
+        found_b,
+        "WC048 p0 缺少 (b) 線 x≈171.7 y≈132.9 w≈251.8 stroke 0xFF4472C4（LO 描邊線 2）"
+    );
+    assert!(
+        found_c,
+        "WC048 p0 缺少 (c) 塊 x≈80.9 y≈341.6 w≈281.4 h≈2.3 fill 0xFF4472C4（LO 實心細條 Rectangle 214）"
+    );
+}
+
+/// 燈 2：`picture-with-schemecolor.docx` 不回退鎖
+/// （main 基線色分 0.239，像素級 duotone 獨立立項 K18，本卡不得使用假色塊冒充，確保解析正常與既有圖元無損）。
+#[test]
+fn picture_with_schemecolor_no_regression() {
+    let eng = load_corpus("ooxmlexport/picture-with-schemecolor.docx");
+    assert_eq!(eng.page_count(), 1, "picture-with-schemecolor 必須為 1 頁");
+    let dl = eng.page_display_list(0).expect("p0 存在");
+    assert!(
+        !dl.items.is_empty(),
+        "picture-with-schemecolor.docx 顯示列表不得為空"
     );
 }
 
