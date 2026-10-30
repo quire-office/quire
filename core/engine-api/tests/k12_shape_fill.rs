@@ -61,11 +61,7 @@ fn wc048_blue_linear_primitive_emitted() {
             y2,
             color_argb,
             ..
-        } => {
-            *color_argb == want_blue
-                && (x2 - x1).abs() >= 100.0
-                && (y2 - y1).abs() <= 20.0
-        }
+        } => *color_argb == want_blue && (x2 - x1).abs() >= 100.0 && (y2 - y1).abs() <= 20.0,
         _ => false,
     });
 

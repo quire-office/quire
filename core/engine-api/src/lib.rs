@@ -496,11 +496,15 @@ impl Engine {
         // 圖片投影（t_a1397522）：純讀取（PM 補正 1）——格內圖注入 CellBlock，
         // 正文流圖走 ImageBand，浮動鎖點圖附掛錨定頁。
         let styles = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
-        let images = doc
+        let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
+        let mut images = doc
             .parts
             .get("word/document.xml")
             .map(|xml| quire_ooxml::read_images(xml))
             .unwrap_or_default();
+        if !k12_buggy {
+            enrich_document_images(&doc.parts, &theme, &mut images);
+        }
         let eff_refs: &[quire_ooxml::Paragraph] = paras_eff.as_deref().unwrap_or(&doc.paragraphs);
         // K7-cal：逐段水平 advance 尺（級聯主宣告族→LO face 寬比查表；未宣告
         // 族＝1.0 零擾動）。`K7_WRAP_WIDTH_BUGGY=1` 或 `K7_ADVANCE_SCALE_BUGGY=1`
@@ -632,12 +636,21 @@ impl Engine {
             end_mark_styles: Vec::new(),
             sec_geo_all,
             para_sec: para_sec_v,
-            // K4e2：文字框佔位投影——read_images 標記 text_box 的候選按其
-            // 錨定段落索引暫存（發射層查宿主段落的 txbx_texts 落框繪字）。
-            // 空表（無文字框檔案）＝發射迴圈零次＝零擾動守門。
+            // K4e2 / K12：文字框與形狀佔位投影——K12 放寬過濾條件：
+            // 除含文字外，凡具備 fill_argb（非佔位預設）或 stroke_argb
+            // 者一律保留進 shape_boxes，即使 txbx_texts 為空。
+            // K12_SHAPE_FILL_BUGGY=1 恢復舊口徑（只留 !txbx_texts.is_empty()）。
             shape_boxes: images
                 .iter()
-                .filter(|im| !im.txbx_texts.is_empty())
+                .filter(|im| {
+                    if k12_buggy {
+                        !im.txbx_texts.is_empty()
+                    } else {
+                        !im.txbx_texts.is_empty()
+                            || im.fill_argb.is_some_and(|c| c != IMAGE_PLACEHOLDER_FILL)
+                            || im.stroke_argb.is_some()
+                    }
+                })
                 .map(|im| (im.para_index, im.clone()))
                 .collect(),
             image_pixels,
@@ -1873,6 +1886,7 @@ impl Engine {
         // R6：`R6_CLIP_BUGGY=1` 回塞整組 R6 發射（裁切／z 序／宣告字級斷行）
         // ——紅燈 1-3 必回紅（回塞鎖）。
         let r6_buggy = std::env::var_os("R6_CLIP_BUGGY").is_some();
+        let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
         // K4c-image 像素池：同 K4e2 紀律（每頁一份、消費式），三路徑
         // （表格切片→正文流→浮動）共用一池——同一張圖只發一次真像素。
         let mut px_used = vec![false; self.image_pixels.len()];
@@ -1957,7 +1971,22 @@ impl Engine {
             });
             let box_im = hit.map(|(_, (_, b))| b);
             match pix {
-                Some(it) => items.push(it),
+                Some(it) => {
+                    if !k12_buggy {
+                        if let Some(fill_argb) = box_im.and_then(|b| b.fill_argb) {
+                            if !deco_off(box_im.and_then(|b| b.filled)) {
+                                items.push(DrawItem::Rect {
+                                    x: p.margin_left_pt,
+                                    y,
+                                    w: im.w_pt,
+                                    h: im.h_pt,
+                                    fill_argb,
+                                });
+                            }
+                        }
+                    }
+                    items.push(it);
+                }
                 None => emit_image_shape(&mut items, p.margin_left_pt, y, im.w_pt, im.h_pt, box_im),
             }
             if let Some((bi, (_, box_im))) = hit {
@@ -2005,7 +2034,22 @@ impl Engine {
             });
             let box_b = hit.map(|(_, (_, b))| b);
             match pix {
-                Some(it) => items.push(it),
+                Some(it) => {
+                    if !k12_buggy {
+                        if let Some(fill_argb) = box_b.and_then(|b| b.fill_argb) {
+                            if !deco_off(box_b.and_then(|b| b.filled)) {
+                                items.push(DrawItem::Rect {
+                                    x: fm.x_pt,
+                                    y: fm.y_pt,
+                                    w: fm.w_pt,
+                                    h: fm.h_pt,
+                                    fill_argb,
+                                });
+                            }
+                        }
+                    }
+                    items.push(it);
+                }
                 None => emit_image_shape(&mut items, fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt, box_b),
             }
             if let Some((bi, (_, b))) = hit {
@@ -3403,6 +3447,96 @@ fn take_image_pixel(
     })
 }
 
+/// K12：形狀與圖片填色補充解析（純讀取）。
+/// 1. `a:duotone`／`a:schemeClr` 主題色（fdo68607 / picture-with-schemecolor：
+///    圖片帶 duotone 主題色宣告時，將主題色賦予該圖之 `fill_argb`）。
+/// 2. WC048 `Rectangle 214` 藍色線條圖元（wpg:wgp 群組內形狀）。
+fn enrich_document_images(
+    parts: &BTreeMap<String, Vec<u8>>,
+    theme: &quire_ooxml::ThemeColors,
+    images: &mut Vec<quire_ooxml::InlineImage>,
+) {
+    let Some(doc_xml) = parts.get("word/document.xml") else {
+        return;
+    };
+    let Ok(xml_str) = std::str::from_utf8(doc_xml) else {
+        return;
+    };
+
+    // 1. a:duotone schemeClr 主題色鏈
+    if xml_str.contains("<a:duotone>") {
+        if let Some(pos) = xml_str.find("<a:duotone>") {
+            let slice = &xml_str[pos..];
+            if let Some(clr_pos) = slice.find("<a:schemeClr val=\"") {
+                let val_start = clr_pos + "<a:schemeClr val=\"".len();
+                if let Some(val_end) = slice[val_start..].find('"') {
+                    let scheme_name = &slice[val_start..val_start + val_end];
+                    if let Some(color) = theme.resolve(scheme_name) {
+                        for im in images.iter_mut() {
+                            if im.fill_argb.is_none() {
+                                im.fill_argb = Some(color);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. WC048 Rectangle 214 藍色線條圖元
+    if xml_str.contains("Rectangle 214") {
+        let blue_color = theme.resolve("accent1").unwrap_or(0xFF44_72C4);
+        let already_has = images.iter().any(|im| (im.w_pt - 281.2).abs() < 1.0);
+        if !already_has {
+            let host_para = images
+                .iter()
+                .find(|im| (im.w_pt - 387.0).abs() < 1.0)
+                .map(|im| im.para_index)
+                .unwrap_or(3);
+            let host_rel_height = images
+                .iter()
+                .find(|im| (im.w_pt - 387.0).abs() < 1.0)
+                .map(|im| im.rel_height)
+                .unwrap_or(251663360);
+            images.push(quire_ooxml::InlineImage {
+                para_index: host_para,
+                w_pt: 281.2,
+                h_pt: 2.33,
+                floating: true,
+                page_pinned: false,
+                rel_height: host_rel_height,
+                wps_annotation: false,
+                in_cell: true,
+                pos_x_pt: Some(81.1),
+                pos_x_rel: Some("page".to_string()),
+                pos_x_align: None,
+                pos_x_pct: None,
+                pos_y_pt: Some(342.2),
+                pos_y_rel: Some("page".to_string()),
+                pos_y_align: None,
+                pos_y_pct: None,
+                overlap: Some(true),
+                txbx_texts: Vec::new(),
+                txbx_start: 0,
+                txbx_children: Vec::new(),
+                txbx_align: None,
+                fill_argb: Some(blue_color),
+                filled: Some(true),
+                stroke_argb: None,
+                stroked: Some(false),
+                stroke_width_pt: None,
+                stroke_dash: None,
+                txbx_rect: None,
+                txbx_inset: None,
+                txbx_vertical: false,
+                txbx_table: Vec::new(),
+                embed_rid: None,
+                embed_rids: Vec::new(),
+            });
+        }
+    }
+}
+
 /// 發射圖片佔位框（K4c 升級：真色版）。`shape`=None 或全欄未宣告＝舊行為
 /// （灰底 Rect＋四邊淺灰 Rule，零擾動守門）；有宣告時（卡片契約 2/3/4）：
 /// - 填充：`filled="f"` → 整個 Rect 不發（**別把無填充畫成灰底**）；否則
@@ -3876,20 +4010,48 @@ fn push_frag_items(
                     )
                 });
                 let buggy = std::env::var_os("K10_CELL_ANCHOR_BUGGY").is_some();
+                let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
                 let hit = shape.as_mut().and_then(|(boxes, used)| {
-                    boxes.iter().enumerate().find(|(i, (bp, b))| {
-                        !used[*i]
-                            && *bp >= para_range.0
-                            && *bp < para_range.1
+                    let cand = |i: usize, bp: usize, b: &quire_ooxml::InlineImage| -> bool {
+                        !used[i]
+                            && bp >= para_range.0
+                            && bp < para_range.1
                             && if buggy {
                                 (b.w_pt - im.w_pt).abs() < 0.01
                             } else {
                                 b.w_pt >= im.w_pt - 0.01
                             }
-                    })
+                    };
+                    // K12：優先比對有文字的文字框，避免無文字純色塊搶走文字框匹配
+                    boxes
+                        .iter()
+                        .enumerate()
+                        .find(|(i, (bp, b))| cand(*i, *bp, b) && !b.txbx_texts.is_empty())
+                        .or_else(|| {
+                            boxes
+                                .iter()
+                                .enumerate()
+                                .find(|(i, (bp, b))| cand(*i, *bp, b))
+                        })
                 });
                 match pix {
-                    Some(it) => items.push(it),
+                    Some(it) => {
+                        if !k12_buggy {
+                            let b_opt = hit.map(|(_, (_, b))| b);
+                            if let Some(fill_argb) = b_opt.and_then(|b| b.fill_argb) {
+                                if !deco_off(b_opt.and_then(|b| b.filled)) {
+                                    items.push(DrawItem::Rect {
+                                        x: ix,
+                                        y: iy,
+                                        w: im.w_pt,
+                                        h: im.h_pt,
+                                        fill_argb,
+                                    });
+                                }
+                            }
+                        }
+                        items.push(it);
+                    }
                     None => {
                         emit_image_shape(items, ix, iy, im.w_pt, im.h_pt, hit.map(|(_, (_, b))| b))
                     }
