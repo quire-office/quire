@@ -85,6 +85,37 @@ pub struct InlineChildShape {
     pub txbx_texts: Vec<String>,
 }
 
+/// K19：`a:blip` 下的像素級雙色調宣告（ECMA-376 §20.1.7.28 `a:duotone`）。
+///
+/// 兩端色＝解析期折算後的 0xAARRGGBB：`a:schemeClr` 經 [`crate::ThemeColors`]
+/// 查槽、`a:srgbClr` 直取、`a:prstClr` 走命名色表；子修飾器 `a:shade`／
+/// `a:tint`／`a:satMod`／`a:lumMod`（val/100000）**按文件序逐一折算**：
+/// - shade／lumMod：sRGB **線性域**乘 val（ECMA 定義乘亮度；LO 梯度實測
+///   吻合 ±1，見 `pngfx.rs` 模組頭），
+/// - tint：線性域朝白插值 `l' = l·val + (1−val)`（與 shade 對稱；corpus 無
+///   tint 實例——白端原樣實測，未校準＝老實標明），
+/// - satMod：**8bit 域、Rec.601 luma** 飽和調製 `c' = lum + (c−lum)·val`
+///   （LO 內嵌圖反推校準式；709 權重在紅/綠/藍梯度實測偏 20/255，棄）。
+///
+/// 折算缺任一端色（畸形宣告／查無槽位）＝整組 None（不虛構、不半套）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DuotoneEffect {
+    /// 暗端色（duotone 首個顏色節點折算值，0xAARRGGBB）。
+    pub color1: u32,
+    /// 亮端色（第二個顏色節點折算值，0xAARRGGBB）。
+    pub color2: u32,
+}
+
+/// K19：解析期色彩節點累積（一個 `a:schemeClr`／`a:srgbClr`／`a:prstClr`
+/// 與其子修飾器）。
+struct DuoNode {
+    /// 基底色（0xAARRGGBB；修飾器套用前）。
+    base: Option<u32>,
+    /// 子修飾器（文件序；('s'=shade/lumMod 線性乘、't'=tint 朝白、
+    /// 'm'=satMod 8bit luma 調製)，參數＝val/100000）。
+    mods: Vec<(char, f64)>,
+}
+
 /// K12：文字框/形狀段落邊框（`w:pBdr`）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShapeBorder {
@@ -246,6 +277,11 @@ pub struct InlineImage {
     /// K12：文字框段落邊框（`w:pBdr`）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub txbx_borders: Vec<ShapeBorder>,
+    /// K19：`a:blip` 下的 `a:duotone` 宣告折算結果（None＝無宣告／折算不成）。
+    /// 發射層據此把像素做雙色調變換（`DrawItem::Image.duotone` 同步外露）。
+    /// serde default＋None 不外露＝無宣告檔案的序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duotone: Option<DuotoneEffect>,
 }
 
 impl InlineImage {
@@ -523,6 +559,111 @@ pub fn parse_vml_color(raw: Option<&str>) -> Option<u32> {
         }
     };
     Some(named)
+}
+
+// ---- K19：duotone 折算（ECMA-376 §21.2.3 色彩變換；LO 實測校準見下）----
+
+/// sRGB 值（0..255，允許未量化 f64）→ 線性域（IEC 61966-2-1 分段式，與
+/// ECMA「lumMod/shade 乘線性亮度」的語意域吻合）。
+fn srgb_to_linear(c8: f64) -> f64 {
+    let v = c8 / 255.0;
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// 線性域 → sRGB 值（0..255，保持 f64 不量化；最終 round 在折算出口）。
+fn linear_to_srgb(v: f64) -> f64 {
+    let v = v.clamp(0.0, 1.0);
+    let s = if v <= 0.0031308 {
+        12.92 * v
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    };
+    s * 255.0
+}
+
+/// 一個 duotone 顏色節點：基底色按文件序套修飾器 → 0xAARRGGBB。
+///
+/// - `'s'`（shade／lumMod）：線性域乘 `k`——ECMA 語意域（`theme.rs::
+///   apply_shading_transform` 的 8bit floor 式是 `w:shd` 屬性的 corpus 校準式，
+///   域不同勿混用）。LO 內嵌圖反推實證：accent1 `5B9BD5` 經
+///   `shade 45000`＋`satMod 135000` → 本式得 (48,110,166)，LO 壓色後圖的
+///   隱含暗端實測 (49,110,165)，逐通道差 ≤1（LO 內部 gamma 精度量化差；
+///   色分軸 24-bin 對 ±1 完全不敏感）。
+/// - `'t'`（tint）：線性域朝白插值 `l' = l·k + (1−k)`（ECMA lumCh 對稱式；
+///   corpus 無 tint 實例——本檔白端是原樣 `prstClr white`，未校準＝老實標明）。
+/// - `'m'`（satMod）：8bit 域 Rec.601 luma 飽和調製 `c' = lum + (c−lum)·k`。
+///   權重選擇有實據：四色帶梯度（灰/紅/綠/藍各 256 階）經 LO 無損 PDF 輸出
+///   反解，紅/綠/藍單通道斜率 = (0.29, 0.586, 0.103)±0.01 ≈ Rec.601；709 權重
+///   偏 0.2/通道，棄。
+fn fold_duo_node(node: &DuoNode) -> Option<u32> {
+    let base = node.base?;
+    let (a, r, g, b) = ((base >> 24) & 0xFF, (base >> 16) & 0xFF, (base >> 8) & 0xFF, base & 0xFF);
+    // 單一狀態 cur＝sRGB 值域 f64（不在中途量化成 8bit——LO 梯度實測吻合的
+    // 管線是 shade 線性域结果直接進 satMod，中間不落地）。線性域修飾器
+    // （s/t）把 cur 經 srgb_to_linear 換域、算完回換；satMod 直接在 cur 上
+    // 做。混序（如 satMod 後再接 shade）因此天然正確——每次 s/t 都從 cur
+    // 現值重新換域，不信任任何快取。
+    let mut cur = [f64::from(r), f64::from(g), f64::from(b)];
+    for (kind, k) in &node.mods {
+        match kind {
+            's' => cur = cur.map(|c| linear_to_srgb(srgb_to_linear(c) * k)),
+            't' => cur = cur.map(|c| linear_to_srgb(srgb_to_linear(c) * k + (1.0 - k))),
+            'm' => {
+                let lum = 0.299 * cur[0] + 0.587 * cur[1] + 0.114 * cur[2];
+                cur = cur.map(|c| (lum + (c - lum) * k).clamp(0.0, 255.0));
+            }
+            _ => {}
+        }
+    }
+    let q = |v: f64| -> u32 { v.round().clamp(0.0, 255.0) as u32 };
+    Some((a << 24) | (q(cur[0]) << 16) | (q(cur[1]) << 8) | q(cur[2]))
+}
+
+/// K19：duotone 顏色節點開標／自閉合時的基底色解析（修飾器另記）。
+/// `a:schemeClr`→theme 查槽、`a:srgbClr`→hex、`a:prstClr`→命名色表
+/// （`parse_vml_color` 覆蓋 white/black/red… 的 ST_PresetColorVal 交集；
+/// 查無＝None，節點保留但折算整組落空——不虛構）。
+fn duo_node_base(
+    theme: &crate::ThemeColors,
+    name: &[u8],
+    e: &quick_xml::events::BytesStart,
+) -> Option<u32> {
+    let val = attr_local(e, b"val")?;
+    match name {
+        b"schemeClr" => theme.resolve(&val),
+        b"srgbClr" => {
+            let hex = val.trim();
+            if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            u32::from_str_radix(hex, 16).ok().map(|v| 0xFF00_0000 | v)
+        }
+        _ => parse_vml_color(Some(&val)),
+    }
+}
+
+/// K19：修飾器記帳（val/100000；非法 val＝不記——容錯不猜）。
+fn duo_note_mod(p: &mut Pending, name: &[u8], e: &quick_xml::events::BytesStart) {
+    let Some(idx) = p.duo_node_in else {
+        return;
+    };
+    let Some(k) = attr_local(e, b"val").and_then(|v| v.trim().parse::<f64>().ok()) else {
+        return;
+    };
+    let kind = match name {
+        b"shade" | b"lumMod" => 's',
+        b"tint" => 't',
+        _ => 'm',
+    };
+    if let Some(nodes) = p.duo_nodes.as_mut() {
+        if let Some(node) = nodes.get_mut(idx) {
+            node.mods.push((kind, k / 100_000.0));
+        }
+    }
 }
 
 /// `strokedashstyle`／`v:stroke/@dashstyle` → SVG stroke-dasharray（卡片
@@ -965,6 +1106,15 @@ struct Pending {
     grp_ch_ext_cy: f64,
     cur_child: Option<PendingChildShape>,
     in_p_bdr: bool,
+    // ---- K19：`a:blip` 色彩效果（duotone）累積上下文 ----
+    /// 進行中 `a:duotone` 的顏色節點清單（文档序，≤2 有效；None＝不在 duotone
+    /// 內）。`a:biLevel`／`a:grayscl` 命中＝識破但不折算（LO 真值＝灰階，本卡
+    /// 未實裝→留 None，發射層原樣直出＝零假色）。
+    duo_nodes: Option<Vec<DuoNode>>,
+    /// 進行中的 duotone 節點索引（`a:schemeClr` 等開標時設；子修飾器寫入處）。
+    duo_node_in: Option<usize>,
+    /// duotone 完結後的折算結果（`a:duotone` End 時由 duo_nodes 折出）。
+    duo: Option<DuotoneEffect>,
 }
 
 struct PendingChildShape {
@@ -1098,6 +1248,9 @@ impl Pending {
             grp_ch_ext_cy: 0.0,
             cur_child: None,
             in_p_bdr: false,
+            duo_nodes: None,
+            duo_node_in: None,
+            duo: None,
         }
     }
 }
@@ -1143,6 +1296,9 @@ struct DrawingParser {
     buggy: bool,
     /// K10 表內浮動錨點回塞鎖：`K10_CELL_ANCHOR_BUGGY=1` 時回退舊 in_cell 判定。
     cell_anchor_buggy: bool,
+    /// K19 duotone 回塞鎖：`K19_DUOTONE_BUGGY=1` 時 duotone 解析結果永不落地
+    /// （燈1/燈2 必紅；照 `K4D_BUGGY` 先例只在 `with_theme()` 讀一次 env）。
+    duotone_buggy: bool,
 }
 
 impl DrawingParser {
@@ -1170,6 +1326,7 @@ impl DrawingParser {
             ac_stack: Vec::new(),
             buggy: std::env::var("K4D_BUGGY").is_ok(),
             cell_anchor_buggy: std::env::var("K10_CELL_ANCHOR_BUGGY").is_ok(),
+            duotone_buggy: std::env::var("K19_DUOTONE_BUGGY").is_ok(),
         }
     }
 
@@ -1229,6 +1386,8 @@ impl DrawingParser {
             embed_rids: p.rids.clone(),
             group_shapes: p.group_shapes.clone(),
             txbx_borders: p.txbx_borders.clone(),
+            // K19 回塞鎖：buggy 態永不落地 duotone（燈1/2 必紅）。
+            duotone: if self.duotone_buggy { None } else { p.duo },
         });
     }
 
@@ -1830,6 +1989,35 @@ impl DrawingParser {
                     // rids）；rid 語義與舊「首見才設」逐位相同。
                     p.note_rid(attr_local(e, b"embed"));
                 }
+                // ---- K19：`a:blip` 色彩效果（duotone／biLevel／grayscl）----
+                b"duotone" if p.duo_nodes.is_none() && p.duo.is_none() => {
+                    // 雙宣告畸形＝首見為準（同 rid 口徑）；節點累積開機。
+                    p.duo_nodes = Some(Vec::new());
+                }
+                b"biLevel" | b"grayscl" if p.duo_nodes.is_none() && p.duo.is_none() => {
+                    // 識破：grayscl 折成黑→白雙色調（LUT 數學＝灰階本體，
+                    // 零猜測）；biLevel 是閾值濾鏡——LO 真值未校準且 corpus
+                    // 零實例，只識不破（不虛構效果，像素原樣直出）。
+                    if name == b"grayscl" {
+                        p.duo = Some(DuotoneEffect {
+                            color1: 0xFF00_0000,
+                            color2: 0xFFFF_FFFF,
+                        });
+                    }
+                }
+                n @ (b"schemeClr" | b"srgbClr" | b"prstClr") if p.duo_nodes.is_some() => {
+                    // duotone 直下的顏色節點（Start 態：可帶子修飾器）。
+                    let base = duo_node_base(&self.theme, n, e);
+                    if let Some(nodes) = p.duo_nodes.as_mut() {
+                        p.duo_node_in = Some(nodes.len());
+                        nodes.push(DuoNode { base, mods: Vec::new() });
+                    }
+                }
+                n @ (b"shade" | b"tint" | b"satMod" | b"lumMod")
+                    if p.duo_node_in.is_some() =>
+                {
+                    duo_note_mod(&mut p, n, e);
+                }
                 b"drawing" | b"pict" if !empty => {
                     let close: &'static [u8] = if name == b"drawing" {
                         b"drawing"
@@ -2016,6 +2204,30 @@ impl DrawingParser {
                 b"blip" => {
                     // K4c-image：同 Start 分支，經 note_rid 統一記錄。
                     p.note_rid(attr_local(e, b"embed"));
+                }
+                // ---- K19：自閉合形態（常態）：`<a:prstClr val="white"/>`、
+                // `<a:shade val="45000"/>`、`<a:grayscl/>` 都是自閉合標籤 ----
+                b"duotone" if p.duo_nodes.is_none() && p.duo.is_none() => {
+                    p.duo_nodes = Some(Vec::new());
+                }
+                b"biLevel" | b"grayscl" if p.duo_nodes.is_none() && p.duo.is_none() => {
+                    if name == b"grayscl" {
+                        p.duo = Some(DuotoneEffect {
+                            color1: 0xFF00_0000,
+                            color2: 0xFFFF_FFFF,
+                        });
+                    }
+                }
+                n @ (b"schemeClr" | b"srgbClr" | b"prstClr") if p.duo_nodes.is_some() => {
+                    let base = duo_node_base(&self.theme, n, e);
+                    if let Some(nodes) = p.duo_nodes.as_mut() {
+                        nodes.push(DuoNode { base, mods: Vec::new() });
+                    }
+                }
+                n @ (b"shade" | b"tint" | b"satMod" | b"lumMod")
+                    if p.duo_node_in.is_some() =>
+                {
+                    duo_note_mod(p, n, e);
                 }
                 _ => {}
             }
@@ -2245,6 +2457,30 @@ impl DrawingParser {
                 b"pctPosHOffset" | b"pctPosVOffset" => {
                     if let Some(p) = self.graphic.as_mut() {
                         p.pct_axis = None;
+                    }
+                    return;
+                }
+                // ---- K19：duotone 節點／容器完結 ----
+                b"schemeClr" | b"srgbClr" | b"prstClr" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.duo_node_in = None;
+                    }
+                    return;
+                }
+                b"duotone" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.duo_node_in = None;
+                        if let Some(nodes) = p.duo_nodes.take() {
+                            // 兩端色齊備才落地（缺色＝整組 None，發射層原樣
+                            // 直出——不虛構半套調色）。
+                            if nodes.len() >= 2 && p.duo.is_none() {
+                                let c1 = fold_duo_node(&nodes[0]);
+                                let c2 = fold_duo_node(&nodes[1]);
+                                if let (Some(c1), Some(c2)) = (c1, c2) {
+                                    p.duo = Some(DuotoneEffect { color1: c1, color2: c2 });
+                                }
+                            }
+                        }
                     }
                     return;
                 }
