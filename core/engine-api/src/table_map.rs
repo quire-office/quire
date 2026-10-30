@@ -547,6 +547,9 @@ pub fn table_input(
     // `w:tblStyle` 時繼承的外層樣式 id（ECMA §17.4.65：子表無宣告沿父表）。
     cond: Option<&ShadingCtx<'_>>,
     style_inherit: Option<&str>,
+    // K17：本表各列的錨定框撐列地板（row_idx→pt；巢狀表傳空表＝不撐，宿主
+    // 列定位只認最內層直接格）。空表＝舊行為逐位元組不變。
+    grow_floors: &HashMap<usize, f32>,
 ) -> TableInput {
     let p = &t.props;
     // K8-shd：本表（含巢狀）逐列逐格條件閘；巢狀表無自己的閘資料時不虛構
@@ -584,6 +587,8 @@ pub fn table_input(
                 height_pt: twip_pt(r.props.height_raw.as_deref()),
                 height_exact: r.props.height_rule.as_deref() == Some("exact"),
                 header: r.props.header,
+                // K17：錨定框撐列地板（空表＝None＝舊行為）。
+                grow_floor_pt: grow_floors.get(&ri).copied(),
                 cells: r
                     .cells
                     .iter()
@@ -649,6 +654,9 @@ pub fn table_input(
                                         // 時繼承本表（子表常不重複宣告 tblStyle）。
                                         cond,
                                         style_id,
+                                        // K17：巢狀表不撐（宿主列定位只認最內層
+                                        // 直接格；撐外層列無 LO 校準依據）。
+                                        &HashMap::new(),
                                     ))));
                                 }
                             }
@@ -1015,6 +1023,10 @@ pub fn build_slots(
     advance_scales: &[f32],
     // K8-shd：條件底紋 ctx（`None`＝零擾動：頁首尾表格／診斷鏡像／回塞鎖）。
     cond_ctx: Option<&ShadingCtx<'_>>,
+    // K17：樣式表（撐列 pitch 的框內字族／字級退檔來源，取 docDefaults；
+    // `None`＝無宣告檔走 12pt／Liberation 尺）。頁首尾表傳 None（images
+    // 亦為空表，撐列不生效）。
+    doc_styles: Option<&StyleTable>,
 ) -> Vec<TableSlot> {
     let styles = styles_xml.map(table_style_borders).unwrap_or_default();
     let cell_imgs = cell_image_map(images);
@@ -1057,6 +1069,8 @@ pub fn build_slots(
     tables
         .iter()
         .map(|bt| {
+            // K17：錨定框撐列地板（本表宿主列；回塞鎖在函數內整支關閉）。
+            let floors = k17_grow_floors(&bt.table, images, params, sections, doc_styles);
             let input = table_input(
                 &bt.table,
                 texts,
@@ -1071,6 +1085,7 @@ pub fn build_slots(
                 // 在 table_input 內部遞迴處理）。
                 cond_ctx,
                 None,
+                &floors,
             );
             let avail_w = avail_w_for(sections, params, bt.para_start);
             let layout = quire_layout::table::layout_table(&input, avail_w, line_h, &m, 0);
@@ -1093,6 +1108,190 @@ pub fn build_slots(
             }
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// K17：錨定文字框撐列（grow = posV + eff_h）
+// ---------------------------------------------------------------------------
+
+/// 撐列模型的 ECMA 預設內邊距（`bodyPr` 缺 tIns/bIns＝45720EMU＝3.6pt；
+/// lIns/rIns＝91440EMU＝7.2pt）。出处 docs/k18-lo-rowgrow-calibration.md §3
+/// （WC048 實測口徑），非湊數常數。
+const K17_INS_TB_PT: f32 = 3.6;
+const K17_INS_LR_PT: f32 = 7.2;
+
+/// 錨定框撐列事實（本卡本地判別，不進 InlineImage——避免污染解析投影）。
+struct K17GrowFacts {
+    autofit_sp: bool,
+    tins: f32,
+    bins: f32,
+    lins: f32,
+    rins: f32,
+    size_pt: Option<f32>,
+    face: Option<String>,
+    spacing_sum_pt: f32,
+    line_declared: Option<f32>,
+}
+
+/// K17 撐列地板計算：對本表各列收集「宿主段落在該列」的合格錨定框
+/// （floating＋layoutInCell＋wrap≠none＋**有 DrawingML bodyPr 事實**或群組框），
+/// 每框取 `grow = posV + eff_h`（規格 `docs/k18-lo-rowgrow-calibration.md` §6），
+/// 同列多框取 **max**（LO 疊加未證，保守）。回傳 row_idx → 地板 pt。
+///
+/// `eff_h`（§6(4)(5)）：
+/// - noAutofit／normAutofit／群組框 → 宣告 extent cy（h_pt）原值；
+/// - spAutoFit → tIns＋bIns＋Σ_段[(before＋after)＋n_lines×pitch]＋
+///   Σ_top/bottom 段邊框(sz/8＋space)；
+///   pitch＝size×(line_declared/240)×LH_face（**框內 declared 恆 240 口徑，
+///   勿吃 docDefaults**；LH 用 K6 face_line_factor）；
+///   n_lines 用 TextMeasurer 依框內寬（w−lIns−rIns）實斷行（LO 同款換行）。
+///
+/// posV 三式退檔（比照 resolved_anchor，但只取 V 軸**列內偏移**）：
+/// posOffset → pct×(page 系用頁高／其余用版心高)；align 式撐列基準未校準
+/// ＝老實跳過（不虛構撐列）。回塞鎖 `K17_ANCHOR_ROWGROW_BUGGY=1` 整支關閉。
+fn k17_grow_floors(
+    table: &Table,
+    images: &[quire_ooxml::InlineImage],
+    params: &LayoutParams,
+    sections: &[SectionSpec],
+    styles: Option<&StyleTable>,
+) -> HashMap<usize, f32> {
+    let mut out: HashMap<usize, f32> = HashMap::new();
+    if std::env::var_os("K17_ANCHOR_ROWGROW_BUGGY").is_some() {
+        return out;
+    }
+    let doc_face = styles.and_then(|t| t.doc_face());
+    let doc_size = styles.map_or(12.0, |t| t.doc_grid().0.unwrap_or(12.0));
+    for im in images {
+        // 資格（紅燈檔頭口徑）：浮動 anchor＋layoutInCell＋wrap≠none
+        // （無宣告＝ECMA 預設 wrapSquare＝可撐）。
+        if !im.floating || !im.layout_in_cell {
+            continue;
+        }
+        if im.wrap_type.as_deref() == Some("none") {
+            continue;
+        }
+        // 撐列對象＝文字框（有 bodyPr 事實）或群組框（只吃宣告 extent，
+        // §6(5)）。純圖片錨點未校準＝不撐（老實）。
+        let facts = match &im.textbox_grow {
+            Some(g) => Some(K17GrowFacts {
+                autofit_sp: g.autofit == "spAutoFit",
+                tins: g.tins_pt.unwrap_or(K17_INS_TB_PT),
+                bins: g.bins_pt.unwrap_or(K17_INS_TB_PT),
+                lins: g.lins_pt.unwrap_or(K17_INS_LR_PT),
+                rins: g.rins_pt.unwrap_or(K17_INS_LR_PT),
+                size_pt: g.size_pt,
+                face: g.face.clone(),
+                spacing_sum_pt: g.spacing_sum_pt,
+                line_declared: g.line_declared,
+            }),
+            None if !im.group_shapes.is_empty() => Some(K17GrowFacts {
+                // 群組框＝比照 noAutofit（K18 §2 推翻「宣告高撐列」後唯一
+                // 存活口徑：群組只吃宣告 extent cy）。
+                autofit_sp: false,
+                tins: 0.0,
+                bins: 0.0,
+                lins: 0.0,
+                rins: 0.0,
+                size_pt: None,
+                face: None,
+                spacing_sum_pt: 0.0,
+                line_declared: None,
+            }),
+            None => None,
+        };
+        let Some(f) = facts else { continue };
+        // 列內 V 偏移：posOffset 直用；pct 依原宣告 frame（page→頁高）。
+        let y_origin = quire_ooxml::origin_of(im.pos_y_rel.as_deref());
+        let (page_h, avail_h) = match sections.get(im.para_index) {
+            Some(s) => (
+                s.geo.page_h_pt,
+                (s.geo.page_h_pt - s.geo.margin_top_pt - s.geo.margin_bottom_pt).max(1.0),
+            ),
+            None => (
+                params.page_h_pt,
+                (params.page_h_pt
+                    - params.margin(quire_layout::MARGIN_TOP)
+                    - params.margin(quire_layout::MARGIN_BOTTOM))
+                .max(1.0),
+            ),
+        };
+        let let_pos_v = match (im.pos_y_pt, im.pos_y_pct) {
+            (Some(v), _) => v,
+            (None, Some(p)) => {
+                let frame = if y_origin == "page" { page_h } else { avail_h };
+                frame * p / 100_000.0
+            }
+            // align 式（或全缺）撐列基準未校準＝老實不撐（不虛構列高）。
+            _ => continue,
+        };
+        // eff_h。
+        let eff_h = if !f.autofit_sp {
+            im.h_pt
+        } else {
+            let size = f.size_pt.unwrap_or(doc_size);
+            let lh_face = crate::face_line_factor(
+                f.face
+                    .as_deref()
+                    .or(doc_face.as_deref())
+                    .unwrap_or("liberation serif"),
+            );
+            let pitch = size * (f.line_declared.unwrap_or(240.0) / 240.0) * lh_face;
+            let inner_w = (im.w_pt - f.lins - f.rins).max(1.0);
+            let m = quire_layout::TextMeasurer::new(size);
+            let mut h = f.tins + f.bins + f.spacing_sum_pt;
+            // 段落數：txbx_texts（框內段文字，文档序）。空 vector＝無段文字
+            // 的事實（不虛構段落行；K18 盲測 pA 單段口徑由 len=1 自然覆蓋）。
+            for text in &im.txbx_texts {
+                let n_lines = if text.trim().is_empty() {
+                    1.0
+                } else {
+                    quire_layout::break_lines(text, inner_w, &m).len().max(1) as f32
+                };
+                h += n_lines * pitch;
+            }
+            // 段邊框（K12 txbx_borders 為真相：width_pt 已是 sz/8，space_pt
+            // 另計）：top＋bottom 各一条（K18 §3 藍線項 2×(3+8)）。
+            for b in &im.txbx_borders {
+                if b.edge == "top" || b.edge == "bottom" {
+                    h += b.width_pt + b.space_pt.unwrap_or(0.0);
+                }
+            }
+            h
+        };
+        let grow = let_pos_v + eff_h;
+        if !(grow.is_finite() && grow > 0.0) || grow > 2000.0 {
+            continue; // 爆量防護（S1-4 同口徑）：病態值不撐列。
+        }
+        // 宿主列定位：錨定段落所屬**直接儲存格**所在列（巢狀表段落的宿主＝
+        // 最內層格，遞迴下鑽）。
+        let Some(row_idx) = k17_host_row(table, im.para_index) else {
+            continue;
+        };
+        let e = out.entry(row_idx).or_insert(0.0);
+        *e = e.max(grow);
+    }
+    out
+}
+
+/// 宿主列定位：段落 index 落在本表（含巢狀）哪個直接儲存格 → 該格所在列。
+/// 巢狀表內段落＝宿主在最內層表（其表高另有算法，撐**外層**列無據＝None）。
+fn k17_host_row(table: &Table, para_index: usize) -> Option<usize> {
+    for (ri, row) in table.rows.iter().enumerate() {
+        for cell in &row.cells {
+            for b in &cell.blocks {
+                match b {
+                    Block::Paragraph { index } if *index == para_index => return Some(ri),
+                    Block::Table(inner) => {
+                        // 最內層命中＝回 None：撐外層列無 LO 校準依據。
+                        let _ = inner;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1142,6 +1341,9 @@ mod tests {
             rel_height: 0,
             wps_annotation: false,
             layout_in_cell: false,
+            // K17：撐列事實——本測只吃幾何，老實缺省＝不撐列。
+            wrap_type: None,
+            textbox_grow: None,
             group_shapes: Vec::new(),
             txbx_borders: Vec::new(),
             duotone: None,
@@ -1326,6 +1528,8 @@ mod tests {
                 1,
                 &[],
                 // K8-shd：本測只鎖槽錨點口徑——條件底紋傳 None＝零擾動路徑。
+                None,
+                // K17：images 恆空＝撐列不生效，doc_styles 老實傳 None。
                 None,
             );
             assert!(!slots.is_empty(), "{rel}：標為 txbx-in-cell 檔應有表格槽");

@@ -540,6 +540,8 @@ impl Engine {
             line_ref_bands,
             &grid_adv_v,
             Some(&cond_ctx),
+            // K17：撐列 pitch 退檔來源＝文件級樣式表（docDefaults 字族／字級）。
+            Some(&style_table),
         );
         let bands = table_map::build_images(
             &images,
@@ -860,6 +862,8 @@ impl Engine {
             &[],
             // K8-shd：頁首尾表格走零擾動路徑（條件帶只作用正文表；
             // hf 表換算風險未量，比照 K7-cal 水平尺老實不接，屬後續卡）。
+            None,
+            // K17：hf 表 images 恆空＝撐列不生效，doc_styles 老實傳 None。
             None,
         );
         let grid: Vec<(f32, f32)> = part.metrics.clone();
@@ -2436,7 +2440,7 @@ fn modal_line_h(line_hs: &[f32], floor: f32) -> f32 {
 /// K6：宣告族 → LO 實際渲染 face 的 real line-height 因子（`docs/k6-lineheight-calibration.md` §1）。
 /// 鍵一律小寫（宣告族名 casefold）；查不到＝1.1499（Liberation 系）＋TODO。
 /// **禁止**再引入 1.4／1.22／0.975 這類普適後備——那些是缺族表時代的湊數。
-fn face_line_factor(face: &str) -> f32 {
+pub(crate) fn face_line_factor(face: &str) -> f32 {
     let key = face.trim().to_lowercase();
     match key.as_str() {
         // Calibri → Carlito；Cambria → Caladea。
@@ -4237,6 +4241,8 @@ impl Engine {
             self.line_ref_bands,
             &[],
             // K8-shd：頁首尾表格零擾動路徑（同上 8-3 注）。
+            None,
+            // K17：hf 表 images 恆空＝撐列不生效，doc_styles 老實傳 None。
             None,
         );
         // 流項＝段落行＋表格依序排列（簡化 packer：頁首本就一小節，不跨頁，
