@@ -2490,7 +2490,7 @@ fn has_cjk(text: &str) -> bool {
 /// 兩邊都成立（環境穩性實證，報告 §6.1）。face 來源：
 /// `~/.local/share/fonts/k6cal`、系統 Liberation、LO 25.8 自帶
 /// Caladea／NotoSerif（矩陣重產：scratch `k7cal/gen_csv.py`）。
-fn face_advance_scale(face: &str) -> f32 {
+pub(crate) fn face_advance_scale(face: &str) -> f32 {
     let key = face.trim().to_lowercase();
     match key.as_str() {
         // Calibri → Carlito／真 Calibri（本環境 LO 渲真 MS face，克隆同寬）。
@@ -2514,7 +2514,7 @@ fn face_advance_scale(face: &str) -> f32 {
 /// 或 `K7_ADVANCE_SCALE_BUGGY=1`（**只**回塞水平 advance 查表，幾何軸不動
 /// ——紅燈 k7_advance_scale 的機制分離鎖）⇒ 全表退 1.0＝舊斷行＋舊發射
 /// 累加（比照 R2_BUGGY／K6_AUTO_PITCH_BUGGY 的 env 慣例）。
-fn k7_advance_enabled() -> bool {
+pub(crate) fn k7_advance_enabled() -> bool {
     std::env::var_os("K7_WRAP_WIDTH_BUGGY").is_none()
         && std::env::var_os("K7_ADVANCE_SCALE_BUGGY").is_none()
 }

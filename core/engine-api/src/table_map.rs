@@ -1238,7 +1238,23 @@ fn k17_grow_floors(
             );
             let pitch = size * (f.line_declared.unwrap_or(240.0) / 240.0) * lh_face;
             let inner_w = (im.w_pt - f.lins - f.rins).max(1.0);
-            let m = quire_layout::TextMeasurer::new(size);
+            // K20：斷行測量器必須帶 K7-cal 水平尺（`face_advance_scale`）。
+            // 用 `new`（1.0 尺）会把 Calibri 框內文字寬放大 ~13%：WC049-Mod
+            // 37 字被判 2 行（LO 真尺 1 行）→ 錨定列多撐一整行 13.4pt。
+            // 族退檔鏈＝框內宣告 → doc_face → liberation serif（與 pitch 的
+            // lh_face 同尺同鏈，行高/行寬一個模型）。BUGGY 總開關走
+            // `k7_advance_enabled`（回塞鎖既有 env，與正文斷行同進退）。
+            let adv_face = f
+                .face
+                .as_deref()
+                .or(doc_face.as_deref())
+                .unwrap_or("liberation serif");
+            let adv = if crate::k7_advance_enabled() {
+                crate::face_advance_scale(adv_face)
+            } else {
+                1.0
+            };
+            let m = quire_layout::TextMeasurer::with_advance_scale(size, adv);
             let mut h = f.tins + f.bins + f.spacing_sum_pt;
             // 段落數：txbx_texts（框內段文字，文档序）。空 vector＝無段文字
             // 的事實（不虛構段落行；K18 盲測 pA 單段口徑由 len=1 自然覆蓋）。
