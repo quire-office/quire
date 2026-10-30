@@ -256,9 +256,9 @@ fn png_rgba8(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         }
         pos += 12 + len;
     }
-    let raw = flate2::read::DeflateDecoder::new(&idat[..]);
+    let raw = flate2::read::ZlibDecoder::new(&idat[..]);
     use std::io::Read;
-    let mut raw = {
+    let raw = {
         let mut buf = Vec::new();
         let mut r = raw;
         r.read_to_end(&mut buf).ok()?;
