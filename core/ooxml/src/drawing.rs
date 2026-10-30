@@ -201,6 +201,12 @@ pub struct InlineImage {
     /// 路徑一概不動）。serde default 保持舊投影位元組不變。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wps_annotation: bool,
+    /// K15：`wp:anchor/@layoutInCell`（"1"/"true"＝真）。真且宿主在表格儲存格內
+    /// 時，LO 以**宿主儲存格**為錨點基準，`relativeFrom` 的 page/margin 字面
+    /// 意義被壓制（WC048 實測：page 系 V 軸＝格頂＋posOffset）。缺省／非 anchor
+    /// ＝false；serde default＋false 不外露＝無此旗標檔案的序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub layout_in_cell: bool,
 }
 
 impl InlineImage {
@@ -839,6 +845,8 @@ struct Pending {
     rel_height: i64,
     /// R6：本候選是 DrawingML `wps:wsp` 標註（套用宿主框裁切與 z 序）。
     wps_annotation: bool,
+    /// K15：`wp:anchor/@layoutInCell` 為真。
+    layout_in_cell: bool,
     /// VML：v:imagedata 出現過。
     vml_image: bool,
     /// VML：o:gfxdata（OLE 圖示）出現過。
@@ -944,6 +952,7 @@ impl Pending {
             page_pinned: false,
             rel_height: 0,
             wps_annotation: false,
+            layout_in_cell: false,
             in_cell,
             vml_image: false,
             vml_gfxdata: false,
@@ -1070,6 +1079,7 @@ impl DrawingParser {
             page_pinned: p.page_pinned,
             rel_height: p.rel_height,
             wps_annotation: p.wps_annotation,
+            layout_in_cell: p.layout_in_cell,
             in_cell: p.in_cell,
             pos_x_pt: p.pos_x_pt,
             pos_x_rel: p.pos_x_rel.clone(),
@@ -1557,6 +1567,11 @@ impl DrawingParser {
                     p.rel_height = attr_local(e, b"relativeHeight")
                         .and_then(|v| v.trim().parse::<i64>().ok())
                         .unwrap_or(0);
+                    // K15：layoutInCell 布林屬性（"1"/"true" 為真；缺省＝假，
+                    // ECMA 預設語意交由 engine 層只在宿主為儲存格時消費）。
+                    p.layout_in_cell = attr_local(e, b"layoutInCell").is_some_and(|v| {
+                        matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on")
+                    });
                 }
                 self.graphic = Some(Box::new(p));
             }
@@ -2123,6 +2138,24 @@ mod tests {
         assert!(!im.floating);
         assert!(!im.in_cell);
         assert_eq!(im.embed_rid.as_deref(), Some("rId5"));
+    }
+
+    /// K15：`wp:anchor/@layoutInCell` 解析（"1"/"true" 真；缺省／"0" 假；inline 恆假）。
+    #[test]
+    fn anchor_layout_in_cell_parsed() {
+        let one = |attr: &str| {
+            let xml = doc(&format!(
+                r#"<w:p><w:r><w:drawing><wp:anchor{attr}><wp:positionH relativeFrom="page">
+               <wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page">
+               <wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx="635000" cy="635000"/>
+               </wp:anchor></w:drawing></w:r></w:p>"#
+            ));
+            read_images(xml.as_bytes())[0].layout_in_cell
+        };
+        assert!(one(r#" layoutInCell="1""#));
+        assert!(one(r#" layoutInCell="true""#));
+        assert!(!one(r#" layoutInCell="0""#));
+        assert!(!one(""));
     }
 
     #[test]

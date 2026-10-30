@@ -758,14 +758,15 @@ fn v_align_y(align: &str, frame_h: f32, h_pt: f32) -> Option<f32> {
 }
 
 /// K10：查詢段落 `para_index` 在表格中的儲存格頁面原點與寬度：
-/// 回傳 `Some((cell_x_pt, cell_y_pt, cell_w_pt))`。
+/// 回傳 `Some((cell_x_pt, cell_y_pt, cell_w_pt, table_left_pt))`。
+/// K15：第四元＝宿主表格左緣（頁座標；`layoutInCell` 的左夾底基準）。
 pub fn find_cell_for_para(
     tables: &[BodyTable],
     slots: &[TableSlot],
     sections: &[SectionSpec],
     params: &LayoutParams,
     para_index: usize,
-) -> Option<(f32, f32, f32)> {
+) -> Option<(f32, f32, f32, f32)> {
     for (bt, slot) in tables.iter().zip(slots.iter()) {
         if para_index < slot.para_start || para_index >= slot.para_end {
             continue;
@@ -789,7 +790,7 @@ pub fn find_cell_for_para(
                     let cell_x = margin_l + geom.0;
                     let cell_y = margin_t + tblp_y + geom.1;
                     let cell_w = geom.2;
-                    return Some((cell_x, cell_y, cell_w));
+                    return Some((cell_x, cell_y, cell_w, margin_l + slot.layout.x_off));
                 }
             }
         }
@@ -812,7 +813,7 @@ fn resolved_anchor(
     avail_w: f32,
     avail_h: f32,
     anchor_para_w: Option<f32>,
-    cell_info: Option<(f32, f32, f32)>,
+    cell_info: Option<(f32, f32, f32, f32)>,
 ) -> Option<quire_layout::FloatingAnchor> {
     // 逐軸可解析才成錨：posOffset 或 `<wp:align>` 兩式任一即可（互斥但
     // 不必同時存在）；relativeFrom 缺＝段落系近似（origin_of 同款容錯）。
@@ -822,9 +823,13 @@ fn resolved_anchor(
     let x_origin = quire_ooxml::origin_of(im.pos_x_rel.as_deref());
     let y_origin = quire_ooxml::origin_of(im.pos_y_rel.as_deref());
 
-    // K10：若身處表格儲存格內且非 page 原點系，以儲存格幾何為基準換算頁絕對原點
+    // K10：若身處表格儲存格內且非 page 原點系，以儲存格幾何為基準換算頁絕對原點。
+    // K15：`layoutInCell=1` 壓制 `relativeFrom` 的 page 字面意義——宿主在儲存格內時
+    // page 系軸同樣改以宿主儲存格為基準（LO 實測：WC048 Textbox3 page 系 V 軸＝
+    // 第 2 列格頂＋posOffset 21.0pt）；無宿主儲存格（cell_info=None）才回退頁原點。
+    let cell_rules = |origin: &str| origin != "page" || im.layout_in_cell;
     let (frame_w, x_base, x_is_page) =
-        if let (Some((cx, _, cw)), true) = (cell_info, x_origin != "page") {
+        if let (Some((cx, _, cw, _)), true) = (cell_info, cell_rules(x_origin)) {
             (cw, cx, true)
         } else {
             let fw = match x_origin {
@@ -836,7 +841,7 @@ fn resolved_anchor(
         };
 
     let (frame_h, y_base, y_is_page) =
-        if let (Some((_, cy, _)), true) = (cell_info, y_origin != "page") {
+        if let (Some((_, cy, _, _)), true) = (cell_info, cell_rules(y_origin)) {
             (avail_h.max(1.0), cy, true)
         } else {
             let fh = match y_origin {
@@ -845,6 +850,13 @@ fn resolved_anchor(
             };
             (fh, 0.0, false)
         };
+
+    // K15：pct 式的百分比基準恆為 `relativeFrom` 原宣告的 frame（page→頁寬高）；
+    // layoutInCell 只換**原點**不換百分比基準（WC048 Textbox3：pctPosVOffset=2500
+    // ＝頁高×2.5%＝21.05pt，LO 實測＝格頂＋21.0；誤用版心高會得 17.45）。
+    // 非 page 原點系維持 K10 的 frame（零擾動）。
+    let pct_frame_w = if x_origin == "page" { page_w } else { frame_w };
+    let pct_frame_h = if y_origin == "page" { page_h } else { frame_h };
 
     // 逐軸三式平滑退檔：posOffset → `<wp:align>` → `<wp14:pctPos*Offset>`。
     // align 值不被識別（如 insideLeft／非法字串）只算該式落空，不可短路
@@ -856,7 +868,7 @@ fn resolved_anchor(
                 .as_deref()
                 .and_then(|a| h_align_x(a, frame_w, im.w_pt))
         })
-        .or_else(|| im.pos_x_pct.map(|p| frame_w * p / 100_000.0))?;
+        .or_else(|| im.pos_x_pct.map(|p| pct_frame_w * p / 100_000.0))?;
     let y_offset = im
         .pos_y_pt
         .or_else(|| {
@@ -864,10 +876,22 @@ fn resolved_anchor(
                 .as_deref()
                 .and_then(|a| v_align_y(a, frame_h, im.h_pt))
         })
-        .or_else(|| im.pos_y_pct.map(|p| frame_h * p / 100_000.0))?;
+        .or_else(|| im.pos_y_pct.map(|p| pct_frame_h * p / 100_000.0))?;
 
-    let x_pt = x_base + x_offset;
+    let mut x_pt = x_base + x_offset;
     let y_pt = y_base + y_offset;
+    // K15：layoutInCell 的 align 式（center/right）算出的框不得越過**宿主表格左緣**——
+    // LO 實測：Textbox3（右對齊、框寬 387 > 欄寬 150，算得負值）落在 72.25＝表左緣；
+    // Textbox1（置中、185.9 > 150）同落 72.2。反例：Textbox2（中欄置中、273.6 > 150，
+    // 左端 160.6 已在表內）LO 不夾到格左緣 222.25，故夾底基準是表左緣而非格左緣。
+    // posOffset／pct 兩式是作者明示偏移，不夾（老實照排）。
+    if let (true, true, Some((_, _, _, table_left))) =
+        (im.layout_in_cell, im.pos_x_pt.is_none(), cell_info)
+    {
+        if x_is_page {
+            x_pt = x_pt.max(table_left);
+        }
+    }
 
     Some(quire_layout::FloatingAnchor {
         x_pt,
@@ -906,10 +930,22 @@ pub fn build_images(
     slots: &[TableSlot],
 ) -> Vec<quire_layout::ImageBand> {
     let buggy = std::env::var_os("K10_CELL_ANCHOR_BUGGY").is_some();
+    // K15 BUGGY 鎖：忽略 layoutInCell 旗標（回到 K10 純 relativeFrom 原點系）。
+    let k15_buggy = std::env::var_os("K15_CELL_ANCHOR_BUGGY").is_some();
     let mut out: Vec<quire_layout::ImageBand> = images
         .iter()
         .filter(|im| !im.in_cell || (!buggy && im.floating))
         .map(|im| {
+            let im_owned;
+            let im = if k15_buggy && im.layout_in_cell {
+                im_owned = quire_ooxml::InlineImage {
+                    layout_in_cell: false,
+                    ..im.clone()
+                };
+                &im_owned
+            } else {
+                im
+            };
             // 錨定段落的頁面幾何：page 系 frame 用頁寬高，margin 系用版心寬高。
             let (page_w, page_h, avail_w, avail_h) = match sections.get(im.para_index) {
                 Some(s) => (
@@ -1105,7 +1141,56 @@ mod tests {
             page_pinned: false,
             rel_height: 0,
             wps_annotation: false,
+            layout_in_cell: false,
         }
+    }
+
+    /// K15：layoutInCell=1＋宿主儲存格 → page 系軸改以格為基準；無宿主退頁原點；
+    /// 旗標關＝K10 舊行為（page 原點，格資訊被忽略）。
+    #[test]
+    fn layout_in_cell_overrides_page_origin() {
+        let cell = Some((200.0, 300.0, 150.0, 72.0));
+        let mut im = anchored_img();
+        im.pos_x_pt = Some(10.0);
+        im.layout_in_cell = true;
+        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None, cell).expect("可解");
+        assert_eq!((a.x_pt, a.y_pt), (210.0, 310.0), "page 系兩軸以格為基準");
+        assert_eq!(a.x_frame, quire_layout::OriginFrame::Page);
+        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None, None).expect("可解");
+        assert_eq!((a.x_pt, a.y_pt), (10.0, 10.0), "無宿主格＝退頁原點");
+        im.layout_in_cell = false;
+        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None, cell).expect("可解");
+        assert_eq!((a.x_pt, a.y_pt), (10.0, 10.0), "旗標關＝K10 舊行為");
+    }
+
+    /// K15：align 式夾表左緣（right：算得負值）；中欄置中左端在表內不夾；
+    /// posOffset 明示負偏移不夾；pct 基準維持 page 高。
+    #[test]
+    fn layout_in_cell_align_clamps_to_table_left_only() {
+        let mut im = anchored_img();
+        im.layout_in_cell = true;
+        im.w_pt = 387.0;
+        im.pos_x_align = Some("right".into());
+        // col0：格 x=72 w=150，table_left=72 → 72+150-387 < 72 → 夾 72。
+        let c0 = Some((72.0, 100.0, 150.0, 72.0));
+        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None, c0).expect("可解");
+        assert_eq!(a.x_pt, 72.0);
+        // 中欄 center：格 x=222 w=150、框寬 273.6 → 222+(150-273.6)/2=160.2 > 表左 72 → 不夾。
+        im.w_pt = 273.6;
+        im.pos_x_align = Some("center".into());
+        let c1 = Some((222.0, 100.0, 150.0, 72.0));
+        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None, c1).expect("可解");
+        assert!((a.x_pt - 160.2).abs() < 0.01, "x={}", a.x_pt);
+        // posOffset 明示負偏移＝作者意圖，不夾。
+        im.pos_x_align = None;
+        im.pos_x_pt = Some(-50.0);
+        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None, c0).expect("可解");
+        assert_eq!(a.x_pt, 22.0);
+        // pct（page 系）：基準＝頁高 800×2.5%＝20（非版心高 700×2.5%）。
+        im.pos_y_pt = None;
+        im.pos_y_pct = Some(2500.0);
+        let a = resolved_anchor(&im, 600.0, 800.0, 500.0, 700.0, None, c0).expect("可解");
+        assert_eq!(a.y_pt, 120.0);
     }
 
     /// 帶兩軸 page 原點的浮圖；y 已由 posOffset 鎖定，測試只折騰 x 軸。
