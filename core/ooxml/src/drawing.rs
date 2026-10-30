@@ -126,6 +126,41 @@ pub struct ShapeBorder {
     pub space_pt: Option<f32>,
 }
 
+/// K17：文字框撐列事實（`docs/k18-lo-rowgrow-calibration.md` §6 規格）。
+///
+/// 只記錄**事實**（外框 `wps:bodyPr` 首見＋框內段落宣告首見）；撐不撐、撐
+/// 多少由 engine 層判資格（floating／layoutInCell／wrap≠none）並算
+/// `grow = posV + eff_h`。段邊框項**不在此欄**——K12 已捕獲 `txbx_borders`
+/// （`sz/8`＋`space`），engine 層直接取用，避免雙份真相。
+/// serde default＋None 不外露＝無 txbx 錨定框的檔案序列化位元組逐位不變。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextboxGrow {
+    /// `wps:bodyPr` 的 autofit 子元素：`spAutoFit`／`noAutofit`／
+    /// `normAutofit`（LO 真值未測，呼叫端比照 noAutofit 保守處理）。
+    /// 群組錨點由呼叫端直接視同 `noAutofit`（K18 §6：群組只吃宣告 extent）。
+    pub autofit: String,
+    /// `bodyPr/@tIns`（pt）。None＝ECMA 預設 45720EMU＝3.6pt（呼叫端退化）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tins_pt: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bins_pt: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lins_pt: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rins_pt: Option<f32>,
+    /// 框內**最大** `w:rPr/w:sz`÷2（pt）。None＝呼叫端退 docDefaults 字級。
+    /// 取最大＝保守少算行數（多字号混排框不虛構塞得下的行）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_pt: Option<f32>,
+    /// 框內首見 `w:rFonts/@w:ascii`（K18 鐵則：吃不到＝None，**勿在此吃
+    /// docDefaults**——doc 級退檔由呼叫端做）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face: Option<String>,
+    /// Σ_框內段落（`w:pPr/w:spacing/@w:before` ＋ `@w:after`，pt）。
+    /// 未宣告＝0（K18：框內段距**不繼承** docDefaults）。
+    pub spacing_sum_pt: f32,
+}
+
 /// 圖片佔位投影：扁平段落序列第 `para_index` 段內的一個圖片/圖形框。
 ///
 /// 只讀投影（段落以索引引用，與 `Block::Paragraph{index}` 同款）；佔位
@@ -271,6 +306,19 @@ pub struct InlineImage {
     /// ＝false；serde default＋false 不外露＝無此旗標檔案的序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub layout_in_cell: bool,
+    /// K17：`wp:anchor` 直下垂直 wrap 事實（撐列資格判別）：`"none"`
+    /// （`<wp:wrapNone/>`）／`"square"`／`"topAndBottom"`／`"tight"`／
+    /// `"through"`。無任何 wrap 子元素＝None（ECMA 預設 `wrapSquare`，
+    /// K18 §6「none 除外全撐」口徑下呼叫端視同可撐）。serde default＋
+    /// None 不外露＝舊投影序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap_type: Option<String>,
+    /// K17：錨定框的撐列事實（`wps:bodyPr` 首見＋框內段落宣告首見；
+    /// `docs/k18-lo-rowgrow-calibration.md` §6）。None＝無文字框事實
+    /// （VML 框／純圖片／群組框不發）。承載欄＝**宿主段落**（para_index）：
+    /// 多框同宿主由 engine 層取 max（LO 疊加未證，保守）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub textbox_grow: Option<TextboxGrow>,
     /// K12：DrawingML 群組（`wpg:wgp`）內的子形狀清單。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_shapes: Vec<InlineChildShape>,
@@ -1111,6 +1159,23 @@ struct Pending {
     grp_ch_ext_cy: f64,
     cur_child: Option<PendingChildShape>,
     in_p_bdr: bool,
+    // ---- K17：錨定框撐列事實捕獲（外框 bodyPr＋txbx 段落宣告首見）----
+    /// `wp:anchor` 直下垂直 wrap 元素（"none"/"square"/"topAndBottom"/...）。
+    k17_wrap: Option<String>,
+    /// `wps:bodyPr` autofit 子元素（spAutoFit/noAutofit/normAutofit）。
+    k17_autofit: Option<String>,
+    k17_tins: Option<f32>,
+    k17_bins: Option<f32>,
+    k17_lins: Option<f32>,
+    k17_rins: Option<f32>,
+    /// 框內最大 `w:rPr/w:sz`（pt，半磅÷2；取最大＝保守少算行）。
+    k17_sz: Option<f32>,
+    /// 框內首見 `w:rFonts/@w:ascii`。
+    k17_face: Option<String>,
+    /// Σ_框內段落 `w:pPr/w:spacing` before＋after（pt）。
+    k17_spacing_sum: f32,
+    /// txbx 內 `w:rPr` 開閉深度（sz/rFonts 只收 rPr 內，spacing 只收 rPr 外）。
+    k17_rpr_depth: usize,
     // ---- K19：`a:blip` 色彩效果（duotone）累積上下文 ----
     /// 進行中 `a:duotone` 的顏色節點清單（文档序，≤2 有效；None＝不在 duotone
     /// 內）。`a:biLevel`／`a:grayscl` 命中＝識破但不折算（LO 真值＝灰階，本卡
@@ -1206,6 +1271,16 @@ impl Pending {
             rel_height: 0,
             wps_annotation: false,
             layout_in_cell: false,
+            k17_wrap: None,
+            k17_autofit: None,
+            k17_tins: None,
+            k17_bins: None,
+            k17_lins: None,
+            k17_rins: None,
+            k17_sz: None,
+            k17_face: None,
+            k17_spacing_sum: 0.0,
+            k17_rpr_depth: 0,
             in_cell,
             vml_image: false,
             vml_gfxdata: false,
@@ -1894,6 +1969,67 @@ impl DrawingParser {
             } else if name == b"pBdr" && !empty {
                 p.in_p_bdr = true;
             }
+            // K17：撐列事實捕獲（規格 docs/k18-lo-rowgrow-calibration.md §6）。
+            // anchor 直下垂直 wrap（wp:wrap* 是 anchor 直接子元素，巢狀子形
+            // 狀無同名元素，不須深度防竄位）。
+            if p.floating {
+                match name {
+                    b"wrapNone" => p.k17_wrap = Some("none".into()),
+                    b"wrapSquare" => p.k17_wrap = Some("square".into()),
+                    b"wrapTight" => p.k17_wrap = Some("tight".into()),
+                    b"wrapThrough" => p.k17_wrap = Some("through".into()),
+                    b"wrapTopAndBottom" => p.k17_wrap = Some("topAndBottom".into()),
+                    _ => {}
+                }
+            }
+            // 外框 `wps:bodyPr`（首見為準）：群組子形狀的 bodyPr 不採納
+            // （grp_depth>0 跳過——群組錨點只吃宣告 extent，K18 §6(5)）。
+            if name == b"bodyPr" && !empty && p.grp_depth == 0 && p.k17_autofit.is_none() {
+                let emu = |k: &[u8]| attr_local(e, k).and_then(|v| v.trim().parse::<f64>().ok()).map(|v| (v / 12700.0) as f32);
+                p.k17_tins = emu(b"tIns");
+                p.k17_bins = emu(b"bIns");
+                p.k17_lins = emu(b"lIns");
+                p.k17_rins = emu(b"rIns");
+            }
+            match name {
+                b"spAutoFit" if p.grp_depth == 0 && p.k17_autofit.is_none() => {
+                    p.k17_autofit = Some("spAutoFit".into())
+                }
+                b"noAutofit" if p.grp_depth == 0 && p.k17_autofit.is_none() => {
+                    p.k17_autofit = Some("noAutofit".into())
+                }
+                b"normAutofit" if p.grp_depth == 0 && p.k17_autofit.is_none() => {
+                    p.k17_autofit = Some("normAutofit".into())
+                }
+                _ => {}
+            }
+            // 框內段落宣告（撐列 pitch/spacing 原料）：txbx_depth>0 且非群組
+            // 子框。sz 只收 w:rPr 內（半磅÷2，取最大＝保守少算行）；face
+            // 首見；spacing 只收 rPr 外（K18：框內段距不繼承 docDefaults，
+            // 未宣告＝0 由 engine 層處理）。rPr 深度對稱增減（on_end）。
+            if self.txbx_depth > 0 && p.grp_depth == 0 {
+                match name {
+                    b"rPr" if !empty => p.k17_rpr_depth += 1,
+                    b"sz" if p.k17_rpr_depth > 0 => {
+                        if let Some(v) =
+                            attr_local(e, b"val").and_then(|v| v.trim().parse::<f32>().ok())
+                        {
+                            p.k17_sz = Some(p.k17_sz.map_or(v / 2.0, |c: f32| c.max(v / 2.0)));
+                        }
+                    }
+                    b"rFonts" if p.k17_face.is_none() => {
+                        p.k17_face = attr_local(e, b"ascii");
+                    }
+                    b"spacing" if p.k17_rpr_depth == 0 => {
+                        let twip = |k: &[u8]| {
+                            attr_local(e, k).and_then(|v| v.trim().parse::<f32>().ok()).map(|v| v / 20.0)
+                        };
+                        p.k17_spacing_sum += twip(b"before").unwrap_or(0.0);
+                        p.k17_spacing_sum += twip(b"after").unwrap_or(0.0);
+                    }
+                    _ => {}
+                }
+            }
             // R6 / K12：DrawingML `wps:wsp` 標註與群組子形狀
             if name == b"wsp" {
                 p.wps_annotation = true;
@@ -2342,6 +2478,16 @@ impl DrawingParser {
         // ---- K4e2：txbxContent 完結（先於各分支，與計數點同深度口徑）----
         if name == b"txbxContent" {
             self.txbx_depth = self.txbx_depth.saturating_sub(1);
+        }
+        // ---- K17：框內 rPr 深度對稱退棧（與 on_start 的 +1 配對；必須先於
+        // p/t 分支——rPr 的 End 事件不是 p/t，放進那個 matches 永遠進不去；
+        // grp_depth>0（群組子框 rPr）與 increment 口徑對稱跳過）----
+        if self.txbx_depth > 0 && name == b"rPr" {
+            if let Some(g) = self.graphic.as_mut() {
+                if g.grp_depth == 0 {
+                    g.k17_rpr_depth = g.k17_rpr_depth.saturating_sub(1);
+                }
+            }
         }
         // ---- K4e2：框內 p／t 完結——文字 flush 進宿主候補的 txbx ----
         if self.txbx_depth > 0 && matches!(name, b"p" | b"t") {
