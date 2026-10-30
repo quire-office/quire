@@ -102,6 +102,7 @@ fill=\"#{r:02x}{g:02x}{b:02x}\" fill-opacity=\"{a:.3}\"/>"
                 mime,
                 data_b64,
                 alt,
+                duotone: _, // K19：data_b64 已是變換後像素（宣告欄僅診斷透傳）。
             } => {
                 // K4c-image：真像素直出（取代同位灰底佔位框）。
                 // preserveAspectRatio="none"＝像素拉伸到 extent 框（LO 同款
