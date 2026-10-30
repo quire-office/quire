@@ -601,7 +601,12 @@ fn linear_to_srgb(v: f64) -> f64 {
 ///   偏 0.2/通道，棄。
 fn fold_duo_node(node: &DuoNode) -> Option<u32> {
     let base = node.base?;
-    let (a, r, g, b) = ((base >> 24) & 0xFF, (base >> 16) & 0xFF, (base >> 8) & 0xFF, base & 0xFF);
+    let (a, r, g, b) = (
+        (base >> 24) & 0xFF,
+        (base >> 16) & 0xFF,
+        (base >> 8) & 0xFF,
+        base & 0xFF,
+    );
     // 單一狀態 cur＝sRGB 值域 f64（不在中途量化成 8bit——LO 梯度實測吻合的
     // 管線是 shade 線性域结果直接進 satMod，中間不落地）。線性域修飾器
     // （s/t）把 cur 經 srgb_to_linear 換域、算完回換；satMod 直接在 cur 上
@@ -2010,12 +2015,13 @@ impl DrawingParser {
                     let base = duo_node_base(&self.theme, n, e);
                     if let Some(nodes) = p.duo_nodes.as_mut() {
                         p.duo_node_in = Some(nodes.len());
-                        nodes.push(DuoNode { base, mods: Vec::new() });
+                        nodes.push(DuoNode {
+                            base,
+                            mods: Vec::new(),
+                        });
                     }
                 }
-                n @ (b"shade" | b"tint" | b"satMod" | b"lumMod")
-                    if p.duo_node_in.is_some() =>
-                {
+                n @ (b"shade" | b"tint" | b"satMod" | b"lumMod") if p.duo_node_in.is_some() => {
                     duo_note_mod(&mut p, n, e);
                 }
                 b"drawing" | b"pict" if !empty => {
@@ -2221,12 +2227,13 @@ impl DrawingParser {
                 n @ (b"schemeClr" | b"srgbClr" | b"prstClr") if p.duo_nodes.is_some() => {
                     let base = duo_node_base(&self.theme, n, e);
                     if let Some(nodes) = p.duo_nodes.as_mut() {
-                        nodes.push(DuoNode { base, mods: Vec::new() });
+                        nodes.push(DuoNode {
+                            base,
+                            mods: Vec::new(),
+                        });
                     }
                 }
-                n @ (b"shade" | b"tint" | b"satMod" | b"lumMod")
-                    if p.duo_node_in.is_some() =>
-                {
+                n @ (b"shade" | b"tint" | b"satMod" | b"lumMod") if p.duo_node_in.is_some() => {
                     duo_note_mod(p, n, e);
                 }
                 _ => {}
@@ -2477,7 +2484,10 @@ impl DrawingParser {
                                 let c1 = fold_duo_node(&nodes[0]);
                                 let c2 = fold_duo_node(&nodes[1]);
                                 if let (Some(c1), Some(c2)) = (c1, c2) {
-                                    p.duo = Some(DuotoneEffect { color1: c1, color2: c2 });
+                                    p.duo = Some(DuotoneEffect {
+                                        color1: c1,
+                                        color2: c2,
+                                    });
                                 }
                             }
                         }

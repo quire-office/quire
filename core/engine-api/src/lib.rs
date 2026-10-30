@@ -4350,7 +4350,8 @@ impl Engine {
                         return None;
                     }
                     let bytes = self.doc.parts.get(path)?;
-                    let (data_b64, duotone) = k19_duotone_pixels(bytes, im.duotone.map(|d| [d.color1, d.color2]));
+                    let (data_b64, duotone) =
+                        k19_duotone_pixels(bytes, im.duotone.map(|d| [d.color1, d.color2]));
                     Some(DrawItem::Image {
                         x: img_x,
                         y,

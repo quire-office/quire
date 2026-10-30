@@ -55,18 +55,36 @@ fn unfilter_line(ft: u8, line: &mut [u8], prev: &[u8], channels: usize) -> bool 
         }
         3 => {
             for i in 0..stride {
-                let a = if i >= channels { line[i - channels] as u16 } else { 0 };
+                let a = if i >= channels {
+                    line[i - channels] as u16
+                } else {
+                    0
+                };
                 line[i] = line[i].wrapping_add(((a + u16::from(prev[i])) >> 1) as u8);
             }
         }
         4 => {
             for i in 0..stride {
-                let a = if i >= channels { i32::from(line[i - channels]) } else { 0 };
+                let a = if i >= channels {
+                    i32::from(line[i - channels])
+                } else {
+                    0
+                };
                 let b = i32::from(prev[i]);
-                let c = if i >= channels { i32::from(prev[i - channels]) } else { 0 };
+                let c = if i >= channels {
+                    i32::from(prev[i - channels])
+                } else {
+                    0
+                };
                 let p = b + c - a;
                 let (pa, pb, pc) = ((p - b).abs(), (p - c).abs(), (p - a).abs());
-                let pr = if pa <= pb && pa <= pc { b } else if pb <= pc { c } else { a };
+                let pr = if pa <= pb && pa <= pc {
+                    b
+                } else if pb <= pc {
+                    c
+                } else {
+                    a
+                };
                 line[i] = line[i].wrapping_add(pr as u8);
             }
         }
@@ -135,9 +153,7 @@ pub fn decode_png_rgba8(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     {
         use flate2::read::ZlibDecoder;
         use std::io::Read;
-        ZlibDecoder::new(&idat[..])
-            .read_to_end(&mut raw)
-            .ok()?;
+        ZlibDecoder::new(&idat[..]).read_to_end(&mut raw).ok()?;
     }
     let mut out = vec![0u8; (w as usize) * (h as usize) * 4];
     if interlace == 0 {
@@ -156,7 +172,13 @@ pub fn decode_png_rgba8(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                 return None;
             }
             for x in 0..w as usize {
-                expand_rgba(&mut out, (y * w as usize + x) * 4, &line, x * channels, channels);
+                expand_rgba(
+                    &mut out,
+                    (y * w as usize + x) * 4,
+                    &line,
+                    x * channels,
+                    channels,
+                );
             }
             prev = line;
         }
@@ -165,8 +187,8 @@ pub fn decode_png_rgba8(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         // 空道（起點越界）零行、跳過。
         let mut rp = 0usize;
         for (xs, ys, xstep, ystep) in ADAM7 {
-            let pw = (w.saturating_sub(xs) + xstep - 1) / xstep;
-            let ph = (h.saturating_sub(ys) + ystep - 1) / ystep;
+            let pw = w.saturating_sub(xs).div_ceil(xstep);
+            let ph = h.saturating_sub(ys).div_ceil(ystep);
             if pw == 0 || ph == 0 {
                 continue;
             }
@@ -210,7 +232,9 @@ pub fn decode_png_rgba8(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
 pub fn duotone_lut(c1: u32, c2: u32, l: f64) -> (u8, u8, u8) {
     let t = (l / 255.0).clamp(0.0, 1.0);
     let mix = |a: u32, b: u32| -> u8 {
-        (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round().clamp(0.0, 255.0) as u8
+        (f64::from(a) + (f64::from(b) - f64::from(a)) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
     };
     (
         mix((c1 >> 16) & 0xFF, (c2 >> 16) & 0xFF),
@@ -221,7 +245,7 @@ pub fn duotone_lut(c1: u32, c2: u32, l: f64) -> (u8, u8, u8) {
 
 /// 對 RGBA8 緩衝就地套 duotone LUT（alpha 原樣）。
 pub fn duotone_rgba8(rgba: &mut [u8], c1: u32, c2: u32) {
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         let l = 0.2126 * f64::from(px[0]) + 0.7152 * f64::from(px[1]) + 0.0722 * f64::from(px[2]);
         let (r, g, b) = duotone_lut(c1, c2, l);
         px[0] = r;
@@ -292,8 +316,14 @@ mod tests {
     /// 端點：L=0→c1、L=255→c2。
     #[test]
     fn lut_endpoints() {
-        assert_eq!(duotone_lut(0xFF10_2030, 0xFFAB_CDDE, 0.0), (0x10, 0x20, 0x30));
-        assert_eq!(duotone_lut(0xFF10_2030, 0xFFAB_CDDE, 255.0), (0xAB, 0xCD, 0xDE));
+        assert_eq!(
+            duotone_lut(0xFF10_2030, 0xFFAB_CDDE, 0.0),
+            (0x10, 0x20, 0x30)
+        );
+        assert_eq!(
+            duotone_lut(0xFF10_2030, 0xFFAB_CDDE, 255.0),
+            (0xAB, 0xCD, 0xDE)
+        );
     }
 
     /// 解碼→調色→重編碼 往返自洽（二進制：再解碼像素等於一輪 LUT）。

@@ -45,7 +45,10 @@ const MINE_COLOR2: u32 = 0xFFFF_FFFF; // prstClr white（LO 實測原樣）
 const LO_COLOR1_OBSERVED: (u8, u8, u8) = (49, 110, 165);
 
 fn corpus(name: &str) -> Vec<u8> {
-    let path = format!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../corpus/{}"), name);
+    let path = format!(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../corpus/{}"),
+        name
+    );
     std::fs::read(&path).unwrap_or_else(|e| panic!("讀 corpus/{name}: {e}"))
 }
 
@@ -82,8 +85,14 @@ fn k19_schemecolor_picture_emits_duotone_effect() {
     assert_eq!(dt.len(), 2, "duotone 恰兩組顏色節點");
     let c1 = dt[0].as_u64().expect("color1 u32") as u32;
     let c2 = dt[1].as_u64().expect("color2 u32") as u32;
-    assert_eq!(c1, MINE_COLOR1, "color1 必須是 accent1 經 shade(45000)+satMod(135000) 折算值");
-    assert_eq!(c2, MINE_COLOR2, "color2 必須是 prstClr white（LO 實測原樣白）");
+    assert_eq!(
+        c1, MINE_COLOR1,
+        "color1 必須是 accent1 經 shade(45000)+satMod(135000) 折算值"
+    );
+    assert_eq!(
+        c2, MINE_COLOR2,
+        "color2 必須是 prstClr white（LO 實測原樣白）"
+    );
 }
 
 /// 燈2：發射的像素必須已是 duotone 變換後的像素（真像素調色，非底矩形）。
@@ -97,7 +106,10 @@ fn k19_emitted_pixels_are_duotone_mapped() {
         .expect("open picture-with-schemecolor");
     let imgs = image_items(&eng);
     assert_eq!(imgs.len(), 1);
-    let b64 = imgs[0].get("data_b64").and_then(|d| d.as_str()).expect("data_b64");
+    let b64 = imgs[0]
+        .get("data_b64")
+        .and_then(|d| d.as_str())
+        .expect("data_b64");
     let bytes = base64_decode(b64).expect("發射像素 base64 可解");
     assert_eq!(&bytes[0..8], b"\x89PNG\r\n\x1a\n", "發射像素必須是 PNG");
     let (w, h, rgba) = png_rgba8(&bytes).expect("PNG RGBA8 可解");
@@ -114,7 +126,7 @@ fn k19_emitted_pixels_are_duotone_mapped() {
     .map(|c| (f64::from(c) + (255.0 - f64::from(c)) * l).round() as u32);
     let mut hits = 0usize;
     let mut checked = 0usize;
-    for px in rgba.chunks_exact(4) {
+    for px in rgba.as_chunks::<4>().0 {
         if px[3] != 255 {
             continue; // alpha 合成屬 LO 側細節，只比不透明像素
         }
@@ -134,7 +146,9 @@ fn k19_emitted_pixels_are_duotone_mapped() {
     );
     // 假圖元防呆：調色後**不得**殘留源灰階值（154,154,154）——灰階未調色＝K12 退件態。
     let raw_gray = rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|px| px[3] == 255 && px[0] == 154 && px[1] == 154 && px[2] == 154)
         .count();
     assert_eq!(raw_gray, 0, "仍殘留源灰階像素＝duotone 未真正套用到像素");
@@ -177,7 +191,10 @@ fn k19_no_duotone_declaration_zero_disturbance() {
                 .and_then(|d| d.as_str())
                 .map(str::len)
                 .expect("data_b64");
-            assert_eq!(got, *want_b64_len, "{name} 像素 base64 位元組數漂移（零擾動鎖）");
+            assert_eq!(
+                got, *want_b64_len,
+                "{name} 像素 base64 位元組數漂移（零擾動鎖）"
+            );
         }
     }
 }
@@ -197,7 +214,10 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
         v[n] = idx as u8;
         n += 1;
         if n == 4 {
-            let x = (u32::from(v[0]) << 18) | (u32::from(v[1]) << 12) | (u32::from(v[2]) << 6) | u32::from(v[3]);
+            let x = (u32::from(v[0]) << 18)
+                | (u32::from(v[1]) << 12)
+                | (u32::from(v[2]) << 6)
+                | u32::from(v[3]);
             out.push((x >> 16) as u8);
             out.push((x >> 8) as u8);
             out.push(x as u8);
@@ -290,18 +310,36 @@ fn png_rgba8(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
             }
             3 => {
                 for i in 0..stride {
-                    let a = if i >= channels { line[i - channels] as u16 } else { 0 };
+                    let a = if i >= channels {
+                        line[i - channels] as u16
+                    } else {
+                        0
+                    };
                     line[i] = line[i].wrapping_add(((a + u16::from(prev[i])) >> 1) as u8);
                 }
             }
             4 => {
                 for i in 0..stride {
-                    let a = if i >= channels { line[i - channels] as i32 } else { 0 };
+                    let a = if i >= channels {
+                        line[i - channels] as i32
+                    } else {
+                        0
+                    };
                     let b = prev[i] as i32;
-                    let c = if i >= channels { prev[i - channels] as i32 } else { 0 };
+                    let c = if i >= channels {
+                        prev[i - channels] as i32
+                    } else {
+                        0
+                    };
                     let p = b + c - a;
                     let (pa, pb, pc) = ((p - b).abs(), (p - c).abs(), (p - a).abs());
-                    let pr = if pa <= pb && pa <= pc { b } else if pb <= pc { c } else { a };
+                    let pr = if pa <= pb && pa <= pc {
+                        b
+                    } else if pb <= pc {
+                        c
+                    } else {
+                        a
+                    };
                     line[i] = line[i].wrapping_add(pr as u8);
                 }
             }
