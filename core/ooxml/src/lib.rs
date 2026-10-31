@@ -747,12 +747,11 @@ fn parse_document_xml_with_fonts(
                         hyperlink_depth += 1;
                     }
                     b"br" => {
-                        // 成對標籤寫法 `<w:br w:type="page"></w:br>`（合法但罕見）
-                        // 的入口：Start/Empty 互斥，自閉合不會重入此臂、零雙計。
-                        // 合併裁決：段內 w:br type="page" 一律走此細分記錄
-                        // （page_breaks 碼點偏移），t_5dfc8ac7 的粗化臂只留
-                        // pPr/w:pageBreakBefore（見下方 pageBreakBefore 臂）。
-                        record_page_break(&mut stack, &e);
+                        // 成對標籤寫法 `<w:br></w:br>`（合法但罕見）的入口：
+                        // Start/Empty 互斥，自閉合不會重入此臂、零雙計。
+                        // 依 ECMA-376 §17.4.1 / §17.4.3 分流：type="page" 記硬分頁，
+                        // 缺省/textWrapping 記軟性換行（\n）。
+                        handle_br_tag(&mut stack, &mut cur_run, &e);
                     }
                     // 段落直接格式（t_5dfc8ac7）：w:pPr 欄位＋其內 w:rPr 收進
                     // 段落棧頂（三態級聯輸入）。只認 depth==1 的 pPr——深一層
@@ -901,10 +900,10 @@ fn parse_document_xml_with_fonts(
                 }
                 let name = e.local_name().as_ref().to_vec();
                 if name == b"br" {
-                    // 強制分頁（§17.4.3）：只認 w:type="page"；column／缺省
-                    // （textWrapping）不是頁斷點。`w:lastRenderedPageBreak`
-                    // 是另一元素，永不進此臂（渲染提示≠斷點，見 Paragraph 欄注）。
-                    record_page_break(&mut stack, &e);
+                    // 分頁與換行（ECMA-376 §17.4.1 / §17.4.3）：
+                    // type="page" 記硬分頁；column／缺省（textWrapping）分流處理。
+                    // `w:lastRenderedPageBreak` 是另一元素，永不進此臂（渲染提示≠斷點）。
+                    handle_br_tag(&mut stack, &mut cur_run, &e);
                 } else if name == b"fldChar" {
                     // 複雜欄三態（Word 產出恒為自閉合標籤）：begin 開層、
                     // separate 翻結果標記、end 出層。未配對（漏 begin）老實無效。
@@ -1280,17 +1279,52 @@ fn attr_val(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
     })
 }
 
-/// `w:br` 自閉合標籤 → 段級斷點記錄（僅 `w:type="page"`，ECMA-376 §17.4.3）。
-/// 偏移＝段落棧頂「已入文碼點數」：文字一律經 Text 臂先行累計，故 br 前後
-/// 的文字各歸斷點兩側（`o=0` 段前、`o=段長` 段後、中間段中）。無配對段落
-/// （body 級游离 br，畸形）＝老實忽略。`w:type="column"`／缺省（textWrapping）
-/// 不記；`w:lastRenderedPageBreak` 是另一元素名，呼叫端標籤比對就擋掉。
-fn record_page_break(stack: &mut [(usize, Paragraph, usize)], e: &quick_xml::events::BytesStart) {
-    if attr_val(e, "type").as_deref() != Some("page") {
+/// 處理 `w:br` 標籤（Start 與 Empty 共通）：
+/// 1. `w:type="page"`（ECMA-376 §17.4.3）：硬分頁斷點，記錄碼點偏移至 `Paragraph::page_breaks`。
+///    偏移＝段落棧頂「已入文碼點數」：文字一律經 Text 臂先行累計，故 br 前後的文字各歸斷點兩側。
+/// 2. 缺省或 `w:type="textWrapping"`（ECMA-376 §17.4.1）：軟換行，在 run 文字流中插入 `\n`。
+///
+/// 【換行表示法選型與理由】
+/// 在「插入換行碼點 `\n`」與「新增換行偏移欄（如 line_breaks: Vec<usize>）」兩者中，本實作選擇【插入換行碼點 `\n`】，理由如下：
+/// - 語意自然且高度吻合 UAX#14：換行符號本為文字流實體字元（Word 剪貼簿純文字亦輸出換行）。
+///   本引擎 `uax14::break_atoms` 原生將 `\n` 標記為 mandatory 強制斷點（`forced: true`），
+///   Knuth-Plass（`kp::optimal_ranges`）在遇 `forced` 時自然不將 state 放入 alive 清單，
+///   Active list 嚴格中斷、不可跨越，天然達成強制折行，完全無需在排版層維護第二套平行偏移演算法。
+/// - 零架構侵入與向後相容：若新增換行偏移欄，則必須同時侵入 `Paragraph`、`CellInput`、`CellBlock`、
+///   `ParagraphLayout`、`table.rs` 等多個核心型別，且極易與 `page_breaks` 混淆而誤觸發分頁；
+///   採用 `\n` 則所有下游資料結構與金樣契約保持零變動，且 round-trip 因基於 parts 原文而 100% 保持 byte-identical。
+/// - 座標與樣式投影嚴密對齊：`Line::char_offset` 與 `emit_line_run_items` 求交集時，因 `\n` 計入碼點偏移，
+///   各行起點與 run 區間嚴密吻合；行尾 `\n` 經 `EOL_CONTROLS` 濾除，不顯示、不佔版面寬度。
+fn handle_br_tag(
+    stack: &mut [(usize, Paragraph, usize)],
+    cur_run: &mut Option<Run>,
+    e: &quick_xml::events::BytesStart,
+) {
+    let br_type = attr_val(e, "type");
+    if br_type.as_deref() == Some("page") {
+        if let Some((_, p, cp_done)) = stack.last_mut() {
+            p.page_breaks.push(*cp_done);
+        }
         return;
     }
-    if let Some((_, p, cp_done)) = stack.last_mut() {
-        p.page_breaks.push(*cp_done);
+
+    // 軟性 br（純換行）：僅在無 type 或 type="textWrapping"（ECMA-376 §17.4.1）時生效。
+    // 注意：column 等欄斷點非純換行，不落此臂；`w:lastRenderedPageBreak` 為渲染提示，不進此處。
+    if br_type.is_none() || br_type.as_deref() == Some("textWrapping") {
+        if std::env::var_os("K21_SOFT_BR_BUGGY").is_some() {
+            return; // BUGGY 回塞鎖：關閉軟 br，退回修前行為
+        }
+        if let Some((_, p, cp_done)) = stack.last_mut() {
+            *cp_done += 1;
+            if let Some(r) = cur_run.as_mut() {
+                r.text.push('\n');
+            } else {
+                p.runs.push(Run {
+                    text: "\n".to_string(),
+                    ..Default::default()
+                });
+            }
+        }
     }
 }
 
@@ -2280,8 +2314,9 @@ mod tests {
         );
     }
 
-    /// 非頁斷點一律不記：column、缺省（textWrapping）、換行；渲染提示
+    /// 非頁斷點一律不進 page_breaks：column、缺省（textWrapping）、換行；渲染提示
     /// `w:lastRenderedPageBreak`（t_01fa57ac 教訓）與欄內斷點同理無效。
+    /// 軟性換行（缺省 `<w:br/>`）則在 run 文字流中記為 '\n'。
     #[test]
     fn only_page_type_counts_as_break() {
         let xml = r#"<w:document xmlns:w="x">
@@ -2295,7 +2330,7 @@ mod tests {
         let paras = parse_doc(xml).expect("解析");
         assert!(paras[0].page_breaks.is_empty(), "非 page 型別/渲染提示不記");
         let text: String = paras[0].runs.iter().map(|r| r.text.as_str()).collect();
-        assert_eq!(text, "xy");
+        assert_eq!(text, "x\ny", "缺省軟性 br 產生換行碼點");
     }
 
     /// 成對標籤 `<w:br></w:br>`（合法罕見寫法）同樣記錄且**不雙計**；
