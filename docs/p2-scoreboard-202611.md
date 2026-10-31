@@ -18,12 +18,12 @@
 | scores.jsonl 檔數＝n | 25/25 ✓（腳本無 lo_fail 跳號） |
 | lo_fail＝0 | 0 ✓（25 檔全轉換成功） |
 | 收場 `pgrep -c soffice`＝0 | WSL pgrep 0、Windows tasklist 0 ✓（`kill_own_lo` atexit 生效） |
-| 零引擎觸碰 `git diff main..HEAD \| grep -cE '^(core\|shells)/'`＝0 | 0 ✓（本卡僅 docs/ ＋ scripts/ 各一檔） |
+| 零引擎觸碰 `git diff main..HEAD \| grep -cE '^(core\|shells)/'`＝0 | 0 ✓（本卡僅 docs/＋scripts/ 各一檔。掃期間 main 前進了 K21，字面 `main..HEAD` 會混入其反向雜訊，精確口徑見附錄） |
 | `--check`（對 10/23 基線） | rc=1：分層六席全 OK（Δ 全正），個別劣化 2 檔（−0.014／−0.001，皆 <0.05）、最差榜新增 2 檔屬榜單洗牌——逐檔歸因見 §2 |
 
-### 色分口徑声明（重要，先讀）
+### 色分口徑聲明（重要，先讀）
 
-10/23 基線**沒有色軸**——`score_color` 是 10/29 c52f9da（J3）才問世的度量。本报告的「色分舊值」不是 10/23 儀表板數字（當時不存在），而是**同一支本輪 LO PDF × 10/23 我方 SVG**（`/home/jerry/projects/quire/out/lo-scoreboard/quire/`，目錄時間戳 2026-10-23 原物）用現行 `score_color` 重測（探針 `scripts/p2_scoreboard_color_probe.py`，直接 import render_lab，零引擎/零 render_lab.py 觸碰）。這是在「LO 端與度量端逐位元組同尺」前提下能做到的最大可比重構：**A/B 差值纯粹是我方引擎漂移**，不含度量與 LO 干擾項。內容/版面兩軸舊值直接取 10/23 `scores.jsonl` 原值；其間口徑改動（10/25 M2 雙空臂）對本樣本 `changed 0/25` 已有 m2-scorecard-recount §1 同 facts 雙跑實證，J4（10/30）只動色/圖/真缺字軸不觸 content/layout key——兩軸 A/B 口徑穩定。
+10/23 基線**沒有色軸**——`score_color` 是 10/29 c52f9da（J3）才問世的度量。本報告的「色分舊值」不是 10/23 儀表板數字（當時不存在），而是**同一支本輪 LO PDF × 10/23 我方 SVG**（`/home/jerry/projects/quire/out/lo-scoreboard/quire/`，目錄時間戳 2026-10-23 原物）用現行 `score_color` 重測（探針 `scripts/p2_scoreboard_color_probe.py`，直接 import render_lab，零引擎/零 render_lab.py 觸碰）。這是在「LO 端與度量端逐位元組同尺」前提下能做到的最大可比重構：**A/B 差值純粹是我方引擎漂移**，不含度量與 LO 干擾項。內容/版面兩軸舊值直接取 10/23 `scores.jsonl` 原值；其間口徑改動（10/25 M2 雙空臂）對本樣本 `changed 0/25` 已有 m2-scorecard-recount §1 同 facts 雙跑實證，J4（10/30）只動色/圖/真缺字軸不觸 content/layout key——兩軸 A/B 口徑穩定。
 
 ## 1. 分層三軸：新值 vs 10/23 舊值
 
@@ -52,7 +52,7 @@
 | 含多節 | 6 | 0.766 | 0.771 | +0.005 |
 | **總平均** | | **0.745** | **0.792** | **+0.047** |
 
-### 色分（J3 色軸 150dpi；舊值＝同 LO 重測舊渲染，見口徑声明）
+### 色分（J3 色軸 150dpi；舊值＝同 LO 重測舊渲染，見口徑聲明）
 
 | 層 | n | 舊渲染 | 新渲染 | Δ |
 |---|---:|---:|---:|---:|
@@ -127,6 +127,6 @@
 
 ## 附錄（產物路徑）
 
-- 新基線：`out/lo-scoreboard/baseline.md`（2026-10-31T19:21:28）、`scores.jsonl`（25 行）、`scores.prev.jsonl`（＝新值，供後續 `--check`）；舊檔留档 `baseline-20261023.md`／`scores-20261023.jsonl`。主庫 `out/lo-scoreboard/` 已同步覆寫（gitignored 工作產物，同步＝儀表板生效點）。
+- 新基線：`out/lo-scoreboard/baseline.md`（2026-10-31T19:21:28）、`scores.jsonl`（25 行）、`scores.prev.jsonl`（＝新值，供後續 `--check`）；舊檔留檔 `baseline-20261023.md`／`scores-20261023.jsonl`。主庫 `out/lo-scoreboard/` 已同步覆寫（gitignored 工作產物，同步＝儀表板生效點）。本卡觸碰面精確口徑＝`git diff $(git merge-base main HEAD)..HEAD` 僅 docs/＋scripts/ 兩新檔。
 - 色分探針：`scripts/p2_scoreboard_color_probe.py`（本卡唯一新腳本；LO PDF×SVG 逐頁 `score_color`，`--pdf-since` 錨定本輪轉檔）。
 - 原始 run log／A/B JSON／分析稿：`~/.hermes/profiles/ow-qa/cache/scratch/p2-scoreboard-202611/`（run.log、color_new.json、color_old_render.json、analysis.json）。
