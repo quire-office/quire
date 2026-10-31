@@ -3,6 +3,7 @@
 - 卡：t_7b19f11c（report-only；基線 commit `23e98d9`，分支 `wt/t_7b19f11c`）；本版生成：2026-10-31 19:21。
 - 上一版基線：`out/lo-scoreboard/baseline-20261023.md`（2026-10-23 21:56，落後 K7/K7-cal、K8、K12、K15、K17、K18、K19、K20、J4 等 12 張卡）。
 - 命令：`python3 scripts/lo_scoreboard.py --seed 20261022 --n 25 --out out/lo-scoreboard`（seed 沿用，樣本 25 檔與 10/23 逐檔同集，`comm` 零差異）。
+- 基線 commit：本掃以開工時 main=`23e98d9`（K20）工作樹執行；**K21（軟性 w:br，fb745b5）於本掃執行期間才入 main，不在本基線內**——「落後 12 張卡」（K7/K7-cal/K8/K12/K15/K17/K18/K19/K20/J4 等）已全部入帳，K21 屬下一輪增量。
 - LO：`/mnt/c/Program Files/LibreOffice/program/soffice.exe`（同 10/23 基線同一支 Windows soffice）。
 
 ## 0. 一句話答案：LO 收斂到哪
