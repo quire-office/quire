@@ -28,7 +28,7 @@
 `pagebreaks.json`（我方）：p0 `first_para 0–1`、p1 `first_para 2–5, starts_section=true`——
 正是 para-level `sectPr`（源檔 `w:sectPr`×2）照實開第 2 頁，LO 同形。
 
-### 1.2 「宣告 ≠ 繪製」的铁證（本卡核心）
+### 1.2 「宣告 ≠ 繪製」的鐵證（本卡核心）
 
 LO 第 2 頁（索引 1）**完整**內容流，逐字元：
 
