@@ -262,6 +262,9 @@ pub fn table_input(
             .cloned()
             .filter(has_any_edges),
         cell_margins: p.cell_margins.as_ref().map(cell_margins),
+        // K23：本工具（行度量）不載入 `word/styles.xml` 的樣式級 `w:tblCellMar`
+        // ⇒ 傳 None＝樣式級整級不參與，逐位元組維持 K23 前行為（零擾動）。
+        style_cell_margins: None,
         rows: t
             .rows
             .iter()

@@ -221,6 +221,14 @@ pub struct TableInput {
     pub style_borders: Option<EdgeSetInput>,
     /// `w:tblCellMar`。
     pub cell_margins: Option<CellMarginInput>,
+    /// K23：表格**樣式級** `w:tblCellMar`（`w:tblStyle` 查 `word/styles.xml`
+    /// 沿 basedOn 鏈合成的結果）。級聯位階（ECMA-376 §17.4.40／§17.4.49
+    /// ＋LO 25.8 ground truth 實測 NumberedList／tdf103976／tdf115883）：
+    /// 直接 `w:tcMar` ＞ `w:tblPr/w:tblCellMar` ＞ **本欄（樣式級）** ＞
+    /// ECMA 預設（側 108dxa＝5.4pt、上下 0）。缺＝None（整級不參與，舊行為
+    /// 逐位元組不變）。serde default＋空值跳過寫入＝既有快照/位元組輸出零位移。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style_cell_margins: Option<CellMarginInput>,
     pub rows: Vec<RowInput>,
     /// M1-band（簇 A）：帶尺細化後「格內一行文字」應佔的帶數＝宣告行高的
     /// 等分份數（見 engine 側 `refine_band_h`）。細尺下若仍按「一行＝一帶」
@@ -898,7 +906,11 @@ pub fn layout_table(
             let col = col_cursor;
             col_cursor = (col_cursor + span).min(cols.len());
 
-            let margins = resolve_margins(cell.margins.as_ref(), input.cell_margins.as_ref());
+            let margins = resolve_margins(
+                cell.margins.as_ref(),
+                input.cell_margins.as_ref(),
+                input.style_cell_margins.as_ref(),
+            );
             let inner_w = (w - margins.left - margins.right).max(8.0);
             // 垂直邊距雙軌：精確 pt 供內容起點與列高（Word／LO 口徑），
             // 量化帶數供分頁容量；垃圾值一律先鉗上限（S1-4 同口徑）。
@@ -1415,26 +1427,51 @@ struct SolvedMargins {
     right: f32,
 }
 
+/// K23 回塞鎖：`K23_STYLE_CELL_MAR_BUGGY=1` ⇒ 樣式級 `w:tblCellMar` 整級不參與
+/// 級聯（回退「tcMar ＞ tblPr 直宣告 ＞ ECMA 預設」的舊三級）。測試進程內不設
+/// env（避免平行污染），由外部執行驗證（紅燈 k23 燈 3 必紅）。
+fn style_cell_mar_enabled() -> bool {
+    std::env::var_os("K23_STYLE_CELL_MAR_BUGGY").is_none()
+}
+
+/// 邊距級聯（逐側）：直接 `w:tcMar` ＞ `w:tblPr/w:tblCellMar` ＞
+/// 表格樣式級 `w:tblCellMar`（K23；回塞鎖關掉此級）＞ ECMA 預設。
 fn resolve_margins(
     cell: Option<&CellMarginInput>,
     table: Option<&CellMarginInput>,
+    style: Option<&CellMarginInput>,
 ) -> SolvedMargins {
-    let side = |c: Option<f32>, t: Option<f32>, dflt: f32| c.or(t).unwrap_or(dflt).max(0.0);
+    let style = if style_cell_mar_enabled() {
+        style
+    } else {
+        None
+    };
+    let side = |c: Option<f32>, t: Option<f32>, s: Option<f32>, dflt: f32| {
+        c.or(t).or(s).unwrap_or(dflt).max(0.0)
+    };
     SolvedMargins {
-        top: side(cell.and_then(|c| c.top), table.and_then(|t| t.top), 0.0),
+        top: side(
+            cell.and_then(|c| c.top),
+            table.and_then(|t| t.top),
+            style.and_then(|s| s.top),
+            0.0,
+        ),
         left: side(
             cell.and_then(|c| c.left),
             table.and_then(|t| t.left),
+            style.and_then(|s| s.left),
             DEFAULT_SIDE_MARGIN_PT,
         ),
         bottom: side(
             cell.and_then(|c| c.bottom),
             table.and_then(|t| t.bottom),
+            style.and_then(|s| s.bottom),
             0.0,
         ),
         right: side(
             cell.and_then(|c| c.right),
             table.and_then(|t| t.right),
+            style.and_then(|s| s.right),
             DEFAULT_SIDE_MARGIN_PT,
         ),
     }
