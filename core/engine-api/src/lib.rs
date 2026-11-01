@@ -345,6 +345,16 @@ impl Engine {
         for bt in &doc.tables {
             collect_table_styles(&bt.table, None, &mut table_styles_of);
         }
+        // K22：正文表 tblStylePr 條件字色查表（段落索引→生效色）。走已過
+        // rels 閘的 `style_table`（K6 口徑：無關聯 styles.xml＝空表＝條件字
+        // 色不生效）。零宣告檔回空 Map＝級聯零擾動。
+        let cond_color_of: HashMap<usize, u32> = {
+            let ctx = table_map::ShadingCtx {
+                styles: &style_table,
+                theme: &theme,
+            };
+            table_map::cond_run_colors(&doc.tables, &ctx)
+        };
         let (eff_all, metrics, spacings, marker_chars) = cascade_paragraphs(
             &style_table,
             &doc.paragraphs,
@@ -355,6 +365,7 @@ impl Engine {
             PitchCascade {
                 table_styles: &table_styles_of,
                 calibrated,
+                cond_color: &cond_color_of,
             },
         );
         let grid_size_v: Vec<f32> = metrics.iter().map(|m| m.0).collect();
@@ -1122,6 +1133,8 @@ impl Engine {
             PitchCascade {
                 table_styles: &HashMap::new(),
                 calibrated: fn_calibrated,
+                // K22：註腳不是表格內容——條件字色不適用（空表＝零擾動）。
+                cond_color: &HashMap::new(),
             },
         );
         let mut by_id: HashMap<i64, footnotes::NoteEntry> = HashMap::new();
@@ -2750,9 +2763,13 @@ type CascadeResult = (
 /// （無錨點不虛構——頁首尾 part 走空表＝tab 維持原樣，既有行為不變）。
 /// K6：級聯的 auto-pitch 輸入束（表格樣式層＋是否走校準路徑）。綁成一個
 /// 參數是為了讓 `cascade_paragraphs` 的參數數目守住 clippy 上限，語義不變。
+/// K22：`cond_color`＝正文表 `tblStylePr` 條件字色（段落索引 → 生效色，
+/// 由 `table_map::cond_run_colors` 查表）。只在 run 級聯鏈完全未宣告顏色
+/// 時落地（直接／字元／段落樣式在上）；空表＝零擾動（頁首尾 part 走空表）。
 struct PitchCascade<'a> {
     table_styles: &'a HashMap<usize, String>,
     calibrated: bool,
+    cond_color: &'a HashMap<usize, u32>,
 }
 
 fn cascade_paragraphs(
@@ -2843,6 +2860,13 @@ fn cascade_paragraphs(
                 // 宣告 w:color（含 auto/非法→明確黑）以級聯為準；
                 // 未宣告不動——保留解析期代擬色（hyperlink 藍）。
                 r2.color = eff.color;
+            } else if let Some(c) = pitch.cond_color.get(&pi) {
+                // K22：表格樣式條件字色（tblStylePr/w:rPr/w:color）——級聯
+                // 鏈（直接格式／字元樣式／段落樣式／docDefaults）完全沒
+                // 宣告顏色時才落地（ECMA §17.4.75：條件層在直接格式之下）。
+                // 超連結合成藍已在上條 color_set 分支攔走（合成預設優先於
+                // 表格條件層，LO 口徑），此分支只接非連結的無色 run。
+                r2.color = Some(*c);
             }
             r2.size_pt = eff.size_pt;
             // 有效字型族（w:rFonts 逐欄級聯結果）：theme 引用已在 ooxml
@@ -4808,6 +4832,9 @@ fn build_hf_layer(
                             PitchCascade {
                                 table_styles: &HashMap::new(),
                                 calibrated,
+                                // K22：頁首尾表無條件字色 ctx（K8 同款零擾動
+                                // 口徑——頁首尾表格呼叫端傳 None／空表）。
+                                cond_color: &HashMap::new(),
                             },
                         )
                     }

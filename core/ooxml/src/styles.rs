@@ -251,6 +251,12 @@ struct OwnStyle {
     /// 少數），缺這層就整頁斑馬紋全缺（fdo68607 鐵證）。
     /// 只收 `w:tcPr/w:shd`；同條件重複宣告＝首見為準。
     cond_shading: Vec<(String, CondShading)>,
+    /// K22：表格樣式的 `w:tblStylePr` 條件**字色**宣告（條件名 → `w:rPr`
+    /// 快照，只含 color 欄）。與 `cond_shading` 同條 `tblStylePr` 節點共吃
+    /// （fdo68607 firstRow 同時宣告 `w:shd fill=4F81BD` 與 `w:color val=FFFFFF`
+    /// ——底色級聯收前者、字色級聯收後者，逐屬性級聯非整條件覆蓋）。
+    /// 同條件重複宣告＝首見為準（與 `cond_shading` 同口徑）。
+    cond_color: Vec<(String, RunStyle)>,
 }
 
 /// `w:tblStylePr/@w:type` 條件下的 `w:tcPr/w:shd` 四欄（K8-shd）。
@@ -674,13 +680,23 @@ fn parse_ppr_default(
     }
 }
 
-/// K8-shd：吃掉一棵 `w:tblStylePr` 子樹（`Start` 已_consumed_，本函式從其
-/// 內容讀到配對 `End`），只取 `w:tcPr/w:shd` 四欄（首見為準）。
+/// K8-shd／K22：吃掉一棵 `w:tblStylePr` 子樹（`Start` 已_consumed_，本函式
+/// 從其內容讀到配對 `End`），取 `w:tcPr/w:shd` 四欄＋**直系 `w:rPr`** 快照
+/// （K22 條件字色；首見為準）。
 ///
 /// 只認 `tcPr` 直系子女——`tblPr/w:shd`（表層底紋）是另一種語意（整表一塊
 /// 色而非逐格），本卡不做，混收會讓「表層無色、格層有帶」的檔案錯色。
 /// 巢狀深度計數容忍 `tcPr` 內的未知包裝元素（`w:sdt` 類）。
-fn parse_tbl_style_pr_shd(reader: &mut quick_xml::Reader<&[u8]>) -> Option<CondShading> {
+///
+/// K22：`w:rPr` 只認 tblStylePr **直系**子女（深度跌回 1 者）——`w:pPr/w:rPr`
+/// 是段落標記 run 屬性（另一種語意），混收會讓段落標記色冒充格內文字色。
+/// 早期版本在首見 `shd` 即 return，直系 rPr 排在 tcPr 之後的宣告會漏收；
+/// 現行版讀盡整棵再回傳（`shd` 首見為準、`rPr` 首見為準）。
+fn parse_tbl_style_pr(
+    reader: &mut quick_xml::Reader<&[u8]>,
+    theme: &ThemeColors,
+    tf: Option<&ThemeFonts>,
+) -> (Option<CondShading>, Option<RunStyle>) {
     // 深度不变式：`depth`＝相对 tblStylePr 的**当前嵌套层**（进入 tblStylePr
     // 内容＝1；每个非自闭合 Start +1、其配對 End −1）。`tcpr_depth`＝进入
     // tcPr 后的层（离开＝深度跌回该值以下）。
@@ -691,25 +707,31 @@ fn parse_tbl_style_pr_shd(reader: &mut quick_xml::Reader<&[u8]>) -> Option<CondS
     // firstRow／band1Horz 解析 None、只有 band1Vert 命中）。
     let mut depth = 1usize;
     let mut tcpr_depth: Option<usize> = None;
+    let mut shd: Option<CondShading> = None;
+    let mut run: Option<RunStyle> = None;
     loop {
         match reader.read_event() {
-            Err(_) | Ok(Event::Eof) => return None,
+            Err(_) | Ok(Event::Eof) => return (shd, run),
             Ok(Event::Start(e)) => {
                 let name = e.local_name();
                 if tcpr_depth.is_some() && name.as_ref() == b"shd" {
-                    let shd = CondShading {
-                        val: attr_val(&e, "val"),
-                        fill: attr_val(&e, "fill"),
-                        theme_fill: attr_val(&e, "themeFill"),
-                        theme_fill_tint: attr_val(&e, "themeFillTint"),
-                        theme_fill_shade: attr_val(&e, "themeFillShade"),
-                    };
+                    if shd.is_none() {
+                        shd = Some(CondShading {
+                            val: attr_val(&e, "val"),
+                            fill: attr_val(&e, "fill"),
+                            theme_fill: attr_val(&e, "themeFill"),
+                            theme_fill_tint: attr_val(&e, "themeFillTint"),
+                            theme_fill_shade: attr_val(&e, "themeFillShade"),
+                        });
+                    }
                     // 仍要把子樹讀乾淨（shd 自閉合居多，但 Empty 與
                     // Start 兩寫法都得支持），故不在此 return。
                     skip_element(reader, b"shd");
-                    return Some(shd);
-                }
-                if !e.is_empty() {
+                } else if depth == 1 && run.is_none() && name.as_ref() == b"rPr" {
+                    // K22：直系 rPr（tblStylePr 直接子女）＝條件字色宣告。
+                    // parse_rpr_body 自行消費到 `</w:rPr>`，本層深度不動。
+                    run = Some(parse_rpr_body(reader, theme, tf));
+                } else if !e.is_empty() {
                     depth += 1;
                     if tcpr_depth.is_none() && name.as_ref() == b"tcPr" {
                         tcpr_depth = Some(depth);
@@ -717,8 +739,8 @@ fn parse_tbl_style_pr_shd(reader: &mut quick_xml::Reader<&[u8]>) -> Option<CondS
                 }
             }
             Ok(Event::Empty(e)) => {
-                if tcpr_depth.is_some() && e.local_name().as_ref() == b"shd" {
-                    return Some(CondShading {
+                if tcpr_depth.is_some() && e.local_name().as_ref() == b"shd" && shd.is_none() {
+                    shd = Some(CondShading {
                         val: attr_val(&e, "val"),
                         fill: attr_val(&e, "fill"),
                         theme_fill: attr_val(&e, "themeFill"),
@@ -730,7 +752,7 @@ fn parse_tbl_style_pr_shd(reader: &mut quick_xml::Reader<&[u8]>) -> Option<CondS
             Ok(Event::End(_)) => {
                 depth -= 1;
                 if depth == 0 {
-                    return None; // 整棵 tblStylePr 讀盡而無 tcPr/shd
+                    return (shd, run); // 整棵 tblStylePr 讀盡
                 }
                 if tcpr_depth.is_some_and(|d| depth < d) {
                     tcpr_depth = None; // tcPr 自身結束（其子女結束不影響）
@@ -833,17 +855,33 @@ impl StyleTable {
                             t.empty = false;
                         }
                         b"tblStylePr" if cur.is_some() => {
-                            // K8-shd：條件底紋（`w:tblStylePr/@w:type` 下的
-                            // `w:tcPr/w:shd`）。整棵子樹就地吃掉（pPr/rPr/
-                            // tblPr 本卡不認——框線條件另有 `table_style_borders`
-                            // 平行路徑，互不干預）。
+                            // K8-shd／K22：條件底紋＋條件字色（`w:tblStylePr/@w:type`
+                            // 下的 `w:tcPr/w:shd` 與直系 `w:rPr/w:color`）。整棵子樹
+                            // 就地吃掉（pPr/tblPr 本卡不認——框線條件另有
+                            // `table_style_borders` 平行路徑，互不干預）。
                             let cond = attr_val(&e, "type").unwrap_or_default();
-                            if let Some(shd) = parse_tbl_style_pr_shd(&mut reader) {
-                                if let Some((_, own)) = cur.as_mut() {
-                                    if !cond.is_empty()
-                                        && !own.cond_shading.iter().any(|(k, _)| k == &cond)
-                                    {
-                                        own.cond_shading.push((cond, shd));
+                            let (shd, run) = parse_tbl_style_pr(&mut reader, theme, tf);
+                            if let Some((_, own)) = cur.as_mut() {
+                                if !cond.is_empty() {
+                                    if let Some(shd) = shd {
+                                        if !own.cond_shading.iter().any(|(k, _)| k == &cond) {
+                                            own.cond_shading.push((cond.clone(), shd));
+                                        }
+                                    }
+                                    // K22：直系 rPr 只留色彩三態（color／color_set；
+                                    // 粗體等其它 run 欄位本卡不消費，不收＝零誤用
+                                    // 面，且避免 b/bCs 誤入格子級聯）。
+                                    if let Some(rs) = run.filter(|r| r.color_set) {
+                                        if !own.cond_color.iter().any(|(k, _)| k == &cond) {
+                                            own.cond_color.push((
+                                                cond.clone(),
+                                                RunStyle {
+                                                    color: rs.color,
+                                                    color_set: true,
+                                                    ..Default::default()
+                                                },
+                                            ));
+                                        }
                                     }
                                 }
                             }
@@ -1267,6 +1305,34 @@ impl StyleTable {
             cur = own.based_on.clone().filter(|b| b != &key);
         }
         None
+    }
+
+    /// K22：表格樣式鏈（不含 docDefaults）上，某條件（`w:tblStylePr/@w:type`
+    /// 如 `firstRow`／`band1Vert`）的直系 `w:rPr/w:color` 宣告（色彩三態快照）。
+    /// 沿 **basedOn 鏈**取第一個命中者（ECMA §17.7.2.3 級聯口徑，與
+    /// [`Self::table_style_cond_shading`] 同源）。
+    ///
+    /// 呼叫端（engine 級聯層）負責疊 `w:tblLook` 生效閘與 §17.4.75 優先序：
+    /// 直接 rPr 字色＞本表條件字色。查無 id／無宣告＝None。
+    pub fn table_style_cond_color(&self, id: &str, cond: &str) -> Option<RunStyle> {
+        let mut cur = Some(id.to_string());
+        for _ in 0..MAX_CHAIN {
+            let Some(key) = cur else { break };
+            let Some(own) = self.table_styles.get(&key) else {
+                break;
+            };
+            if let Some((_, rs)) = own.cond_color.iter().find(|(k, _)| k == cond) {
+                return Some(rs.clone());
+            }
+            cur = own.based_on.clone().filter(|b| b != &key);
+        }
+        None
+    }
+
+    /// K22：全表是否有任何 `tblStylePr` 條件字色宣告（開檔快路——零宣告檔
+    /// 整層跳過，逐表 `compute_cond_gates` 的錢都不花）。
+    pub fn has_cond_color(&self) -> bool {
+        self.table_styles.values().any(|s| !s.cond_color.is_empty())
     }
 
     /// K6：表格樣式鏈（不含 docDefaults）的第一個段前／段後距宣告。
@@ -2023,5 +2089,99 @@ mod tests {
         let (_, p) = t.effective_para(None, ParaStyle::default());
         assert_eq!(p.spacing_before_pt, Some(0.0));
         assert_eq!(p.spacing_after_pt, Some(0.0));
+    }
+
+    // ---------------- K22：tblStylePr 直系 rPr 條件字色 ----------------
+
+    /// 直系 `w:rPr/w:color` 收進 `cond_color`（首見為準）；`w:color val="auto"`
+    /// ＝color_set 真＋color None（明確黑三態）；只有 rPr 無 shd 的條件
+    /// （firstCol 族）不产生 cond_shading 條目。
+    #[test]
+    fn k22_cond_color_parses_direct_rpr() {
+        let t = table(wrap(
+            r#"<w:style w:type="table" w:styleId="K22T">
+                 <w:tblStylePr w:type="firstRow">
+                   <w:rPr><w:b/><w:color w:val="FF0000"/></w:rPr>
+                   <w:tcPr><w:shd w:val="clear" w:fill="4F81BD"/></w:tcPr>
+                 </w:tblStylePr>
+                 <w:tblStylePr w:type="firstCol">
+                   <w:rPr><w:color w:val="auto"/></w:rPr>
+                 </w:tblStylePr>
+                 <w:tblStylePr w:type="band1Horz">
+                   <w:tcPr><w:shd w:val="clear" w:fill="D3DFEE"/></w:tcPr>
+                 </w:tblStylePr>
+               </w:style>"#,
+        ));
+        let c = t
+            .table_style_cond_color("K22T", "firstRow")
+            .expect("firstRow 直系 rPr 字色必須入帳");
+        assert_eq!(c.color, Some(0xFFFF_0000));
+        assert!(c.color_set);
+        // 只留色彩三態：b 等其它 run 欄位不收。
+        assert_eq!(c.bold, None, "粗體等非色彩欄位不得混入條件字色快照");
+        let auto = t
+            .table_style_cond_color("K22T", "firstCol")
+            .expect("auto 也是宣告（明確黑三態）");
+        assert!(auto.color_set);
+        assert_eq!(auto.color, None, "auto＝color_set 真、color None");
+        assert!(
+            t.table_style_cond_color("K22T", "band1Horz").is_none(),
+            "未宣告 rPr 的條件＝無字色意見（None，續下一条）"
+        );
+        // cond_shading 零回退：同節點 shd 仍收、只有 rPr 的條件不入帳。
+        assert_eq!(
+            t.table_style_cond_shading("K22T", "firstRow")
+                .expect("firstRow shd")
+                .fill
+                .as_deref(),
+            Some("4F81BD")
+        );
+        assert!(t.table_style_cond_shading("K22T", "firstCol").is_none());
+        assert!(t.has_cond_color());
+    }
+
+    /// 順序鎖：`w:rPr` 排在 `w:tcPr` **之後**（Word 少見但合法；舊實作首見
+    /// shd 即 return 會漏收）＋ `w:pPr/w:rPr`（段落標記 run 屬性）不得混收
+    /// 成條件字色。
+    #[test]
+    fn k22_cond_color_rpr_after_tcpr_and_ppr_rpr_excluded() {
+        let t = table(wrap(
+            r#"<w:style w:type="table" w:styleId="K22U">
+                 <w:tblStylePr w:type="firstRow">
+                   <w:pPr><w:rPr><w:color w:val="00FF00"/></w:rPr></w:pPr>
+                   <w:tcPr><w:shd w:val="clear" w:fill="4F81BD"/></w:tcPr>
+                   <w:rPr><w:color w:val="FFFFFF"/></w:rPr>
+                 </w:tblStylePr>
+               </w:style>"#,
+        ));
+        let c = t
+            .table_style_cond_color("K22U", "firstRow")
+            .expect("tcPr 之後的直系 rPr 必須收得到（舊實作首見 shd 即返→漏收）");
+        assert_eq!(
+            c.color,
+            Some(0xFFFF_FFFF),
+            "直系 rPr（白）贏；pPr/w:rPr（綠）是段落標記語意，混收即錯色"
+        );
+    }
+
+    /// basedOn 鏈：條件字色沿鏈取第一個命中者（與 cond_shading 同口徑）。
+    #[test]
+    fn k22_cond_color_inherits_along_based_on_chain() {
+        let t = table(wrap(
+            r#"<w:style w:type="table" w:styleId="Base">
+                 <w:tblStylePr w:type="firstRow"><w:rPr><w:color w:val="123456"/></w:rPr></w:tblStylePr>
+               </w:style>
+               <w:style w:type="table" w:styleId="Child">
+                 <w:basedOn w:val="Base"/>
+                 <w:tblStylePr w:type="band1Horz"><w:tcPr><w:shd w:val="clear" w:fill="EEE"/></w:tcPr></w:tblStylePr>
+               </w:style>"#,
+        ));
+        assert_eq!(
+            t.table_style_cond_color("Child", "firstRow")
+                .expect("basedOn 鏈繼承")
+                .color,
+            Some(0xFF12_3456)
+        );
+        assert!(t.table_style_cond_color("Child", "lastRow").is_none());
     }
 }

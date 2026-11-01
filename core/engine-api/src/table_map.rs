@@ -11,6 +11,10 @@
 //!
 //! 條件**底紋**（K8-shd）：`tblStylePr/w:tcPr/w:shd` 經 `w:tblLook` 生效閘
 //! 逐屬性級聯消費（見 [`ShadingCtx`]），條件框線仍走 v1 最小查表不變。
+//!
+//! 條件**字色**（K22）：`tblStylePr/w:rPr/w:color` 與底色同軸、同閘、同
+//! 優先序（[`cond_run_colors`]，資料流到 engine 級聯層 `cascade_paragraphs`
+//! 的 run 著色烘焙；直接字色＞條件字色，ECMA-376 §17.4.75）。
 
 use std::collections::HashMap;
 
@@ -244,6 +248,99 @@ fn cond_band_fill(style_id: &str, conds: &[(&str, bool)], ctx: &ShadingCtx) -> O
             // 該條件未宣告 fill：續下一條（PM 鐵證②實測：firstCol 粗體
             // 格仍 gets band1Horz 底色）。
             ShdDecision::Pass => continue,
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// K22：條件字色級聯（tblStylePr/w:rPr/w:color——與條件底色同軸、同閘、
+// 同優先序走 [`COND_PRIORITY`]；fdo68607 firstRow 同時宣告 shd＋color，
+// K8 只接了底色層，字色層自此補齊）。
+// ---------------------------------------------------------------------------
+
+/// K22：逐段落查表——正文表 `tblStylePr` 條件字色的最終生效值
+/// （段落索引 → 0xAARRGGBB）。Map 有鍵＝條件層宣告過字色（含 `auto`＝
+/// 明確黑）；無鍵＝條件層無意見（級聯維持現行落點，零擾動）。
+///
+/// 層序語見呼叫端（`cascade_paragraphs` 的 K22 段）：本層＝表格條件層，
+/// 只在 run 級聯鏈完全沒宣告顏色時落地（直接／字元／段落樣式在上）。
+/// 頁首尾表不走本函數（K8 同款零擾動口徑）。`K22_COND_COLOR_BUGGY=1`＝
+/// 整層關閉（回塞鎖：紅燈 k22 燈 1/2/3 必紅）。
+pub fn cond_run_colors(tables: &[BodyTable], ctx: &ShadingCtx) -> HashMap<usize, u32> {
+    let mut out = HashMap::new();
+    // 快路：全表無任何條件字色宣告（corpus 378/400 檔）＝整層跳過，
+    // 逐表 compute_cond_gates 的錢都不花（開檔零成本）。
+    if !ctx.styles.has_cond_color() {
+        return out;
+    }
+    if std::env::var_os("K22_COND_COLOR_BUGGY").is_some() {
+        return out;
+    }
+    for bt in tables {
+        collect_cond_color_table(&bt.table, None, ctx, &mut out);
+    }
+    out
+}
+
+/// 一表（含巢狀）逐格條件字色 → 格內段落烘焙。樣式 id：自帶＞繼承外層
+/// （ECMA §17.4.65，同 `table_input` 巢狀口徑）；無任何樣式 id＝本表無
+/// 條件層，但巢狀子表仍可能自帶——續遞迴，不虚構。
+fn collect_cond_color_table(
+    t: &quire_ooxml::Table,
+    inherit: Option<&str>,
+    ctx: &ShadingCtx,
+    out: &mut HashMap<usize, u32>,
+) {
+    let Some(sid) = t.props.style.as_deref().or(inherit) else {
+        for row in &t.rows {
+            for c in &row.cells {
+                for b in &c.blocks {
+                    if let Block::Table(inner) = b {
+                        collect_cond_color_table(inner, None, ctx, out);
+                    }
+                }
+            }
+        }
+        return;
+    };
+    // 生效閘與帶序完全沿用 K8 的 compute_cond_gates（tblLook 閘、排除特殊
+    // 列的 1-based 帶序、欄序知識閘）——字色與底色同軸的「同軸」就是這層。
+    let gates = compute_cond_gates(t);
+    for (ri, row) in t.rows.iter().enumerate() {
+        for (ci, cell) in row.cells.iter().enumerate() {
+            let cc = gates
+                .get(ri)
+                .and_then(|g| g.get(ci))
+                .and_then(|cd| cond_cell_color(sid, &cd.gates(), ctx));
+            for b in &cell.blocks {
+                match b {
+                    Block::Paragraph { index } => {
+                        if let Some(c) = cc {
+                            // 同段被多格覆蓋（畸形 vMerge）＝首見為準，與
+                            // cond_shading 收錄口徑一致。
+                            out.entry(*index).or_insert(c);
+                        }
+                    }
+                    Block::Table(inner) => {
+                        collect_cond_color_table(inner, Some(sid), ctx, out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 一格命中的條件字色（`COND_PRIORITY` 序逐條查，首個宣告者定案——與
+/// [`cond_band_fill`] 的底色查表同口徑；未宣告＝續下一条，逐屬性級聯非
+/// 整條件覆蓋）。`w:color val="auto"`（color_set 真、color None）＝明確黑。
+fn cond_cell_color(style_id: &str, conds: &[(&str, bool)], ctx: &ShadingCtx) -> Option<u32> {
+    for (cond, gate) in conds {
+        if !gate {
+            continue;
+        }
+        if let Some(rs) = ctx.styles.table_style_cond_color(style_id, cond) {
+            return Some(rs.color.unwrap_or(0xFF00_0000));
         }
     }
     None
