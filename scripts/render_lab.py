@@ -193,14 +193,46 @@ def _w2w(linux_path: pathlib.Path) -> str:
     return r.stdout.strip()
 
 
+def _painted_image_xrefs(p) -> tuple[list, list]:
+    """該頁**實際繪製**的點陣圖（繪製口徑）。回傳 (繪製清單, 宣告清單)。
+
+    `page.get_images()` 回的是「宣告在該頁 `/Resources`」的圖片——LO 常讓相鄰頁
+    **共用同一個 Resources 間接物件**（n751077 兩頁同 obj 41），於是某頁會報出
+    它根本沒畫的 xref（`get_image_rects(xref) == []`）。把宣告值當內容會誤傷
+    `compare()` 的 4b「同位雙空（LO 真空）⇒ None」臂（判別式 `images == 0` 被
+    殭屍宣告值擋死），真真空頁被判成 `empty_page_mismatch` 0.0（度量偽影）。
+
+    因此內容口徑只計 `get_image_rects()` 非空者＝該頁真的有把它畫出來。
+    「逐頁重複的頁首／頁尾圖」在兩頁都是**真繪製**，照樣進 `image_xrefs`，
+    故 4d 防放水臂語意不受影響（`scripts/tests/test_k25a_painted_ink.py` 實檔鎖）。
+    逐 entry 保留（不 dedupe）：維持 `xref_pages`／`unique_images` 的既有算式，
+    本函式唯二的變更就是「未繪製的殭屍宣告不計」。
+    """
+    declared = [im[0] for im in p.get_images(full=True)]
+    painted = []
+    for x in declared:
+        try:
+            rects = p.get_image_rects(x)
+        except Exception:  # noqa: BLE001 —— 保守方向：查不動就仍算該頁內容（不放水）
+            painted.append(x)
+            continue
+        if rects:
+            painted.append(x)
+    return painted, declared
+
+
 def pdf_page_facts(pdf: pathlib.Path) -> list[dict]:
-    """PDF 每頁：文字行（幾何順序）、行數、頁尺寸（pt）、文字 span 數、圖形實據。"""
+    """PDF 每頁：文字行（幾何順序）、行數、頁尺寸（pt）、文字 span 數、圖形實據。
+
+    `images`／`image_xrefs` ＝**繪製**口徑（見 `_painted_image_xrefs`）；
+    `images_declared`／`image_xrefs_declared` 保留舊的**宣告**口徑供診斷與 A/B。
+    """
     d = pymupdf.open(pdf)
     pages = []
     for p in d:
         lines = [norm(t) for t in str(p.get_text("text")).splitlines() if norm(t)]
         words = len(p.get_text("words"))
-        imgs = p.get_images(full=True)
+        painted, declared = _painted_image_xrefs(p)
         pages.append({
             "lines": lines,
             "line_count": len(lines),
@@ -210,8 +242,10 @@ def pdf_page_facts(pdf: pathlib.Path) -> list[dict]:
             # 0/0 度量偽影判準：LO 該頁是否真的有非文字內容（向量圖／點陣圖）。
             # image_xrefs 供區分「內文圖」與「逐頁重複的頁首／頁尾圖」。
             "drawings": len(p.get_drawings()),
-            "images": len(imgs),
-            "image_xrefs": [im[0] for im in imgs],
+            "images": len(painted),
+            "image_xrefs": painted,
+            "images_declared": len(declared),
+            "image_xrefs_declared": declared,
         })
     d.close()
     return pages
@@ -289,6 +323,32 @@ def content_key(lines: list[str]) -> str:
 def layout_key(lines: list[str]) -> str:
     """版面鍵：保留「前 8 行逐行拼接」的舊口徑（含換行位置）。"""
     return " | ".join(norm(l) for l in lines[:8])
+
+
+def _synthetic_shared_resources_pdf(path: pathlib.Path, paint_second: bool) -> None:
+    """合成 2 頁 PDF（自測 fixture 用；不碰 LO/引擎，只用 pymupdf 寫檔）。
+
+    p0＝真繪製圖＋`TEXT1 TEXT2`。p1 依 `paint_second` 二選一：
+    - False：把 p1 的 `/Resources` 指向 p0 **同一個間接物件**、內容流零 `Do`
+      ⇒ p1「宣告 1、繪製 0」＝n751077（LO 兩頁同 obj 41）的精確重現。
+    - True：p1 **真繪製**同一張圖＝逐頁重複的頁首圖（4d 防放水臂保護的對象）。
+    """
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 40, 35))
+    pix.set_rect(pix.irect, (200, 40, 40))
+    rect = pymupdf.Rect(17, 60, 84, 119)
+    doc = pymupdf.open()
+    p0 = doc.new_page(width=612, height=792)
+    p0.insert_image(rect, pixmap=pix)
+    p0.insert_text((70, 150), "TEXT1 TEXT2", fontsize=14)
+    p0_xref = doc[0].xref
+    doc.new_page(width=612, height=792)
+    if paint_second:
+        doc[1].insert_image(rect, pixmap=pix)
+    else:
+        res = doc.xref_get_key(p0_xref, "Resources")
+        doc.xref_set_key(doc[1].xref, "Resources", res[1])
+    doc.save(path)
+    doc.close()
 
 
 def compare(name: str, lo: list[dict], ow: dict, sect_pr: int | None = None) -> dict:
@@ -968,6 +1028,40 @@ def selftest() -> int:
           r8["content_scores"][1] == 0.0 and r8["content_scores"][0] == 1.0
           and r8["first_divergence"] == 1 and not r8["measurement_artifacts"],
           f"scores={r8['content_scores']} div={r8['first_divergence']}")
+
+    # (4d2)/(4d3) K25-A：4d fixture 是手寫 dict，改「繪製口徑」時它不會紅——故補
+    # 兩條**真實 PDF**（合成，不碰 LO）的鎖：
+    #   4d2＝LO 該頁**真繪製**的重複頁首圖＋我方空 ⇒ 仍必須 0.0（防放水臂不得稀釋）；
+    #   4d3＝LO 該頁**只宣告未繪製**（兩頁共用 Resources obj，n751077 鐵證態）
+    #        ＋我方同位空 ⇒ None＋雙空同位頁 artifact（燈1 的機制面）。
+    # 細部欄位口徑另由 scripts/tests/test_k25a_painted_ink.py 逐條鎖。
+    with tempfile.TemporaryDirectory() as _td:
+        _tdp = pathlib.Path(_td)
+        _hdr = _tdp / "k25a-hdr.pdf"
+        _void = _tdp / "k25a-void.pdf"
+        _synthetic_shared_resources_pdf(_hdr, paint_second=True)
+        _synthetic_shared_resources_pdf(_void, paint_second=False)
+        ow9 = {"pages": [{"lines": ["TEXT1", "TEXT2"]}, {"lines": []}],
+               "breaks": [{"width_pt": 612.0, "height_pt": 792.0},
+                          {"width_pt": 612.0, "height_pt": 792.0}]}
+        f_hdr = pdf_page_facts(_hdr)
+        r9 = compare("t9", f_hdr, ow9)
+        check("4d2 真繪製重複頁首圖（實檔 PDF）仍 0.0（防放水臂必仍綠）",
+              [pg["images"] for pg in f_hdr] == [1, 1]
+              and r9["content_scores"] == [1.0, 0.0] and r9["first_divergence"] == 1
+              and "empty_page_mismatch" in r9["notes"] and not r9["measurement_artifacts"],
+              f"images={[pg['images'] for pg in f_hdr]} scores={r9['content_scores']}")
+        f_void = pdf_page_facts(_void)
+        r10 = compare("t10", f_void, ow9, sect_pr=2)
+        check("4d3 只宣告未繪製的共用 Resources 頁（實檔 PDF）＝None 偽影",
+              f_void[1]["images"] == 0 and f_void[1]["images_declared"] == 1
+              and r10["content_scores"] == [1.0, None] and r10["first_divergence"] is None
+              and "empty_page_mismatch" not in r10["notes"]
+              and any(n.startswith("measurement_artifact:雙空同位頁") for n in r10["notes"])
+              and r10["measurement_artifacts"]
+              and r10["measurement_artifacts"][0]["reason"] == "both_empty_same_position",
+              f"images={f_void[1]['images']}/{f_void[1]['images_declared']} "
+              f"scores={r10['content_scores']}")
 
     # ── J3 三軸（色/圖/真缺字）合成案例 ──────────────────────────────
     def _blank():
