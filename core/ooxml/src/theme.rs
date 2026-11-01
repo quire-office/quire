@@ -438,10 +438,10 @@ fn typeface_of(e: &BytesStart) -> Option<String> {
 /// `none`（明示「無主題色」）與查無的名 → None。
 pub fn theme_slot_for(token: &str) -> Option<&'static str> {
     match token {
-        "text1" | "t1" | "dark1" => Some("dk1"),
-        "background1" | "bg1" | "light1" => Some("lt1"),
-        "text2" | "t2" | "dark2" => Some("dk2"),
-        "background2" | "bg2" | "light2" => Some("lt2"),
+        "text1" | "t1" | "dk1" | "dark1" => Some("dk1"),
+        "background1" | "bg1" | "lt1" | "light1" => Some("lt1"),
+        "text2" | "t2" | "dk2" | "dark2" => Some("dk2"),
+        "background2" | "bg2" | "lt2" | "light2" => Some("lt2"),
         "accent1" => Some("accent1"),
         "accent2" => Some("accent2"),
         "accent3" => Some("accent3"),
