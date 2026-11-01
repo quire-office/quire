@@ -150,17 +150,28 @@ fn cjk_clusters_are_scale_immutable() {
 }
 
 /// 紅燈 4（零擾動守門臂）：無 footer 幾何無關檔＋查表未命中/零宣告代表檔
-/// （sdt_vml_textbox 自製 1 頁／RA001 7 頁／tdf127814 2 頁——main tip db68a9e
-/// 實測基線）頁數逐位不動。水平尺只作用在「宣告族命中查表」路徑，這些檔
+/// （sdt_vml_textbox 自製 1 頁／RA001 6 頁／tdf127814 2 頁）頁數逐位不動。
+/// 水平尺只作用在「宣告族命中查表」路徑，這些檔
 /// 全走 1.0 後備＝零擾動；動表值把這些頁數翻走時此燈先響。
+///
+/// K28 對齊（本臂唯一改值，逐值證據）：RA001 7→6。本檔原基線「7」取自
+/// main tip db68a9e（我方態），非 LO 真值——LO 25.8 實轉 PDF `/Count: 6`
+/// （K28 worker 覆核，2026-11-02）＋本倉 k5-diag §2.3「LO6/我方 9」＋
+/// r8-diag「RA001 六頁」三方一致。K28 幽靈網格欄修復（resolve_columns
+/// 截斷＋跳過歸一）讓 RA001 三張 `w:tblGridChange` 表（修訂歷史欄併入
+/// t.grid ⇒ 6 欄假象、等比歸一到 tblW 8970＝全欄和 17940 之半 ⇒ 欄寬
+/// [79.1,52.8,92.4]pt＝raw 50%）回到 raw [158.1,105.6,184.8]pt 節距，
+/// 頁數收斂 7→6＝LO；render_lab 實測 LO 6 頁/我方 6 頁（頁數 ✓）。
+/// 幽靈態零擾動面：corpus 400 檔 A/B 頁數 diff 僅 RA001 兩檔變動（K28
+/// completion metadata）。
 #[test]
 fn zero_decl_and_miss_files_page_counts_untouched() {
     const LOCKS: [(&str, usize, &str); 3] = [
         ("selfgen/sdt_vml_textbox.docx", 1, "零宣告自製檔"),
         (
             "xopt/TestFiles_RA001-Tracked-Revisions-01.docx",
-            7,
-            "修訂檔（Arial 命中但表格為主）",
+            6,
+            "修訂檔（Arial 命中但表格為主；K28 後 LO 6 頁收斂）",
         ),
         ("ooxmlexport/tdf127814.docx", 2, "M1 帶尺錨檔"),
     ];
