@@ -148,7 +148,7 @@ fn k25_lamp_d_page2_is_structural_section_page() {
 }
 
 /// 鎖的鑑別力自查：把「期望值」改錯必須紅——證明本檔斷言真的在跑，不是空過。
-/// （纯鎖無引擎改動，故以偽期望值取代 BUGGY 回塞態；見檔首說明。）
+/// （純鎖無引擎改動，故以偽期望值取代 BUGGY 回塞態；見檔首說明。）
 #[test]
 fn k25_lock_is_discriminating_selfcheck() {
     let eng = load();
