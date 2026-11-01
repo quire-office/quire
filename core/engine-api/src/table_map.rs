@@ -417,6 +417,131 @@ fn has_any_edges(e: &EdgeSetInput) -> bool {
     .any(|p| p.is_some_and(|p| p.val.is_some()))
 }
 
+/// K23：`word/styles.xml` → styleId → **樣式級** `w:tblCellMar`（四側 pt，
+/// 沿 basedOn 鏈合成、子贏父；與 `table_style_borders` 同款容錯：鏈長上限
+/// 16＋拜訪集防環）。
+///
+/// 存在的理由（實測根因）：`w:tblCellMar` 不只寫在 `w:tblPr`，Word 的內建表
+/// 格式（TableNormal／TableGrid／自訂樣式）普遍把內距宣告在**樣式**裡。舊
+/// 級聯只看 `w:tblPr` 直宣告與 ECMA 預設，樣式級整級漏掉 ⇒ 宣告 0／86dxa
+/// 的表被錯誤按 5.4pt/側排版（LO 25.8 ground truth：NumberedList／
+/// tdf103976 格線左界 126.8→文字 x0=131.1＝4.3pt＝86dxa；tdf115883 樣式
+/// 宣告 0 內距）。級聯位階（ECMA §17.4.40／§17.4.49＋LO 實測）：
+/// 直接 `w:tcMar` ＞ `w:tblPr/w:tblCellMar` ＞ 本表（樣式級）＞ ECMA 預設。
+pub fn table_style_cell_margins(styles_xml: &[u8]) -> HashMap<String, CellMarginInput> {
+    let xml = String::from_utf8_lossy(styles_xml);
+    // ---- 第一趟：逐 <w:style …> 記錄自帶四側與 basedOn ----
+    let mut own: HashMap<String, (Option<CellMarginInput>, Option<String>)> = HashMap::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = xml[cursor..].find("<w:style ") {
+        let start = cursor + rel;
+        let end = match xml[start..].find("</w:style>") {
+            Some(e) => start + e + "</w:style>".len(),
+            None => xml.len(),
+        };
+        cursor = end;
+        let seg = &xml[start..end];
+        if !seg.contains("w:type=\"table\"") {
+            continue;
+        }
+        let Some(id) = attr(seg, "w:styleId") else {
+            continue;
+        };
+        let based_on = seg
+            .find("<w:basedOn ")
+            .and_then(|i| attr(&seg[i..], "w:val"));
+        let margins = find_tbl_cell_mar(seg).map(|m| cell_margins(&m));
+        own.insert(id, (margins, based_on));
+    }
+    // ---- 第二趟：沿 basedOn 補缺位（子先、父補缺側 ⇒ 子宣告贏） ----
+    let mut out: HashMap<String, CellMarginInput> = HashMap::new();
+    for id in own.keys() {
+        let mut acc: CellMarginInput = Default::default();
+        let mut seen: Vec<&String> = Vec::new();
+        let mut cur: Option<&String> = Some(id);
+        let mut stack: Vec<Option<&CellMarginInput>> = Vec::new();
+        for _ in 0..16 {
+            let Some(key) = cur else { break };
+            let Some((margins, based_on)) = own.get(key) else {
+                break;
+            };
+            if seen.contains(&key) {
+                break; // 鏈環：老實停在已合成結果
+            }
+            seen.push(key);
+            stack.push(margins.as_ref());
+            cur = based_on
+                .as_ref()
+                .and_then(|b| own.get_key_value(b))
+                .map(|(k, _)| k);
+        }
+        // 子先寫、父只補缺側 ⇒ derived style wins（宣告 0 是有效宣告，
+        // 必須壓過父樣式的 108dxa——NumberedList ProcedureTable 實測口徑）。
+        for m in stack.iter().copied().flatten() {
+            fill_missing_margins(&mut acc, m);
+        }
+        let any =
+            acc.top.is_some() || acc.left.is_some() || acc.bottom.is_some() || acc.right.is_some();
+        if any {
+            out.insert(id.clone(), acc);
+        }
+    }
+    out
+}
+
+/// 樣式級 `w:tblCellMar` → `Margins`（沿用 ooxml 側的方位結構，缺側＝None）。
+/// 自閉合（`<w:tblCellMar/>`）或無閉合標籤（畸形）＝不認（回 None，老實不虛構）。
+fn find_tbl_cell_mar(seg: &str) -> Option<Margins> {
+    let i = seg.find("<w:tblCellMar")?;
+    let tag_end = seg[i..].find('>').map(|e| i + e)?;
+    if seg[tag_end.saturating_sub(1)..=tag_end] == *"/>" {
+        return None; // 自閉合＝無任何側宣告
+    }
+    let close = seg[tag_end..].find("</w:tblCellMar>")? + tag_end;
+    let region = &seg[tag_end + 1..close];
+    let side = |tag: &str| -> Option<TblWidth> {
+        let k = region.find(&format!("<w:{tag} "))?;
+        let e = region[k..].find("/>")? + k;
+        let w = attr(&region[k..=e], "w:w")?;
+        Some(TblWidth {
+            w: Some(w),
+            typ: attr(&region[k..=e], "w:type"),
+        })
+    };
+    let m = Margins {
+        top: side("top"),
+        start: side("start"),
+        bottom: side("bottom"),
+        end: side("end"),
+        left: side("left"),
+        right: side("right"),
+        ..Default::default()
+    };
+    let any = m.top.is_some()
+        || m.start.is_some()
+        || m.bottom.is_some()
+        || m.end.is_some()
+        || m.left.is_some()
+        || m.right.is_some();
+    any.then_some(m)
+}
+
+/// 逐側補缺位（`None`＝該側未宣告，非宣告 0——0 是有效宣告必須保留）。
+fn fill_missing_margins(dst: &mut CellMarginInput, src: &CellMarginInput) {
+    if dst.top.is_none() {
+        dst.top = src.top;
+    }
+    if dst.left.is_none() {
+        dst.left = src.left;
+    }
+    if dst.bottom.is_none() {
+        dst.bottom = src.bottom;
+    }
+    if dst.right.is_none() {
+        dst.right = src.right;
+    }
+}
+
 /// 格內圖片投影表（t_a1397522）：錨定段落 → 依文档序的尺寸序列。
 /// 同一段落多張圖＝逐張注入（CellBlock::Image 在格內垂直堆疊、帶高累加
 /// ——卡片語義；不合併，合併會虛構容量）。
@@ -633,6 +758,8 @@ pub fn table_input(
     t: &Table,
     texts: &[String],
     styles: &HashMap<String, EdgeSetInput>,
+    // K23：styleId → 樣式級 `w:tblCellMar`（四側 pt，沿 basedOn 合成）。
+    style_margins: &HashMap<String, CellMarginInput>,
     cell_imgs: &HashMap<usize, Vec<(f32, f32)>>,
     sizes: &HashMap<usize, f32>,
     line_hs: &HashMap<usize, f32>,
@@ -675,6 +802,16 @@ pub fn table_input(
             .cloned()
             .filter(has_any_edges),
         cell_margins: p.cell_margins.as_ref().map(cell_margins),
+        // K23：樣式級內距（查表口徑同 `style_borders`——只認本表自帶 tblStyle；
+        // 巢狀表未自帶時不虛構繼承，本 corpus 無巢狀樣式內距案例）。
+        style_cell_margins: p
+            .style
+            .as_deref()
+            .and_then(|s| style_margins.get(s))
+            .cloned()
+            .filter(|m| {
+                m.top.is_some() || m.left.is_some() || m.bottom.is_some() || m.right.is_some()
+            }),
         rows: t
             .rows
             .iter()
@@ -741,6 +878,7 @@ pub fn table_input(
                                         inner,
                                         texts,
                                         styles,
+                                        style_margins,
                                         cell_imgs,
                                         sizes,
                                         line_hs,
@@ -1126,6 +1264,8 @@ pub fn build_slots(
     doc_styles: Option<&StyleTable>,
 ) -> Vec<TableSlot> {
     let styles = styles_xml.map(table_style_borders).unwrap_or_default();
+    // K23：樣式級 cell 內距查表（與框線同款「沿 basedOn 補缺位」）。
+    let style_margins = styles_xml.map(table_style_cell_margins).unwrap_or_default();
     let cell_imgs = cell_image_map(images);
     // 段落 → 級聯有效字級（首 run；None 不入表＝全域尺）。
     let mut sizes: HashMap<usize, f32> = HashMap::new();
@@ -1172,6 +1312,7 @@ pub fn build_slots(
                 &bt.table,
                 texts,
                 &styles,
+                &style_margins,
                 &cell_imgs,
                 &sizes,
                 &line_h_map,

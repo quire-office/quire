@@ -3799,23 +3799,33 @@ fn emit_line_run_items(
     }
 }
 
-/// 表格格內文字的單樣式解析：由儲存格所屬段落之 Run 查詢樣式旗標與顏色。
+/// 表格格內文字的單樣式解析：由儲存格所屬段落之 Run 查詢樣式旗標、顏色與
+/// **字型族**（K23）。
+///
+/// 字型的理由（實測根因）：舊路徑格內文字恆發 `family: None`（原始碼註解
+/// 「格內選族待後續卡」），SVG 端不寫 `font-family` ⇒ 瀏覽器／光柵器落到
+/// **自身預設 face**。fdo68607 內文宣告 Calibri（LO 以 Carlito/Calibri 渲染，
+/// 我方斷行亦按 K7-cal 0.8834 尺收斂在 414.2pt 內），但 SVG 沒有宣告 ⇒
+/// Chrome 落 Times New Roman 以外的 wide fallback 時，同一行文字被拉寬
+/// 13–16%、右緣最遠 665.6pt 直接越過 581.4pt 格線（實測 PM 報的 ~626pt 即
+/// 此假影）。斷行尺與發射宣告必須同 face，否則幾何對、視覺爆欄。
 fn resolve_cell_line_style(
     canon_cell: Option<&CanonicalTableCell>,
     canon_tbl: Option<&CanonicalTable>,
     paragraphs: &[quire_ooxml::Paragraph],
     line_text: &str,
-) -> (u8, u32) {
+) -> (u8, u32, Option<String>) {
     if line_text.is_empty() {
-        return (0, DEFAULT_TEXT_COLOR_ARGB);
+        return (0, DEFAULT_TEXT_COLOR_ARGB, None);
     }
-    let match_in_para = |p: &quire_ooxml::Paragraph| -> Option<(u8, u32)> {
+    let match_in_para = |p: &quire_ooxml::Paragraph| -> Option<(u8, u32, Option<String>)> {
         let full: String = p.runs.iter().map(|r| r.text.as_str()).collect();
         let byte_pos = full.find(line_text)?;
         let start_cp = full[..byte_pos].chars().count();
         let end_cp = start_cp + line_text.chars().count();
         let mut flags = 0u8;
         let mut color = None;
+        let mut family = None;
         let mut run_cp = 0usize;
         for r in &p.runs {
             let r_len = r.text.chars().count();
@@ -3828,9 +3838,14 @@ fn resolve_cell_line_style(
                 if color.is_none() && r.color.is_some() {
                     color = Some(rc);
                 }
+                // 首個覆蓋本行的 run 決定族（正文 `emit_line_run_items`
+                // 「合併段選族採首個 run」同款口徑）。
+                if family.is_none() && !r.text.is_empty() {
+                    family = select_text_family(r.effective_fonts.as_ref(), line_text);
+                }
             }
         }
-        Some((flags, color.unwrap_or(DEFAULT_TEXT_COLOR_ARGB)))
+        Some((flags, color.unwrap_or(DEFAULT_TEXT_COLOR_ARGB), family))
     };
     if let Some(cc) = canon_cell {
         for b in &cc.blocks {
@@ -3858,7 +3873,7 @@ fn resolve_cell_line_style(
             }
         }
     }
-    (0, DEFAULT_TEXT_COLOR_ARGB)
+    (0, DEFAULT_TEXT_COLOR_ARGB, None)
 }
 
 /// K4e2 格內文字框配對池：(文字框候選, 消費旗標)。消費式配對——同一框只
@@ -3945,8 +3960,15 @@ fn push_frag_items(
                 if t.runs.is_empty() {
                     // TODO(CardA): 表格格內文字本輪維持整格單樣式發射（不拆分為多個 DrawItem::Text），
                     // 待後續表格卡在 CellText 攜帶段落與字元偏移後，再與正文行共用跨 run 樣式拆段。
-                    let (flags, color_argb) =
+                    let (flags, color_argb, family) =
                         resolve_cell_line_style(canon_cell, canon_tbl, paragraphs, &t.text);
+                    // K23 回塞鎖（修 A）：`K23_CELL_FAMILY_BUGGY=1` ⇒ 退回「格內
+                    // 文字恆不宣告族」的舊態（紅燈 k23 燈 1b／1c 必紅）。
+                    let family = if std::env::var_os("K23_CELL_FAMILY_BUGGY").is_some() {
+                        None
+                    } else {
+                        family
+                    };
                     items.push(DrawItem::Text {
                         x: base_x + t.x_pt,
                         y: y + t.y_pt,
@@ -3955,8 +3977,11 @@ fn push_frag_items(
                         size_pt: t.size_pt.unwrap_or(size),
                         flags,
                         color_argb,
-                        // 格內文字目前不帶 run 級字型（layout 層限制）；格內選族待後續卡。
-                        family: None,
+                        // K23：格內選族（級聯 `w:rFonts` 查表結果；無宣告＝
+                        // None＝渲染端自身預設，零版面擾動）。斷行按宣告 face
+                        // 的 K7-cal 水平尺收斂，發射必須同 face 宣告，否則
+                        // 渲染端 wide fallback 把行拉寬 → 視覺爆欄（fdo68607）。
+                        family,
                         text: t.text.clone(),
                     });
                     continue;
@@ -3977,14 +4002,24 @@ fn push_frag_items(
                     }
                     let seg = &t.text[char_idx[s]..char_idx[e]];
                     let seg_size = r.size_pt.unwrap_or(base_size).max(1.0);
+                    // K23：段級選族——以本段文字回查所屬段落 run 的級聯
+                    // `w:rFonts`（混排段的 CJK run 與 Latin run 各自選族，
+                    // `select_text_family` 的 hint/eastAsia 邏輯天然處理）。
+                    // 同單樣式路徑的 `K23_CELL_FAMILY_BUGGY` 回塞鎖。
+                    let family = if std::env::var_os("K23_CELL_FAMILY_BUGGY").is_some() {
+                        None
+                    } else {
+                        resolve_cell_line_style(canon_cell, canon_tbl, paragraphs, seg).2
+                    };
                     items.push(DrawItem::Text {
                         x: base_x + t.x_pt + x_off,
                         y: y + t.y_pt,
                         size_pt: seg_size,
                         flags: r.flags,
                         color_argb: r.color_argb.unwrap_or(DEFAULT_TEXT_COLOR_ARGB),
-                        // 格內 run 級字型族未透傳（layout 層限制）——選族屬後續卡。
-                        family: None,
+                        // K23：格內 run 級字型族（原「未透傳＝None」，同單樣式
+                        // 路徑的理由：斷行尺與發射宣告必須同 face）。
+                        family,
                         text: seg.to_string(),
                     });
                     // 零漂移口徑（emit_line_run_items 同款）：未宣告段與整行
