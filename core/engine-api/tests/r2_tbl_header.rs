@@ -123,18 +123,21 @@ fn r2_no_spurious_repeat() {
 }
 
 /// 守門（L3 鐵律＋卡面綠燈）：delText 'Chromatpgrams' 照發 ×1——本卡
-/// 不得回退 L3-revisions 成果。頁數錨點 6→7（K7b）：LO 真值實測＝7 頁
-/// （soffice 25.8 本機轉 PDF 逐頁覆核，scratch/k7b/lo/…pdf），修前我方
-/// 6 頁＝頁首表（header2/header3 含 w:tbl）越 margin 未推正文起點、尾部
-/// 吸乾所致；K7b 推下後 7 頁與 LO 對齊——向 LO 收斂更新錨點（比照
+/// 不得回退 L3-revisions 成果。頁數錨點 7→6（K28）：R2/K7b 期註記「LO
+/// 真值 7 頁」與其**自證檔本身矛盾**——`scratch/k7b/lo/TestFiles_RA001-
+/// Tracked-Revisions-01.pdf`（corpus 檔 md5 相同，K7b worker 實轉存證）
+/// pymupdf 實數＝6 頁（K28 worker 2026-11-02 覆核，另獨立重轉亦 6）；
+/// 本倉 k5-diag §2.3「LO6/我方 9」＋r8-diag「六頁」同口徑。K28 幽靈
+/// 網格欄修復（`w:tblGridChange` 併入欄不再參與 tblW 歸一）使 RA001
+/// 三表回 raw 節距，7→6 與 LO 收斂——向 LO 真值更新錨點（比照
 /// af3bf34 K6 先例），非本卡改頁數。
 #[test]
 fn ra001_page_count_and_l3_locked() {
     let eng = ra001();
     assert_eq!(
         eng.page_count(),
-        7,
-        "RA001 頁數＝7（K7b 頁首推下後與 LO 真值 7 頁對齊；推前 6＝舊缺陷）"
+        6,
+        "RA001 頁數＝6（LO 真值：k7b-lo 自證 PDF 實數＋K28 重轉＋k5/r8-diag 三方一致；K28 幽靈欄修復後收斂）"
     );
     let (deltext, _) = pages_with(&eng, "Chromatpgrams");
     assert_eq!(deltext, 1, "L3 delText 'Chromatpgrams' ×1 不得回退");
