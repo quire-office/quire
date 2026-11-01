@@ -108,6 +108,7 @@ pub struct DuotoneEffect {
 
 /// K19：解析期色彩節點累積（一個 `a:schemeClr`／`a:srgbClr`／`a:prstClr`
 /// 與其子修飾器）。
+#[derive(Debug)]
 struct DuoNode {
     /// 基底色（0xAARRGGBB；修飾器套用前）。
     base: Option<u32>,
@@ -724,6 +725,159 @@ fn duo_note_mod(p: &mut Pending, name: &[u8], e: &quick_xml::events::BytesStart)
     }
 }
 
+// ---- K24：`wps:style` 樣式矩陣（DrawingML style matrix）----
+
+/// 一個 `wps:style` 的 fillRef／lnRef 折色累積。
+///
+/// # 為什麼必須走這條路（shapes-with-text 實據）
+/// DrawingML 的 `wps:wsp` 常**不在 spPr 宣告 solidFill**，改由 `wps:style`
+/// 的**樣式矩陣引用**給色：`<a:fillRef idx="1"><a:schemeClr val="accent1"/>
+/// </a:fillRef>`。idx 是 theme part `fillStyleLst`/`lnStyleLst` 的**索引**
+/// （idx=0＝明確不用＝無色），實際顏色是 ref 子節點的 schemeClr（可帶
+/// shade/tint/satMod 修飾器）。K12 填色鏈只讀 spPr 的 solidFill，對這一路
+/// **零落地**＝該檔 11 個形狀全黑白（色分 0.000）。
+///
+/// # 折算口徑（逐條實據，非推測）
+/// - **fillRef idx≥1** → 子 `a:schemeClr` 折色。實測：accent1=156082 →
+///   填色 #156082，與同檔 VML Fallback 快取 `fillcolor="#156082 [3204]"`
+///   逐位吻合（該快取欄是 Word 自己算完寫下的）。
+/// - **lnRef idx≥1** → 同折，落**描邊**色。實測 lnRef idx=2 帶
+///   `shade 15000`：Word 快取 `strokecolor="#030e13 [484]"`＝每通道
+///   floor(c×0.15)——**DrawingML 修飾器的 Word 預算口徑是 8bit floor**
+///   （`theme.rs::apply_shading_transform` 的 corpus 校準式），不是 K19
+///   duotone 那條線性域式（該式另有 LO 內嵌圖反推實據，域不同勿混用）。
+///   本處採 8bit floor 對齊快取真值。
+/// - **idx=0／缺 idx** → 不發色（ECMA：0 是明確的「無」，不是預設值）。
+///   實據：同檔 rect 文字框 `fillRef idx="0"`＋spPr 有 solidFill lt1 → 白底
+///   照舊走 spPr，矩陣不覆蓋（優先序 spPr solidFill > fillRef，見消費點）。
+/// - `a:scrgbClr`（`<a:scrgbClr r="0" g="0" b="0"/>`，Office 2013 擴充）
+///   不認識 → 不虛構（None）。
+///
+/// 折色**只在 spPr 未給色時**才消費——既有 spPr solidFill 檔序列化零位移。
+#[derive(Debug, Default)]
+struct StyleMatrix {
+    /// `wps:style` 開閉深度（>0 時才認 lnRef/fillRef）。
+    ctx: usize,
+    /// 進行中 ref：('l'=lnRef／'f'=fillRef)＋idx 可用旗標（idx=0／缺＝不可用）。
+    cur: Option<(char, bool)>,
+    /// 進行中 ref 的顏色節點（基底＋子修飾器；ref 完結時折算）。
+    node: Option<DuoNode>,
+    /// fillRef 折算結果（首見為準）。
+    fill: Option<u32>,
+    /// lnRef 折算結果（首見為準）。
+    stroke: Option<u32>,
+}
+
+impl StyleMatrix {
+    /// `a:lnRef`／`a:fillRef` 開標記帳（Start 與 Empty 兩態共用；只收
+    /// `wps:style` 直下的首見 ref——巢狀畸形不覆寫）。
+    fn note_ref(&mut self, name: &[u8], e: &quick_xml::events::BytesStart) {
+        if self.ctx == 0 || self.cur.is_some() {
+            return;
+        }
+        let kind = if name == b"lnRef" { 'l' } else { 'f' };
+        // ST_IntPointType 的 idx：0＝明確不用該矩陣樣式（ECMA 語意）。
+        let usable = attr_local(e, b"idx")
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .is_some_and(|i| i >= 1);
+        self.cur = Some((kind, usable));
+    }
+
+    /// ref 直下顏色節點開標（`a:schemeClr`／`a:srgbClr`／`a:prstClr`；
+    /// 首見為準——ref 內正常僅一個顏色元素，`a:scrgbClr` 等不認識名落不進
+    /// `duo_node_base` 的接受集＝不虛構）。
+    fn note_color(
+        &mut self,
+        theme: &crate::ThemeColors,
+        name: &[u8],
+        e: &quick_xml::events::BytesStart,
+    ) {
+        if self.ctx == 0 || self.cur.is_none() || self.node.is_some() {
+            return;
+        }
+        self.node = Some(DuoNode {
+            base: duo_node_base(theme, name, e),
+            mods: Vec::new(),
+        });
+    }
+
+    /// ref 內顏色節點的子修飾器記帳（shade/tint/satMod/lumMod）。
+    fn note_mod(&mut self, name: &[u8], e: &quick_xml::events::BytesStart) {
+        let Some(node) = self.node.as_mut() else {
+            return;
+        };
+        let Some(k) = attr_local(e, b"val").and_then(|v| v.trim().parse::<f64>().ok()) else {
+            return;
+        };
+        let kind = match name {
+            b"shade" | b"lumMod" => 's',
+            b"tint" => 't',
+            _ => 'm',
+        };
+        node.mods.push((kind, k / 100_000.0));
+    }
+}
+
+/// K24：樣式矩陣修飾器折算（8bit 域；Word 預算口徑，實據見 [`StyleMatrix`]
+/// 文首）。's'（shade/lumMod）＝每通道 floor(c×k)；'t'（tint）＝朝白插值
+/// `c + (255−c)×k`（同 `theme.rs::apply_shading_transform` 校準式）；
+/// 'm'（satMod）＝8bit luma 飽和調製（同 K19 'm'）。非法 k → 整節點不折。
+fn fold_style_node(node: &DuoNode) -> Option<u32> {
+    let base = node.base?;
+    let (a, r, g, b) = (
+        (base >> 24) & 0xFF,
+        (base >> 16) & 0xFF,
+        (base >> 8) & 0xFF,
+        base & 0xFF,
+    );
+    let mut cur = [f64::from(r), f64::from(g), f64::from(b)];
+    for (kind, k) in &node.mods {
+        if !k.is_finite() || !(0.0..=10.0).contains(k) {
+            return None;
+        }
+        match kind {
+            // Word 快取實據（strokecolor=#030e13 [484]）：floor，不是 round。
+            's' => cur = cur.map(|c| (c * k).floor()),
+            't' => cur = cur.map(|c| c + (255.0 - c) * k),
+            'm' => {
+                let lum = 0.299 * cur[0] + 0.587 * cur[1] + 0.114 * cur[2];
+                cur = cur.map(|c| (lum + (c - lum) * k).clamp(0.0, 255.0));
+            }
+            _ => {}
+        }
+    }
+    let q = |v: f64| -> u32 { v.floor().clamp(0.0, 255.0) as u32 };
+    Some((a << 24) | (q(cur[0]) << 16) | (q(cur[1]) << 8) | q(cur[2]))
+}
+
+/// K24：路由——群組子件進行中（`cur_child`）時樣式矩陣歸子件，否則歸本候選。
+fn active_style(p: &mut Pending) -> &mut StyleMatrix {
+    match p.cur_child.as_mut() {
+        Some(c) => &mut c.style,
+        None => &mut p.style,
+    }
+}
+
+/// K24：`a:lnRef`／`a:fillRef` 完結折算（End 與 wsp/群組完結兜底共用）。
+/// idx=0／缺＝明確「不用矩陣樣式」→ 不發色；折色首見為準（get_or_insert）。
+fn style_flush_ref(st: &mut StyleMatrix, is_ln: bool) {
+    let usable = matches!(st.cur.take(), Some((_, true)));
+    let node = st.node.take();
+    if !usable {
+        return;
+    }
+    let Some(c) = node.as_ref().and_then(fold_style_node) else {
+        return;
+    };
+    if is_ln {
+        if st.stroke.is_none() {
+            st.stroke = Some(c);
+        }
+    } else if st.fill.is_none() {
+        st.fill = Some(c);
+    }
+}
+
 /// `strokedashstyle`／`v:stroke/@dashstyle` → SVG stroke-dasharray（卡片
 /// 契約 4 映射手冊；VML 官方樣式 → dasharray，單位 pt，線寬呼叫端另給）：
 /// - `solid`（含不認識值以外的實語義不明者）→ None（實線）；
@@ -1149,6 +1303,13 @@ struct Pending {
     /// `a:extLst`／`a:ext` 深度（>0 時 solidFill/srgbClr **一概不收**：
     /// 擴充清單如 `a14:hiddenLine` 非真實填充／描邊，mce-nested 實據）。
     ext_ctx: usize,
+    // ---- K24：`wps:style` 樣式矩陣（fillRef/lnRef → theme 折色）----
+    /// `wps:wsp` 開閉深度（>0 才認 `style`/`lnRef`/`fillRef`——圖表 `c:style`
+    /// 子樹的 `c:lnRef`/`c:fillRef` 與 DrawingML **同名不同物**，wsp 外不收）。
+    wsp_ctx: usize,
+    /// 本候選的樣式矩陣累積（fillRef/lnRef 折色；只在 `graphic.is_some()`
+    /// 路徑餵入——VML／巢狀 drawing 吞沒幀（skip_tag）到不了這裡）。
+    style: StyleMatrix,
     // ---- K12：DrawingML 群組（wpg:wgp）子形狀與段落邊框（w:pBdr）----
     group_shapes: Vec<InlineChildShape>,
     txbx_borders: Vec<ShapeBorder>,
@@ -1214,6 +1375,8 @@ struct PendingChildShape {
     txbx_cur: String,
     txbx_in_t: bool,
     txbx_para_depth: usize,
+    // ---- K24：子形狀自己的 `wps:style` 樣式矩陣（口徑同 Pending）----
+    style: StyleMatrix,
 }
 
 impl PendingChildShape {
@@ -1236,6 +1399,7 @@ impl PendingChildShape {
             txbx_cur: String::new(),
             txbx_in_t: false,
             txbx_para_depth: 0,
+            style: StyleMatrix::default(),
         }
     }
 }
@@ -1324,6 +1488,8 @@ impl Pending {
             ln_ctx: 0,
             fill_ctx: 0,
             ext_ctx: 0,
+            wsp_ctx: 0,
+            style: StyleMatrix::default(),
             group_shapes: Vec::new(),
             txbx_borders: Vec::new(),
             grp_depth: 0,
@@ -1389,6 +1555,9 @@ struct DrawingParser {
     /// K19 duotone 回塞鎖：`K19_DUOTONE_BUGGY=1` 時 duotone 解析結果永不落地
     /// （燈1/燈2 必紅；照 `K4D_BUGGY` 先例只在 `with_theme()` 讀一次 env）。
     duotone_buggy: bool,
+    /// K24 樣式矩陣回塞鎖：`K24_STYLE_BUGGY=1` 時 `wps:style` fillRef/lnRef
+    /// 折色永不落地（燈1/燈2 必紅；同款「讀一次 env」先例）。
+    style_buggy: bool,
 }
 
 impl DrawingParser {
@@ -1417,6 +1586,7 @@ impl DrawingParser {
             buggy: std::env::var("K4D_BUGGY").is_ok(),
             cell_anchor_buggy: std::env::var("K10_CELL_ANCHOR_BUGGY").is_ok(),
             duotone_buggy: std::env::var("K19_DUOTONE_BUGGY").is_ok(),
+            style_buggy: std::env::var("K24_STYLE_BUGGY").is_ok(),
         }
     }
 
@@ -1481,9 +1651,11 @@ impl DrawingParser {
             txbx_align: p.txbx_align.clone(),
             // 卡片契約 2 優先序：v:fill/@color（p.fill）> shape 屬性
             // fillcolor/o:fillcolor（p.fill_attr）> docDefaults（未接＝不發）。
-            fill_argb: p.fill.or(p.fill_attr),
+            // K24：三者优先序全缺時退 `wps:style` 樣式矩陣 fillRef 折色
+            //（ECMA：spPr 直接格式壓樣式矩陣；既有 spPr 檔零位移）。
+            fill_argb: p.fill.or(p.fill_attr).or(p.style.fill),
             filled: if p.filled_f { Some(false) } else { None },
-            stroke_argb: p.stroke.or(p.stroke_attr),
+            stroke_argb: p.stroke.or(p.stroke_attr).or(p.style.stroke),
             stroked: if p.stroked_f { Some(false) } else { None },
             stroke_width_pt: p.stroke_w,
             stroke_dash: p.dash.clone(),
@@ -1612,7 +1784,27 @@ fn apply_graphic_elem(
     p: &mut Pending,
     name: &[u8],
     e: &quick_xml::events::BytesStart,
+    style_buggy: bool,
 ) {
+    // ---- K24：`wps:style` 樣式矩陣採集（Start 與 Empty 兩態共用本入口）----
+    // 門閂三層：wsp 內（圖表 c:style 同名不同物）＋style 直下（ref）＋ref 直下
+    //（顏色節點與修飾器）。折色只在完結時落 StyleMatrix，不碰 fill/stroke
+    // 欄位——既有 spPr solidFill 檔案一個位元組都不動。
+    // K24_STYLE_BUGGY=1 → 整條採集閉嘴＝折色永不落地（回塞鎖，燈1/燈2 必紅）。
+    if p.wsp_ctx > 0 && !style_buggy {
+        let st = active_style(p);
+        match name {
+            b"style" => st.ctx += 1,
+            n @ (b"lnRef" | b"fillRef") => st.note_ref(n, e),
+            n @ (b"schemeClr" | b"srgbClr" | b"prstClr") if st.cur.is_some() => {
+                st.note_color(theme, n, e)
+            }
+            n @ (b"shade" | b"tint" | b"satMod" | b"lumMod") if st.node.is_some() => {
+                st.note_mod(n, e)
+            }
+            _ => {}
+        }
+    }
     if p.in_grp_sp_pr {
         match name {
             b"off" => {
@@ -2003,6 +2195,9 @@ impl DrawingParser {
             // R6 / K12：DrawingML `wps:wsp` 標註與群組子形狀
             if name == b"wsp" {
                 p.wps_annotation = true;
+                // K24：wsp 包圍計數——style/lnRef/fillRef 只在 wsp 內才認
+                //（圖表 `c:style` 子樹的 `c:lnRef`/`c:fillRef` 同名不同物）。
+                p.wsp_ctx += 1;
                 if p.grp_depth > 0 {
                     p.cur_child = Some(PendingChildShape::new());
                 }
@@ -2037,7 +2232,7 @@ impl DrawingParser {
                 }
             }
             // K12：套用繪圖幾何、顏色與邊框解析
-            apply_graphic_elem(&self.theme, &mut p, name, e);
+            apply_graphic_elem(&self.theme, &mut p, name, e, self.style_buggy);
 
             // 框內文字採集（K4e2；群組圖形 wps:txbx 路徑）。
             if self.txbx_depth > 0 {
@@ -2348,7 +2543,7 @@ impl DrawingParser {
                 }
                 _ => {}
             }
-            apply_graphic_elem(&self.theme, p, name, e);
+            apply_graphic_elem(&self.theme, p, name, e, self.style_buggy);
         }
     }
 
@@ -2635,6 +2830,29 @@ impl DrawingParser {
                     }
                     return;
                 }
+                // ---- K24：`wps:style` 樣式矩陣完結 ----
+                b"lnRef" | b"fillRef" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        let st = active_style(p);
+                        if st.ctx > 0 {
+                            style_flush_ref(st, name == b"lnRef");
+                        }
+                    }
+                    return;
+                }
+                b"style" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        let st = active_style(p);
+                        st.ctx = st.ctx.saturating_sub(1);
+                        // 兜底：style 收尾時 ref 仍未閉合（畸形巢狀）→ 就地折
+                        // 一次，不讓進行中 ref 漏進下一個 style。
+                        if st.ctx == 0 && (st.cur.is_some() || st.node.is_some()) {
+                            let ln = matches!(st.cur, Some(('l', _)));
+                            style_flush_ref(st, ln);
+                        }
+                    }
+                    return;
+                }
                 b"wgp" => {
                     if let Some(p) = self.graphic.as_mut() {
                         p.grp_depth = p.grp_depth.saturating_sub(1);
@@ -2643,6 +2861,7 @@ impl DrawingParser {
                 }
                 b"wsp" => {
                     if let Some(p) = self.graphic.as_mut() {
+                        p.wsp_ctx = p.wsp_ctx.saturating_sub(1);
                         if let Some(child) = p.cur_child.take() {
                             let (dx_pt, dy_pt, w_pt, h_pt) = if p.grp_ch_ext_cx > 0.0
                                 && p.grp_ch_ext_cy > 0.0
@@ -2671,9 +2890,11 @@ impl DrawingParser {
                                 dy_pt,
                                 w_pt,
                                 h_pt,
-                                fill_argb: child.fill,
+                                // K24：子件同口徑——spPr solidFill 缺 → 退本子件
+                                // 自己的 wps:style fillRef/lnRef 折色。
+                                fill_argb: child.fill.or(child.style.fill),
                                 filled: if child.filled_f { Some(false) } else { None },
-                                stroke_argb: child.stroke,
+                                stroke_argb: child.stroke.or(child.style.stroke),
                                 stroked: if child.stroked_f { Some(false) } else { None },
                                 stroke_width_pt: child.stroke_w,
                                 stroke_dash: child.dash,
@@ -3147,6 +3368,136 @@ mod tests {
             r#"<w:p><w:r><w:drawing><wp:inline><wp:effectExtent/></wp:inline></w:drawing></w:r></w:p>"#,
         );
         assert!(read_images(xml.as_bytes()).is_empty());
+    }
+
+    // ---- K24：`wps:style` 樣式矩陣（fillRef/lnRef → theme 折色）----
+
+    /// 最小 clrScheme（accent1=156082——shapes-with-text theme1.xml 實測值）。
+    const THEME_K24: &str = r#"<a:theme xmlns:a="a"><a:themeElements><a:clrScheme>
+        <a:accent1><a:srgbClr val="156082"/></a:accent1>
+        </a:clrScheme></a:themeElements></a:theme>"#;
+
+    fn theme_k24() -> crate::ThemeColors {
+        crate::ThemeColors::parse(THEME_K24.as_bytes())
+    }
+
+    /// 燈2（合成最小檔）：ellipse spPr 直下 solidFill srgbClr=FF0000 →
+    /// fill_argb=0xFFFF0000（spPr 直路端到端通）。
+    #[test]
+    fn k24_synthetic_ellipse_solid_fill_srgb() {
+        let xml = doc(
+            r#"<w:p><w:r><w:drawing><wp:inline xmlns:wp="wp"><wp:extent cx="1857375" cy="876300"/>
+               <a:graphic xmlns:a="a"><a:graphicData xmlns:wps="wps"><wps:wsp>
+               <wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1857375" cy="876300"/></a:xfrm>
+               <a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom>
+               <a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></wps:spPr>
+               </wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#,
+        );
+        let imgs = read_images(xml.as_bytes());
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(imgs[0].fill_argb, Some(0xFFFF_0000));
+    }
+
+    /// 燈2b（合成）：spPr 無 solidFill、僅 `wps:style` fillRef idx=1
+    /// schemeClr accent1 → fill_argb＝theme accent1（0xFF156082）。
+    /// 這是 shapes-with-text 的真實形態（該檔 11 個 wsp 全走此路）。
+    #[test]
+    fn k24_synthetic_fill_ref_theme_accent1() {
+        let xml = doc(
+            r#"<w:p><w:r><w:drawing><wp:inline xmlns:wp="wp"><wp:extent cx="1857375" cy="876300"/>
+               <a:graphic xmlns:a="a"><a:graphicData xmlns:wps="wps"><wps:wsp>
+               <wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1857375" cy="876300"/></a:xfrm>
+               <a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom></wps:spPr>
+               <wps:style><a:lnRef idx="2"><a:schemeClr val="accent1"><a:shade val="15000"/></a:schemeClr></a:lnRef>
+               <a:fillRef idx="1"><a:schemeClr val="accent1"/></a:fillRef>
+               <a:effectRef idx="0"><a:schemeClr val="accent1"/></a:effectRef>
+               <a:fontRef idx="minor"><a:schemeClr val="lt1"/></a:fontRef></wps:style>
+               </wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#,
+        );
+        let imgs = read_images_with_theme(xml.as_bytes(), &theme_k24());
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(
+            imgs[0].fill_argb,
+            Some(0xFF15_6082),
+            "fillRef idx=1 → accent1 折色必須落地（shapes-with-text 根因路徑）"
+        );
+        // lnRef shade 15000：8bit floor 口徑（Word 快取 strokecolor=#030e13 實據）：
+        // 0x15*0.15=3.15→3、0x60*0.15=14.4→14(0x0E)、0x82*0.15=19.5→19(0x13)。
+        assert_eq!(
+            imgs[0].stroke_argb,
+            Some(0xFF03_0E13),
+            "lnRef shade 折色必須命中 Word 快取真值 #030e13"
+        );
+    }
+
+    /// 燈2c（合成）：優先序與 idx=0 語意——spPr solidFill 壓 fillRef；
+    /// fillRef idx=0＝明確「無」→ 不得發色（同檔 rect 文字框實據：
+    /// fillRef idx=0＋spPr lt1 → 白底走 spPr）。
+    #[test]
+    fn k24_sp_pr_wins_and_idx_zero_is_none() {
+        // spPr solidFill=FF0000 + fillRef accent1 → FF0000（直接格式壓矩陣）。
+        let xml = doc(
+            r#"<w:p><w:r><w:drawing><wp:inline xmlns:wp="wp"><wp:extent cx="1270000" cy="1270000"/>
+               <a:graphic xmlns:a="a"><a:graphicData xmlns:wps="wps"><wps:wsp>
+               <wps:spPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></wps:spPr>
+               <wps:style><a:fillRef idx="1"><a:schemeClr val="accent1"/></a:fillRef></wps:style>
+               </wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#,
+        );
+        let imgs = read_images_with_theme(xml.as_bytes(), &theme_k24());
+        assert_eq!(imgs[0].fill_argb, Some(0xFFFF_0000));
+        // fillRef idx=0（明確不用）→ None（不冒充 accent1）。
+        let xml = doc(
+            r#"<w:p><w:r><w:drawing><wp:inline xmlns:wp="wp"><wp:extent cx="1270000" cy="1270000"/>
+               <a:graphic xmlns:a="a"><a:graphicData xmlns:wps="wps"><wps:wsp>
+               <wps:spPr><a:noFill/></wps:spPr>
+               <wps:style><a:fillRef idx="0"><a:schemeClr val="accent1"/></a:fillRef></wps:style>
+               </wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#,
+        );
+        let imgs = read_images_with_theme(xml.as_bytes(), &theme_k24());
+        assert_eq!(imgs[0].fill_argb, None, "idx=0＝明確『無』，不得折色");
+    }
+
+    /// 燈2d（合成）：群組子件同口徑——`wpg:wgp` 內 `wps:wsp` 的 fillRef
+    /// 落 `group_shapes[].fill_argb`（K12 群組鏈零回退前提下的增量）。
+    #[test]
+    fn k24_group_child_fill_ref() {
+        let xml = doc(
+            r#"<w:p><w:r><w:drawing><wp:inline xmlns:wp="wp"><wp:extent cx="4333875" cy="1285875"/>
+               <a:graphic xmlns:a="a"><a:graphicData xmlns:wpg="wpg" xmlns:wps="wps"><wpg:wgp>
+               <wpg:grpSpPr><a:xfrm><a:off x="0" y="3209925"/><a:ext cx="4333875" cy="1285875"/>
+               <a:chOff x="0" y="3209925"/><a:chExt cx="4333875" cy="1285875"/></a:xfrm></wpg:grpSpPr>
+               <wps:wsp><wps:spPr><a:xfrm><a:off x="0" y="3209925"/><a:ext cx="1009650" cy="885825"/></a:xfrm>
+               <a:prstGeom prst="star5"><a:avLst/></a:prstGeom></wps:spPr>
+               <wps:style><a:fillRef idx="1"><a:schemeClr val="accent1"/></a:fillRef></wps:style>
+               </wps:wsp></wpg:wgp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#,
+        );
+        let imgs = read_images_with_theme(xml.as_bytes(), &theme_k24());
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(imgs[0].group_shapes.len(), 1);
+        assert_eq!(
+            imgs[0].group_shapes[0].fill_argb,
+            Some(0xFF15_6082),
+            "群組子形的 fillRef 折色必須進 group_shapes"
+        );
+    }
+
+    /// c:style 門閂：圖表 `c:style` 子樹的 `c:lnRef`/`c:fillRef`（同名不同物，
+    /// 不在 `wps:wsp` 內）一概不收——wsp_ctx 閂鎖實鎖。
+    #[test]
+    fn k24_style_outside_wsp_ignored() {
+        let xml = doc(
+            r#"<w:p><w:r><w:drawing><wp:inline xmlns:wp="wp"><wp:extent cx="1270000" cy="1270000"/>
+               <a:graphic xmlns:a="a"><a:graphicData xmlns:c="c">
+               <c:style><c:lnRef idx="2"><c:schemeClr val="accent1"/></c:lnRef>
+               <c:fillRef idx="1"><c:schemeClr val="accent1"/></c:fillRef></c:style>
+               </a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#,
+        );
+        let imgs = read_images_with_theme(xml.as_bytes(), &theme_k24());
+        assert_eq!(
+            imgs[0].fill_argb, None,
+            "wsp 外的 fillRef（圖表 c: 系）不得採納"
+        );
+        assert_eq!(imgs[0].stroke_argb, None);
     }
 
     #[test]
