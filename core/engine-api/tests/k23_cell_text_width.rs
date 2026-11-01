@@ -40,8 +40,14 @@
 //!   燈 1c 必紅）。
 //! - `K23_STYLE_CELL_MAR_BUGGY=1` ⇒ 樣式級整級不參與級聯（回退舊三級；燈 3／
 //!   燈 4／燈 4b 必紅）。
+//!
 //! 測試進程內不設 env（避免平行污染），由外部執行：
-//! `K23_CELL_FAMILY_BUGGY=1 K23_STYLE_CELL_MAR_BUGGY=1 cargo test -p quire-engine --test k23_cell_text_width`
+//!
+//! ```sh
+//! K23_CELL_FAMILY_BUGGY=1 K23_STYLE_CELL_MAR_BUGGY=1 \
+//!   cargo test -p quire-engine --test k23_cell_text_width
+//! ```
+//!
 //! （實測見提交說明與 `docs/k23-cell-margin-report.md`）。
 
 use quire_engine::Engine;
