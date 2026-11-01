@@ -20,7 +20,7 @@
 //! - p1：`lines=[]`、`drawings=0`、**繪製**圖片 rect=[]（宣告未繪製）、非白像素 0。
 //!
 //! # 四盞燈（本檔）
-//! - 燈 A：頁數 == 2（LO 同）——防 K5-diag §2.1 舊態（我方 3 頁）复活。
+//! - 燈 A：頁數 == 2（LO 同）——防 K5-diag §2.1 舊態（我方 3 頁）復活。
 //! - 燈 B：p0 六個 TEXT 標籤**全數**存在＋恰好 1 張 `Image`，且圖片幾何 ∈ LO ±1pt。
 //! - 燈 C：p1 **零墨跡**（與 LO 真空頁同形）——防有人把空段虛構出字去騙相似度。
 //! - 燈 D：p1 仍是**獨立一頁**（`starts_section`＝para-level `sectPr` 照實開頁），
@@ -64,7 +64,7 @@ fn k25_lamp_a_page_count_matches_lo() {
     assert_eq!(
         eng.page_count(),
         2,
-        "n751077 頁數必須與 LO 一致＝2（K5-diag §2.1 舊態 3 頁不得复活）"
+        "n751077 頁數必須與 LO 一致＝2（K5-diag §2.1 舊態 3 頁不得復活）"
     );
 }
 
@@ -163,7 +163,7 @@ fn k25_lock_is_discriminating_selfcheck() {
     assert_ne!(
         eng.page_count(),
         3,
-        "頁數若變 3＝K5-diag 舊態复活，燈 A 應紅"
+        "頁數若變 3＝K5-diag 舊態復活，燈 A 應紅"
     );
     assert_ne!(
         eng.page_count(),
