@@ -39,7 +39,10 @@ pub use table::{
     Shading, Table, TableCell, TableLook, TableProps, TableRow, TblWidth,
 };
 pub use theme::{apply_shading_transform, theme_slot_for, ThemeColors, ThemeFonts};
-pub use zip_struct::{Change, ZipBundle, ZipEntry, ZipError};
+pub use zip_struct::{
+    Change, ZipBundle, ZipEntry, ZipError, MAX_ENTRY_DECOMPRESSED_SIZE,
+    MAX_TOTAL_DECOMPRESSED_SIZE, METHOD_DEFLATE, METHOD_STORE,
+};
 
 pub use notes::{
     parse_note_settings, Note, NoteKind, NoteKind2, NoteNumberFormat, NotePos, NotePr, NoteRef,
@@ -55,20 +58,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum OoxmlError {
     #[error("zip 解析失敗: {0}")]
-    Zip(String),
+    Zip(#[from] ZipError),
     #[error("找不到 word/document.xml，不是有效的 .docx")]
     MissingDocument,
     #[error("XML 解析失敗: {0}")]
     Xml(String),
-}
-
-impl From<ZipError> for OoxmlError {
-    fn from(e: ZipError) -> Self {
-        OoxmlError::Zip(e.to_string())
-    }
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -354,10 +351,7 @@ impl OoxmlDoc {
 /// 由 .docx 位元組解析（不碰檔案系統，wasm32 友善）。
 pub fn parse(bytes: &[u8]) -> Result<OoxmlDoc, OoxmlError> {
     let bundle = ZipBundle::open(bytes)?;
-    let mut parts: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    for e in bundle.file_entries() {
-        parts.insert(e.key(), e.decoded()?);
-    }
+    let parts = bundle.decode_parts()?;
     let xml = parts
         .get("word/document.xml")
         .ok_or(OoxmlError::MissingDocument)?;
