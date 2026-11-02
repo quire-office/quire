@@ -136,3 +136,41 @@ x 軸：LO TEXT1 x=70.9、TEXT2 x=394.5；我方全部 93.0。
    `core/engine-api/src/lib.rs`（textbox 一路）、`core/engine-api/tests/`。
 3. **度量盲區（順帶記帳）**：五軸對「同頁同字重疊」（詞序同、位置全錯）給 1.0——
    建議版面軸加 y 直方圖項，否則 §2 這類誤位永遠不出現於最差榜。
+
+## 6. K25-B 收案（2026-11-03，ow-render）：逐框排版落地，§2 表全數命中 ±2pt
+
+### 6.1 根因（實錘）
+發射層只認「宿主框」一份 `txbx_rect`（K4c 映射後的最後一個子件矩形），三個子
+`v:rect` 的 `top`（1440/11160/2294 coord 單位）在映射後被丟棄，框內 12 段文字全
+掛宿主框頂（y≈153–166）。解析層 WIP（7ebde51）已把子件矩形＋coord_top 帶進
+`InlineImage.vml_group_children`，本卡補的是發射層逐框排版。
+
+### 6.2 模型（LO 六組資料集擬合，最差殘差 0.202pt；scratch `model_final.py`）
+- **組框映射**：`CoordFrame` 線性映射 coord→extent（既有 `map`），宿主框按
+  `mso-position-*-center/relative:page|margin` 釘頁心；子件 y ＝組頂＋top 映射。
+- **框內堆疊**：每子件独立起點＝框頂＋邊距；逐段 pitch＝`size × face_line_factor`
+  （K6 auto-pitch 同口徑）、基線 ALP＝`face_baseline_ratio × line_factor × size`
+  （hhea 實測 asc/(asc+|desc|)，缺 face 退 Liberation Serif 實測值，零虛構）。
+- **空段**：中段的空段吃 docDefaults 字級；**只有最後一段**空段繼承最後有字段
+  字級（LO quirk，V5 實測 4.6pt 漂移的元凶）。
+- **右/居中對齊位移**：全大寫串的量寬走 K7 `A_upper` 軌（`face_advance_scale_caps`，
+  **取代**混合樣本折中尺、不疊乘）。TEXT2 48pt：LO advance＝541.10−394.5＝146.60
+  ＝Liberation Serif 實測 146.62；折中尺 133.98 會把整串推向邊界外側 12.6pt。
+
+### 6.3 驗收實據（显示列表 top-origin 基線，`cargo run -q -p quire-cli -- dump`）
+| 標籤 | LO (x, y) | 我方 (x, y) | Δx | Δy |
+|---|---|---|---:|---:|
+| TEXT1（16） | (70.90, 144.45) | (70.90, 144.33) | −0.00 | −0.12 |
+| TEXT2（48） | (394.50, 660.35) | (395.47, 659.94) | +0.97 | −0.41 |
+| TEXT3（36） | (70.90, 377.90) | (70.90, 377.75) | −0.00 | −0.15 |
+| TEXT4（36） | (70.90, 419.35) | (70.90, 419.15) | −0.00 | −0.20 |
+| TEXT5（20） | (70.90, 473.45) | (70.90, 473.34) | −0.00 | −0.11 |
+| TEXT6-9（16） | (70.90, 506.55) | (70.90, 506.43) | −0.00 | −0.12 |
+
+### 6.4 閘門與零擾動
+- 紅燈鎖 `core/engine-api/tests/k25b_group_child_stack.rs`（先紅後綠；燈3 回塞
+  `K25_B_CHILD_STACK_BUGGY=1` 必紅鑑別力）。
+- `k25_empty_page_parity` 5 綠零回退；全 `cargo test -p quire-engine` 37 binaries
+  287 綠；ow-gate 八閘 `GATE_SUMMARY fail=0`。
+- 全庫 A/B（400 docx，同 binary BUGGY 開關前後 dump 逐項比對）：擾動恰落
+  `corpus/ooxmlimport/n751077.docx` 一檔（6 項）——其餘 399 檔逐位不變。

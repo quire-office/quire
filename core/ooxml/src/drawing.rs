@@ -1883,11 +1883,7 @@ fn map_child_shape(v: &mut Pending, e: &quick_xml::events::BytesStart) {
 /// 累積。**只對「釘定群組」開栓**（`page_pinned`＝LO 真值擬合範圍；非釘定
 /// 群組／VML 直下裸 shape → None＝舊行為零擾動，絕不誤吞非群組路徑）。
 /// 頂幀缺（毒化層）也照樣開筆——座標缺時完結不落表。
-fn begin_vml_child(
-    v: &mut Pending,
-    e: &quick_xml::events::BytesStart,
-    depth: usize,
-) {
+fn begin_vml_child(v: &mut Pending, e: &quick_xml::events::BytesStart, depth: usize) {
     // `depth`＝呼叫當下的 coord 幀棧高：**1** 才是「最外層組的直系子件」。
     // 0＝無組（裸 shape，非本卡範圍）；≥2＝巢狀子組的孫件（其座標屬子組 own
     // frame，冒充外層組子件會錯位）——一律不開栓。
