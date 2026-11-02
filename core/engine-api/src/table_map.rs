@@ -1601,6 +1601,7 @@ mod tests {
             group_shapes: Vec::new(),
             txbx_borders: Vec::new(),
             duotone: None,
+            txbx_drawing_extent: None,
         }
     }
 

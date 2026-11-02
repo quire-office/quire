@@ -1305,10 +1305,42 @@ impl TableLayout {
 
 /// 欄寬分配：tblGrid 優先（總寬≠宣告寬→等比縮放）；無 grid→首列 tcW 推導；
 /// 都没有→單欄佔滿。最後總寬 > 可用寬→等比壓回（不越版心）。
+///
+/// K28（幽靈網格欄）：解析器把 `w:tblGridChange`（修訂歷史網格）內層欄一併
+/// 收進 `t.grid`，`w:tblGrid` 有效欄數可 **多於** 各列實際使用欄數（Σ
+/// `w:gridSpan` 最大值）——多出的「幽靈欄」不得參與 `w:tblW` 等比歸一。
+/// LO 25.8 ground truth（詳 `docs/k28-mixed-break.md`）：用戶檔 §七預算表
+/// （併入後 12×1560、列用 6、tblW 9360）LO 格線 raw 78.0pt／欄；`RA001-
+/// Tracked-Revisions-01/02`（併入後 6 欄用 3、tblW 8970＝直屬和≠併入和）
+/// LO 6 頁＝raw 節距態（舊歸一 k＝0.5 灌水 7 頁）。修復前我方把**全欄**
+/// 歸一到宣告寬（12 欄→每欄 39pt、內寬 21pt）⇒ 拉丁/數字 atom 比行寬寬
+/// ⇒ KP 緊急切分逐字鋸開（用戶 11/01 截圖 `Clo/udfl`、`$10./00`、逐字
+/// 直排）。處方＝**先截斷（取前 N 欄）＋幽靈態跳過等比歸一**（一般表
+/// N＝欄數 ⇒ 既有路徑逐位元組不變；corpus 400 檔 A/B 頁數僅 RA001 兩檔
+/// 變動 7→6＝LO）。`K28_GHOST_GRID_BUGGY=1` 回退全欄歸一舊路徑（紅燈
+/// k28 燈 6 回塞鎖）。
 fn resolve_columns(input: &TableInput, avail_w: f32) -> Vec<f32> {
     let mut cols: Vec<f32> = Vec::new();
+    // K28：幽靈網格欄態（僅 tblGrid 路徑可判；回塞鎖下視同非幽靈）。
+    let mut ghost = false;
     if !input.grid_pt.is_empty() {
         cols = input.grid_pt.iter().map(|v| v.max(0.0)).collect();
+        let n_used = input
+            .rows
+            .iter()
+            .map(|r| {
+                r.cells
+                    .iter()
+                    .map(|c| c.grid_span.max(1) as usize)
+                    .sum::<usize>()
+            })
+            .max()
+            .unwrap_or(0)
+            .min(cols.len());
+        if n_used > 0 && n_used < cols.len() && std::env::var_os("K28_GHOST_GRID_BUGGY").is_none() {
+            ghost = true;
+            cols.truncate(n_used);
+        }
     } else if let Some(row0) = input.rows.first() {
         let n_cols: usize = row0.cells.iter().map(|c| c.grid_span.max(1) as usize).sum();
         if n_cols > 0 {
@@ -1337,7 +1369,10 @@ fn resolve_columns(input: &TableInput, avail_w: f32) -> Vec<f32> {
     if let Some(w) = input.width {
         let target = w.resolve(avail_w);
         let natural: f32 = cols.iter().sum();
-        if target > 1.0 && natural > 1.0 && (target - natural).abs() > 0.5 {
+        // K28：幽靈態跳過等比歸一——LO 對「有效網格欄＞已用欄」的表按 raw
+        // gridCol 排版（用戶檔 §七表 raw 78.0pt≠歸一 39pt；RA001 raw
+        // [158.1,105.6,184.8]pt≠歸一 50%）。非幽靈態維持舊路徑逐位元組。
+        if !ghost && target > 1.0 && natural > 1.0 && (target - natural).abs() > 0.5 {
             let k = target / natural;
             for c in cols.iter_mut() {
                 *c *= k;
