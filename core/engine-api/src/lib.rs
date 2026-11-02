@@ -141,6 +141,15 @@ struct PixelSource {
     src: (String, String),
     /// K19：宿主候選的 duotone 宣告（Some→發射前像素變換＋欄位透傳）。
     duotone: Option<[u32; 2]>,
+    /// K27：來源是 EMF 且成功直讀出內嵌 `EMR_STRETCHDIBITS` ⇒ `Some`
+    /// （重編好的 PNG 位元組＋EMF 檔頭 `rclFrame` 換算的 pt 尺寸）。
+    ///
+    /// 為何破例把像素存進引擎（本結構本「只記路徑不複製位元組」）：EMF 的
+    /// 可渲染位元組**不在 parts 裡**（parts 是原始 EMF 向量流），不解碼就没有
+    /// 任何位元組可發；而發射每頁都會重跑（頁首圖逐頁消費），開檔解一次存
+    /// 住才是常數成本。規模：全語料 media EMF 僅 16 parts／562,908 B
+    /// （P5-diag §1-2），其中可直讀者 3 parts。
+    emf: Option<(Vec<u8>, [f32; 2])>,
 }
 
 /// 頁首／頁尾 part 的已解析投影（開啟文件時一次性解析；純讀取）。
@@ -160,7 +169,7 @@ struct HfPart {
     /// 解出可渲染像素的 part 路徑＋MIME；None＝查無/不可渲染格式→佔位框）。
     /// rId 走本 part 自己的 `.rels`（HF part 有自家 rels，不是
     /// document.xml.rels——Bug51170 實測）。空表＝無圖（零變化守門）。
-    pixels: Vec<Option<(String, String)>>,
+    pixels: Vec<Option<(String, String, Option<(Vec<u8>, [f32; 2])>)>>,
 }
 
 /// 一節的頁首頁尾發射資料：宣告（已繼承、rId 已換算為「確實在 parts 裡」
@@ -574,13 +583,15 @@ impl Engine {
         let image_pixels: Vec<PixelSource> = images
             .iter()
             .filter_map(|im| {
-                let src = resolve_pixel_source(&doc.parts, &doc_rels, &image_rid_candidates(im))?;
+                let (path, mime, emf) =
+                    resolve_pixel_source(&doc.parts, &doc_rels, &image_rid_candidates(im))?;
                 Some(PixelSource {
                     para: im.para_index,
                     w_pt: im.w_pt,
-                    src,
+                    src: (path, mime),
                     // K19：宿主候選的 duotone 宣告隨池項走（發射時才變換像素）。
                     duotone: im.duotone.map(|d| [d.color1, d.color2]),
+                    emf,
                 })
             })
             .collect();
@@ -3407,7 +3418,12 @@ fn resolve_pixel_source(
     parts: &BTreeMap<String, Vec<u8>>,
     rels: &[quire_ooxml::Relationship],
     rids: &[&str],
-) -> Option<(String, String)> {
+) -> Option<(String, String, Option<(Vec<u8>, [f32; 2])>)> {
+    // K27：EMF 只作**最後備選**——先照舊規則找「既有可渲染格式」，全程沒有
+    // 才輪到 EMF 直讀。理由：`ve:AlternateContent` 的 Fallback PNG 是同一張
+    // 圖的忠實點陣（Bug51170 即此形態），而本卡只抽得到 EMF 的內嵌 DIB；
+    // 讓 EMF 搶在前頭會把「已驗證的 Fallback 像素」換成「部分還原」。
+    let mut emf: Option<(String, (Vec<u8>, [f32; 2]))> = None;
     for rid in rids {
         let Some(part) = resolve_relationship(rels, rid) else {
             continue;
@@ -3416,12 +3432,45 @@ fn resolve_pixel_source(
         if !parts.contains_key(&part) {
             continue;
         }
-        let Some(mime) = mime_of_media_path(&part) else {
-            continue;
-        };
-        return Some((part, mime.to_string()));
+        if let Some(mime) = mime_of_media_path(&part) {
+            return Some((part, mime.to_string(), None));
+        }
+        // K27 回塞鎖：關掉直讀 ⇒ EMF 一律走既有灰佔位框（燈1/燈2 必紅）。
+        // 照 `K6_AUTO_PITCH_BUGGY` 的 inline 先例（本函數開檔期逐圖一次，
+        // 不在熱路徑）。
+        if emf.is_none()
+            && is_metafile_path(&part)
+            && std::env::var_os("K27_EMF_DIB_BUGGY").is_none()
+        {
+            // 只抽內嵌 DIB；純 vector／不可直讀 ⇒ None ⇒ 續找／退佔位框
+            // （n779834 浮水印走這條，零回退鎖在 k27_emf_dib 燈3）。
+            if let Some(px) = parts
+                .get(&part)
+                .and_then(|b| quire_ooxml::emf_dib_png(b))
+            {
+                emf = Some((part, px));
+            }
+        }
     }
-    None
+    emf.map(|(part, px)| (part, "image/png".to_string(), Some(px)))
+}
+
+/// 是不是點陣元檔副檔名（EMF 走 DIB 直讀；WMF 本卡不做——語料 0 實例）。
+fn is_metafile_path(path: &str) -> bool {
+    path.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("emf"))
+}
+
+/// EMF 發射尺寸口徑：檔頭 `rclFrame` 換算值優先，未宣告（0×0）退宿主框。
+///
+/// 卡面鐵律：不用 VML／`wp:extent` shape box——P5-diag 實測我方 box 比 LO
+/// 大 7~30%，照 box 發就會把圖拉出宿主欄位（色軸模擬 0.680 vs 0.651 的差
+/// 就在這裡）。
+fn emf_frame_size(frame_pt: [f32; 2], host_w: f32, host_h: f32) -> (f32, f32) {
+    if frame_pt[0] > 0.0 && frame_pt[1] > 0.0 {
+        (frame_pt[0], frame_pt[1])
+    } else {
+        (host_w, host_h)
+    }
 }
 
 /// 來源 part 路徑 → 它的 `.rels` part 路徑（OPC §3：`<dir>/_rels/<file>.rels`）。
@@ -3463,7 +3512,16 @@ fn take_image_pixel(
         .iter()
         .enumerate()
         .find(|(i, s)| !used[*i] && pred(s))?;
-    let bytes = parts.get(&src.src.0)?; // parts 被編輯抽掉 → 退佔位框（誠實）
+    // K27：EMF 候選的位元組＝開檔期直讀內嵌 DIB 重編的 PNG（parts 裡只有
+    // 原始向量流，直接發它沒有任何渲染器認得），尺寸改依 EMF 檔頭 rclFrame；
+    // 非 EMF 逐位元組走舊路（零擾動守門）。
+    let (bytes, mime, w, h) = match &src.emf {
+        Some((png, fp)) => {
+            let (w, h) = emf_frame_size(*fp, w, h);
+            (png.as_slice(), src.src.1.clone(), w, h)
+        }
+        None => (parts.get(&src.src.0)?.as_slice(), src.src.1.clone(), w, h),
+    };
     used[i] = true;
     let (data_b64, duotone) = k19_duotone_pixels(bytes, src.duotone);
     Some(DrawItem::Image {
@@ -3471,7 +3529,7 @@ fn take_image_pixel(
         y,
         w,
         h,
-        mime: src.src.1.clone(),
+        mime,
         data_b64,
         alt: None,
         duotone,
@@ -4410,19 +4468,28 @@ impl Engine {
             // 渲染即在此翻綠）。命中發真像素並跳過發框；未命中發 emit_image_shape
             // （HF 候選本身就是 InlineImage——真色直走 shape 版，None 才退灰佔位）。
             let pix = part.pixels.get(idx).and_then(|p| p.as_ref()).and_then(
-                |(path, mime)| -> Option<DrawItem> {
+                |(path, mime, emf)| -> Option<DrawItem> {
                     if im.w_pt <= 0.0 || im.h_pt <= 0.0 {
                         return None;
                     }
-                    let bytes = self.doc.parts.get(path)?;
+                    // K27：EMF 直讀出的 PNG 優先（真像素），尺寸口徑改用 EMF
+                    // 檔頭 rclFrame（見 `take_image_pixel` 同口徑說明）；非 EMF
+                    // 走既有路徑取 parts 位元組，逐位元組不變。
+                    let (bytes, mime, w, h) = match emf {
+                        Some((png, fp)) => {
+                            let (w, h) = emf_frame_size(*fp, im.w_pt, im.h_pt);
+                            (png.as_slice(), mime.clone(), w, h)
+                        }
+                        None => (self.doc.parts.get(path)?.as_slice(), mime.clone(), im.w_pt, im.h_pt),
+                    };
                     let (data_b64, duotone) =
                         k19_duotone_pixels(bytes, im.duotone.map(|d| [d.color1, d.color2]));
                     Some(DrawItem::Image {
                         x: img_x,
                         y,
-                        w: im.w_pt,
-                        h: im.h_pt,
-                        mime: mime.clone(),
+                        w,
+                        h,
+                        mime,
                         data_b64,
                         alt: None,
                         duotone,
@@ -4847,7 +4914,7 @@ fn build_hf_layer(
                     .get(&rels_path_for(&path))
                     .map(|r| read_rels(r))
                     .unwrap_or_default();
-                let pixels: Vec<Option<(String, String)>> = images
+                let pixels: Vec<Option<(String, String, Option<(Vec<u8>, [f32; 2])>)>> = images
                     .iter()
                     .map(|im| resolve_pixel_source(&doc.parts, &hf_rels, &image_rid_candidates(im)))
                     .collect();
