@@ -11,6 +11,7 @@
 
 mod diff;
 mod drawing;
+mod emf_dib;
 mod notes;
 mod numbering;
 mod png_duotone;
@@ -26,6 +27,7 @@ pub use drawing::{
     count_paras, origin_of, read_images, read_images_with_theme, DuotoneEffect, InlineChildShape,
     InlineImage, ShapeBorder, TextboxGrow,
 };
+pub use emf_dib::{emf_dib_png, emf_embedded_dib, emf_embedded_dib_checked, EmfDib, EmfReject};
 pub use png_duotone::duotone_png_bytes;
 pub use rels::{read_rels, resolve_relationship, Relationship};
 pub use sectpr::{
