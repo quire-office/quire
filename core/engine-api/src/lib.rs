@@ -128,6 +128,15 @@ pub struct Engine {
     line_ref_bands: u32,
 }
 
+/// K27：EMF 內嵌 DIB 直讀產物（PNG 位元組流＋EMF 檔頭 `rclFrame` 換算的 pt 尺寸 `[寬, 高]`）。
+type EmfRasterPayload = (Vec<u8>, [f32; 2]);
+
+/// K4c/K27：圖片像素來源解析結果（part 路徑, MIME 型別, 選擇性的 EMF 直讀產物）。
+type ResolvedPixelSource = (String, String, Option<EmfRasterPayload>);
+
+/// K27：暫存的 EMF 候選像素（part 路徑＋EMF 直讀產物）。
+type PendingEmfCandidate = (String, EmfRasterPayload);
+
 /// K4c-image 像素池項（開檔期一次性解析；像素位元組本身**不複製**進
 /// 引擎——只記來源 part 路徑，發射時才從 `doc.parts` 取位元組編 base64，
 /// 開檔成本與檔案大小同尺、不雙倍佔内存）。
@@ -149,7 +158,7 @@ struct PixelSource {
     /// 任何位元組可發；而發射每頁都會重跑（頁首圖逐頁消費），開檔解一次存
     /// 住才是常數成本。規模：全語料 media EMF 僅 16 parts／562,908 B
     /// （P5-diag §1-2），其中可直讀者 3 parts。
-    emf: Option<(Vec<u8>, [f32; 2])>,
+    emf: Option<EmfRasterPayload>,
 }
 
 /// 頁首／頁尾 part 的已解析投影（開啟文件時一次性解析；純讀取）。
@@ -169,7 +178,7 @@ struct HfPart {
     /// 解出可渲染像素的 part 路徑＋MIME；None＝查無/不可渲染格式→佔位框）。
     /// rId 走本 part 自己的 `.rels`（HF part 有自家 rels，不是
     /// document.xml.rels——Bug51170 實測）。空表＝無圖（零變化守門）。
-    pixels: Vec<Option<(String, String, Option<(Vec<u8>, [f32; 2])>)>>,
+    pixels: Vec<Option<ResolvedPixelSource>>,
 }
 
 /// 一節的頁首頁尾發射資料：宣告（已繼承、rId 已換算為「確實在 parts 裡」
@@ -3418,12 +3427,12 @@ fn resolve_pixel_source(
     parts: &BTreeMap<String, Vec<u8>>,
     rels: &[quire_ooxml::Relationship],
     rids: &[&str],
-) -> Option<(String, String, Option<(Vec<u8>, [f32; 2])>)> {
+) -> Option<ResolvedPixelSource> {
     // K27：EMF 只作**最後備選**——先照舊規則找「既有可渲染格式」，全程沒有
     // 才輪到 EMF 直讀。理由：`ve:AlternateContent` 的 Fallback PNG 是同一張
     // 圖的忠實點陣（Bug51170 即此形態），而本卡只抽得到 EMF 的內嵌 DIB；
     // 讓 EMF 搶在前頭會把「已驗證的 Fallback 像素」換成「部分還原」。
-    let mut emf: Option<(String, (Vec<u8>, [f32; 2]))> = None;
+    let mut emf: Option<PendingEmfCandidate> = None;
     for rid in rids {
         let Some(part) = resolve_relationship(rels, rid) else {
             continue;
@@ -4918,7 +4927,7 @@ fn build_hf_layer(
                     .get(&rels_path_for(&path))
                     .map(|r| read_rels(r))
                     .unwrap_or_default();
-                let pixels: Vec<Option<(String, String, Option<(Vec<u8>, [f32; 2])>)>> = images
+                let pixels: Vec<Option<ResolvedPixelSource>> = images
                     .iter()
                     .map(|im| resolve_pixel_source(&doc.parts, &hf_rels, &image_rid_candidates(im)))
                     .collect();
