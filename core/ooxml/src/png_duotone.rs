@@ -24,6 +24,38 @@ use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use std::io::Write;
 
+/// 總像素預算上限（wasm32: ≤ 16M px; native: ≤ 64M px）。
+#[cfg(target_arch = "wasm32")]
+pub const MAX_TOTAL_PIXELS: usize = 16 * 1024 * 1024;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub const MAX_TOTAL_PIXELS: usize = 64 * 1024 * 1024;
+
+/// RGBA8 緩衝位元組上限（像素上限 × 4）。
+pub const MAX_RGBA_BYTES: usize = MAX_TOTAL_PIXELS * 4;
+
+/// 取得當前總像素預算上限。
+///
+/// 回塞鎖 `S2_PNG_BUDGET_BUGGY=1` 只在【測試編譯目標】編入（integration test 以
+/// `#[path]` 直含本檔、自帶 `cfg(test)`）；正式函式庫建置零環境變數後門——
+/// 安全上限不可被運行時環境關閉。
+fn max_total_pixels() -> usize {
+    #[cfg(all(not(target_arch = "wasm32"), test))]
+    if std::env::var_os("S2_PNG_BUDGET_BUGGY").is_some() {
+        return usize::MAX;
+    }
+    MAX_TOTAL_PIXELS
+}
+
+/// 取得當前 RGBA8 緩衝位元組上限（回塞鎖同上，僅 `cfg(test)` 編入）。
+fn max_rgba_bytes() -> usize {
+    #[cfg(all(not(target_arch = "wasm32"), test))]
+    if std::env::var_os("S2_PNG_BUDGET_BUGGY").is_some() {
+        return usize::MAX;
+    }
+    MAX_RGBA_BYTES
+}
+
 /// PNG magic。
 const PNG_MAGIC: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 
@@ -107,16 +139,18 @@ pub fn decode_png_rgba8(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     if bytes.len() < 8 + 25 || &bytes[0..8] != PNG_MAGIC {
         return None;
     }
-    let mut pos = 8;
+    let mut pos = 8usize;
     let mut w = 0u32;
     let mut h = 0u32;
     let mut channels = 0usize;
     let mut interlace = 0u8;
     let mut idat: Vec<u8> = Vec::new();
-    while pos + 12 <= bytes.len() {
-        let len = u32::from_be_bytes(bytes[pos..pos + 4].try_into().ok()?) as usize;
-        let typ = &bytes[pos + 4..pos + 8];
-        let body = bytes.get(pos + 8..pos + 8 + len)?;
+    while pos.checked_add(12).is_some_and(|end| end <= bytes.len()) {
+        let len = u32::from_be_bytes(bytes.get(pos..pos + 4)?.try_into().ok()?) as usize;
+        let typ = bytes.get(pos + 4..pos + 8)?;
+        let body_offset = 8usize.checked_add(len)?;
+        let body_end = pos.checked_add(body_offset)?;
+        let body = bytes.get(pos + 8..body_end)?;
         match typ {
             b"IHDR" => {
                 if body.len() < 13 {
@@ -132,30 +166,72 @@ pub fn decode_png_rgba8(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                     0 => 1,
                     2 => 3,
                     6 => 4,
-                    _ => return None, // 调色板(3)／灰+alpha(4)：corpus 未見，老實不支援
+                    _ => return None, // 調色板(3)／灰+alpha(4)：corpus 未見，老實不支援
                 };
                 w = u32::from_be_bytes(body[0..4].try_into().ok()?);
                 h = u32::from_be_bytes(body[4..8].try_into().ok()?);
                 if w == 0 || h == 0 || w > 65_536 || h > 65_536 {
-                    return None; // 爆量防護（同 emu_to_pt 紀律）
+                    return None; // 邊長爆量防護（同 emu_to_pt 紀律）
+                }
+                // 1. 像素預算：以 checked_mul 計算 w*h，超額 return None
+                let total_pixels = (w as usize).checked_mul(h as usize)?;
+                if total_pixels > max_total_pixels() {
+                    return None;
                 }
             }
             b"IDAT" => idat.extend_from_slice(body),
             b"IEND" => break,
             _ => {}
         }
-        pos += 12 + len;
+        let chunk_total = 12usize.checked_add(len)?;
+        pos = pos.checked_add(chunk_total)?;
     }
     if w == 0 || h == 0 || channels == 0 {
         return None;
     }
+
+    // 計算 IDAT 解壓後的預期位元組數（非交錯為 (stride+1)*h，交錯為各 Adam7 pass 總和）
+    let expected: usize = if interlace == 0 {
+        let stride = (w as usize).checked_mul(channels)?;
+        stride.checked_add(1)?.checked_mul(h as usize)?
+    } else if interlace == 1 {
+        let mut total = 0usize;
+        for (xs, ys, xstep, ystep) in ADAM7 {
+            let pw = w.saturating_sub(xs).div_ceil(xstep) as usize;
+            let ph = h.saturating_sub(ys).div_ceil(ystep) as usize;
+            if pw == 0 || ph == 0 {
+                continue;
+            }
+            let stride = pw.checked_mul(channels)?;
+            let pass_len = stride.checked_add(1)?.checked_mul(ph)?;
+            total = total.checked_add(pass_len)?;
+        }
+        total
+    } else {
+        return None; // 交錯類型 2..6 非法（PNG 規範只定義 0/1）
+    };
+
     let mut raw = Vec::new();
     {
         use flate2::read::ZlibDecoder;
         use std::io::Read;
-        ZlibDecoder::new(&idat[..]).read_to_end(&mut raw).ok()?;
+        // 3. zlib 輸出上限：IDAT 解壓改讀到 expected+1 即棄，防範 zlib bomb
+        let limit = (expected as u64).checked_add(1)?;
+        let bytes_read = ZlibDecoder::new(&idat[..])
+            .take(limit)
+            .read_to_end(&mut raw)
+            .ok()?;
+        if bytes_read != expected {
+            return None;
+        }
     }
-    let mut out = vec![0u8; (w as usize) * (h as usize) * 4];
+
+    // 2. RGBA 緩衝 allocation 前 checked 三連，且結果必須 ≤ 由像素預算推導的上限
+    let rgba_len = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+    if rgba_len > max_rgba_bytes() {
+        return None;
+    }
+    let mut out = vec![0u8; rgba_len];
     if interlace == 0 {
         let stride = (w as usize) * channels;
         if raw.len() < (stride + 1) * h as usize {
@@ -256,11 +332,13 @@ pub fn duotone_rgba8(rgba: &mut [u8], c1: u32, c2: u32) {
 
 /// RGBA8 → PNG bytes（colorType 6、filter 0、zlib deflate）。
 pub fn encode_png_rgba8(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
-    let stride = (w as usize) * 4;
-    if rgba.len() != stride * h as usize {
+    let stride = (w as usize).checked_mul(4)?;
+    let total_bytes = stride.checked_mul(h as usize)?;
+    if rgba.len() != total_bytes {
         return None;
     }
-    let mut raw = Vec::with_capacity((stride + 1) * h as usize);
+    let raw_cap = (stride.checked_add(1)?).checked_mul(h as usize)?;
+    let mut raw = Vec::with_capacity(raw_cap);
     for y in 0..h as usize {
         raw.push(0); // filter 0（None）
         raw.extend_from_slice(&rgba[y * stride..(y + 1) * stride]);
