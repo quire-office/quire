@@ -85,6 +85,40 @@ pub struct InlineChildShape {
     pub txbx_texts: Vec<String>,
 }
 
+/// K25-B：VML `v:group`（`coordorigin`/`coordsize` 系）內**一個子件**的框內
+/// 文字排版事實（n751077 實據）。
+///
+/// 存在的理由：既有 `txbx_rect`（K4c）只留「最近一個子件」的映射矩形，且
+/// 群組的 `txbx_texts` 是把各子件段落**展平**後掛在宿主段落上——發射層因此
+/// 只能把所有子件的文字堆在同一個起點（n751077 九段全塌在 y≈153–166，LO
+/// 分佈 144–660）。本子件投影帶齊「各自矩形＋各自文字範圍＋各自對齊／內縮／
+/// 文字錨點」，發射層才能逐框排版。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VmlGroupChild {
+    /// 子件框矩形（pt，**相對群組 coord 矩形原點**）＝[dx, dy, 寬, 高]。
+    /// 由 `coordorigin`/`coordsize` 線性映射（[`CoordFrame`]），未做 union
+    /// 平移——發射層以子件 union 包框對位（LO：union 水平對 page 置中、
+    /// 垂直對 margin 置中；n751077 實測 union=[63.70,125.92,484.60,550.90]）。
+    pub rect: [f32; 4],
+    /// 本子件 `w:txbxContent` 各段在**群組候補** `txbx_texts`／`txbx_runs`
+    /// 展平清單的起始索引與段數（文档序切片＝本框自己的文字與 run）。
+    pub txbx_start: usize,
+    pub txbx_len: usize,
+    /// 子件自身 `style/v-text-anchor:bottom`：框內文字**底堆疊**（末行帶底
+    /// 貼框底減內邊距，往上累減各行高）；false＝頂堆疊。n751077 `s1041`
+    /// （9 段、堆疊起點由框底算）實據。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub anchor_bottom: bool,
+    /// 子件自身 `<v:textbox/@inset>`（左,上,右,下 pt）；缺＝None（發射層退
+    /// VML 預設內縮 7.2/3.6，**不是**宿主框的 inset）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inset: Option<[f32; 4]>,
+    /// 子件框內段級 `w:jc`（首見為準；"center"/"right"）。n751077 `s1040`
+    /// （`w:jc=right` ＋ 48pt 標籤，LO 基線 x=394.5）實據。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<String>,
+}
+
 /// K19：`a:blip` 下的像素級雙色調宣告（ECMA-376 §20.1.7.28 `a:duotone`）。
 ///
 /// 兩端色＝解析期折算後的 0xAARRGGBB：`a:schemeClr` 經 [`crate::ThemeColors`]
@@ -328,6 +362,15 @@ pub struct InlineImage {
     /// K12：DrawingML 群組（`wpg:wgp`）內的子形狀清單。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_shapes: Vec<InlineChildShape>,
+    // ---- K25-B：VML `v:group`（coordorigin/coordsize 系）**釘定群組**的子件
+    // 框內文字投影（n751077 實據）。只有「`floating`＋`page_pinned`＋至少一個
+    // coord 映射成功子件」才記（LO 真值擬合範圍＝頁面釘定群組）；DrawingML
+    // 群組、非釘定群組、巢狀子組＝空＝舊行為零擾動。serde default＋空不外露
+    // ＝既有投影序列化位元組逐位不變。----
+    /// K25-B：釘定 VML 群組的子件清單（文档序；`rect`＝coord→pt 映射後的
+    /// **原始**矩形，相對群組 coord 原點，未做 union 平移）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vml_group_children: Vec<VmlGroupChild>,
     /// K12：文字框段落邊框（`w:pBdr`）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub txbx_borders: Vec<ShapeBorder>,
