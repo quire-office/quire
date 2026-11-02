@@ -40,7 +40,7 @@ const EOCD64_LEN: usize = 56;
 const EOCD64_LOCATOR_LEN: usize = 20;
 const ZIP64_MARKER: u32 = u32::MAX;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum ZipError {
     #[error("zip 結構毀損: {0}")]
     Corrupt(&'static str),
@@ -50,7 +50,23 @@ pub enum ZipError {
     Encrypted { name: String },
     #[error("deflate/crc 失敗: {0}")]
     Codec(String),
+    #[error("{name} 解壓後超過上限 {limit} 位元組")]
+    TooLarge { name: String, limit: usize },
 }
+
+/// 單一 entry 最大解壓大小：native 128 MiB，wasm32 64 MiB。
+#[cfg(not(target_arch = "wasm32"))]
+pub const MAX_ENTRY_DECOMPRESSED_SIZE: usize = 128 * 1024 * 1024;
+/// 整包 zip 總最大解壓大小：native 512 MiB，wasm32 256 MiB。
+#[cfg(not(target_arch = "wasm32"))]
+pub const MAX_TOTAL_DECOMPRESSED_SIZE: usize = 512 * 1024 * 1024;
+
+/// 單一 entry 最大解壓大小：native 128 MiB，wasm32 64 MiB。
+#[cfg(target_arch = "wasm32")]
+pub const MAX_ENTRY_DECOMPRESSED_SIZE: usize = 64 * 1024 * 1024;
+/// 整包 zip 總最大解壓大小：native 512 MiB，wasm32 256 MiB。
+#[cfg(target_arch = "wasm32")]
+pub const MAX_TOTAL_DECOMPRESSED_SIZE: usize = 256 * 1024 * 1024;
 
 /// 一個 zip entry 的完整結構＋原始位元組。
 /// `local_raw`/`data_raw`/`gap_raw`/`central_raw` 是零失真搬運的關鍵：
@@ -109,9 +125,31 @@ impl ZipEntry {
         central_comment_of(&self.central_raw)
     }
 
-    /// 解壓後的明文（Stored 直接複製，Deflate 走 raw inflate）。
+    /// 解壓後的明文（Stored 直接複製，Deflate 走 raw inflate），並驗證 CRC32 與宣告大小。
     pub fn decoded(&self) -> Result<Vec<u8>, ZipError> {
-        decode_raw(&self.name_raw, self.method, &self.data_raw)
+        self.decoded_with_limit(MAX_ENTRY_DECOMPRESSED_SIZE)
+    }
+
+    /// 解壓後的明文，附帶自訂大小上限，並驗證 CRC32 與宣告大小。
+    pub fn decoded_with_limit(&self, limit: usize) -> Result<Vec<u8>, ZipError> {
+        let plain = decode_raw(&self.name_raw, self.method, &self.data_raw, limit)?;
+        self.validate_plain(&plain)?;
+        Ok(plain)
+    }
+
+    /// 校驗解壓後的明文大小與 CRC-32 是否與 central directory 記錄相符。
+    /// central 記錄可偽造，故這是「明文 vs 宣告」的完整性斷言：不符＝Corrupt，
+    /// 無損承諾要求任何進入解析/比對路的明文都必須通過此閘。
+    pub(crate) fn validate_plain(&self, plain: &[u8]) -> Result<(), ZipError> {
+        if plain.len() as u64 != self.uncompressed_size {
+            return Err(ZipError::Corrupt("解壓大小與宣告不符"));
+        }
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(plain);
+        if hasher.finalize() != self.crc {
+            return Err(ZipError::Corrupt("CRC-32 校驗不符"));
+        }
+        Ok(())
     }
 }
 
@@ -173,16 +211,28 @@ impl ZipBundle {
     pub fn open(bytes: &[u8]) -> Result<Self, ZipError> {
         let eocd_at =
             find_eocd(bytes).ok_or(ZipError::Corrupt("找不到 End of Central Directory"))?;
-        let cmt_len = rd_u16(bytes, eocd_at + 20).ok_or(ZipError::Corrupt("EOCD 截斷"))? as usize;
-        if eocd_at + EOCD_LEN + cmt_len > bytes.len() {
+        let off_cmt = eocd_at
+            .checked_add(20)
+            .ok_or(ZipError::Corrupt("EOCD 截斷"))?;
+        let cmt_len = rd_u16(bytes, off_cmt).ok_or(ZipError::Corrupt("EOCD 截斷"))? as usize;
+        let eocd_base_end = eocd_at
+            .checked_add(EOCD_LEN)
+            .ok_or(ZipError::Corrupt("EOCD 範圍溢位"))?;
+        let eocd_end = eocd_base_end
+            .checked_add(cmt_len)
+            .ok_or(ZipError::Corrupt("archive comment 長度溢位"))?;
+        if eocd_end > bytes.len() {
             return Err(ZipError::Corrupt("archive comment 長度越界"));
         }
-        let archive_comment_raw = bytes[eocd_at + EOCD_LEN..eocd_at + EOCD_LEN + cmt_len].to_vec();
-        let eocd_raw = bytes[eocd_at..eocd_at + EOCD_LEN + cmt_len].to_vec();
+        let archive_comment_raw = bytes[eocd_base_end..eocd_end].to_vec();
+        let eocd_raw = bytes[eocd_at..eocd_end].to_vec();
 
-        let total16 = rd_u16(bytes, eocd_at + 8).ok_or(ZipError::Corrupt("EOCD 截斷"))?;
-        let cd_size16 = rd_u32(bytes, eocd_at + 12).ok_or(ZipError::Corrupt("EOCD 截斷"))?;
-        let cd_off16 = rd_u32(bytes, eocd_at + 16).ok_or(ZipError::Corrupt("EOCD 截斷"))?;
+        let off_total = eocd_at.checked_add(8).ok_or(ZipError::Corrupt("EOCD 截斷"))?;
+        let off_cd_size = eocd_at.checked_add(12).ok_or(ZipError::Corrupt("EOCD 截斷"))?;
+        let off_cd_off = eocd_at.checked_add(16).ok_or(ZipError::Corrupt("EOCD 截斷"))?;
+        let total16 = rd_u16(bytes, off_total).ok_or(ZipError::Corrupt("EOCD 截斷"))?;
+        let cd_size16 = rd_u32(bytes, off_cd_size).ok_or(ZipError::Corrupt("EOCD 截斷"))?;
+        let cd_off16 = rd_u32(bytes, off_cd_off).ok_or(ZipError::Corrupt("EOCD 截斷"))?;
         let (mut total, mut cd_size, mut cd_off) =
             (total16 as u64, cd_size16 as u64, cd_off16 as u64);
 
@@ -196,33 +246,61 @@ impl ZipBundle {
             if rd_u32(bytes, loc_at) != Some(SIG_EOCD64_LOC) {
                 return Err(ZipError::Corrupt("zip64 locator 簽名不符"));
             }
-            let z64_at =
-                rd_u64(bytes, loc_at + 8).ok_or(ZipError::Corrupt("locator 截斷"))? as usize;
+            let loc_at_plus_8 = loc_at
+                .checked_add(8)
+                .ok_or(ZipError::Corrupt("zip64 locator 位移溢位"))?;
+            let z64_at_u64 =
+                rd_u64(bytes, loc_at_plus_8).ok_or(ZipError::Corrupt("locator 截斷"))?;
+            let z64_at = usize::try_from(z64_at_u64)
+                .map_err(|_| ZipError::Corrupt("zip64 EOCD 位置溢位"))?;
             if rd_u32(bytes, z64_at) != Some(SIG_EOCD64) {
                 return Err(ZipError::Corrupt("zip64 EOCD 簽名不符"));
             }
-            if z64_at + EOCD64_LEN > bytes.len() {
+            let z64_end = z64_at
+                .checked_add(EOCD64_LEN)
+                .ok_or(ZipError::Corrupt("zip64 EOCD 範圍溢位"))?;
+            if z64_end > bytes.len() {
                 return Err(ZipError::Corrupt("zip64 EOCD 越界"));
             }
-            total = rd_u64(bytes, z64_at + 32).ok_or(ZipError::Corrupt("zip64 EOCD 截斷"))?;
-            cd_size = rd_u64(bytes, z64_at + 40).ok_or(ZipError::Corrupt("zip64 EOCD 截斷"))?;
-            cd_off = rd_u64(bytes, z64_at + 48).ok_or(ZipError::Corrupt("zip64 EOCD 截斷"))?;
-            eocd64_raw = bytes[z64_at..z64_at + EOCD64_LEN].to_vec();
-            eocd64_locator_raw = bytes[loc_at..loc_at + EOCD64_LOCATOR_LEN].to_vec();
+            let off_z64_total = z64_at
+                .checked_add(32)
+                .ok_or(ZipError::Corrupt("zip64 EOCD 溢位"))?;
+            let off_z64_cd_size = z64_at
+                .checked_add(40)
+                .ok_or(ZipError::Corrupt("zip64 EOCD 溢位"))?;
+            let off_z64_cd_off = z64_at
+                .checked_add(48)
+                .ok_or(ZipError::Corrupt("zip64 EOCD 溢位"))?;
+            total = rd_u64(bytes, off_z64_total).ok_or(ZipError::Corrupt("zip64 EOCD 截斷"))?;
+            cd_size = rd_u64(bytes, off_z64_cd_size).ok_or(ZipError::Corrupt("zip64 EOCD 截斷"))?;
+            cd_off = rd_u64(bytes, off_z64_cd_off).ok_or(ZipError::Corrupt("zip64 EOCD 截斷"))?;
+            let loc_end = loc_at
+                .checked_add(EOCD64_LOCATOR_LEN)
+                .ok_or(ZipError::Corrupt("zip64 locator 範圍溢位"))?;
+            if loc_end > bytes.len() {
+                return Err(ZipError::Corrupt("zip64 locator 越界"));
+            }
+            eocd64_raw = bytes[z64_at..z64_end].to_vec();
+            eocd64_locator_raw = bytes[loc_at..loc_end].to_vec();
         }
 
-        let cd_start = cd_off as usize;
+        let cd_start = usize::try_from(cd_off)
+            .map_err(|_| ZipError::Corrupt("central directory 位移溢位"))?;
+        let cd_size_usize = usize::try_from(cd_size)
+            .map_err(|_| ZipError::Corrupt("central directory 大小溢位"))?;
         let cd_end = cd_start
-            .checked_add(cd_size as usize)
+            .checked_add(cd_size_usize)
             .ok_or(ZipError::Corrupt("central directory 範圍溢位"))?;
         if cd_end > eocd_at {
             return Err(ZipError::Corrupt("central directory 與 EOCD 重疊"));
         }
         let central_block = &bytes[cd_start..cd_end];
 
+        let total_usize = usize::try_from(total)
+            .map_err(|_| ZipError::Corrupt("central directory 項目數量溢位"))?;
         let mut entries = Vec::new();
         let mut pos = 0usize;
-        for _ in 0..total {
+        for _ in 0..total_usize {
             entries.push(parse_central_entry(central_block, &mut pos)?);
         }
         if pos != central_block.len() {
@@ -232,15 +310,21 @@ impl ZipBundle {
         // 依 central 記錄回填每個 entry 的 local header／壓縮資料／gap。
         let mut first_local = cd_start;
         for e in &mut entries {
-            let lho = e.local_header_offset as usize;
-            if lho + LOCAL_HEADER_LEN > cd_start {
+            let lho = usize::try_from(e.local_header_offset)
+                .map_err(|_| ZipError::Corrupt("local header offset 溢位"))?;
+            let lho_min_end = lho
+                .checked_add(LOCAL_HEADER_LEN)
+                .ok_or(ZipError::Corrupt("local header offset 溢位"))?;
+            if lho_min_end > cd_start {
                 return Err(ZipError::Corrupt("local header offset 越界"));
             }
             if rd_u32(bytes, lho) != Some(SIG_LOCAL) {
                 return Err(ZipError::Corrupt("local header 簽名不符"));
             }
-            let nlen = rd_u16(bytes, lho + 26).ok_or(ZipError::Corrupt("local 截斷"))? as usize;
-            let elen = rd_u16(bytes, lho + 28).ok_or(ZipError::Corrupt("local 截斷"))? as usize;
+            let off_nlen = lho.checked_add(26).ok_or(ZipError::Corrupt("local 截斷"))?;
+            let off_elen = lho.checked_add(28).ok_or(ZipError::Corrupt("local 截斷"))?;
+            let nlen = rd_u16(bytes, off_nlen).ok_or(ZipError::Corrupt("local 截斷"))? as usize;
+            let elen = rd_u16(bytes, off_elen).ok_or(ZipError::Corrupt("local 截斷"))? as usize;
             let head_end = lho
                 .checked_add(LOCAL_HEADER_LEN)
                 .and_then(|v| v.checked_add(nlen))
@@ -249,8 +333,10 @@ impl ZipBundle {
             if head_end > cd_start {
                 return Err(ZipError::Corrupt("local name/extra 越界"));
             }
+            let csize = usize::try_from(e.compressed_size)
+                .map_err(|_| ZipError::Corrupt("壓縮資料大小溢位"))?;
             let data_end = head_end
-                .checked_add(e.compressed_size as usize)
+                .checked_add(csize)
                 .ok_or(ZipError::Corrupt("壓縮資料長度溢位"))?;
             if data_end > cd_start {
                 return Err(ZipError::Corrupt("壓縮資料越界"));
@@ -263,13 +349,17 @@ impl ZipBundle {
         let mut by_offset: Vec<usize> = (0..entries.len()).collect();
         by_offset.sort_by_key(|&i| entries[i].local_header_offset);
         for (rank, &idx) in by_offset.iter().enumerate() {
-            let data_end = entries[idx].local_header_offset as usize
-                + entries[idx].local_raw.len()
-                + entries[idx].data_raw.len();
-            let next_start = by_offset
-                .get(rank + 1)
-                .map(|&n| entries[n].local_header_offset as usize)
-                .unwrap_or(cd_start);
+            let entry_lho = usize::try_from(entries[idx].local_header_offset)
+                .map_err(|_| ZipError::Corrupt("local header offset 溢位"))?;
+            let data_end = entry_lho
+                .checked_add(entries[idx].local_raw.len())
+                .and_then(|v| v.checked_add(entries[idx].data_raw.len()))
+                .ok_or(ZipError::Corrupt("entry 範圍溢位"))?;
+            let next_start = match by_offset.get(rank + 1) {
+                Some(&n) => usize::try_from(entries[n].local_header_offset)
+                    .map_err(|_| ZipError::Corrupt("local header offset 溢位"))?,
+                None => cd_start,
+            };
             if next_start < data_end {
                 return Err(ZipError::Corrupt("entry 資料互相重疊"));
             }
@@ -316,6 +406,35 @@ impl ZipBundle {
 
     pub fn part_names(&self) -> Vec<String> {
         self.file_entries().map(|e| e.key()).collect()
+    }
+
+    /// 解壓所有一般檔案 entry，同時強制單一 entry 上限與整包總解壓上限。
+    pub fn decode_parts(&self) -> Result<BTreeMap<String, Vec<u8>>, ZipError> {
+        self.decode_parts_with_limits(MAX_ENTRY_DECOMPRESSED_SIZE, MAX_TOTAL_DECOMPRESSED_SIZE)
+    }
+
+    /// 解壓所有一般檔案 entry，附帶自訂單一 entry 上限與整包總解壓上限。
+    pub fn decode_parts_with_limits(
+        &self,
+        entry_limit: usize,
+        total_limit: usize,
+    ) -> Result<BTreeMap<String, Vec<u8>>, ZipError> {
+        let mut parts = BTreeMap::new();
+        let mut total: usize = 0;
+        for e in self.file_entries() {
+            let plain = e.decoded_with_limit(entry_limit)?;
+            // 累計以 checked_add 守門：任何 entry 使總量越界即整包拒絕
+            //（各 entry 單獨合法、疊起來炸記憶體正是總量炸彈的形態）。
+            total = total
+                .checked_add(plain.len())
+                .filter(|t| *t <= total_limit)
+                .ok_or_else(|| ZipError::TooLarge {
+                    name: e.key(),
+                    limit: total_limit,
+                })?;
+            parts.insert(e.key(), plain);
+        }
+        Ok(parts)
     }
 
     pub fn archive_comment(&self) -> &[u8] {
@@ -488,7 +607,9 @@ impl ZipBundle {
         z64[40..48].copy_from_slice(&cd_size.to_le_bytes());
         z64[48..56].copy_from_slice(&cd_off.to_le_bytes());
         // zip64 EOCD 的實體位置（緊接 central 之後）＝locator 要指的地方。
-        let z64_at = cd_off + cd_size;
+        let z64_at = cd_off
+            .checked_add(cd_size)
+            .ok_or(ZipError::Corrupt("zip64 EOCD 位移溢位"))?;
         // locator：zip64 EOCD 起始位移(8..16)。
         loc[8..16].copy_from_slice(&z64_at.to_le_bytes());
         let mut eocd = self.eocd_raw.clone();
@@ -704,31 +825,47 @@ fn patch_central_offset(central_raw: &[u8], offset: u64) -> Result<Vec<u8>, ZipE
     while cur.len() >= 4 {
         let id = rd_u16(cur, 0).ok_or(ZipError::Corrupt("extra 截斷"))?;
         let len = rd_u16(cur, 2).ok_or(ZipError::Corrupt("extra 截斷"))? as usize;
-        if cur.len() < 4 + len {
+        let Some(field_len) = len.checked_add(4) else {
+            break;
+        };
+        if cur.len() < field_len {
             break;
         }
         if id == XID_ZIP64 {
             // zip64 body 順序 uncompressed, compressed, offset——某欄存在 iff
             // 對應標準欄位（24=usize、20=csize、42=offset）是 marker。
-            let mut at = extra_at + rel + 4;
+            let mut at = extra_at
+                .checked_add(rel)
+                .and_then(|v| v.checked_add(4))
+                .ok_or(ZipError::Corrupt("zip64 extra 位移溢位"))?;
             if rd_u32(&out, 24) == Some(ZIP64_MARKER) {
-                at += 8;
+                at = at
+                    .checked_add(8)
+                    .ok_or(ZipError::Corrupt("zip64 extra 位移溢位"))?;
             }
             if rd_u32(&out, 20) == Some(ZIP64_MARKER) {
-                at += 8;
+                at = at
+                    .checked_add(8)
+                    .ok_or(ZipError::Corrupt("zip64 extra 位移溢位"))?;
             }
             slot = Some(at);
             break;
         }
-        rel += 4 + len;
-        cur = &cur[4 + len..];
+        let Some(next_rel) = rel.checked_add(field_len) else {
+            break;
+        };
+        rel = next_rel;
+        cur = &cur[field_len..];
     }
     match slot {
         Some(at) => {
-            if at + 8 > out.len() {
+            let at_plus_8 = at
+                .checked_add(8)
+                .ok_or(ZipError::Corrupt("zip64 extra 內 offset 欄位越界"))?;
+            if at_plus_8 > out.len() {
                 return Err(ZipError::Corrupt("zip64 extra 內 offset 欄位越界"));
             }
-            out[at..at + 8].copy_from_slice(&offset.to_le_bytes());
+            out[at..at_plus_8].copy_from_slice(&offset.to_le_bytes());
         }
         None => return Err(ZipError::Corrupt("offset 欄位是 marker 但無 zip64 extra")),
     }
@@ -745,9 +882,16 @@ fn find_eocd(bytes: &[u8]) -> Option<usize> {
     let mut at = bytes.len() - EOCD_LEN;
     loop {
         if rd_u32(bytes, at) == Some(SIG_EOCD) {
-            if let Some(cmt_len) = rd_u16(bytes, at + 20) {
-                if at + EOCD_LEN + cmt_len as usize == bytes.len() {
-                    return Some(at);
+            if let Some(off_cmt) = at.checked_add(20) {
+                if let Some(cmt_len) = rd_u16(bytes, off_cmt) {
+                    if let Some(end) = at
+                        .checked_add(EOCD_LEN)
+                        .and_then(|v| v.checked_add(cmt_len as usize))
+                    {
+                        if end == bytes.len() {
+                            return Some(at);
+                        }
+                    }
                 }
             }
         }
@@ -760,33 +904,119 @@ fn find_eocd(bytes: &[u8]) -> Option<usize> {
 
 fn parse_central_entry(block: &[u8], pos: &mut usize) -> Result<ZipEntry, ZipError> {
     let at = *pos;
-    if at + CENTRAL_HEADER_LEN > block.len() {
+    let min_len = at
+        .checked_add(CENTRAL_HEADER_LEN)
+        .ok_or(ZipError::Corrupt("central record 截斷"))?;
+    if min_len > block.len() {
         return Err(ZipError::Corrupt("central record 截斷"));
     }
     if rd_u32(block, at) != Some(SIG_CENTRAL) {
         return Err(ZipError::Corrupt("central record 簽名不符"));
     }
-    let version_made_by = rd_u16(block, at + 4).unwrap_or(0);
-    let version_needed = rd_u16(block, at + 6).unwrap_or(0);
-    let flags = rd_u16(block, at + 8).unwrap_or(0);
-    let method = rd_u16(block, at + 10).unwrap_or(0);
-    let dos_time = rd_u16(block, at + 12).unwrap_or(0);
-    let dos_date = rd_u16(block, at + 14).unwrap_or(0);
-    let crc = rd_u32(block, at + 16).unwrap_or(0);
+    let version_made_by = rd_u16(
+        block,
+        at.checked_add(4)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0);
+    let version_needed = rd_u16(
+        block,
+        at.checked_add(6)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0);
+    let flags = rd_u16(
+        block,
+        at.checked_add(8)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0);
+    let method = rd_u16(
+        block,
+        at.checked_add(10)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0);
+    let dos_time = rd_u16(
+        block,
+        at.checked_add(12)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0);
+    let dos_date = rd_u16(
+        block,
+        at.checked_add(14)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0);
+    let crc = rd_u32(
+        block,
+        at.checked_add(16)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0);
     // 規格順序：20=compressed、24=uncompressed（很容易讀反，特別標註）。
-    let mut csize_field = rd_u32(block, at + 20).unwrap_or(0) as u64;
-    let mut usize_field = rd_u32(block, at + 24).unwrap_or(0) as u64;
-    let nlen = rd_u16(block, at + 28).unwrap_or(0) as usize;
-    let elen = rd_u16(block, at + 30).unwrap_or(0) as usize;
-    let clen = rd_u16(block, at + 32).unwrap_or(0) as usize;
-    let internal_attrs = rd_u16(block, at + 36).unwrap_or(0);
-    let external_attrs = rd_u32(block, at + 38).unwrap_or(0);
-    let mut offset_field = rd_u32(block, at + 42).unwrap_or(0) as u64;
+    let mut csize_field = rd_u32(
+        block,
+        at.checked_add(20)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0) as u64;
+    let mut usize_field = rd_u32(
+        block,
+        at.checked_add(24)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0) as u64;
+    let nlen = rd_u16(
+        block,
+        at.checked_add(28)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0) as usize;
+    let elen = rd_u16(
+        block,
+        at.checked_add(30)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0) as usize;
+    let clen = rd_u16(
+        block,
+        at.checked_add(32)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0) as usize;
+    let internal_attrs = rd_u16(
+        block,
+        at.checked_add(36)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0);
+    let external_attrs = rd_u32(
+        block,
+        at.checked_add(38)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0);
+    let mut offset_field = rd_u32(
+        block,
+        at.checked_add(42)
+            .ok_or(ZipError::Corrupt("central record 截斷"))?,
+    )
+    .unwrap_or(0) as u64;
 
-    let name_at = at + CENTRAL_HEADER_LEN;
-    let extra_at = name_at + nlen;
-    let comment_at = extra_at + elen;
-    let rec_end = comment_at + clen;
+    let name_at = at
+        .checked_add(CENTRAL_HEADER_LEN)
+        .ok_or(ZipError::Corrupt("central record 位移溢位"))?;
+    let extra_at = name_at
+        .checked_add(nlen)
+        .ok_or(ZipError::Corrupt("central record 名稱長度溢位"))?;
+    let comment_at = extra_at
+        .checked_add(elen)
+        .ok_or(ZipError::Corrupt("central record extra 長度溢位"))?;
+    let rec_end = comment_at
+        .checked_add(clen)
+        .ok_or(ZipError::Corrupt("central record comment 長度溢位"))?;
     if rec_end > block.len() {
         return Err(ZipError::Corrupt("central record 名稱/extra/comment 越界"));
     }
@@ -818,11 +1048,11 @@ fn parse_central_entry(block: &[u8], pos: &mut usize) -> Result<ZipEntry, ZipErr
             let mut i = 0usize;
             if usize_field == ZIP64_MARKER as u64 {
                 usize_field = rd_u64(&data, i).ok_or(ZipError::Corrupt("zip64 extra 截斷"))?;
-                i += 8;
+                i = i.checked_add(8).ok_or(ZipError::Corrupt("zip64 extra 溢位"))?;
             }
             if csize_field == ZIP64_MARKER as u64 {
                 csize_field = rd_u64(&data, i).ok_or(ZipError::Corrupt("zip64 extra 截斷"))?;
-                i += 8;
+                i = i.checked_add(8).ok_or(ZipError::Corrupt("zip64 extra 溢位"))?;
             }
             if offset_field == ZIP64_MARKER as u64 {
                 offset_field = rd_u64(&data, i).ok_or(ZipError::Corrupt("zip64 extra 截斷"))?;
@@ -858,11 +1088,14 @@ pub fn parse_extra_fields(mut data: &[u8]) -> Vec<(u16, Vec<u8>)> {
     while data.len() >= 4 {
         let id = rd_u16(data, 0).unwrap_or(0);
         let len = rd_u16(data, 2).unwrap_or(0) as usize;
-        if data.len() < 4 + len {
+        let Some(field_len) = len.checked_add(4) else {
+            break;
+        };
+        if data.len() < field_len {
             break;
         }
-        out.push((id, data[4..4 + len].to_vec()));
-        data = &data[4 + len..];
+        out.push((id, data[4..field_len].to_vec()));
+        data = &data[field_len..];
     }
     out
 }
@@ -887,7 +1120,9 @@ fn local_extra_of(e: &ZipEntry) -> &[u8] {
     }
     let nlen = rd_u16(&e.local_raw, 26).unwrap_or(0) as usize;
     let elen = rd_u16(&e.local_raw, 28).unwrap_or(0) as usize;
-    let start = LOCAL_HEADER_LEN + nlen;
+    let Some(start) = LOCAL_HEADER_LEN.checked_add(nlen) else {
+        return &[];
+    };
     let end = start.saturating_add(elen).min(e.local_raw.len());
     if start > end {
         return &[];
@@ -905,7 +1140,12 @@ fn central_comment_of(raw: &[u8]) -> &[u8] {
     let nlen = rd_u16(raw, 28).unwrap_or(0) as usize;
     let elen = rd_u16(raw, 30).unwrap_or(0) as usize;
     let clen = rd_u16(raw, 32).unwrap_or(0) as usize;
-    let start = CENTRAL_HEADER_LEN + nlen + elen;
+    let Some(start) = CENTRAL_HEADER_LEN
+        .checked_add(nlen)
+        .and_then(|v| v.checked_add(elen))
+    else {
+        return &[];
+    };
     let end = start.saturating_add(clen).min(raw.len());
     if start > end {
         return &[];
@@ -913,15 +1153,31 @@ fn central_comment_of(raw: &[u8]) -> &[u8] {
     &raw[start..end]
 }
 
-fn decode_raw(name_raw: &[u8], method: u16, raw: &[u8]) -> Result<Vec<u8>, ZipError> {
+pub(crate) fn decode_raw(
+    name_raw: &[u8],
+    method: u16,
+    raw: &[u8],
+    cap: usize,
+) -> Result<Vec<u8>, ZipError> {
     let name = String::from_utf8_lossy(name_raw).into_owned();
     match method {
-        METHOD_STORE => Ok(raw.to_vec()),
+        METHOD_STORE => {
+            if raw.len() > cap {
+                return Err(ZipError::TooLarge { name, limit: cap });
+            }
+            Ok(raw.to_vec())
+        }
         METHOD_DEFLATE => {
-            let mut dec = DeflateDecoder::new(raw);
+            // 只讀 cap+1 位元組即止：宣告的 uncompressed_size 可偽造，不可作為
+            // 唯一防線；無限 read_to_end 正是 zip bomb 的記憶體耗盡面。
             let mut buf = Vec::new();
-            dec.read_to_end(&mut buf)
+            DeflateDecoder::new(raw)
+                .take((cap as u64) + 1)
+                .read_to_end(&mut buf)
                 .map_err(|e| ZipError::Codec(format!("{name}: {e}")))?;
+            if buf.len() > cap {
+                return Err(ZipError::TooLarge { name, limit: cap });
+            }
             Ok(buf)
         }
         m => Err(ZipError::UnsupportedMethod { name, method: m }),
@@ -991,15 +1247,18 @@ fn fit32(v: u64) -> u32 {
 }
 
 fn rd_u16(b: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?))
+    let end = at.checked_add(2)?;
+    Some(u16::from_le_bytes(b.get(at..end)?.try_into().ok()?))
 }
 
 fn rd_u32(b: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
+    let end = at.checked_add(4)?;
+    Some(u32::from_le_bytes(b.get(at..end)?.try_into().ok()?))
 }
 
 fn rd_u64(b: &[u8], at: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(b.get(at..at + 8)?.try_into().ok()?))
+    let end = at.checked_add(8)?;
+    Some(u64::from_le_bytes(b.get(at..end)?.try_into().ok()?))
 }
 
 fn push_u16(b: &mut Vec<u8>, v: u16) {
