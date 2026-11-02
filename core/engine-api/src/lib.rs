@@ -3444,10 +3444,7 @@ fn resolve_pixel_source(
         {
             // 只抽內嵌 DIB；純 vector／不可直讀 ⇒ None ⇒ 續找／退佔位框
             // （n779834 浮水印走這條，零回退鎖在 k27_emf_dib 燈3）。
-            if let Some(px) = parts
-                .get(&part)
-                .and_then(|b| quire_ooxml::emf_dib_png(b))
-            {
+            if let Some(px) = parts.get(&part).and_then(|b| quire_ooxml::emf_dib_png(b)) {
                 emf = Some((part, px));
             }
         }
@@ -3457,7 +3454,9 @@ fn resolve_pixel_source(
 
 /// 是不是點陣元檔副檔名（EMF 走 DIB 直讀；WMF 本卡不做——語料 0 實例）。
 fn is_metafile_path(path: &str) -> bool {
-    path.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("emf"))
+    path.rsplit('.')
+        .next()
+        .is_some_and(|e| e.eq_ignore_ascii_case("emf"))
 }
 
 /// EMF 發射尺寸口徑：檔頭 `rclFrame` 換算值優先，未宣告（0×0）退宿主框。
@@ -4480,7 +4479,12 @@ impl Engine {
                             let (w, h) = emf_frame_size(*fp, im.w_pt, im.h_pt);
                             (png.as_slice(), mime.clone(), w, h)
                         }
-                        None => (self.doc.parts.get(path)?.as_slice(), mime.clone(), im.w_pt, im.h_pt),
+                        None => (
+                            self.doc.parts.get(path)?.as_slice(),
+                            mime.clone(),
+                            im.w_pt,
+                            im.h_pt,
+                        ),
                     };
                     let (data_b64, duotone) =
                         k19_duotone_pixels(bytes, im.duotone.map(|d| [d.color1, d.color2]));
@@ -8412,7 +8416,7 @@ mod tests {
         // Choice→pdf 不可渲染、Fallback→png 可渲染 ⇒ 跳 pdf 取 png（Bug51170）。
         assert_eq!(
             resolve_pixel_source(&parts, &rels, &["rId1", "rId2"]),
-            Some(("word/media/image2.png".into(), "image/png".into()))
+            Some(("word/media/image2.png".into(), "image/png".into(), None))
         );
         // 皆可渲染 ⇒ 取先見（文档序）。
         parts.insert("word/media/image1.pdf".to_string(), vec![1u8; 3]);
@@ -8425,12 +8429,12 @@ mod tests {
         parts.insert("word/media/a.jpg".to_string(), vec![3u8; 3]);
         assert_eq!(
             resolve_pixel_source(&parts, &rels_png2, &["rIdA", "rIdB"]),
-            Some(("word/media/image2.png".into(), "image/png".into()))
+            Some(("word/media/image2.png".into(), "image/png".into(), None))
         );
         // 懸空 rId（part 不在包內）→ 跳過續找。
         assert_eq!(
             resolve_pixel_source(&parts, &rels, &["rId3", "rId2"]),
-            Some(("word/media/image2.png".into(), "image/png".into()))
+            Some(("word/media/image2.png".into(), "image/png".into(), None))
         );
         // 全部不可渲染／查無 ⇒ None（發射退佔位框）。
         assert_eq!(resolve_pixel_source(&parts, &rels, &["rId1"]), None);
