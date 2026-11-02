@@ -183,7 +183,7 @@ impl SheetState {
 /// `xl/workbook.xml` 的 sheet 宣告（rels 歸屬前的原始三欄＋rId）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeclaredSheet {
-    /// `sheet/@name`（缺＝空字串；畸形檔不丢整條宣告）。
+    /// `sheet/@name`（缺＝空字串；畸形檔不丟整條宣告）。
     pub name: String,
     /// `sheet/@sheetId`（缺省／非法＝None）。
     pub sheet_id: Option<u32>,
@@ -209,7 +209,7 @@ pub fn read_workbook_sheets(xml: &[u8]) -> WorkbookDecl {
     let mut reader = quick_xml::Reader::from_str(&text);
     let mut out = WorkbookDecl::default();
     // 標籤棧：直接子層判定用（根＝層級 1；sheets/definedNames 的子女＝層級 3）。
-    // **所有** Start 都入棧（无关标签記 "other"）——只推不彈的棧會在錯置 End
+    // **所有** Start 都入棧（無關標籤記 "other"）——只推不彈的棧會在錯置 End
     // 時把真實層級算錯（容錯棧的代價是必須完整配對）。
     let mut stack: Vec<&'static str> = Vec::new();
     while let Ok(ev) = reader.read_event() {
