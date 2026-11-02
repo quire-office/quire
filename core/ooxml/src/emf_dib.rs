@@ -340,7 +340,7 @@ impl RecordLayout {
             return None;
         }
         let ah = h.unsigned_abs() as u64;
-        let stride = (w as u64 * bit_count as u64 + 31) / 32 * 4;
+        let stride = (w as u64 * bit_count as u64).div_ceil(32) * 4;
         if (w as u64).saturating_mul(ah) > MAX_PIXELS {
             return None;
         }
@@ -410,7 +410,7 @@ fn decode_dib(body: &[u8], layout: &RecordLayout) -> Option<DibPixels> {
         _ => return None,
     };
     let bpp_bytes = bit_count / 8;
-    let stride = (w * bit_count + 31) / 32 * 4;
+    let stride = (w * bit_count).div_ceil(32) * 4;
     // BI_BITFIELDS 且遮罩走像素區前綴時，cbBits 含那 12 位元組。
     let prefix = if comp == BI_BITFIELDS && bi_size < 52 {
         12
@@ -512,6 +512,9 @@ mod tests {
     ///
     /// **位移基準＝整筆記錄起點**（含 iType/nSize），與真實檔案一致
     /// （fdo76591 image1：offBmi=80、offBits=120，BIH 就在 record+80）。
+    // DIB 欄位本就一堆（w/h/bpp/comp/masks/bits/rop/mask_in_bits），測試建造器
+    // 照欄位一一對映，硬拆結構體反而看不清在填哪個欄位。
+    #[allow(clippy::too_many_arguments)]
     fn stretch_dib(
         w: i32,
         h: i32,
