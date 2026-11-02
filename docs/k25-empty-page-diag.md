@@ -157,7 +157,7 @@ x 軸：LO TEXT1 x=70.9、TEXT2 x=394.5；我方全部 93.0。
   **取代**混合樣本折中尺、不疊乘）。TEXT2 48pt：LO advance＝541.10−394.5＝146.60
   ＝Liberation Serif 實測 146.62；折中尺 133.98 會把整串推向邊界外側 12.6pt。
 
-### 6.3 驗收實據（显示列表 top-origin 基線，`cargo run -q -p quire-cli -- dump`）
+### 6.3 驗收實據（顯示列表 top-origin 基線，`cargo run -q -p quire-cli -- dump`）
 | 標籤 | LO (x, y) | 我方 (x, y) | Δx | Δy |
 |---|---|---|---:|---:|
 | TEXT1（16） | (70.90, 144.45) | (70.90, 144.33) | −0.00 | −0.12 |
