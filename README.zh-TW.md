@@ -1,83 +1,61 @@
-# Quire — Rust 的 Office 文件引擎
+# Quire — Rust 的 Office 文件引擎：存檔時原樣搬運未修改的 part
 
 [English](README.md) · [繁體中文](README.zh-TW.md)
 
 ![Quire](brand/banner.png)
 
-Quire 是一個 Rust 函式庫：開啟 `.docx`、排版、輸出渲染結果（每頁一張 SVG／顯示
-列表），存回時不動的東西一個位元組都不會變——引擎未觸碰的 ZIP entry 原樣寫回。
-這個說法由 CI 在 399 份真實語料上逐檔檢查（`roundtrip --check`，byte-identical），
-native 與 `wasm32-unknown-unknown` 兩個目標在 Linux 與 Windows 上都跑。
+Quire 是以 Rust 開發的文件引擎，用於開啟、排版、渲染與無損存檔 Office 文件。它不是包裝桌面辦公室軟體的外殼，也不是把檔案拆進內部物件模型後全數重寫的解析器：Quire 存檔時會重新封裝，但只有引擎被要求變更的 part 會被重寫；其餘 part——包括引擎不認識的自訂內容——皆以原始位元組原封不動放回新檔案（相同的壓縮流、ZIP64、extra field、註解與順序）。在 400 份真實文件語料上，未修改任何 part 的存檔往返達到 399 份檔案逐位元組相同（1 份因上游 CRC 損毀隔離），每次推播都由 CI 在 Linux 與 Windows 上重驗一遍。
 
-它是函式庫加一個很薄的展示殼，不是成品文書軟體。DOCX 現在可用；XLSX 以平級
-crate 進行中，掛在同一層容器／無損機制上；PPTX 排在其後
-（[後續規劃](#後續規劃) · [quireoffice.dev/roadmap](https://quireoffice.dev/roadmap)）。
+多數開源文件函式庫把檔案解析成自己的模型、再從頭寫回，於是未建模的內容就無聲消失：自訂 XML part、數位簽章資料、廠牌特有的格式設定。如果產品需要處理並輸出文件，「存檔後遺漏部分原始內容」是無法接受的缺陷——因此未修改 part 的位元組級原樣保存是 Quire 最優先達成的保證，並由 CI 嚴格把關。Quire 是函式庫加上幾層很薄的展示殼：是你嵌進產品裡的引擎，不是安裝來用的文書處理器。
 
-## 現在能用的（DOCX）
+## 三分鐘看到它動
 
-- **無損開／存**——手寫 ZIP 層，未觸碰的 entry 位元組級原樣搬運（含 ZIP64、
-  extra field、comment）。`roundtrip --check` 逐檔比對並進 CI 閘門。
-- **斷行**——真實字型度量（swash＋內建 Noto Sans TC 子集）、Knuth-Plass 逐段
-  最佳化、UAX#14 斷字規則；輸出由 golden 快照鎖住。
-- **分頁**——段落級快取＋增量重排（增量結果與整篇重建逐頁核對；p95 < 8 ms）；
-  頁面幾何取自 `sectPr`，逐頁回報。
-- **內容**——表格（含跨頁切頁）、頁首頁尾（含欄位代換）、樣式級聯
-  （docDefaults → basedOn → 直接格式）、圖片佔位框與錨定浮圖、強制分頁
-  （`w:br type="page"`）。
-- **渲染**——同一份顯示列表契約：CLI 輸出 SVG，瀏覽器殼（wasm）吃同樣的輸出。
-- **比對工具**——`scripts/render_lab.py` 拿 LibreOffice 做基線逐頁比對渲染差異。
-  視覺還在對齊中；複雜圖形族是已知的缺口，以 corpus 失敗簇追蹤。
+**在瀏覽器裡**——[quireoffice.dev/playground](https://quireoffice.dev/playground)：拖一份 `.docx` 進去。解壓、解析、排版、繪製全部在那個分頁內以 WebAssembly 完成，檔案不會離開你的裝置。目前是唯讀預覽，編輯是下一個引擎里程碑。
 
-還沒做的：編輯 UI、欄位排版（`w:cols`）、修訂追蹤、公式引擎（XLSX）、PPTX、
-協作（CRDT 層目前是空的適配位）。
+**從原始碼**
 
-## 快速開始
+```bash
+cargo test --workspace                          # 引擎測試
+cargo run -p quire-cli -- render fixtures/sample.docx --out out/quire-sample
+                                                # 每頁一張 SVG，含斷點報告
+cargo run -p quire-cli -- roundtrip corpus --check
+                                                # 無損閘門，399/399
+```
 
-    cargo test --workspace                        # 引擎測試
-    cargo run -p quire-cli -- info fixtures/sample.docx
-    cargo run -p quire-cli -- render fixtures/sample.docx --out out/quire-sample
-                                                  # 每頁一張 SVG＋分頁斷點
-    cargo run -p quire-cli -- roundtrip corpus --check
-                                                  # 語料無損閘門
-    python3 scripts/render_lab.py --n 10          # LO 基線 vs 我方
-    python3 scripts/verify_corpus.py              # 語料閘門（檔數/manifest/覆蓋率）
+## 做完了什麼、還沒做什麼
 
-瀏覽器 demo：<https://quireoffice.dev/playground>——拖放區已就緒，瀏覽器端渲染尚未上線，
-該頁會說明哪些能用、哪些還沒。
-本機跑網頁殼：`cd shells/web && npm install && npm run demo`
+**已落地** — DOCX 無損開檔／存檔（含 ZIP64、extra field、註解）；Knuth-Plass 斷行搭配 UAX#14 與真實字型度量；增量分頁（500 頁文件 p95 < 8 ms）；表格跨頁切片並重發表頭；頁首頁尾與欄位代換；完整樣式級聯；多欄版面（`w:cols`）；修訂標記渲染（`w:ins`／`w:del`）；浮動圖片、表格底紋、圖片 duotone。
+
+**進行中** — 文件編輯 API（下一個引擎里程碑）。XLSX 目前已共用同一層無損容器：`core/xlsx` 對 80 檔真實語料（POI 40＋LibreOffice QA 40）做容器級 byte-identical 往返，加上唯讀的 workbook 模型；cell 解析尚未實作。
+
+**規劃中** — ODF 家族（ODT 先）；CRDT 協作層；瀏覽器編輯器、Tauri 桌面應用、可自架的協作後端；不列預估時程，細節見 [quireoffice.dev/roadmap](https://quireoffice.dev/roadmap)。
+
+**已知缺口** — 對比 LibreOffice 的視覺再現仍在收斂，複雜繪圖族以語料失敗叢集追蹤。渲染是一份顯示列表（display list）契約，不是對任何辦公室軟體的像素級複製。
+
+## 為開啟「你不信任的檔案」而設計
+
+只會吃正常檔案的文件引擎等於展示品。Quire 把畸形輸入預設當成敵意處理：單一 entry 與整包的解壓資源上限（zip bomb 在膨脹前就被擋下）、每個解壓 part 都做 CRC-32 驗證、圖片像素預算並在 32 位元 wasm 上用 checked 算術、外加 fuzz-lite 回歸閘門斷言變異與截斷過的封包只能回報錯誤、不得 panic。解析 crate 的 release 設定保留 `overflow-checks`。細節見 [SECURITY.md](SECURITY.md)。
+
+## 為什麼自己寫 ZIP 與排版層
+
+現成的 ZIP 函式庫會重新壓縮資料流、重寫目錄記錄順序、丟掉不認識的 extra field——每一樣都讓逐位元組往返變成不可能，所以容器層自己寫。排版是同一件事的另一面：瀏覽器排版引擎每個平台結果不同，也無法在無介面環境跑，所以斷行與分頁是可決定的 Rust，在伺服器、CLI 與瀏覽器分頁裡產出同一份顯示列表。
+
+兩條界線由腳本強制、不靠默契：`core/` 不得 import `shells/`，外殼只能經 `engine-api` 進入核心（`bash scripts/check-layering.sh`）。`core/` 下每個 crate 都要能編 `wasm32-unknown-unknown`。CI 在 Ubuntu 與 Windows 跑 fmt／clippy／test／roundtrip／wasm。
 
 ## 倉庫結構
 
-    core/ooxml         DOCX 容器＋part（無損讀寫、樣式、表格）
-    core/layout        斷行＋分頁（增量、預算制）
+    core/ooxml         DOCX 容器與 parts（無損讀寫、樣式、表格）
+    core/xlsx          XLSX 活頁簿與工作表模型（共用同一層無損容器）
+    core/layout        斷行＋分頁（增量、有預算）
     core/render-trait  顯示列表契約
-    core/crdt          協作適配位（Phase 4）
-    core/engine-api    殼進核心的唯一入口
+    core/crdt          協作適配槽（規劃中）
+    core/engine-api    外殼唯一進入點
     shells/native      CLI（info / render / roundtrip）
-    shells/web         瀏覽器殼（wasm32-unknown-unknown）
-    scripts/           語料採集、LibreOffice render-lab、閘門腳本
+    shells/web         瀏覽器外殼（wasm32-unknown-unknown）
+    scripts/           語料收集、LibreOffice 比對實驗室、閘門腳本
 
-兩條界線由腳本檢查、不靠 review 約定：`core/` 不得 import `shells/`，殼只能走
-`engine-api`（`bash scripts/check-layering.sh`）。`core/` 下每個 crate 都必須能編
-`wasm32-unknown-unknown`。CI 在 ubuntu、Windows 跑
-fmt／clippy／test／roundtrip／wasm；矩陣細節在文件站。
-
-## 後續規劃
-
-|      |                                                                                          |
-|------|--------------------------------------------------------------------------------------------|
-| 現在 | DOCX：無損 round-trip ＋ 排版管線（本 repo）                                              |
-| 進行中 | XLSX：`core/xlsx` 掛同一 OPC／無損層——先活頁簿模型，接著儲存格                            |
-| 接著 | DOCX 深度（修訂追蹤、欄位排版），順序由 corpus 失敗簇決定；協作走 CRDT 適配位              |
-| 之後 | PPTX（`core/pptx`）：複用 layout／shaping，自帶畫布模型                                    |
-
-## 品牌資產
-
-標誌、lockup、banner、favicon 與使用規則見 [`brand/`](brand/)。
+深度內容在文件站 [docs.quireoffice.dev](https://docs.quireoffice.dev)——架構筆記、CLI 參考、渲染實驗室流程、playground 說明。品牌素材（標誌、組合圖、banner、使用規範）在 [`brand/`](brand/)。
 
 ## 授權
 
-原始碼以 **Apache License 2.0** 授權發布（`LICENSE-APACHE`）。例外：
-`core/layout/assets/` 下的 Noto Sans TC 子集字型依上游 **SIL Open Font License 1.1**
-授權（見同目錄 `OFL.txt`）；`corpus/` 為測試語料，各檔授權追蹤於
-`corpus/manifest.json`。
+原始碼採 **Apache License 2.0**（`LICENSE-APACHE`）。`core/layout/assets/` 下的 Noto Sans TC 字型子集保留上游 **SIL Open Font License 1.1**（該目錄 `OFL.txt`）；`corpus/` 為測試語料，逐檔授權追蹤於 `corpus/manifest.json`。

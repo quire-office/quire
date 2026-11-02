@@ -1,0 +1,28 @@
+# 依賴更新機器人（外部 code review 2026-11-02 建議；PM 落地）
+# cargo workspace 根＋兩個 shell 的 npm＋GitHub Actions，每週各一 PR。
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+  - package-ecosystem: npm
+    directory: "/shells/web"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    labels: ["dependencies"]
+  - package-ecosystem: npm
+    directory: "/shells/web-collab"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    labels: ["dependencies"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "ci"]
