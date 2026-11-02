@@ -117,6 +117,22 @@ pub struct VmlGroupChild {
     /// （`w:jc=right` ＋ 48pt 標籤，LO 基線 x=394.5）實據。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub align: Option<String>,
+    /// 子件 `style/@top` 的**原始 coord 數值**（除錯與擬合用；發射層吃
+    /// `rect`，不直接吃本欄）。帶單位字尾者＝非 coord 單位 → None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coord_top: Option<f64>,
+}
+
+/// K25-B：解析期進行中的子件累積（完結時轉 [`VmlGroupChild`]）。
+struct PendingVmlChild {
+    rect: [f32; 4],
+    txbx_start: usize,
+    /// 本子件 `w:txbxContent` 已 flush 的段落數（＝`txbx_len`）。
+    para: usize,
+    anchor_bottom: bool,
+    inset: Option<[f32; 4]>,
+    align: Option<String>,
+    coord_top: Option<f64>,
 }
 
 /// K19：`a:blip` 下的像素級雙色調宣告（ECMA-376 §20.1.7.28 `a:duotone`）。
@@ -1167,6 +1183,13 @@ fn apply_vml_deco(v: &mut Pending, name: &[u8], e: &quick_xml::events::BytesStar
             if v.txbx_inset.is_none() {
                 v.txbx_inset = parse_vml_inset(attr_local(e, b"inset").as_deref());
             }
+            // K25-B：進行中子件自帶 inset 與宿主框分離（n751077 三子件皆未宣告
+            // → None＝發射層退 VML 預設內縮，非宿主框的值）。
+            if let Some(ch) = v.vml_child.as_mut() {
+                if ch.inset.is_none() {
+                    ch.inset = parse_vml_inset(attr_local(e, b"inset").as_deref());
+                }
+            }
             if !v.txbx_vertical {
                 let (_, _, kv) = vml_style_map(attr_local(e, b"style").as_deref());
                 if let Some(flow) = style_lookup(&kv, "layout-flow") {
@@ -1318,6 +1341,10 @@ struct Pending {
     dash: Option<String>,
     /// 最近一個可映射 shape 的組內矩形（pt，相對外框原點）。
     mapped_rect: Option<[f32; 4]>,
+    /// K25-B：進行中的釘定群組子件（`v:group` Start 清空、子件 End 落表）。
+    vml_child: Option<PendingVmlChild>,
+    /// K25-B：釘定群組已完結的子件清單（文档序）。
+    vml_children: Vec<VmlGroupChild>,
     txbx_rect: Option<[f32; 4]>,
     txbx_inset: Option<[f32; 4]>,
     txbx_vertical: bool,
@@ -1517,6 +1544,8 @@ impl Pending {
             stroke_w: None,
             dash: None,
             mapped_rect: None,
+            vml_child: None,
+            vml_children: Vec::new(),
             txbx_rect: None,
             txbx_inset: None,
             txbx_vertical: false,
@@ -1709,6 +1738,12 @@ impl DrawingParser {
             embed_rid: p.rid.clone(),
             embed_rids: p.rids.clone(),
             group_shapes: p.group_shapes.clone(),
+            // K25-B：釘定群組才落子件清單（非釘定＝空＝serde 不外露＝零擾動）。
+            vml_group_children: if p.page_pinned {
+                p.vml_children.clone()
+            } else {
+                Vec::new()
+            },
             txbx_borders: p.txbx_borders.clone(),
             // K19 回塞鎖：buggy 態永不落地 duotone（燈1/2 必紅）。
             duotone: if self.duotone_buggy { None } else { p.duo },
@@ -1793,6 +1828,9 @@ fn push_group_frame(v: &mut Pending, e: &quick_xml::events::BytesStart) {
             h_pt,
         })
     })();
+    // K25-B：入新幀＝進入（巢狀）子組——直系子件累積到此為止（孫件的 rect
+    // 屬子組 own frame，不得冒充外層組的直系子件）。
+    v.vml_child = None;
     v.coord_stack.push(frame);
 }
 
@@ -1801,9 +1839,6 @@ fn push_group_frame(v: &mut Pending, e: &quick_xml::events::BytesStart) {
 /// （毒化層／帶單位值／缺尺寸）→ 不動 `mapped_rect`（None＝呼叫端
 /// 退回整框，老實退化）。
 fn map_child_shape(v: &mut Pending, e: &quick_xml::events::BytesStart) {
-    if v.mapped_rect.is_some() {
-        return;
-    }
     let Some(frame) = v.coord_stack.last().copied().flatten() else {
         return;
     };
@@ -1817,9 +1852,69 @@ fn map_child_shape(v: &mut Pending, e: &quick_xml::events::BytesStart) {
         frame.scale_x(r[2]),
         frame.scale_y(r[3]),
     ];
-    if rect.iter().all(|x| x.is_finite()) && rect[2] > 0.0 && rect[3] > 0.0 {
+    if !(rect.iter().all(|x| x.is_finite()) && rect[2] > 0.0 && rect[3] > 0.0) {
+        return;
+    }
+    // K4c 舊契約（零擾動）：只留「第一個可映射子件」的矩形退整框用。
+    if v.mapped_rect.is_none() {
         v.mapped_rect = Some(rect);
     }
+    // K25-B：進行中的子件累積（僅釘定群組，見 `begin_vml_child`）。首見為準
+    // ——巢狀子組內的孫件不改寫本欄（其座標屬子組 coordinate frame）。
+    // 注意：本欄＝VML 專用的 `vml_child`，與 K24 DrawingML 的 `cur_child`
+    // （`PendingChildShape`，wps 群組子形狀）是兩條互不相干的路徑。
+    if let Some(ch) = v.vml_child.as_mut() {
+        ch.rect = rect;
+        ch.coord_top = Some(r[1]);
+    }
+}
+
+/// K25-B：`v:group` 的子件（`v:rect`／`v:shape`／…）Start → 開一筆進行中子件
+/// 累積。**只對「釘定群組」開栓**（`page_pinned`＝LO 真值擬合範圍；非釘定
+/// 群組／VML 直下裸 shape → None＝舊行為零擾動，絕不誤吞非群組路徑）。
+/// 頂幀缺（毒化層）也照樣開筆——座標缺時完結不落表。
+fn begin_vml_child(
+    v: &mut Pending,
+    e: &quick_xml::events::BytesStart,
+    depth: usize,
+) {
+    // `depth`＝呼叫當下的 coord 幀棧高：**1** 才是「最外層組的直系子件」。
+    // 0＝無組（裸 shape，非本卡範圍）；≥2＝巢狀子組的孫件（其座標屬子組 own
+    // frame，冒充外層組子件會錯位）——一律不開栓。
+    if !(v.floating && v.page_pinned) || depth != 1 {
+        return;
+    }
+    let (_, _, kv) = vml_style_map(attr_local(e, b"style").as_deref());
+    v.vml_child = Some(PendingVmlChild {
+        // 占位＝非法（0 尺寸）；只有 `map_child_shape` 成功才會被覆寫成實值。
+        rect: [0.0, 0.0, 0.0, 0.0],
+        txbx_start: v.txbx.len(),
+        para: 0,
+        anchor_bottom: style_lookup(&kv, "v-text-anchor")
+            .is_some_and(|a| a.eq_ignore_ascii_case("bottom")),
+        inset: None,
+        align: None,
+        coord_top: None,
+    });
+}
+
+/// K25-B：直系子件完結 → 有合法映射矩形才落表（老實退化：缺矩形＝發射層退
+/// 舊整框路徑）。無條件清空進行中欄位（下一子件 Start 重開一筆）。
+fn finish_vml_child(v: &mut Pending) {
+    let Some(ch) = v.vml_child.take() else { return };
+    let rect_ok = ch.rect.iter().all(|x| x.is_finite()) && ch.rect[2] > 0.0 && ch.rect[3] > 0.0;
+    if !rect_ok || v.vml_children.len() >= 64 {
+        return; // 座標非法／異常膨脹：老實不發射逐框排版
+    }
+    v.vml_children.push(VmlGroupChild {
+        rect: ch.rect,
+        txbx_start: ch.txbx_start,
+        txbx_len: ch.para,
+        anchor_bottom: ch.anchor_bottom,
+        inset: ch.inset,
+        align: ch.align,
+        coord_top: ch.coord_top,
+    });
 }
 
 fn apply_graphic_elem(
@@ -2105,6 +2200,13 @@ impl DrawingParser {
                 if v.txbx_align.is_none() {
                     v.txbx_align = val.clone();
                 }
+                // K25-B：子件級對齊（首見為準）——群組的 `txbx_align` 是跨框
+                // 展平值，逐框排版吃的是自己這一份。
+                if let Some(ch) = v.vml_child.as_mut() {
+                    if ch.align.is_none() {
+                        ch.align = val.clone();
+                    }
+                }
             }
             if let Some(g) = self.graphic.as_mut() {
                 if g.txbx_align.is_none() {
@@ -2197,6 +2299,9 @@ impl DrawingParser {
                                 v.w = w;
                                 v.h = h;
                             }
+                            // K25-B：釘定群組的**直系**子件開一筆框內文字累積
+                            // （`coord_stack.len()==1`＝最外層組的直接子件）。
+                            begin_vml_child(v, e, v.coord_stack.len());
                             map_child_shape(v, e);
                             apply_shape_style(v, e);
                         }
@@ -2499,6 +2604,13 @@ impl DrawingParser {
                 if v.txbx_align.is_none() {
                     v.txbx_align = val.clone();
                 }
+                // K25-B：子件級對齊（n751077 `s1040` 的 `<w:jc w:val="right"/>`
+                // 是**自閉合**標籤 → 走 on_empty 這條；Start 分支同樣補一份）。
+                if let Some(ch) = v.vml_child.as_mut() {
+                    if ch.align.is_none() {
+                        ch.align = val.clone();
+                    }
+                }
             }
             if let Some(g) = self.graphic.as_mut() {
                 if g.txbx_align.is_none() {
@@ -2711,6 +2823,11 @@ impl DrawingParser {
                     v.txbx_para_depth = v.txbx_para_depth.saturating_sub(1);
                     if v.txbx_para_depth == 0 {
                         v.txbx.push(std::mem::take(&mut v.txbx_cur));
+                        // K25-B：本段屬進行中子件——累加其段落數（發射層據
+                        // `txbx_start`＋`txbx_len` 切片出該框自己的段落）。
+                        if let Some(ch) = v.vml_child.as_mut() {
+                            ch.para += 1;
+                        }
                     }
                 }
             }
@@ -2793,6 +2910,14 @@ impl DrawingParser {
                 return;
             }
             if is_vml_shape(name) {
+                // K25-B：直系子件完結 → 落進釘定群組子件清單（座標非法＝
+                // 老實不落，發射層退舊整框路徑）。巢狀子組（name==group）與
+                // 非直系子件（vml_child 已被子組 Start 清空）不走這裡。
+                if name != b"group" {
+                    if let Some(v) = self.vml.as_mut() {
+                        finish_vml_child(v);
+                    }
+                }
                 self.shape_depth = self.shape_depth.saturating_sub(1);
                 // pict 尚未閉合時不提前完結（外層 pict End 統一收尾）。
                 if self.pict_depth == 0 && self.shape_depth == 0 {
