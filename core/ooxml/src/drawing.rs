@@ -2473,6 +2473,17 @@ impl DrawingParser {
                         v.note_rid(attr_local(e, b"id"));
                     }
                 }
+                // K27（實據 fdo76591）：`w:pict > v:shape > v:textbox >
+                // w:txbxContent > w:r > w:drawing > wp:inline > a:blip` 是
+                // LO 匯出圖的常見雙層形態——內層 DrawingML 的 blip rId 在此
+                // 前一律漏收（VML 分支只認 imagedata）⇒ 像素池永遠解不到
+                // media part，EMF 也永遠輪不到直讀。只記 rId（像素備選），
+                // 幾何／段落／採納旗標一概不動（同 Fallback 子樹的破例口徑）。
+                b"blip" => {
+                    if let Some(v) = self.vml.as_mut() {
+                        v.note_rid(attr_local(e, b"embed"));
+                    }
+                }
                 b"gfxdata" => {
                     if let Some(v) = self.vml.as_mut() {
                         v.vml_gfxdata = true;
