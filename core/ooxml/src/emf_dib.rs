@@ -274,26 +274,40 @@ struct RecordLayout {
 }
 
 impl RecordLayout {
-    /// 兩式並試：`(固定區尾, offBmi 位移, rop 位移)` ＝ `(80, 48, 32)`（LO 實寫，
-    /// `iRopColorUse` 在 `iUsage` 前）與 `(96, 64, 60)`（MS-EMF 規格）。
+    /// 固定區版式：**傳統 GDI／LO 實寫式**（固定區 80B：offBmi/cbBmi/offBits/
+    /// cbBits 在 body+48..64、`iRopColorUse` 在 body+64、`iRop` 在 body+68，
+    /// 位移值以 body 起點為基準）。
     ///
-    /// 判準＝自我一致性（見檔頭）。兩式都過時取先試的 LO 式——實務上不可能
-    /// 同時自洽（另一式讀出的是像素垃圾），真遇同時自洽者留 LO 式即可。
+    /// **實據**（本次逐欄 hex dump 覆核，非引用規格表）：`fdo76591`
+    /// `image1.emf`／`image2.emf` 兩筆 `EMR_STRETCHDIBITS` 皆此式——
+    /// image1 `+48=80(offBmi) +52=40(cbBmi) +56=120(offBits) +60=60756(cbBits)
+    /// +64=0(iRopColorUse) +68=0x00CC0020(SRCCOPY)`；image2 同位同形。
+    ///
+    /// **不實作** MS-EMF §2.3.3.31 的字面版式（固定區 108B、off* 以整筆記錄為
+    /// 基準）：語料 0 實例，欄位偏移無實據可驗，憑規格表硬寫＝憑空猜測；
+    /// 真有該式檔案出現由後續卡帶實據補（届时自我一致性校驗仍是守門）。
     fn parse(body: &[u8]) -> Option<Self> {
-        [(80usize, 48usize, 32usize), (96, 64, 60)]
-            .into_iter()
-            .find_map(|(fixed_end, o_off, rop_off)| {
-                Self::try_layout(body, fixed_end, o_off, rop_off)
-            })
+        Self::try_layout(body, 80, 48, 68, 64)
     }
 
-    fn try_layout(body: &[u8], fixed_end: usize, o_off: usize, rop_off: usize) -> Option<Self> {
+    fn try_layout(
+        body: &[u8],
+        fixed_end: usize,
+        o_off: usize,
+        rop_off: usize,
+        rop_use_off: usize,
+    ) -> Option<Self> {
         if body.len() < fixed_end.max(o_off + 16).max(rop_off + 4) {
             return None;
         }
         let rd = |s: usize| u32::from_le_bytes(body[s..s + 4].try_into().ok().unwrap());
         let (off_bmi, cb_bmi, off_bits, cb_bits) =
             (rd(o_off), rd(o_off + 4), rd(o_off + 8), rd(o_off + 12));
+        // `iRopColorUse != 0` ⇒ 該槽是 BkColor 不是 iRop（與背景混合），我們
+        // 無法忠實重現 ⇒ 老實退佔位框，不拿 BkColor 當 ROP 讀。
+        if rd(rop_use_off) != 0 {
+            return None;
+        }
         let rop = rd(rop_off);
         let (off_bmi_u, cb_bmi_u, off_bits_u) = (off_bmi as usize, cb_bmi as usize, off_bits as usize);
         if off_bmi_u < fixed_end
@@ -482,10 +496,13 @@ mod tests {
         r
     }
 
-    /// 造 `EMR_STRETCHDIBITS`：`spec_layout` 選固定區式（false=LO 80B／true=MS 96B）。
+    /// 造 `EMR_STRETCHDIBITS`（真實語料版式，固定區 80 位元組——見
+    /// `RecordLayout::parse` 的 hex dump 實據；不再造第二式，因語料 0 實例）。
     /// `mask_in_bits`＝BI_BITFIELDS 遮罩放像素區前綴（true）或 BIH 延伸（false）。
+    ///
+    /// **位移基準＝整筆記錄起點**（含 iType/nSize），與真實檔案一致
+    /// （fdo76591 image1：offBmi=80、offBits=120，BIH 就在 record+80）。
     fn stretch_dib(
-        spec_layout: bool,
         w: i32,
         h: i32,
         bpp: u16,
@@ -495,20 +512,15 @@ mod tests {
         rop: u32,
         mask_in_bits: bool,
     ) -> Vec<u8> {
-        let fixed_end: usize = if spec_layout { 96 } else { 80 };
+        // 記錄固定區 80B（record 相對）⇒ 扣掉 iType/nSize 後，本檔固定區 72B。
+        const REC_FIXED: usize = 80;
         let bih_len = if masks.is_some() && !mask_in_bits { 52 } else { 40 };
-        let mut body = vec![0u8; fixed_end];
-        // 兩式共同欄位（xDest/yDest/cxDest/cyDest 同在 24..40，rclBounds 8..24）。
-        body[8..12].copy_from_slice(&0i32.to_le_bytes());
-        body[12..16].copy_from_slice(&0i32.to_le_bytes());
-        body[16..20].copy_from_slice(&w.to_le_bytes());
-        body[20..24].copy_from_slice(&h.abs().to_le_bytes());
-        body[24..28].copy_from_slice(&0i32.to_le_bytes());
-        body[28..32].copy_from_slice(&0i32.to_le_bytes());
-        body[32..36].copy_from_slice(&w.to_le_bytes());
-        body[36..40].copy_from_slice(&h.abs().to_le_bytes());
-        body[40..44].copy_from_slice(&w.to_le_bytes());
-        body[44..48].copy_from_slice(&h.abs().to_le_bytes());
+        let mut rec: Vec<u8> = vec![0u8; REC_FIXED];
+        rec[0..4].copy_from_slice(&EMR_STRETCHDIBITS.to_le_bytes());
+        // rclBounds(8..24) 留零；rclDest/rclSrc 本卡不讀（尺寸口徑用 EMF 檔頭
+        // rclFrame），照真實檔案的形態填寬高，避免日後誤讀。
+        rec[40..44].copy_from_slice(&w.to_le_bytes());
+        rec[44..48].copy_from_slice(&h.abs().to_le_bytes());
 
         let mut bih = vec![0u8; bih_len];
         bih[0..4].copy_from_slice(&(bih_len as u32).to_le_bytes());
@@ -524,27 +536,29 @@ mod tests {
                 bih[48..52].copy_from_slice(&bm.to_le_bytes());
             }
         }
-        let off_bmi = fixed_end;
+        let off_bmi = REC_FIXED;
         let off_bits = off_bmi + bih_len;
         let cb_bits = bits.len() + if mask_in_bits { 12 } else { 0 };
-        let (o_off, rop_off) = if spec_layout { (64usize, 60usize) } else { (48, 32) };
-        body[o_off..o_off + 4].copy_from_slice(&(off_bmi as u32).to_le_bytes());
-        body[o_off + 4..o_off + 8].copy_from_slice(&(bih_len as u32).to_le_bytes());
-        body[o_off + 8..o_off + 12].copy_from_slice(&(off_bits as u32).to_le_bytes());
-        body[o_off + 12..o_off + 16].copy_from_slice(&(cb_bits as u32).to_le_bytes());
-        body[rop_off..rop_off + 4].copy_from_slice(&rop.to_le_bytes());
+        rec[48..52].copy_from_slice(&(off_bmi as u32).to_le_bytes());
+        rec[52..56].copy_from_slice(&(bih_len as u32).to_le_bytes());
+        rec[56..60].copy_from_slice(&(off_bits as u32).to_le_bytes());
+        rec[60..64].copy_from_slice(&(cb_bits as u32).to_le_bytes());
+        rec[64..68].copy_from_slice(&0u32.to_le_bytes()); // iRopColorUse＝0 ⇒ +68 真是 iRop
+        rec[68..72].copy_from_slice(&rop.to_le_bytes());
 
-        let mut payload = body;
-        payload.extend_from_slice(&bih);
+        rec.extend_from_slice(&bih);
         if let Some((rm, gm, bm)) = masks {
             if mask_in_bits {
-                payload.extend_from_slice(&rm.to_le_bytes());
-                payload.extend_from_slice(&gm.to_le_bytes());
-                payload.extend_from_slice(&bm.to_le_bytes());
+                rec.extend_from_slice(&rm.to_le_bytes());
+                rec.extend_from_slice(&gm.to_le_bytes());
+                rec.extend_from_slice(&bm.to_le_bytes());
             }
         }
-        payload.extend_from_slice(bits);
-        record(EMR_STRETCHDIBITS, &payload)
+        rec.extend_from_slice(bits);
+        // nSize 回填（真實檔案：offBits+cbBits 恰等於 nSize）。
+        let n = rec.len();
+        rec[4..8].copy_from_slice(&(n as u32).to_le_bytes());
+        rec
     }
 
     /// 88B 檔頭（rclFrame 起於 (0,0)）＋記錄串。
@@ -555,7 +569,7 @@ mod tests {
         out[0..4].copy_from_slice(&1u32.to_le_bytes());
         out[4..8].copy_from_slice(&(n_size as u32).to_le_bytes());
         out[8..24].copy_from_slice(&[0u8; 16]);
-        out[24..32].copy_from_slice(&0i32.to_le_bytes());
+        out[24..32].copy_from_slice(&[0u8; 8]);
         out[32..36].copy_from_slice(&frame_wh_01mm.0.to_le_bytes());
         out[36..40].copy_from_slice(&frame_wh_01mm.1.to_le_bytes());
         out[40..44].copy_from_slice(b" EMF");
@@ -589,7 +603,7 @@ mod tests {
         // 卡面燈2 變體甲：16bpp 5-5-5（BI_RGB）＋ LO 實寫記錄式。
         let emf = wrap(
             (2000, 2000),
-            &[stretch_dib(false, 2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
+            &[stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
         );
         let d = emf_embedded_dib(&emf).expect("LO 式記錄必可抽 DIB");
         assert_eq!((d.width, d.height), (2, 2));
@@ -604,10 +618,13 @@ mod tests {
             (d.rgba[i], d.rgba[i + 1], d.rgba[i + 2], d.rgba[i + 3])
         };
         // bottom-up ⇒ 頂列是像素區第二列。
-        assert_eq!(px(0, 0), (248, 0, 0, 255), "0xF800 5-5-5 紅");
-        assert_eq!(px(1, 0), (255, 255, 255, 255), "0x7FFF ⇒ 全白");
-        assert_eq!(px(0, 1), (0, 0, 248, 255), "0x001F ⇒ 藍");
-        assert_eq!(px(1, 1), (0, 248, 0, 255), "0x07C0 ⇒ 綠");
+        // 口徑＝X1R5G5B5（bit15 是 X 不是 R）＋ 5 位元滿值 *255/31（與 P5 探針
+        // `*255//31`、corpus 取證像素同一把尺；不是「取頂字节」——那會讓
+        // 0xF800 出 248 而 LO 出 246，色軸直接偏）。
+        assert_eq!(px(0, 0), (246, 0, 0, 255), "0xF800：X=1、R=30 ⇒ 30*255/31");
+        assert_eq!(px(1, 0), (255, 255, 255, 255), "0x7FFF ⇒ R/G/B 皆滿值 255");
+        assert_eq!(px(0, 1), (0, 0, 255, 255), "0x001F ⇒ B 滿值");
+        assert_eq!(px(1, 1), (8, 246, 0, 255), "0x07C0：G=30 且 bit10 落 R 場 ⇒ R=1");
     }
 
     #[test]
@@ -618,8 +635,7 @@ mod tests {
         let bits = dib16([[0x001F, 0x07E0], [0xF800, 0xFFFF]]);
         let emf = wrap(
             (2000, 2000),
-            &[stretch_dib(
-                true, 2, 2, 16, BI_BITFIELDS,
+            &[stretch_dib(2, 2, 16, BI_BITFIELDS,
                 Some(masks), &bits, SRCCOPY, false,
             )],
         );
@@ -628,9 +644,10 @@ mod tests {
             let i = (y * 2 + x) * 4;
             (d.rgba[i], d.rgba[i + 1], d.rgba[i + 2], d.rgba[i + 3])
         };
-        assert_eq!(px(0, 0), (248, 0, 0, 255), "565 紅端（5 位元）");
+        // BI_BITFIELDS 走遮罩標尺：滿值 ⇒ 255（遮罩寬 5 位元時 31*255/31）。
+        assert_eq!(px(0, 0), (255, 0, 0, 255), "565 紅端遮罩滿值");
         assert_eq!(px(1, 0), (255, 255, 255, 255), "0xFFFF 565 ⇒ 全白");
-        assert_eq!(px(0, 1), (0, 0, 248, 255), "565 藍端（5 位元）");
+        assert_eq!(px(0, 1), (0, 0, 255, 255), "565 藍端遮罩滿值");
         assert_eq!(px(1, 1), (0, 255, 0, 255), "565 綠端（6 位元 ⇒ 63→255）");
     }
 
@@ -641,14 +658,13 @@ mod tests {
         let bits = dib16([[0x001F, 0x07E0], [0xF800, 0xFFFF]]);
         let emf = wrap(
             (2000, 2000),
-            &[stretch_dib(
-                false, 2, 2, 16, BI_BITFIELDS,
+            &[stretch_dib(2, 2, 16, BI_BITFIELDS,
                 Some(masks), &bits, SRCCOPY, true,
             )],
         );
         let d = emf_embedded_dib(&emf).expect("遮罩前綴式必可抽 DIB");
-        let i = 0usize; // 頂列首元 = 0xF800
-        assert_eq!((d.rgba[i], d.rgba[i + 1], d.rgba[i + 2]), (248, 0, 0));
+        let i = 0usize; // 頂列首元 = 0xF800（遮罩滿值 ⇒ 255）
+        assert_eq!((d.rgba[i], d.rgba[i + 1], d.rgba[i + 2]), (255, 0, 0));
     }
 
     #[test]
@@ -657,12 +673,12 @@ mod tests {
         let bits = dib16([[0xF800, 0x7FFF], [0x001F, 0x07C0]]);
         let emf = wrap(
             (2000, 2000),
-            &[stretch_dib(false, 2, -2, 16, BI_RGB, None, &bits, SRCCOPY, false)],
+            &[stretch_dib(2, -2, 16, BI_RGB, None, &bits, SRCCOPY, false)],
         );
         let d = emf_embedded_dib(&emf).expect("負高 top-down 必可抽");
         let i = 0usize;
-        assert_eq!((d.rgba[i], d.rgba[i + 1], d.rgba[i + 2]), (248, 0, 0),
-                   "top-down ⇒ 像素區首列即頂列（紅）");
+        assert_eq!((d.rgba[i], d.rgba[i + 1], d.rgba[i + 2]), (246, 0, 0),
+                   "top-down ⇒ 像素區首列即頂列（0xF800 5-5-5 紅）");
     }
 
     #[test]
@@ -673,7 +689,7 @@ mod tests {
                 (2000, 2000),
                 &[
                     record(t, &[0u8; 8]),
-                    stretch_dib(false, 2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false),
+                    stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false),
                 ],
             );
             assert_eq!(
@@ -689,7 +705,7 @@ mod tests {
                 (2000, 2000),
                 &[
                     record(t, &[0u8; 16]),
-                    stretch_dib(false, 2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false),
+                    stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false),
                 ],
             );
             assert!(
@@ -704,13 +720,13 @@ mod tests {
         // 閘 2：畫面框 4:1、DIB 1:1 ⇒ DIB 只佔畫面一小塊 ⇒ 否決（n779834 形態）。
         let emf = wrap(
             (20000, 5000),
-            &[stretch_dib(false, 2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
+            &[stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
         );
         assert_eq!(emf_embedded_dib_checked(&emf), Err(EmfReject::AspectMismatch));
         // 畫面框未宣告（0×0）⇒ 不由閘 2 否決（呼叫端退回宿主框尺寸）。
         let emf0 = wrap(
             (0, 0),
-            &[stretch_dib(false, 2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
+            &[stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
         );
         assert!(emf_embedded_dib(&emf0).is_some(), "無 rclFrame 不得由閘 2 否決");
     }
@@ -721,7 +737,7 @@ mod tests {
         for comp in [1u32, 2, 4, 5, 69, 70, 0xFF] {
             let emf = wrap(
                 (2000, 2000),
-                &[stretch_dib(false, 2, 2, 16, comp, None, &dib16_555(), SRCCOPY, false)],
+                &[stretch_dib(2, 2, 16, comp, None, &dib16_555(), SRCCOPY, false)],
             );
             assert!(
                 emf_embedded_dib(&emf).is_none(),
@@ -729,22 +745,22 @@ mod tests {
             );
         }
         // 调色板（biClrUsed>0）⇒ 不支援。
-        let mut rec = stretch_dib(false, 2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false);
-        // BIH 起點＝記錄 body 的 offBmi=80 ⇒ 記錄內位移 8+80=88；biClrUsed@+32。
-        let clr_at = 8 + 80 + 32;
+        let mut rec = stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false);
+        // 版式＝記錄相對：BIH 起點在 record+80；biClrUsed@BIH+32 ⇒ record+112。
+        let clr_at = 80 + 32;
         rec[clr_at..clr_at + 4].copy_from_slice(&4u32.to_le_bytes());
         let emf = wrap((2000, 2000), &[rec]);
         assert!(emf_embedded_dib(&emf).is_none(), "调色板 DIB 不得假解");
         // ROP 非 SRCCOPY ⇒ 無法忠實重現。
         let emf = wrap(
             (2000, 2000),
-            &[stretch_dib(false, 2, 2, 16, BI_RGB, None, &dib16_555(), 0x00EE_0086, false)],
+            &[stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), 0x00EE_0086, false)],
         );
         assert_eq!(emf_embedded_dib_checked(&emf), Err(EmfReject::UnsupportedRop));
         // 像素區截斷 ⇒ None（不可 panic、不可虛構半張圖）。
         let mut emf = wrap(
             (2000, 2000),
-            &[stretch_dib(false, 2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
+            &[stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
         );
         let cut = emf.len() - 6;
         emf.truncate(cut);
@@ -782,7 +798,7 @@ mod tests {
         junk.extend((1..64).map(|k| {
             let mut base = wrap(
                 (2000, 2000),
-                &[stretch_dib(false, 2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
+                &[stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
             );
             base.truncate(base.len() - k);
             base
