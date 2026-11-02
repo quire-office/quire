@@ -1573,6 +1573,8 @@ mod tests {
             pos_y_rel: None,
             pos_y_align: None,
             pos_y_pct: None,
+            // K25-B：手刻最小候選＝非釘定群組，子件清單恆空（serde 不外露）。
+            vml_group_children: Vec::new(),
             overlap: None,
             embed_rid: None,
             embed_rids: Vec::new(),

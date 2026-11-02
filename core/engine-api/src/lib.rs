@@ -2065,22 +2065,36 @@ impl Engine {
                 Some(it) => items.push(it),
                 None => emit_image_shape(&mut items, fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt, box_b),
             }
+            // K25-B：釘定 VML 群組的子件框內文字——逐框排版（LO 真值擬合；
+            // 接管成功＝本框不再走 emit_txbx_texts，免得整組文字再塌框頂）。
+            // 老實退化：回 false＝資格不合／座標非法，呼叫端舊路徑逐位不變。
+            let start = items.len();
+            let k25b_taken = box_b.is_some_and(|b| {
+                emit_vml_group_children(
+                    &mut items,
+                    (fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt),
+                    b,
+                    paras.get(fm.para),
+                    size,
+                )
+            });
             if let Some((bi, (_, b))) = hit {
                 box_used[bi] = true;
-                let start = items.len();
-                emit_txbx_texts(
-                    &mut items,
-                    fm.x_pt,
-                    fm.y_pt,
-                    fm.w_pt,
-                    fm.h_pt,
-                    &b.txbx_texts,
-                    txbx_runs_for(paras.get(fm.para), b),
-                    size,
-                    line_h,
-                    Some(b),
-                    !r6_buggy,
-                );
+                if !k25b_taken {
+                    emit_txbx_texts(
+                        &mut items,
+                        fm.x_pt,
+                        fm.y_pt,
+                        fm.w_pt,
+                        fm.h_pt,
+                        &b.txbx_texts,
+                        txbx_runs_for(paras.get(fm.para), b),
+                        size,
+                        line_h,
+                        Some(b),
+                        !r6_buggy,
+                    );
+                }
                 push_txbx_keys(
                     &mut txbx_keys,
                     &items,
@@ -2542,6 +2556,28 @@ pub(crate) fn face_advance_scale(face: &str) -> f32 {
         "noto serif" | "notoserif" => 1.0328,
         // TODO(K7-cal)：Tahoma→LO 實際替代 face 未實測（VCL 替代表本機查無
         // 實據），**不虛構**——1.0 後備；補量後入表。
+        _ => 1.0,
+    }
+}
+
+/// K25-B：K7-cal 的 **A_upper 軌**（`docs/k7-advance-matrix.csv` 第 A_upper 欄，
+/// 全大寫樣本的「LO face 寬／內嵌子集寬」比）。K7 引擎表取混合樣本折中值
+/// （TNR 0.9648），對全大寫串系統性偏窄：TEXT2 48pt 折中尺量得 138.86×0.9648＝
+/// 133.98，LO 實測 advance＝541.10−394.5＝146.60（＝Liberation Serif 實測
+/// 146.62），偏 8.6%——右對齊的位移直接吃量寬，偏窄會把整串字推向右邊界外側
+/// （實測 x=407.12，LO 394.5）。A_upper 軌與 `face_advance_scale` **同尺同向**
+/// （同為 LO face／內嵌子集，只是樣本全大寫），故全大寫串以本值**取代**折中值、
+/// **不疊乘**。**只供 K25-B 釘定群組框內的對齊位移**使用（斷行尺仍走
+/// `face_advance_scale`，既有行為零擾動）；查不到族＝1.0（零擾動守門，比照 K7
+/// 未命中口徑）。
+pub(crate) fn face_advance_scale_caps(face: &str) -> f32 {
+    let key = face.trim().to_lowercase();
+    match key.as_str() {
+        "calibri" | "carlito" => 0.8711,
+        "cambria" | "caladea" => 0.9436,
+        "liberation serif" | "liberationserif" | "times new roman" | "times" => 1.0487,
+        "arial" | "liberation sans" | "liberationsans" | "helvetica" => 1.0656,
+        "noto serif" | "notoserif" => 1.0518,
         _ => 1.0,
     }
 }
@@ -3352,6 +3388,238 @@ fn emit_txbx_texts(
             items.append(b);
         }
     }
+}
+
+/// K6 同構表：宣告族 → LO 實際渲染 face 的**基線分配比** asc/(asc+|desc|)。
+/// 框內行盒基線＝行頂＋本值×字級×行高因子（`ALP = ratio × LH`，n751077 六組
+/// LO 資料集擬合殘差 ≤0.21pt，`docs/k25b-vml-group-child-y.md` §2）。
+/// 值全部來自本機 hhea 實測（探針 scratch `ttf_hhea2.py`／`ttf_ttc.py`，
+/// 逐檔 asc/desc/upm 已記帳）；**查不到族＝退 Liberation Serif 實測值**
+/// （與 K6 `face_line_factor` 同口徑的後備 face，不虛構新值）。
+pub(crate) fn face_baseline_ratio(face: &str) -> f32 {
+    let key = face.trim().to_lowercase();
+    match key.as_str() {
+        // LibSerif（asc=1825 desc=-443 upm=2048，本機實測）。
+        "liberation serif" | "liberationserif" | "times new roman" | "times" => 0.80467,
+        // LibSans（asc=1854 desc=-434 upm=2048）。
+        "arial" | "liberation sans" | "liberationsans" | "helvetica" => 0.81031,
+        // Calibri（asc=1536 desc=-512 upm=2048）。
+        "calibri" | "carlito" => 0.75000,
+        // Cambria（asc=1946 desc=-455 upm=2048）。
+        "cambria" | "caladea" => 0.81050,
+        // PMingLiU（asc=820 desc=-204 upm=1024）。
+        "pmingliu" | "mingliu" | "新細明體" => 0.80078,
+        // TODO(K25-B)：NotoSerif／WQY 等族本機查無 face 檔，**不虛構**——
+        // 退 Liberation Serif（K6 同口徑）；補量後入表。
+        _ => 0.80467,
+    }
+}
+
+/// K25-B：VML `v:textbox` 未宣告 `@inset` 時的 ECMA/MS 預設內縮
+/// （left/right 0.1in、top/bottom 0.05in → pt）。n751077 三子件全未宣告，
+/// LO 即按此值排版（框內文字左緣 63.70+7.20=70.90 實測命中）。
+const VML_TEXTBOX_DEFAULT_INSET: [f32; 4] = [7.2, 3.6, 7.2, 3.6];
+
+/// K25-B：釘定 `v:group` 子件框內文字的**逐框堆疊**發射（取代整組塌框頂）。
+///
+/// 回 `true`＝本框已由本函數接管（呼叫端**不得**再呼叫 `emit_txbx_texts`，
+/// 否則雙發）；回 `false`＝資格不合／老實退化，呼叫端走舊路徑零擾動。
+///
+/// 幾何模型（n751077 LO 真值擬合，全部殘差 ≤0.42pt，推導與資料集見
+/// `docs/k25b-vml-group-child-y.md`）：
+/// 1. **群組對位＝子件 union 包框**（非宣告 extent）：LO 把「子件聯集」而非
+///    「group style 宣告的 611.95×648」拿去置中——水平 relative:page、垂直
+///    relative:margin。置中對平移不變 ⇒ 由現有宿主佔位框（已按宣告 extent
+///    置中）局部修正：`ox = host_x + (host_w − uw)/2 − u0`（y 同式）。
+/// 2. **框內基線堆疊**：`pitch_i = size_i × LH(face)`（K6 表）、
+///    `baseline_i = stack_top + Σpitch[:i] + ALP × size_i`；
+///    `v-text-anchor:bottom` → `stack_top = 框底 − inset_b − Σpitch`，
+///    否則 `框頂 + inset_t`。空段落吃 docDefaults 字級（LO 實測 12pt×LH，
+///    **非**段落標記字級——P2 全九段有字與 real 末空段兩組資料共同鎖定），
+///    末段為空時退「最後有字段的字級」（LO quirk，V5/V6 覆核）。
+/// 3. **水平**：左內縮 `框左+inset_l`；`w:jc=center`→置中、`right`→
+///    `框右−inset_r−量寬`（LO TEXT2 394.5 實據）。
+///
+/// 座標口徑（照卡面驗收欄「顯示列表逐標籤 y 命中 LO ±2」）：發射的
+/// `DrawItem::Text.y` ＝ LO 內容流 `Td` 換算 top-origin 的**基線值**。注意
+/// native SVG 渲染端另有 `y + 字級` 的行頂→基線換算（全倉庫文字項共有的
+/// 既有約定，非本卡範圍，見 docs 記帳）。
+fn emit_vml_group_children(
+    items: &mut Vec<DrawItem>,
+    // 宿主框（浮動錨定框）在頁上的位置與尺寸（pt）；打包成單參數避 clippy
+    // too_many_arguments（8 參函式在本倉是紅線）。
+    host: (f32, f32, f32, f32),
+    box_im: &quire_ooxml::InlineImage,
+    para: Option<&quire_ooxml::Paragraph>,
+    doc_size: f32,
+) -> bool {
+    let (host_x, host_y, host_w, host_h) = host;
+    // 回塞鎖：關掉逐框排版 ⇒ 整組退舊路徑（燈3 鑑別力）。
+    if std::env::var_os("K25_B_CHILD_STACK_BUGGY").is_some() {
+        return false;
+    }
+    let chs = &box_im.vml_group_children;
+    if chs.is_empty() {
+        return false;
+    }
+    // 直排（layout-flow:vertical）群組：既有直排路徑已校準，老實退舊路徑。
+    if box_im.txbx_vertical {
+        return false;
+    }
+    // union 包框（子件原始映射矩形，未平移）。非法尺寸／空 union＝退舊路徑。
+    let (mut u0, mut v0, mut u1, mut v1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for c in chs {
+        if !c.rect.iter().all(|x| x.is_finite()) || c.rect[2] <= 0.0 || c.rect[3] <= 0.0 {
+            return false;
+        }
+        u0 = u0.min(c.rect[0]);
+        v0 = v0.min(c.rect[1]);
+        u1 = u1.max(c.rect[0] + c.rect[2]);
+        v1 = v1.max(c.rect[1] + c.rect[3]);
+    }
+    if !(u0.is_finite() && v0.is_finite() && u1 > u0 && v1 > v0) {
+        return false;
+    }
+    let (uw, uh) = (u1 - u0, v1 - v0);
+    // 宿主佔位框已由 anchor 按宣告 extent 置中；換算成「union 置中」。
+    let gx = host_x + (host_w - uw) / 2.0 - u0;
+    let gy = host_y + (host_h - uh) / 2.0 - v0;
+    let host_runs: &[Vec<quire_ooxml::Run>] = para.map(|p| p.txbx_runs.as_slice()).unwrap_or(&[]);
+
+    for ch in chs {
+        let end = (ch.txbx_start + ch.txbx_len).min(box_im.txbx_texts.len());
+        let start = ch.txbx_start.min(end);
+        let texts = &box_im.txbx_texts[start..end];
+        if texts.is_empty() {
+            continue;
+        }
+        // run 切片與文字切片同序同長（解析層逐段蓋章）；對位失敗＝退預設樣式
+        // 空 run 組（老實，絕不串段——同 R5（R1）紀律）。
+        let runs: &[Vec<quire_ooxml::Run>] = host_runs.get(start..end).unwrap_or(&[]);
+        let (bx, by, bw, bh) = (gx + ch.rect[0], gy + ch.rect[1], ch.rect[2], ch.rect[3]);
+        if bw <= 0.0 || bh <= 0.0 {
+            continue;
+        }
+        let [inset_l, inset_t, inset_r, inset_b] = ch.inset.unwrap_or(VML_TEXTBOX_DEFAULT_INSET);
+        let inner_x = bx + inset_l;
+        let inner_w = (bw - inset_l - inset_r).max(10.0);
+        let right_align = ch.align.as_deref() == Some("right");
+        let center_align = ch.align.as_deref() == Some("center") || right_align;
+
+        // ---- 堆疊尺寸表（逐段）：有字段＝段內最大宣告字級（K6「混級取大」，
+        // 全未宣告退 docDefaults）；空段＝docDefaults（LO 實測：本檔 pPr 標記
+        // 宣告 36pt 的空段，LO 仍按 12pt 行高排——P2/V4/V5 三組資料共同鎖定，
+        // 故**不**讀段落標記）；尾段為空且前面有字段＝退最後有字段的字級
+        // （LO quirk，real/V5/V6 覆核）。----
+        let mut sizes: Vec<f32> = Vec::with_capacity(texts.len());
+        for (i, t) in texts.iter().enumerate() {
+            let declared = runs
+                .get(i)
+                .map(|rs| rs.iter().filter_map(|r| r.size_pt).fold(0.0f32, f32::max))
+                .unwrap_or(0.0);
+            sizes.push(if t.trim().is_empty() {
+                doc_size.max(1.0)
+            } else {
+                declared.max(doc_size).max(1.0)
+            });
+        }
+        if texts.last().is_some_and(|t| t.trim().is_empty()) {
+            // LO quirk（real/V5/V6 覆核）：**僅最後一段**空段退「最後有字段的
+            // 字級」；中段空段仍吃 docDefaults（V5 若全尾段繼承會偏 4.6pt）。
+            if let Some(sz) = sizes
+                .iter()
+                .enumerate()
+                .rfind(|(i, _)| texts[*i].trim() != "")
+                .map(|(_, s)| *s)
+            {
+                let last = sizes.len() - 1;
+                sizes[last] = sz;
+            }
+        }
+        // ---- 行高／基線（逐段 face 查表，未命中退 Liberation 系）。----
+        let mut pitches: Vec<f32> = Vec::with_capacity(sizes.len());
+        let mut alps: Vec<f32> = Vec::with_capacity(sizes.len());
+        for (i, &s) in sizes.iter().enumerate() {
+            let own = runs.get(i).map(Vec::as_slice).unwrap_or(&[]);
+            let fam = own
+                .iter()
+                .find(|r| !r.text.is_empty() && r.effective_fonts.is_some())
+                .or_else(|| own.iter().find(|r| r.effective_fonts.is_some()))
+                .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
+            let (lh, ratio) = match fam {
+                Some(ref f) => (face_line_factor(f), face_baseline_ratio(f)),
+                None => (
+                    face_line_factor("liberation serif"),
+                    face_baseline_ratio(""),
+                ),
+            };
+            pitches.push((s * lh).max(1.0));
+            alps.push(ratio * lh * s);
+        }
+        let total: f32 = pitches.iter().sum();
+        let mut top = if ch.anchor_bottom {
+            (by + bh - inset_b - total).max(f32::MIN / 4.0)
+        } else {
+            by + inset_t
+        };
+
+        for (i, t) in texts.iter().enumerate() {
+            let own = runs.get(i).map(Vec::as_slice).unwrap_or(&[]);
+            let seg_size = sizes[i];
+            let adv = para_advance_scale(own);
+            let m = TextMeasurer::with_advance_scale(seg_size.max(doc_size), adv);
+            if t.trim().is_empty() {
+                // 空段＝只推進堆疊帶高，不發墨跡（LO 同形；K25 燈 C 零墨跡約束）。
+                top += pitches[i];
+                continue;
+            }
+            let fake = quire_ooxml::Paragraph {
+                runs: own.to_vec(),
+                ..Default::default()
+            };
+            let baseline_base = top + alps[i];
+            let lines = quire_layout::break_lines(t, inner_w, &m);
+            let n_line = lines.len().max(1) as f32;
+            // 對齊位移的量寬尺：全大寫串走 A_upper 軌（見
+            // `face_advance_scale_caps` 檔首說明）——**取代**而非疊乘折中尺；
+            // 含小寫（混合樣本）者維持 K7 折中尺＝既有行為。
+            let caps_track = t.chars().any(|c| c.is_ascii_uppercase())
+                && !t.chars().any(|c| c.is_ascii_lowercase());
+            let caps_scale = if caps_track {
+                match own
+                    .iter()
+                    .find(|r| !r.text.is_empty() && r.effective_fonts.is_some())
+                    .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text))
+                {
+                    Some(ref f) => face_advance_scale_caps(f),
+                    None => 1.0,
+                }
+            } else {
+                1.0
+            };
+            let mc = if caps_scale != 1.0 {
+                TextMeasurer::with_advance_scale(seg_size.max(doc_size), caps_scale)
+            } else {
+                m
+            };
+            for (li, l) in lines.iter().enumerate() {
+                let y = baseline_base + li as f32 * pitches[i];
+                let shift = if center_align {
+                    let lw = mc.text_width(&l.text);
+                    if right_align {
+                        (inner_w - lw).max(0.0)
+                    } else {
+                        ((inner_w - lw) * 0.5).max(0.0)
+                    }
+                } else {
+                    0.0
+                };
+                emit_line_run_items(items, inner_x + shift, y, seg_size, l, Some(&fake));
+            }
+            top += pitches[i] * n_line;
+        }
+    }
+    true
 }
 
 /// 圖片佔位框配色（t_a1397522）：灰底＋淺灰描邊。「誠實的近似」視覺：
