@@ -336,6 +336,12 @@ pub struct InlineImage {
     /// serde default＋None 不外露＝無宣告檔案的序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duotone: Option<DuotoneEffect>,
+    /// K27-B：`v:textbox` 內部 `w:drawing` 自採的 `wp:extent` 尺寸（[寬, 高] pt）。
+    /// 只有在 textbox 內嵌 w:drawing 形態下為 Some；發射層圖片尺寸優先改採此值，
+    /// 不再覆用外層 VML `v:shape` 的 style 邊框（避免內嵌圖以滿版整頁發射）。
+    /// serde default＋None 不外露＝無此形態檔案的序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub txbx_drawing_extent: Option<[f32; 2]>,
 }
 
 impl InlineImage {
@@ -1355,6 +1361,8 @@ struct Pending {
     duo_node_in: Option<usize>,
     /// duotone 完結後的折算結果（`a:duotone` End 時由 duo_nodes 折出）。
     duo: Option<DuotoneEffect>,
+    /// K27-B：textbox 內嵌 w:drawing 自身宣告的 wp:extent 尺寸（pt，[寬, 高]）。
+    txbx_drawing_extent: Option<[f32; 2]>,
 }
 
 struct PendingChildShape {
@@ -1507,6 +1515,7 @@ impl Pending {
             duo_nodes: None,
             duo_node_in: None,
             duo: None,
+            txbx_drawing_extent: None,
         }
     }
 }
@@ -1669,6 +1678,7 @@ impl DrawingParser {
             txbx_borders: p.txbx_borders.clone(),
             // K19 回塞鎖：buggy 態永不落地 duotone（燈1/2 必紅）。
             duotone: if self.duotone_buggy { None } else { p.duo },
+            txbx_drawing_extent: p.txbx_drawing_extent,
         });
     }
 
@@ -2106,6 +2116,23 @@ impl DrawingParser {
                         v.vml_gfxdata = true;
                     }
                 }
+                b"blip" => {
+                    if let Some(v) = self.vml.as_mut() {
+                        v.note_rid(attr_local(e, b"embed"));
+                    }
+                }
+                b"extent" if self.txbx_depth > 0 => {
+                    if let Some(v) = self.vml.as_mut() {
+                        if v.txbx_drawing_extent.is_none() {
+                            if let (Some(w), Some(h)) = (
+                                emu_to_pt(attr_local(e, b"cx").as_deref()),
+                                emu_to_pt(attr_local(e, b"cy").as_deref()),
+                            ) {
+                                v.txbx_drawing_extent = Some([w, h]);
+                            }
+                        }
+                    }
+                }
                 b"pict" if !empty => {
                     // pict 內嵌 pict（文字框內再放圖）：深度計數；標記續寫
                     // 同一累積（首見尺寸為準＝外框，LO 同款近似）。
@@ -2487,6 +2514,21 @@ impl DrawingParser {
                 b"gfxdata" => {
                     if let Some(v) = self.vml.as_mut() {
                         v.vml_gfxdata = true;
+                    }
+                }
+                // K27-B（實據 fdo76591）：`v:textbox` 內部 `w:drawing` 帶有自身
+                // `<wp:extent cx="..." cy="..."/>`。採集其尺寸，發射層圖片尺寸優先
+                // 改採此值，不再覆用外層 VML `v:shape` 的 style 框（避免鋪滿整頁）。
+                b"extent" if self.txbx_depth > 0 => {
+                    if let Some(v) = self.vml.as_mut() {
+                        if v.txbx_drawing_extent.is_none() {
+                            if let (Some(w), Some(h)) = (
+                                emu_to_pt(attr_local(e, b"cx").as_deref()),
+                                emu_to_pt(attr_local(e, b"cy").as_deref()),
+                            ) {
+                                v.txbx_drawing_extent = Some([w, h]);
+                            }
+                        }
                     }
                 }
                 // K4c：v:fill／v:stroke／v:textbox 常為自閉合標籤（tdf152200
@@ -3889,5 +3931,31 @@ mod tests {
         );
         let imgs = read_images(xml.as_bytes());
         assert_eq!(imgs[0].para_index, 2);
+    }
+
+    #[test]
+    fn vml_textbox_nested_drawing_captures_extent() {
+        // K27-B（實據 fdo76591）：v:textbox 內部 w:drawing 自身帶有
+        // wp:extent（如 6296025×952500 EMU ⇒ 495.75×75pt），必須採集進
+        // txbx_drawing_extent，外層 VML 邊框尺寸（567×733.65pt）保持不變。
+        let xml = doc(
+            r##"<w:p><w:r><w:pict><v:shape xmlns:v="v" style="position:absolute;margin-left:-13.95pt;margin-top:-17.8pt;width:567pt;height:733.65pt"><v:textbox><w:txbxContent><w:p><w:r><w:drawing><wp:inline xmlns:wp="wp"><wp:extent cx="6296025" cy="952500"/><a:graphic xmlns:a="a"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="pic"><pic:blipFill><a:blip xmlns:r="r" r:embed="rId9"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>"##,
+        );
+        let imgs = read_images(xml.as_bytes());
+        assert_eq!(imgs.len(), 1);
+        assert!(
+            (imgs[0].w_pt - 567.0).abs() < 1e-3,
+            "外層 VML 邊框寬度維持 567pt"
+        );
+        assert!(
+            (imgs[0].h_pt - 733.65).abs() < 1e-3,
+            "外層 VML 邊框高度維持 733.65pt"
+        );
+        assert_eq!(imgs[0].embed_rid.as_deref(), Some("rId9"));
+        let ext = imgs[0]
+            .txbx_drawing_extent
+            .expect("必須成功採集內嵌 extent");
+        assert!((ext[0] - 495.75).abs() < 1e-3, "內嵌圖寬度 495.75pt");
+        assert!((ext[1] - 75.0).abs() < 1e-3, "內嵌圖高度 75.0pt");
     }
 }

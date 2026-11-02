@@ -159,6 +159,8 @@ struct PixelSource {
     /// 住才是常數成本。規模：全語料 media EMF 僅 16 parts／562,908 B
     /// （P5-diag §1-2），其中可直讀者 3 parts。
     emf: Option<EmfRasterPayload>,
+    /// K27-B：來源候選帶有 textbox 內嵌 w:drawing 自己的 wp:extent 尺寸。
+    txbx_drawing_extent: Option<[f32; 2]>,
 }
 
 /// 頁首／頁尾 part 的已解析投影（開啟文件時一次性解析；純讀取）。
@@ -601,6 +603,7 @@ impl Engine {
                     // K19：宿主候選的 duotone 宣告隨池項走（發射時才變換像素）。
                     duotone: im.duotone.map(|d| [d.color1, d.color2]),
                     emf,
+                    txbx_drawing_extent: im.txbx_drawing_extent,
                 })
             })
             .collect();
@@ -3528,7 +3531,14 @@ fn take_image_pixel(
             let (w, h) = emf_frame_size(*fp, w, h);
             (png.as_slice(), src.src.1.clone(), w, h)
         }
-        None => (parts.get(&src.src.0)?.as_slice(), src.src.1.clone(), w, h),
+        None => {
+            // K27-B：textbox 內 w:drawing 尺寸改採自身的 wp:extent，不再覆用外層 VML style 框。
+            let (w, h) = match src.txbx_drawing_extent {
+                Some([ew, eh]) => (ew, eh),
+                None => (w, h),
+            };
+            (parts.get(&src.src.0)?.as_slice(), src.src.1.clone(), w, h)
+        }
     };
     used[i] = true;
     let (data_b64, duotone) = k19_duotone_pixels(bytes, src.duotone);
@@ -4488,12 +4498,14 @@ impl Engine {
                             let (w, h) = emf_frame_size(*fp, im.w_pt, im.h_pt);
                             (png.as_slice(), mime.clone(), w, h)
                         }
-                        None => (
-                            self.doc.parts.get(path)?.as_slice(),
-                            mime.clone(),
-                            im.w_pt,
-                            im.h_pt,
-                        ),
+                        None => {
+                            // K27-B：textbox 內 w:drawing 尺寸改採自身的 wp:extent，不再覆用外層 VML style 框。
+                            let (w, h) = match im.txbx_drawing_extent {
+                                Some([ew, eh]) => (ew, eh),
+                                None => (im.w_pt, im.h_pt),
+                            };
+                            (self.doc.parts.get(path)?.as_slice(), mime.clone(), w, h)
+                        }
                     };
                     let (data_b64, duotone) =
                         k19_duotone_pixels(bytes, im.duotone.map(|d| [d.color1, d.color2]));
