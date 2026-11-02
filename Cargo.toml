@@ -45,3 +45,9 @@ unicode-linebreak = "0.1.5"
 [profile.release]
 opt-level = "s"
 lto = true
+
+# 解析不可信輸入的 crate：release 也開整數溢位檢查（外部 code review 2026-11-02）。
+# 只圈 quire-ooxml——zip/png 邊界算術在 release 直接 abort 而非 wrap；
+# 體積影響僅限本 crate，wasm 首包/分塊預算閘門（npm run size）照舊守門。
+[profile.release.package.quire-ooxml]
+overflow-checks = true
