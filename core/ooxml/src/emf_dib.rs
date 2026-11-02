@@ -177,8 +177,10 @@ impl Header {
     fn parse(emf: &[u8]) -> Option<Self> {
         // MS-EMF 固定欄：iType@0、nSize@4、rclBounds@8、rclFrame@24（l,t,r,b）、
         // iSignature@40（' EMF'）、nBytes@48、nRecords@52。
-        let i32_at =
-            |o: usize| emf.get(o..o + 4).and_then(|b| Some(i32::from_le_bytes(b.try_into().ok()?)));
+        let i32_at = |o: usize| {
+            emf.get(o..o + 4)
+                .and_then(|b| Some(i32::from_le_bytes(b.try_into().ok()?)))
+        };
         let i_type = u32::from_le_bytes(emf.get(0..4)?.try_into().ok()?);
         if i_type != EMR_HEADER {
             return None;
@@ -186,7 +188,10 @@ impl Header {
         let n_size = u32::from_le_bytes(emf.get(4..8)?.try_into().ok()?) as usize;
         let (l, t, r, b) = (i32_at(24)?, i32_at(28)?, i32_at(32)?, i32_at(36)?);
         // 0.01mm → pt：×72/2540（1pt = 0.3528mm = 35.278 個 0.01mm）。
-        let frame_pt = [(r - l) as f32 * 72.0 / 2540.0, (b - t) as f32 * 72.0 / 2540.0];
+        let frame_pt = [
+            (r - l) as f32 * 72.0 / 2540.0,
+            (b - t) as f32 * 72.0 / 2540.0,
+        ];
         // nSize 不可信時退回規格最小檔頭 88——後續自我一致性校驗自然把關。
         let record_start = if (88..=emf.len()).contains(&n_size) {
             n_size
@@ -243,7 +248,7 @@ fn vector_paint(t: u32) -> bool {
         | 53..=57        // EXTFLOODFILL/LINETO/ARCTO/POLYDRAW/SETARCDIRECTION
         | 59..=68        // BEGINPATH..ABORTPATH（填／描邊路徑）
         | 71..=74        // FILLRGN/FRAMERGN/INVERTRGN/PAINTRGN
-        | 85..=92)       // 16 位元變體（POLYBEZIER16..POLYDRAW16）
+        | 85..=92) // 16 位元變體（POLYBEZIER16..POLYDRAW16）
 }
 
 /// 閘 2：DIB 是否填滿畫面框（0.8..1.25）。畫面框未宣告（0×0）時不否決——
@@ -309,7 +314,8 @@ impl RecordLayout {
             return None;
         }
         let rop = rd(rop_off);
-        let (off_bmi_u, cb_bmi_u, off_bits_u) = (off_bmi as usize, cb_bmi as usize, off_bits as usize);
+        let (off_bmi_u, cb_bmi_u, off_bits_u) =
+            (off_bmi as usize, cb_bmi as usize, off_bits as usize);
         if off_bmi_u < fixed_end
             || cb_bmi_u < 40
             || off_bmi_u.checked_add(cb_bmi_u)? != off_bits_u
@@ -406,7 +412,11 @@ fn decode_dib(body: &[u8], layout: &RecordLayout) -> Option<DibPixels> {
     let bpp_bytes = bit_count / 8;
     let stride = (w * bit_count + 31) / 32 * 4;
     // BI_BITFIELDS 且遮罩走像素區前綴時，cbBits 含那 12 位元組。
-    let prefix = if comp == BI_BITFIELDS && bi_size < 52 { 12 } else { 0 };
+    let prefix = if comp == BI_BITFIELDS && bi_size < 52 {
+        12
+    } else {
+        0
+    };
     let need = stride.checked_mul(height as usize)?;
     let avail = body.len().saturating_sub(layout.bits);
     if avail < prefix + need || layout.cb_bits < prefix + need {
@@ -514,7 +524,11 @@ mod tests {
     ) -> Vec<u8> {
         // 記錄固定區 80B（record 相對）⇒ 扣掉 iType/nSize 後，本檔固定區 72B。
         const REC_FIXED: usize = 80;
-        let bih_len = if masks.is_some() && !mask_in_bits { 52 } else { 40 };
+        let bih_len = if masks.is_some() && !mask_in_bits {
+            52
+        } else {
+            40
+        };
         let mut rec: Vec<u8> = vec![0u8; REC_FIXED];
         rec[0..4].copy_from_slice(&EMR_STRETCHDIBITS.to_le_bytes());
         // rclBounds(8..24) 留零；rclDest/rclSrc 本卡不讀（尺寸口徑用 EMF 檔頭
@@ -603,7 +617,16 @@ mod tests {
         // 卡面燈2 變體甲：16bpp 5-5-5（BI_RGB）＋ LO 實寫記錄式。
         let emf = wrap(
             (2000, 2000),
-            &[stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
+            &[stretch_dib(
+                2,
+                2,
+                16,
+                BI_RGB,
+                None,
+                &dib16_555(),
+                SRCCOPY,
+                false,
+            )],
         );
         let d = emf_embedded_dib(&emf).expect("LO 式記錄必可抽 DIB");
         assert_eq!((d.width, d.height), (2, 2));
@@ -624,7 +647,11 @@ mod tests {
         assert_eq!(px(0, 0), (246, 0, 0, 255), "0xF800：X=1、R=30 ⇒ 30*255/31");
         assert_eq!(px(1, 0), (255, 255, 255, 255), "0x7FFF ⇒ R/G/B 皆滿值 255");
         assert_eq!(px(0, 1), (0, 0, 255, 255), "0x001F ⇒ B 滿值");
-        assert_eq!(px(1, 1), (8, 246, 0, 255), "0x07C0：G=30 且 bit10 落 R 場 ⇒ R=1");
+        assert_eq!(
+            px(1, 1),
+            (8, 246, 0, 255),
+            "0x07C0：G=30 且 bit10 落 R 場 ⇒ R=1"
+        );
     }
 
     #[test]
@@ -635,8 +662,15 @@ mod tests {
         let bits = dib16([[0x001F, 0x07E0], [0xF800, 0xFFFF]]);
         let emf = wrap(
             (2000, 2000),
-            &[stretch_dib(2, 2, 16, BI_BITFIELDS,
-                Some(masks), &bits, SRCCOPY, false,
+            &[stretch_dib(
+                2,
+                2,
+                16,
+                BI_BITFIELDS,
+                Some(masks),
+                &bits,
+                SRCCOPY,
+                false,
             )],
         );
         let d = emf_embedded_dib(&emf).expect("MS-EMF 規格式記錄必可抽 DIB");
@@ -658,8 +692,15 @@ mod tests {
         let bits = dib16([[0x001F, 0x07E0], [0xF800, 0xFFFF]]);
         let emf = wrap(
             (2000, 2000),
-            &[stretch_dib(2, 2, 16, BI_BITFIELDS,
-                Some(masks), &bits, SRCCOPY, true,
+            &[stretch_dib(
+                2,
+                2,
+                16,
+                BI_BITFIELDS,
+                Some(masks),
+                &bits,
+                SRCCOPY,
+                true,
             )],
         );
         let d = emf_embedded_dib(&emf).expect("遮罩前綴式必可抽 DIB");
@@ -677,8 +718,11 @@ mod tests {
         );
         let d = emf_embedded_dib(&emf).expect("負高 top-down 必可抽");
         let i = 0usize;
-        assert_eq!((d.rgba[i], d.rgba[i + 1], d.rgba[i + 2]), (246, 0, 0),
-                   "top-down ⇒ 像素區首列即頂列（0xF800 5-5-5 紅）");
+        assert_eq!(
+            (d.rgba[i], d.rgba[i + 1], d.rgba[i + 2]),
+            (246, 0, 0),
+            "top-down ⇒ 像素區首列即頂列（0xF800 5-5-5 紅）"
+        );
     }
 
     #[test]
@@ -720,15 +764,39 @@ mod tests {
         // 閘 2：畫面框 4:1、DIB 1:1 ⇒ DIB 只佔畫面一小塊 ⇒ 否決（n779834 形態）。
         let emf = wrap(
             (20000, 5000),
-            &[stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
+            &[stretch_dib(
+                2,
+                2,
+                16,
+                BI_RGB,
+                None,
+                &dib16_555(),
+                SRCCOPY,
+                false,
+            )],
         );
-        assert_eq!(emf_embedded_dib_checked(&emf), Err(EmfReject::AspectMismatch));
+        assert_eq!(
+            emf_embedded_dib_checked(&emf),
+            Err(EmfReject::AspectMismatch)
+        );
         // 畫面框未宣告（0×0）⇒ 不由閘 2 否決（呼叫端退回宿主框尺寸）。
         let emf0 = wrap(
             (0, 0),
-            &[stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
+            &[stretch_dib(
+                2,
+                2,
+                16,
+                BI_RGB,
+                None,
+                &dib16_555(),
+                SRCCOPY,
+                false,
+            )],
         );
-        assert!(emf_embedded_dib(&emf0).is_some(), "無 rclFrame 不得由閘 2 否決");
+        assert!(
+            emf_embedded_dib(&emf0).is_some(),
+            "無 rclFrame 不得由閘 2 否決"
+        );
     }
 
     #[test]
@@ -737,7 +805,16 @@ mod tests {
         for comp in [1u32, 2, 4, 5, 69, 70, 0xFF] {
             let emf = wrap(
                 (2000, 2000),
-                &[stretch_dib(2, 2, 16, comp, None, &dib16_555(), SRCCOPY, false)],
+                &[stretch_dib(
+                    2,
+                    2,
+                    16,
+                    comp,
+                    None,
+                    &dib16_555(),
+                    SRCCOPY,
+                    false,
+                )],
             );
             assert!(
                 emf_embedded_dib(&emf).is_none(),
@@ -754,13 +831,34 @@ mod tests {
         // ROP 非 SRCCOPY ⇒ 無法忠實重現。
         let emf = wrap(
             (2000, 2000),
-            &[stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), 0x00EE_0086, false)],
+            &[stretch_dib(
+                2,
+                2,
+                16,
+                BI_RGB,
+                None,
+                &dib16_555(),
+                0x00EE_0086,
+                false,
+            )],
         );
-        assert_eq!(emf_embedded_dib_checked(&emf), Err(EmfReject::UnsupportedRop));
+        assert_eq!(
+            emf_embedded_dib_checked(&emf),
+            Err(EmfReject::UnsupportedRop)
+        );
         // 像素區截斷 ⇒ None（不可 panic、不可虛構半張圖）。
         let mut emf = wrap(
             (2000, 2000),
-            &[stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
+            &[stretch_dib(
+                2,
+                2,
+                16,
+                BI_RGB,
+                None,
+                &dib16_555(),
+                SRCCOPY,
+                false,
+            )],
         );
         let cut = emf.len() - 6;
         emf.truncate(cut);
@@ -771,7 +869,10 @@ mod tests {
     fn no_dib_and_garbage_return_none_not_panic() {
         // 只有 state 記錄、無 STRETCHDIBITS（純 vector／文字 EMF）。
         let emf = wrap((1000, 1000), &[record(33, &[]), record(98, &[0; 4])]);
-        assert_eq!(emf_embedded_dib_checked(&emf), Err(EmfReject::NoStretchDibits));
+        assert_eq!(
+            emf_embedded_dib_checked(&emf),
+            Err(EmfReject::NoStretchDibits)
+        );
         // 垃圾／畸形位元組：一律 None，不可 panic。
         let mut junk: Vec<Vec<u8>> = vec![
             vec![],
@@ -798,7 +899,16 @@ mod tests {
         junk.extend((1..64).map(|k| {
             let mut base = wrap(
                 (2000, 2000),
-                &[stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false)],
+                &[stretch_dib(
+                    2,
+                    2,
+                    16,
+                    BI_RGB,
+                    None,
+                    &dib16_555(),
+                    SRCCOPY,
+                    false,
+                )],
             );
             base.truncate(base.len() - k);
             base
@@ -825,7 +935,11 @@ mod tests {
         let i1 = doc.parts.get("word/media/image1.emf").expect("image1.emf");
         let i2 = doc.parts.get("word/media/image2.emf").expect("image2.emf");
         let d1 = emf_embedded_dib(i1).expect("fdo76591 image1.emf 必可抽 DIB");
-        assert_eq!((d1.width, d1.height), (166, 183), "DIB 尺寸（P5-diag §1-3）");
+        assert_eq!(
+            (d1.width, d1.height),
+            (166, 183),
+            "DIB 尺寸（P5-diag §1-3）"
+        );
         assert!(
             (d1.frame_pt[0] - 83.93).abs() < 0.1 && (d1.frame_pt[1] - 93.15).abs() < 0.1,
             "rclFrame 換算 pt：{:?}",
@@ -857,7 +971,10 @@ mod tests {
         ))
         .expect("corpus n779834");
         let ndoc = crate::parse(&n779).expect("parse n779834");
-        let em = ndoc.parts.get("word/media/image1.emf").expect("n779 image1.emf");
+        let em = ndoc
+            .parts
+            .get("word/media/image1.emf")
+            .expect("n779 image1.emf");
         assert_eq!(
             emf_embedded_dib_checked(em),
             Err(EmfReject::VectorPaint),

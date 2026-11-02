@@ -89,10 +89,7 @@ fn k27_lamp1_fdo76591_emf_emits_two_image_items_at_rclframe_size() {
         "燈1：fdo76591 必須以真像素發射 2 張 EMF 圖＋1 張 PNG（共 3 個 Image）；實得 {} 個 Image、{rects} 個佔位框",
         imgs.len()
     );
-    assert_eq!(
-        rects, 0,
-        "燈1：三張圖全數真像素發射 ⇒ 不得殘留任何灰佔位框"
-    );
+    assert_eq!(rects, 0, "燈1：三張圖全數真像素發射 ⇒ 不得殘留任何灰佔位框");
     for (_w, _h, b64) in &imgs {
         assert!(
             is_png_b64(b64),
@@ -205,7 +202,10 @@ fn k27_lamp3_pure_vector_emf_still_placeholder() {
 /// 為什麼必紅：修前 EMF 走 `mime_of_media_path → None`，合成檔同樣只發佔位框。
 #[test]
 fn k27_lamp2_synthetic_16bpp_emf_variants_render() {
-    for (name, variant) in [("5-5-5 BI_RGB", Variant::B555), ("5-6-5 BI_BITFIELDS", Variant::B565)] {
+    for (name, variant) in [
+        ("5-5-5 BI_RGB", Variant::B555),
+        ("5-6-5 BI_BITFIELDS", Variant::B565),
+    ] {
         let docx = docx_with_emf(variant);
         let eng = Engine::from_docx_bytes(&docx).unwrap_or_else(|e| panic!("{name} 開檔失敗: {e}"));
         let mut hit: Option<(f64, f64, String)> = None;
@@ -235,7 +235,10 @@ fn k27_lamp2_synthetic_16bpp_emf_variants_render() {
         // 解出來必須有純紅像素（R 滿、G/B 空）。
         let px = png_rgba(decode_b64(&b64));
         let has_red = px.chunks(4).any(|c| c[0] > 200 && c[1] < 40 && c[2] < 40);
-        assert!(has_red, "{name}：解出的像素必須含紅色（頂列 0xF800／0xF800）");
+        assert!(
+            has_red,
+            "{name}：解出的像素必須含紅色（頂列 0xF800／0xF800）"
+        );
     }
 }
 
@@ -388,7 +391,10 @@ fn docx_with_emf(variant: Variant) -> Vec<u8> {
     assert_ne!(rels_new, rels_xml, "base rels 必須含 </Relationships>");
 
     let mut changes = std::collections::BTreeMap::new();
-    changes.insert("word/document.xml".to_string(), quire_ooxml::Change::Replace(doc_new.into_bytes()));
+    changes.insert(
+        "word/document.xml".to_string(),
+        quire_ooxml::Change::Replace(doc_new.into_bytes()),
+    );
     changes.insert(
         "word/_rels/document.xml.rels".to_string(),
         quire_ooxml::Change::Replace(rels_new.into_bytes()),
@@ -492,9 +498,17 @@ fn png_rgba(png: Vec<u8>) -> Vec<u8> {
             }
             4 => {
                 for i in 0..stride {
-                    let a: i32 = if i >= channels { line[i - channels] as i32 } else { 0 };
+                    let a: i32 = if i >= channels {
+                        line[i - channels] as i32
+                    } else {
+                        0
+                    };
                     let b: i32 = prev[i] as i32;
-                    let c: i32 = if i >= channels { prev[i - channels] as i32 } else { 0 };
+                    let c: i32 = if i >= channels {
+                        prev[i - channels] as i32
+                    } else {
+                        0
+                    };
                     let p = a + b - c;
                     let (pa, pb, pc) = ((p - a).abs(), (p - b).abs(), (p - c).abs());
                     let pr = if pa <= pb && pa <= pc {
@@ -533,4 +547,3 @@ fn png_rgba(png: Vec<u8>) -> Vec<u8> {
     }
     out
 }
-
