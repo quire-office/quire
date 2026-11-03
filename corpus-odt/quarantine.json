@@ -1,0 +1,25 @@
+{
+ "schema": "quire-corpus-quarantine/1",
+ "description": "授權／完整性查證不過，或轉換與下載失敗的 ODT 清單：清單內檔案不入正庫，必須逐檔列出原因，修復後移除。",
+ "files": {},
+ "tried_and_rejected": [
+  {
+   "url": "https://odfalliance.org/wp-content/uploads/2021/06/ODF-Alliance-Test-Corpus.zip",
+   "title": "ODF-Alliance Test Corpus zip",
+   "reason": "下載回 200 但內容是 114 bytes 的停放網域跳頁（text/html，非 zip），且站方未附任何授權條款可查證——授權與完整性雙查證不過，不入正庫",
+   "http": "200 text/html 114B（偽裝成功）"
+  },
+  {
+   "url": "https://joinup.ec.europa.eu/collection/odf-open-document-format-for-productivity-applications/solution/odf-test-suite-corpus",
+   "title": "EU Joinup ODF test suite corpus",
+   "reason": "HTTPS 連線直接失敗（curl rc=6，無回應），無法取得檔案本體與授權聲明",
+   "http": "連線失敗（rc=6）"
+  },
+  {
+   "url": "https://commons.wikimedia.org/w/api.php（filetype:office ext:odt 檢索）",
+   "title": "Wikimedia Commons ODT 檔案（多筆 CC/PD）",
+   "reason": "API 於本環境回 403 Forbidden（无 UA 白名單），無法完成「逐檔授權欄位實查」；未實查不得登記授權，故整批暫不入库（改天補 UA／鏡像站再議）",
+   "http": "403 Forbidden"
+  }
+ ]
+}
