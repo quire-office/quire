@@ -23,7 +23,7 @@
 //!   照舊發灰底 Rect＋四條佔位 Rule——誠實近似不得被本卡閂誤殺。
 //! - 燈 4：SVG 兜底閂（alpha-0 Rect 不落 SVG）在 native 殼單元測試
 //!   `shells/native/tests/render_svg_alpha_gate.rs`（本檔不依賴 native 殼）。
-//! - 燈 5（**#[ignore]，待 D5 落地解鎖**）：fdo76591 頂部块樣式真值。S1
+//! - 燈 5（**#[ignore]，待 D5 落地解鎖**）：fdo76591 頂部塊樣式真值。S1
 //!   根因＝框內 `w:tab` 停靠點定義被誤轉偽造前導空格 → `txbx_runs_for`
 //!   配對全滅（core/ooxml 面，PM 已裁定移交 D5 t_ed8bbd01，本卡禁碰）。
 
@@ -193,7 +193,7 @@ fn emf_watermark_placeholder_untouched() {
     );
 }
 
-/// 燈 5（待解鎖）：fdo76591 頂部块樣式真值——**S1 歸 D5（t_ed8bbd01）**。
+/// 燈 5（待解鎖）：fdo76591 頂部塊樣式真值——**S1 歸 D5（t_ed8bbd01）**。
 ///
 /// 根因在 core/ooxml：VML 框內 `<w:pPr><w:tabs><w:tab w:val=… w:pos=…/>`
 /// 停靠點定義被 drawing.rs 無條件轉成偽造前導空格（' '）進 `txbx_texts`，
