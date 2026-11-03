@@ -1013,6 +1013,12 @@ fn parse_document_xml_with_fonts(
                             ppr_rpr_depth,
                         );
                     }
+                    if txbx_depth > 0 && name.as_slice() == b"tab" {
+                        txbx_cur.push(' ');
+                        if let Some(r) = cur_run.as_mut() {
+                            r.text.push(' ');
+                        }
+                    }
                 } else if matches!(name.as_slice(), b"footnoteReference" | b"endnoteReference") {
                     // 註引用標記（自閉合＝Word 常態寫法）：標進進行中的 run。
                     record_note_ref(name.as_slice(), &e, &mut cur_run);

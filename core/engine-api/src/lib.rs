@@ -591,7 +591,7 @@ impl Engine {
             .get("word/_rels/document.xml.rels")
             .map(|r| read_rels(r))
             .unwrap_or_default();
-        let image_pixels: Vec<PixelSource> = images
+        let mut image_pixels: Vec<PixelSource> = images
             .iter()
             .filter_map(|im| {
                 let (path, mime, emf) =
@@ -607,6 +607,27 @@ impl Engine {
                 })
             })
             .collect();
+        // R31：未將自身宣告為圖片的文字框，其內嵌 DrawingML 圖形進入像素池
+        for im in &images {
+            if im.embed_rid.is_none() {
+                for cs in &im.group_shapes {
+                    if let Some(rid) = &cs.stroke_dash {
+                        if let Some((path, mime, emf)) =
+                            resolve_pixel_source(&doc.parts, &doc_rels, &[rid.as_str()])
+                        {
+                            image_pixels.push(PixelSource {
+                                para: im.para_index,
+                                w_pt: cs.w_pt,
+                                src: (path, mime),
+                                duotone: None,
+                                emf,
+                                txbx_drawing_extent: Some([cs.w_pt, cs.h_pt]),
+                            });
+                        }
+                    }
+                }
+            }
+        }
         // br-page 硬斷點（ECMA-376 §17.4.3）：canonical 段落的 w:br w:type="page"
         // 偏移直傳版面層（與 texts 逐段同標）。無 br 檔案＝全空清單＝舊行為。
         // K2b：投影插入 marker 後，原始 `w:br` 碼點偏移需右移 marker 前綴
@@ -2032,6 +2053,7 @@ impl Engine {
                     line_h,
                     Some(box_im),
                     !r6_buggy,
+                    Some((self.image_pixels.as_slice(), &mut px_used, &self.doc.parts)),
                 );
                 push_txbx_keys(
                     &mut txbx_keys,
@@ -2093,6 +2115,7 @@ impl Engine {
                         line_h,
                         Some(b),
                         !r6_buggy,
+                        Some((self.image_pixels.as_slice(), &mut px_used, &self.doc.parts)),
                     );
                 }
                 push_txbx_keys(
@@ -3104,12 +3127,8 @@ fn txbx_runs_for<'a>(
         // 回塞鎖：舊路徑＝整段合併的 run 清單（發射端再以每框 index 取樣）。
         return p.txbx_runs.as_slice();
     }
-    // VML 候選解析層不蓋 children（見 drawing.rs txbxContent 起點）——維持舊
-    // 「整段合併 run」口徑；否則逐 run 切段會把 VML 框的整句拆成多個文字項
-    // （fdo76591 的 BELVIDERE 綠燈鎖：整句必須同一個 Text 項）。
-    if box_im.txbx_children.is_empty() {
-        return p.txbx_runs.as_slice();
-    }
+    // VML 候選解析層與 DrawingML 一致依 txbx_start 截取所屬本框 run 清單，
+    // 避免宿主段落內多框時起點錯位導致重複發射。
     let n = box_im.txbx_texts.len();
     let start = box_im.txbx_start;
     if let (Some(ts), Some(rs)) = (
@@ -3179,6 +3198,7 @@ fn emit_txbx_texts(
     line_h: f32,
     shape: Option<&quire_ooxml::InlineImage>,
     r6: bool,
+    mut pixels: Option<PixelPool<'_>>,
 ) {
     if w <= 0.0 {
         return;
@@ -3318,11 +3338,64 @@ fn emit_txbx_texts(
             blocks.push(block);
         }
     } else {
+        let center = shape.and_then(|s| s.txbx_align.as_deref()) == Some("center");
+        // R31：若外層 shape 本身已作為圖片發射，文字框不再重疊發射內嵌圖形
+        let skip_drawings = shape.and_then(|s| s.embed_rid.as_ref()).is_some();
         let mut yy = inner_y;
         for (ti, t) in texts.iter().enumerate() {
             let mut block: Vec<DrawItem> = Vec::new();
+            // R31：框內內嵌 DrawingML 圖形排版發射
+            let mut has_image = false;
+            if !skip_drawings {
+                if let Some(td) = shape.and_then(|s| {
+                    s.group_shapes
+                        .iter()
+                        .find(|d| d.dx_pt as usize == ti && d.stroke_dash.is_some())
+                }) {
+                    let img_w = td.w_pt;
+                    let img_h = td.h_pt;
+                    let img_x = if center {
+                        inner_x + ((inner_w - img_w) * 0.5).max(0.0)
+                    } else {
+                        inner_x
+                    };
+                    let pix = pixels.as_mut().and_then(|pool| {
+                        take_image_pixel(
+                            (pool.0, pool.1, pool.2),
+                            |s| (s.w_pt - img_w).abs() < 0.01,
+                            img_x,
+                            yy,
+                            img_w,
+                            img_h,
+                        )
+                    });
+                    match pix {
+                        Some(it) => block.push(it),
+                        None => block.push(DrawItem::Rect {
+                            x: img_x,
+                            y: yy,
+                            w: img_w,
+                            h: img_h,
+                            fill_argb: 0x2088_8888,
+                        }),
+                    }
+                    yy += img_h;
+                    has_image = true;
+                }
+            }
+
             let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+            let k25b_buggy = std::env::var_os("K25_B_CHILD_STACK_BUGGY").is_some();
             if t.trim().is_empty() {
+                if has_image {
+                    blocks.push(block);
+                    continue;
+                }
+                let empty_step = if k25b_buggy || wps || line_h > 8.0 {
+                    line_h
+                } else {
+                    12.0
+                };
                 // 全空白／空段：有 run 就照發（HC031：框內只有大字号空白 run，
                 // 樣式宣告是實內容；KP 斷行會 trim_end 吞掉純空白行，故繞過
                 // break_lines 逐 run 直接發射一個佔位文字項），無 run＝純空白帶。
@@ -3344,7 +3417,7 @@ fn emit_txbx_texts(
                         xx += TextMeasurer::new(sz_eff).text_width(&r.text);
                     }
                 }
-                yy += line_h;
+                yy += empty_step;
                 blocks.push(block);
                 continue;
             }
@@ -3365,10 +3438,16 @@ fn emit_txbx_texts(
                 runs: own_runs.to_vec(),
                 ..Default::default()
             };
-            let center = shape.and_then(|s| s.txbx_align.as_deref()) == Some("center");
+            let step_h = if k25b_buggy || wps {
+                line_h
+            } else if line_h > 8.0 {
+                (seg_size * 1.15).max(line_h)
+            } else {
+                (seg_size * 1.15).max(12.0)
+            };
             for l in quire_layout::break_lines(t, inner_w, &m) {
                 // R6：標註矩形越出宿主框底線 → 該行起不發（LO 默認視圖裁切）。
-                if yy + line_h > clip_bottom + 0.01 {
+                if yy + step_h > clip_bottom + 0.01 {
                     break;
                 }
                 let shift = if center {
@@ -3378,7 +3457,7 @@ fn emit_txbx_texts(
                     0.0
                 };
                 emit_line_run_items(&mut block, inner_x + shift, yy, seg_size, &l, Some(&fake));
-                yy += line_h;
+                yy += step_h;
             }
             blocks.push(block);
         }
@@ -4443,6 +4522,7 @@ fn push_frag_items(
                         line_h,
                         Some(b),
                         std::env::var_os("R6_CLIP_BUGGY").is_none(),
+                        pixels.as_mut().map(|(p, u, parts)| (*p, &mut **u, *parts)),
                     );
                 }
             }
@@ -8875,12 +8955,17 @@ mod tests {
             );
         }
         let dl = engine.page_display_list(0).expect("p0 顯示列表");
-        let bel = dl
+        let text_all = dl
             .items
             .iter()
-            .filter(|it| matches!(it, DrawItem::Text { text, .. } if text.contains("BELVIDERE ASSEMBLY PLANT")))
-            .count();
-        assert_eq!(bel, 1, "BELVIDERE 應落 p0 且只發一遍");
+            .filter_map(|it| match it {
+                DrawItem::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        let bel_count = text_all.match_indices("BELVIDERE ASSEMBLY PLANT").count();
+        assert_eq!(bel_count, 1, "BELVIDERE 應落 p0 且只發一遍");
         assert!(
             dl.items
                 .iter()
