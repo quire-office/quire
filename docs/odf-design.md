@@ -3,7 +3,7 @@
 > **定位**：本文件為 `core/odf` 實作的唯一規格依據。實作者照書開工，無須自行考古 OASIS OpenDocument Format (ODF) 1.3 / 1.4 規格書。
 > **戰略目標**：Word-Family 收斂戰略的第一塊設計地基——ODT 讀取模型必須投影並收斂進與 DOCX 線**完全相同**的 [`quire-engine`](../core/engine-api/src/lib.rs) 中間模型與 [`quire-layout`](../core/layout/src/lib.rs) Knuth-Plass 排版／Display List 核心，嚴禁平行重寫第二套排版器。
 > **證據基底**：每條斷言均標註 OASIS ODF 1.3（Part 2: Packages / Part 3: OpenDocument Schema，結構與 ODF 1.4 草案一致）章節號，或由 LibreOffice 24.8.0.3（Windows x86_64，`meta.xml` 之 `meta:generator` 實字可查）Headless 實產之三份基準樣本（[`sample1_styles_list.odt`](odf-design/sample1_styles_list.odt)、[`sample2_table_frame.odt`](odf-design/sample2_table_frame.odt)、[`sample3_page_sect.odt`](odf-design/sample3_page_sect.odt)）的 `unzip` 可重放實證；未經實證處一律誠實標註「推測，待 ODF-2 實證」。
-> **修訂紀錄（返修卡 t_baa65494）**：外部初稿之 104 條帶識別符代碼連結經逐條實測覆核後全面修正——所有指向既有代碼的連結改標真實檔案與真實行號（識別符一律用實際宣告名），`core/odf` 提議型別（`RunSpan`／`BlockAttrs`／`InlineDrawing`／`FloatingImage`／`DrawingShape`／`LayoutTable`→`TableInput`／`OdfError`／`OdfWarning` 等）一律明文標註「本卡提議，尚未存在」且不再掛代碼連結；`file:///…/.worktrees/argon-odfd/…` 絕對路徑全數改倉內相對連結（本檔位於 `docs/`，代碼用 `../core/…`）；基準樣本產製器版本出處依 `meta.xml` 實字改正為 LibreOffice 24.8.0.3。本段以下之「既有」皆指真實代碼，「提議」皆指本卡設計、ODF-2/3 落地時才建立。
+> **修訂紀錄（返修卡 t_baa65494）**：外部初稿之代碼連結經逐條實測覆核後全面修正（PM 覆核口徑為 104 條帶識別符連結：正確 23、行號錯位 74）——所有指向既有代碼的連結改標真實檔案與真實行號（識別符一律用實際宣告名），`core/odf` 提議型別（`RunSpan`／`BlockAttrs`／`InlineDrawing`／`FloatingImage`／`DrawingShape`／`LayoutTable`→`TableInput`／`OdfError`／`OdfWarning` 等）一律明文標註「本卡提議，尚未存在」且不再掛代碼連結；`file:///…/.worktrees/argon-odfd/…` 絕對路徑全數改倉內相對連結（本檔位於 `docs/`，代碼用 `../core/…`）；基準樣本產製器版本出處依 `meta.xml` 實字改正為 LibreOffice 24.8.0.3。本機重放稽核器（`ow-doc-anchor-audit.py`，含相對連結解析擴充）返修前計數 stale=29、missfile=1、phantom=84；返修後閘門綠：stale=0、missfile=0、phantom=0。本段以下之「既有」皆指真實代碼，「提議」皆指本卡設計、ODF-2/3 落地時才建立。
 
 ---
 
