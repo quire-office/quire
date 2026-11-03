@@ -295,9 +295,10 @@ fn lamp2_vmerge_continuation_emits_bottom_rule() {
             && (*x2 - 372.0).abs() <= 1.0
     });
     if bottom_rule.is_none() {
-        missing.push(format!(
+        missing.push(
             "合併格底邊邊框缺失：期望在 y≈105.6 發射 [72.0, 105.6, 372.0, 105.6] w=2.0，實得 None"
-        ));
+                .to_string(),
+        );
     }
 
     // 2. 側邊檢驗：Row 1（continuation cell，y: 88.8 -> 105.6）的左緣與右緣必須發射出邊框 Rule
@@ -309,9 +310,10 @@ fn lamp2_vmerge_continuation_emits_bottom_rule() {
             && y1.max(*y2) >= 104.0
     });
     if left_rule.is_none() {
-        missing.push(format!(
+        missing.push(
             "合併格 continuation cell 左緣垂直分隔線缺段：期望在 x=72.0 覆蓋 y=[88.8, 105.6]，實得缺失"
-        ));
+                .to_string(),
+        );
     }
 
     let right_rule = rules.iter().find(|(x1, y1, x2, y2, w)| {
@@ -322,9 +324,10 @@ fn lamp2_vmerge_continuation_emits_bottom_rule() {
             && y1.max(*y2) >= 104.0
     });
     if right_rule.is_none() {
-        missing.push(format!(
+        missing.push(
             "合併格 continuation cell 右緣邊框丟失：期望在 x=372.0 覆蓋 y=[88.8, 105.6]，實得缺失"
-        ));
+                .to_string(),
+        );
     }
 
     if std::env::var_os("D6_BORDERS_BUGGY").is_some() {
