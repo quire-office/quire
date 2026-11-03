@@ -53,6 +53,11 @@ const LO_ROW2_TOP: f32 = 344.25;
 const TOL: f32 = 1.0;
 
 /// 取 p0 中寬高命中 (w,h)±1 的 Rect → (x, y)。
+///
+/// R34 探針換位（斷言值零改動）：R34 起表內無填充框根不再發 Rect（alpha-0
+/// 幽靈是錯誤口徑），Textbox3 根框原點改踩同原點的可見子件白框（387×98.5，
+/// 群組 dx/dy=0；修態 (72.0,158.5)、K17 BUGGY 回退態 (72.0,106.5)——兩個態
+/// 下子件都跟根框整體位移，鑑別力與舊 Rect 探針等價）。
 fn rect_xy(eng: &Engine, w: f32, h: f32) -> (f32, f32) {
     let dl = eng.page_display_list(0).expect("p0 存在");
     dl.items
@@ -64,6 +69,11 @@ fn rect_xy(eng: &Engine, w: f32, h: f32) -> (f32, f32) {
             _ => None,
         })
         .unwrap_or_else(|| panic!("p0 找不到 {w}×{h} 的 Rect"))
+}
+
+/// Textbox3 群組根框（387×185）原點：踩同原點子件白框（見 `rect_xy` 檔頭注）。
+fn textbox3_origin(eng: &Engine) -> (f32, f32) {
+    rect_xy(eng, 387.0, 98.5)
 }
 
 /// p0 全部橫向**表格**線 y（Rule 且 y1==y2；表格框線 0.5pt，文字框邊框 0.75pt，
@@ -92,7 +102,7 @@ fn horizontal_rule_ys(eng: &Engine) -> Vec<f32> {
 #[test]
 fn k17_lamp1_wc048_textbox3_y_lo_truth() {
     let eng = load_corpus(WC048);
-    let (_x, y) = rect_xy(&eng, 387.0, 185.0);
+    let (_x, y) = textbox3_origin(&eng);
     assert!(
         (y - LO_TEXTBOX3_Y).abs() <= TOL,
         "燈1：Textbox3 y 應落 LO {LO_TEXTBOX3_Y}±{TOL}，實得 {y}（修前 106.5）"
@@ -162,7 +172,7 @@ fn k17_lamp3_scoreboard_gate_script_exists() {
 #[test]
 fn k17_lamp5_textbox3_still_anchored_to_cell_top() {
     let eng = load_corpus(WC048);
-    let (_x, y) = rect_xy(&eng, 387.0, 185.0);
+    let (_x, y) = textbox3_origin(&eng);
     let cell_top = y - 21.0475;
     let ys = horizontal_rule_ys(&eng);
     assert!(
@@ -183,7 +193,7 @@ fn k17_buggy_regression_lock() {
         return;
     }
     let eng = load_corpus(WC048);
-    let (_x, y) = rect_xy(&eng, 387.0, 185.0);
+    let (_x, y) = textbox3_origin(&eng);
     assert!(
         (100.0..=115.0).contains(&y),
         "BUGGY 態 Textbox3 y 應退回舊值 ≈106.5，實得 {y}"

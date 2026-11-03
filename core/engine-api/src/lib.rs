@@ -3937,10 +3937,15 @@ fn emit_image_shape(
         return; // 非法尺寸老實不發射（容錯鐵律）
     }
     let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
-    // R32：表內文字框／群組根（in_cell 或 layout_in_cell）的「無填充宣告」＝透明底（LO WC048 Textbox2/3）。
-    // 舊碼把「宣告缺位」一律退佔位灰（0xFFF0F0F0），表內 Textbox3 的 387×185 灰帶
-    // 因而蓋到第 3 列文字。此處改發全透明 Rect（0x00000000），既消滅灰帶遮蓋，
-    // 又保持 K15 幾何原點錨定驗證（w=387 h=185、w=273.6 h=110.55）零回退。
+    // R34 回塞鎖（照 K12/K17 BUGGY 先例，只在發射期讀一次）：
+    // `R34_PLACEHOLDER_GATE_BUGGY=1` 還原 R32 舊口徑（alpha-0 幽靈 Rect＋
+    // 無條件四條佔位 Rule）——r32/r34 考卷的防假綠燈據此證明紅燈由本修復驅動。
+    let r34_buggy = std::env::var_os("R34_PLACEHOLDER_GATE_BUGGY").is_some();
+    // ＝LO 無底色（WC048 Textbox2/3 實測零墨跡）。R32 當時改發全透明 Rect
+    // （0x0000_0000）消滅灰帶，但幽靈矩形留在顯示列表裡：SVG 端 alpha-0
+    // rect 仍 hit-testable（PM 覆核定為錯誤口徑，R34 起改「直接不 push」）。
+    // K15 錨定驗證原以這批 Rect 為探針，R34 起 k15/k17 改踩同原點的可見圖元
+    // （探針換位、斷言 LO 真值逐字不動，見各檔註解）。
     // 純圖片／EMF／正文浮動佔位（shape=None 或非表內框）仍走舊灰底零擾動。
     let textbox_root_nofill = shape.is_some_and(|b| {
         (b.in_cell || b.layout_in_cell)
@@ -3950,7 +3955,13 @@ fn emit_image_shape(
     let fill = if shape.is_some_and(|b| deco_off(b.filled)) {
         None
     } else if textbox_root_nofill {
-        Some(0x0000_0000)
+        // R34：無填充宣告的表內框根＝不發 Rect（LO 真值無底色，也不留幽靈）。
+        // BUGGY 回塞態＝R32 舊口徑（alpha-0 幽靈 Rect 照發）。
+        if r34_buggy {
+            Some(0x0000_0000)
+        } else {
+            None
+        }
     } else {
         Some(
             shape
@@ -4013,6 +4024,21 @@ fn emit_image_shape(
                 }
             }
         }
+    }
+    // R34（S2）：表內文字框／群組根的「無描邊宣告」＝LO 無框線（WC048 Textbox3
+    // 實測 LO 零框線）。舊碼在 `stroke_argb` 缺位時無條件退佔位邊
+    // （IMAGE_PLACEHOLDER_EDGE 0xFFCCCCCC ×4），R32 把填色改透明後，這四條
+    // 淺灰佔位線仍蓋在框區（PM 實跑坐實）。口徑與本函數填充臂對稱：
+    // `filled="f"` 是「宣告不填」、`stroked="f"` 是「宣告不描邊」，兩者皆
+    // 未宣告的表內文字框根＝LO 依内容繪製、框本身無墨跡 ⇒ 不发佔位四邊。
+    // 本閂位置在群組子件發射**之後**：子件（白框／藍塊）各有自己的宣告，
+    // 照常發射，閂只掐根框的佔位邊。純圖片／EMF 的灰底佔位框（shape=None
+    // 或無框內文字與子件）照舊發四邊，K4c-image 誠實佔位契約零擾動。
+    if !r34_buggy
+        && textbox_root_nofill
+        && shape.is_some_and(|b| b.stroke_argb.is_none() && b.stroked != Some(true))
+    {
+        return;
     }
     if shape.is_some_and(|b| deco_off(b.stroked)) {
         return;
