@@ -52,7 +52,11 @@ fn first_row_cell1_text_pushed_below_textbox() {
         .copied()
         .filter(|(x, y)| *x > 200.0 && *y < 130.0)
         .collect();
-    assert_eq!(top_row.len(), 2, "首列 cell2/cell3 兩格文字，實得 {top_row:?}");
+    assert_eq!(
+        top_row.len(),
+        2,
+        "首列 cell2/cell3 兩格文字，實得 {top_row:?}"
+    );
     for (x, y) in top_row {
         assert!(
             (69.0..=76.0).contains(&y),
@@ -106,11 +110,7 @@ fn test_text_total_matches_lo_truth() {
         "全篇 This is a test. 應＝LO 9 個（不得重複發射），實得 {}: {texts:?}",
         texts.len()
     );
-    let third_row: Vec<(f32, f32)> = texts
-        .iter()
-        .copied()
-        .filter(|(_, y)| *y > 330.0)
-        .collect();
+    let third_row: Vec<(f32, f32)> = texts.iter().copied().filter(|(_, y)| *y > 330.0).collect();
     assert_eq!(third_row.len(), 3, "第 3 列應 3 個，實得 {third_row:?}");
     for (x, y) in third_row {
         assert!(
