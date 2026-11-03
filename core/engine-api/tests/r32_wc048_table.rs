@@ -47,22 +47,16 @@ fn first_row_cell1_text_pushed_below_textbox() {
         "首列 cell1 文字應被 Textbox1 wrap 推下到 LO y=112.2±4，實得 y={}（修前 72.0）",
         first_col.1
     );
-    let top_row: Vec<(f32, f32)> = texts
-        .iter()
-        .copied()
-        .filter(|(x, y)| *x > 200.0 && *y < 130.0)
-        .collect();
-    assert_eq!(
-        top_row.len(),
-        2,
-        "首列 cell2/cell3 兩格文字，實得 {top_row:?}"
+    // 第一列列頂（y≈72）三格文字序列斷言 == LO pymupdf span 真值（首格空）：
+    let row0_top_cell1 = texts.iter().find(|(x, y)| *x < 150.0 && (69.0..=76.0).contains(y));
+    let row0_top_cell2 = texts.iter().find(|(x, y)| (150.0..=300.0).contains(x) && (69.0..=76.0).contains(y));
+    let row0_top_cell3 = texts.iter().find(|(x, y)| *x > 300.0 && (69.0..=76.0).contains(y));
+    assert!(
+        row0_top_cell1.is_none(),
+        "第一列首格在列頂必須為空（LO pymupdf 真值 [空, This is a test., This is a test.]），實得 {row0_top_cell1:?}"
     );
-    for (x, y) in top_row {
-        assert!(
-            (69.0..=76.0).contains(&y),
-            "首列 cell2/3 x={x} 應留在列頂 LO y=72.7±3，實得 {y}"
-        );
-    }
+    assert!(row0_top_cell2.is_some(), "第一列第 2 格在列頂必須有字");
+    assert!(row0_top_cell3.is_some(), "第一列第 3 格在列頂必須有字");
 }
 
 /// 燈 2：Textbox2／Textbox3 根皆無底色（LO 無灰帶）；Textbox3 的 387×185 灰帶

@@ -24,8 +24,8 @@ use quire_layout::table::{
 };
 use quire_layout::{LayoutParams, SectionSpec, TableSlot, TextMeasurer};
 use quire_ooxml::{
-    apply_shading_transform, Block, BodyTable, Borders, Margins, StyleTable, Table, TblWidth,
-    ThemeColors,
+    apply_shading_transform, Block, BodyTable, Borders, Margins, StyleTable, Table, TableCell,
+    TblWidth, ThemeColors,
 };
 use quire_render_trait::{FLAG_BOLD, FLAG_ITALIC, FLAG_STRIKE, FLAG_UNDERLINE};
 
@@ -1554,13 +1554,15 @@ fn k17_grow_floors(
         }
         // 宿主列定位：錨定段落所屬**直接儲存格**所在列（巢狀表段落的宿主＝
         // 最內層格，遞迴下鑽）。
-        let Some(row_idx) = k17_host_row(table, im.para_index) else {
+        let Some((row_idx, col_idx, host_cell)) = k17_host_cell(table, im.para_index) else {
             continue;
         };
         // R32：wrapSquare 文字框把宿主格首行文字推到框底之下（LO 口徑：
         // 起點＝ceil((posV+eff_h)/line_h)×line_h）。只認「框頂仍壓到首行帶」
-        // 者（posV < 1.2×line_h）；Textbox2 的 wrapTopAndBottom 與 Textbox3
-        // 群組 posV=21.05pt（首行上方、LO 不推）皆排除。
+        // （posV < 1.2×line_h）且「框寬壓滿宿主格寬」（≥85%，如 WC048 框寬 185.9pt
+        // 壓過格寬 150.25pt）；若格寬充裕（如 WC049 格寬 450pt 框寬 185.9pt），
+        // LO 走兩側環繞（wrapText="bothSides"），不推下首行。Textbox2 的
+        // wrapTopAndBottom 與 Textbox3 群組 posV=21.05pt（首行上方、LO 不推）皆排除。
         let wrap_square = matches!(im.wrap_type.as_deref(), None | Some("square"));
         // R32：推移量化用的是宿主段的實際行高（`line_hs`，發射端口徑），
         // 非全域 params.line_h_pt（WC048 的 params 預設行高遠小於 cell 段
@@ -1570,7 +1572,14 @@ fn k17_grow_floors(
             .copied()
             .filter(|v| *v > 0.0 && v.is_finite())
             .unwrap_or(line_h);
-        if wrap_square && let_pos_v < cell_lh * 1.2 {
+        let cell_w = host_cell
+            .props
+            .width
+            .as_ref()
+            .and_then(|tw| twip_pt(tw.w.as_deref()))
+            .or_else(|| table.grid.get(col_idx).and_then(|gc| gc.w_pt));
+        let covers_cell_w = cell_w.is_some_and(|w| im.w_pt >= w * 0.85);
+        if wrap_square && covers_cell_w && let_pos_v < cell_lh * 1.2 {
             let off = ((let_pos_v + eff_h) / cell_lh).ceil() * cell_lh;
             if off.is_finite() && off > 0.0 && off < 2000.0 {
                 let t = wrap_tops.entry(im.para_index).or_insert(0.0);
@@ -1583,14 +1592,14 @@ fn k17_grow_floors(
     out
 }
 
-/// 宿主列定位：段落 index 落在本表（含巢狀）哪個直接儲存格 → 該格所在列。
+/// 宿主儲存格定位：段落 index 落在本表（含巢狀）哪個直接儲存格 → (列號, 欄號, &Cell)。
 /// 巢狀表內段落＝宿主在最內層表（其表高另有算法，撐**外層**列無據＝None）。
-fn k17_host_row(table: &Table, para_index: usize) -> Option<usize> {
+fn k17_host_cell<'a>(table: &'a Table, para_index: usize) -> Option<(usize, usize, &'a TableCell)> {
     for (ri, row) in table.rows.iter().enumerate() {
-        for cell in &row.cells {
+        for (ci, cell) in row.cells.iter().enumerate() {
             for b in &cell.blocks {
                 match b {
-                    Block::Paragraph { index } if *index == para_index => return Some(ri),
+                    Block::Paragraph { index } if *index == para_index => return Some((ri, ci, cell)),
                     Block::Table(inner) => {
                         // 最內層命中＝回 None：撐外層列無 LO 校準依據。
                         let _ = inner;
