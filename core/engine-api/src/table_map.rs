@@ -671,9 +671,9 @@ fn find_tbl_borders(seg: &str) -> Option<Borders> {
     };
     let bs = Borders {
         top: pick("top"),
-        left: pick("left"),
+        left: pick("left").or_else(|| pick("start")),
         bottom: pick("bottom"),
-        right: pick("right"),
+        right: pick("right").or_else(|| pick("end")),
         inside_h: pick("insideH"),
         inside_v: pick("insideV"),
         tl2br: None,
