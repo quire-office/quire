@@ -217,7 +217,7 @@ EXT_PICKS: list[dict] = [
                    "published, and distributed, in whole or in part, without restriction of any kind, "
                    "provided that the above copyright notice and this section are included\"；"
                    "本檔為未修改的官方 OASIS Standard 原檔，授權查證通過）",
-        "why": "規範本体文件：真實世界由 ODF 1.3 全功能 writer 產出、目錄＋交叉引用＋長文件，"
+        "why": "規範本體文件：真實世界由 ODF 1.3 全功能 writer 產出、目錄＋交叉引用＋長文件，"
                "且是「解析器要解的規格自己」，可當自對照樣本",
         "tags": ["specification", "toc", "real-world"],
     },
@@ -242,8 +242,8 @@ QUARANTINE_TRIED: list[dict] = [
     {
         "url": "https://commons.wikimedia.org/w/api.php（filetype:office ext:odt 檢索）",
         "title": "Wikimedia Commons ODT 檔案（多筆 CC/PD）",
-        "reason": "API 於本環境回 403 Forbidden（无 UA 白名單），無法完成「逐檔授權欄位實查」；"
-                  "未實查不得登記授權，故整批暫不入库（改天補 UA／鏡像站再議）",
+        "reason": "API 於本環境回 403 Forbidden（無 UA 白名單），無法完成「逐檔授權欄位實查」；"
+                  "未實查不得登記授權，故整批暫不入庫（改天補 UA／鏡像站再議）",
         "http": "403 Forbidden",
     },
 ]
@@ -345,7 +345,7 @@ def kill_stale_lo() -> None:
 
 def kill_own_lo(needle: str) -> int:
     """只殺本輪自己拉起的 soffice（命令列含本 scratch profile 路徑者）。
-    背景同 render_lab：崩潰残留的模態視窗溫和砍不動，兩日可累積上百個進程撐爆 pagefile。"""
+    背景同 render_lab：崩潰殘留的模態視窗溫和砍不動，兩日可累積上百個進程撐爆 pagefile。"""
     if not shutil.which("powershell.exe"):
         return 0
     try:
@@ -701,7 +701,7 @@ def build(dry: bool, force: bool, only_missing: bool) -> int:
         print(f"FAIL: LO 轉換失敗 {len(fails)} 檔：{[f['file'] for f in fails]}", file=sys.stderr)
         return 1
     if len(entries) != 50:
-        print(f"FAIL: 正庫应為 50 檔，實得 {len(entries)}", file=sys.stderr)
+        print(f"FAIL: 正庫應為 50 檔，實得 {len(entries)}", file=sys.stderr)
         return 1
     return 0
 

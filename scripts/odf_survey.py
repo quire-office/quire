@@ -138,7 +138,7 @@ def classify_href(href: str) -> str | None:
 
 
 def part_exists(names: set[str], target: str) -> bool:
-    """ODF 內部引用常指向目錄（如 Pictures/）或带 %xx 跳脫的檔名，兩者都要能核對。"""
+    """ODF 內部引用常指向目錄（如 Pictures/）或帶 %xx 跳脫的檔名，兩者都要能核對。"""
     if target in names:
         return True
     if target.endswith("/") and any(n.startswith(target) for n in names):
@@ -417,7 +417,7 @@ def survey_file(archive: pathlib.Path, entry: dict) -> dict:
     rec["pii_hits"] = scan_pii(archive)
     rec["pathology"] = patho
 
-    # 病態旗標（先紅後綠的落點都在这里）
+    # 病態旗標（先紅後綠的落點都在這裡）
     if not patho["mimetype_ok"]:
         if not patho["mimetype_present"]:
             flags.append("mimetype_missing")
@@ -585,13 +585,15 @@ def manifest_completeness(corpus: pathlib.Path) -> list[str]:
 def required_cases(records: list[dict], s: dict) -> list[dict]:
     """X1a 口徑的「ODF-2 必蓋 case 清單」：每項附 corpus-odt 實檔證據。
 
-    这些是 core/odf crate（無損容器＋投影模型）第一期必須自證的考題，
+    這些是 core/odf crate（無損容器＋投影模型）第一期必須自證的考題，
     全部從本批 50 檔的實測結果反推，不是憑空列清單。
     """
     def with_font(rec_list: list[dict]) -> list[str]:
         out = []
         for r in rec_list:
-            if any("font" in (e.get("media_type") or "") for e in r.get("entries", [])):
+            # media_type 只存在於 META-INF/manifest.xml 的宣告面（entries[] 是 zip 層，
+            # 沒有 MIME 欄位）；字型判定必須查 manifest 宣告的 media_types。
+            if any("font" in mt for mt in (r.get("manifest") or {}).get("media_types", [])):
                 out.append(r["file"])
         return out
 
@@ -600,7 +602,7 @@ def required_cases(records: list[dict], s: dict) -> list[dict]:
             "id": "ODF2-01",
             "title": "mimetype 必須是首 entry 且 stored（ODF 1.3 §3.3）",
             "why": "3 檔 LO QA 真實檔違例（見 mimetype_violation_files）：讀取端若先假設首 entry，"
-                   "对这三檔會直接误判；寫出端若首 entry 被壓縮則違反規格。",
+                   "對這三檔會直接誤判；寫出端若首 entry 被壓縮則違反規格。",
             "evidence": s["mimetype_violation_files"],
         },
         {
@@ -672,15 +674,15 @@ def required_cases(records: list[dict], s: dict) -> list[dict]:
         {
             "id": "ODF2-11",
             "title": "嵌入字型（application/x-font-ttf）",
-            "why": "本批僅 1 檔帶 TTF（tdf124470），但字型是版面還原的關鍵輸入：容器層必須"
-                   "把 fonts/ entry 當一等公民保留（含 manifest 宣告順序），不能歸入「其他媒體」。",
+            "why": "本批僅 1 檔帶 TTF（lo__selfgen__embedded_font_odttf.odt），但字型是版面還原的關鍵輸入：容器層必須"
+                   "把字型 entry 當一等公民保留（含 manifest 宣告順序），不能歸入「其他媒體」。",
             "evidence": with_font(records),
         },
         {
             "id": "ODF2-12",
             "title": "文字框 draw:text-box（含 k18 撐列模型輸入）",
-            "why": "4 檔有 draw:text-box：LO 文字框撐列（K18-cal 校準过的 posV+eff_h+clash+ε）"
-                   "要能從 ODT 侧座標重現，容器解析必須保留框的位置/尺寸屬性。",
+            "why": "4 檔有 draw:text-box：LO 文字框撐列（K18-cal 校準過的 posV+eff_h+clash+ε）"
+                   "要能從 ODT 側座標重現，容器解析必須保留框的位置/尺寸屬性。",
             "evidence": s["files_with_text_box"],
         },
         {
@@ -779,7 +781,8 @@ def main() -> int:
             "record_count_ok": len(records) == manifest.get("count", len(entries)),
         },
         "files": records,
-        "summary": summarize(records, manifest.get("count", len(entries))),
+        "summary": s,
+        "required_cases": required_cases(records, s),
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n",
@@ -789,7 +792,8 @@ def main() -> int:
           f"mimetype 違例 {len(s['mimetype_violation_files'])} 檔，"
           f"加密 {len(s['encrypted_files'])} 檔，外部引用 {len(s['external_href_files'])} 檔。")
     print(f"閘門：manifest 完備={not problems}，先紅自證={ok}，"
-          f"record 數相符={document['gate']['record_count_ok']}")
+          f"record 數相符={document['gate']['record_count_ok']}，"
+          f"ODF-2 必蓋 case {len(document['required_cases'])} 項。")
     if problems:
         for p in problems:
             print("  MANIFEST-FAIL", p)

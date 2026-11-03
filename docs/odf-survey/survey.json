@@ -17311,5 +17311,217 @@
         ]
       }
     ]
-  }
+  },
+  "required_cases": [
+    {
+      "id": "ODF2-01",
+      "title": "mimetype 必須是首 entry 且 stored（ODF 1.3 §3.3）",
+      "why": "3 檔 LO QA 真實檔違例（見 mimetype_violation_files）：讀取端若先假設首 entry，對這三檔會直接誤判；寫出端若首 entry 被壓縮則違反規格。",
+      "evidence": [
+        "ext/lo_core_sw_qa_odfexport_tdf140437.odt",
+        "ext/lo_core_sw_qa_odfexport_tdf152710.odt",
+        "ext/lo_core_sw_qa_odfexport_tdf77961.odt"
+      ]
+    },
+    {
+      "id": "ODF2-02",
+      "title": "加密容器（manifest:encryption-data）只登記不解析",
+      "why": "2 檔 Blowfish CFB＋PBKDF2 真加密（LO QA 鏡像 fdo76591 待遇）：容器層必須能辨識、跳過、報明，不得當損壞檔，也不得在本期實作解密。",
+      "evidence": [
+        "ext/lo_core_sw_qa_odfexport_sha1_correct.odt",
+        "ext/lo_core_sw_qa_odfexport_sha1_wrong.odt"
+      ]
+    },
+    {
+      "id": "ODF2-03",
+      "title": "manifest 宣告 entry 但 zip 未帶（self-declared absent）",
+      "why": "tdf152710.odt 宣告 content.xml 卻缺：無損容器必須保留「宣告≠實際」差異，round-trip 後要原樣還原而非憑猜補齊。",
+      "evidence": [
+        "ext/lo_core_sw_qa_odfexport_tdf152710.odt"
+      ]
+    },
+    {
+      "id": "ODF2-04",
+      "title": "檔外資源引用（資源性 xlink:href 指向容器外）",
+      "why": "12 檔有 draw:image / draw:frame 層級的外部引用：無損往返必須原封保留 href，投影面則要能區分「引用不存在的外部資源」與純超鏈（text:a 另計）。",
+      "evidence": [
+        "ext/lo_core_sw_qa_odfexport_tdf152710.odt",
+        "ext/lo_core_sw_qa_odfimport_ooo32780-1.odt",
+        "lo_out/lo__ooxmlexport__fdo76098.odt",
+        "lo_out/lo__ooxmlexport__strict.odt",
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader-styles.odt",
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader.odt",
+        "lo_out/lo__poi__test-data_document_WordWithAttachments.odt",
+        "lo_out/lo__poi__test-data_document_bug59058.odt",
+        "lo_out/lo__poi__test-data_document_drawing.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_ChartUpdater01_Chart-Embedded-Xlsx-08.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_DocumentBuilder04_SolarOverview.odt",
+        "lo_out/lo__xopt__TestFiles_HC031-Complicated-Document.odt"
+      ]
+    },
+    {
+      "id": "ODF2-05",
+      "title": "合併格：covered-table-cell 單複數兩種寫法都要吃",
+      "why": "17 檔有合併格。本批實測：LO 導出走單數 <table:covered-table-cell/>，複數 <table:covered-table-cells/>（range 寫法）在本批 0 現但規格允許——投影模型兩者都必須映射，否則覆蓋格會渲染成實體格。",
+      "evidence": [
+        "ext/lo_core_sw_qa_odfimport_feature_table_merged-cells.odt",
+        "lo_out/lo__ooxmlexport__FDO76312.odt",
+        "lo_out/lo__ooxmlexport__FDO78292.odt",
+        "lo_out/lo__ooxmlexport__fdo76098.odt",
+        "lo_out/lo__ooxmlexport__tdf102466.odt",
+        "lo_out/lo__ooxmlexport__tdf104061_tableSectionColumns.odt",
+        "lo_out/lo__ooxmlexport__tdf105688.odt",
+        "lo_out/lo__ooxmlexport__tdf123054.odt",
+        "lo_out/lo__ooxmlexport__tdf123705.odt",
+        "lo_out/lo__phpword__samples_resources_Sample_11_ReadWord2007.odt",
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader-styles.odt",
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader.odt",
+        "lo_out/lo__poi__test-data_document_bug57031.odt",
+        "lo_out/lo__poi__test-data_document_bug59058.odt",
+        "lo_out/lo__poi__test-data_document_bug65649.odt",
+        "lo_out/lo__poi__test-data_document_drawing.odt",
+        "lo_out/lo__poi__test-data_document_form_footnotes.odt"
+      ]
+    },
+    {
+      "id": "ODF2-06",
+      "title": "目錄是 text:table-of-content，不是 text:outline",
+      "why": "本批 50 檔 text:outline 出現 0 次、text:table-of-content 5 檔：卡面原本的text:outline 假設是錯的（ODF 無此元素），考題必須以真實標籤為準，含 toc 的 text:table-of-content-source 與 entry-template 結構。",
+      "evidence": [
+        "ext/oasis_opendocument_v1p3_os_part1_introduction.odt",
+        "lo_out/lo__ooxmlexport__tdf102466.odt",
+        "lo_out/lo__ooxmlexport__tdf124637_sectionMargin.odt",
+        "lo_out/lo__selfgen__dropcap_toc_fields.odt",
+        "lo_out/lo__xopt__TestFiles_HC031-Complicated-Document.odt"
+      ]
+    },
+    {
+      "id": "ODF2-07",
+      "title": "軟分頁 fo:break-before=\"page\"（本批未見 text:soft-page-break）",
+      "why": "12 檔靠 fo:break-before 斷頁：LO 導出不用 text:soft-page-break 標籤，投影模型的斷頁訊號來源必須以 styles 屬性為準。",
+      "evidence": [
+        "ext/lo_core_sw_qa_odfexport_WordTest_edit.odt",
+        "ext/oasis_opendocument_v1p3_os_part1_introduction.odt",
+        "lo_out/lo__ooxmlexport__FDO76312.odt",
+        "lo_out/lo__ooxmlexport__fdo78420.odt",
+        "lo_out/lo__ooxmlexport__tdf102466.odt",
+        "lo_out/lo__ooxmlexport__tdf105688.odt",
+        "lo_out/lo__phpword__samples_resources_Sample_11_ReadWord2007.odt",
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader-styles.odt",
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader.odt",
+        "lo_out/lo__poi__test-data_document_bug57031.odt",
+        "lo_out/lo__poi__test-data_document_bug65649.odt",
+        "lo_out/lo__xopt__TestFiles_HC031-Complicated-Document.odt"
+      ]
+    },
+    {
+      "id": "ODF2-08",
+      "title": "腳註/尾註錨（text:note + text:note-body）",
+      "why": "12 檔有註解錨：content.xml 的註解正文與 styles.xml 的 footnote/endnote configuration 要成對還原，缺 sidecar 就丟註解。",
+      "evidence": [
+        "ext/lo_core_sw_qa_odfimport_ooo32780-1.odt",
+        "lo_out/lo__ooxmlexport__tdf124637_sectionMargin.odt",
+        "lo_out/lo__phpword__samples_resources_Sample_11_ReadWord2007.odt",
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader-styles.odt",
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader.odt",
+        "lo_out/lo__poi__test-data_document_Bug54849.odt",
+        "lo_out/lo__poi__test-data_document_bug65649.odt",
+        "lo_out/lo__poi__test-data_document_form_footnotes.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_DocumentBuilder04_Neptune.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_DocumentBuilder04_Saturn.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_DocumentBuilder04_SolarOverview.odt",
+        "lo_out/lo__xopt__TestFiles_HC031-Complicated-Document.odt"
+      ]
+    },
+    {
+      "id": "ODF2-09",
+      "title": "頁首/頁尾（style:header / style:footer）",
+      "why": "21 檔有頁首、19 檔有頁尾：頁首頁尾住在 styles.xml 的 master-page→page-layout 鏈上，投影器不能只讀 content.xml。",
+      "evidence": [
+        "ext/oasis_opendocument_v1p3_os_part1_introduction.odt",
+        "lo_out/lo__ooxmlexport__FDO76312.odt",
+        "lo_out/lo__ooxmlexport__fdo69616.odt",
+        "lo_out/lo__ooxmlexport__fdo78420.odt",
+        "lo_out/lo__ooxmlexport__lvlPicBulletId.odt",
+        "lo_out/lo__ooxmlexport__mce-nested.odt",
+        "lo_out/lo__ooxmlexport__strict.odt",
+        "lo_out/lo__ooxmlexport__table-row-data-displayed-twice.odt",
+        "lo_out/lo__ooxmlexport__tdf102466.odt",
+        "lo_out/lo__ooxmlexport__tdf104061_tableSectionColumns.odt",
+        "lo_out/lo__ooxmlexport__tdf105688.odt",
+        "lo_out/lo__ooxmlexport__tdf123705.odt",
+        "lo_out/lo__ooxmlexport__tdf124637_sectionMargin.odt",
+        "lo_out/lo__phpword__samples_resources_Sample_11_ReadWord2007.odt",
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader-styles.odt",
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader.odt",
+        "lo_out/lo__poi__test-data_document_Bug54849.odt",
+        "lo_out/lo__poi__test-data_document_WordWithAttachments.odt",
+        "lo_out/lo__poi__test-data_document_bug57031.odt",
+        "lo_out/lo__poi__test-data_document_checkboxes.odt",
+        "lo_out/lo__xopt__TestFiles_HC031-Complicated-Document.odt"
+      ]
+    },
+    {
+      "id": "ODF2-10",
+      "title": "嵌入物件 draw:frame 家族（chart / formula / OLE / PDF）",
+      "why": "27 檔有 draw:frame，media_type 混雜 opendocument.chart×4、formula×2、sun.star.oleobject×4、application/pdf×1：無損面要原樣保留 secondary manifest 宣告，投影面要決定降採策略。",
+      "evidence": [
+        "ext/lo_core_sw_qa_odfexport_embedded-pdf.odt",
+        "ext/lo_core_sw_qa_odfexport_tdf152710.odt",
+        "ext/oasis_opendocument_v1p3_os_part1_introduction.odt",
+        "lo_out/lo__ooxmlexport__FDO78292.odt",
+        "lo_out/lo__ooxmlexport__fdo76098.odt",
+        "lo_out/lo__ooxmlexport__fdo77887.odt",
+        "lo_out/lo__ooxmlexport__strict.odt",
+        "lo_out/lo__ooxmlexport__tdf104061_tableSectionColumns.odt",
+        "lo_out/lo__ooxmlexport__tdf105688.odt",
+        "lo_out/lo__phpword__samples_resources_Sample_11_ReadWord2007.odt",
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader-styles.odt",
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader.odt",
+        "lo_out/lo__poi__test-data_document_WordWithAttachments.odt",
+        "lo_out/lo__poi__test-data_document_bug57031.odt",
+        "lo_out/lo__poi__test-data_document_bug59058.odt",
+        "lo_out/lo__poi__test-data_document_checkboxes.odt",
+        "lo_out/lo__poi__test-data_document_drawing.odt",
+        "lo_out/lo__poi__test-data_document_form_footnotes.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_ChartUpdater01_Chart-Embedded-Xlsx-08.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_DocumentBuilder04_Mercury.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_DocumentBuilder04_Neptune.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_DocumentBuilder04_Pluto.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_DocumentBuilder04_Saturn.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_DocumentBuilder04_SolarOverview.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_DocumentBuilder04_Sun.odt",
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_HtmlConverter01_Test-03.odt",
+        "lo_out/lo__xopt__TestFiles_HC031-Complicated-Document.odt"
+      ]
+    },
+    {
+      "id": "ODF2-11",
+      "title": "嵌入字型（application/x-font-ttf）",
+      "why": "本批僅 1 檔帶 TTF（lo__selfgen__embedded_font_odttf.odt），但字型是版面還原的關鍵輸入：容器層必須把字型 entry 當一等公民保留（含 manifest 宣告順序），不能歸入「其他媒體」。",
+      "evidence": [
+        "lo_out/lo__selfgen__embedded_font_odttf.odt"
+      ]
+    },
+    {
+      "id": "ODF2-12",
+      "title": "文字框 draw:text-box（含 k18 撐列模型輸入）",
+      "why": "4 檔有 draw:text-box：LO 文字框撐列（K18-cal 校準過的 posV+eff_h+clash+ε）要能從 ODT 側座標重現，容器解析必須保留框的位置/尺寸屬性。",
+      "evidence": [
+        "lo_out/lo__ooxmlexport__fdo77887.odt",
+        "lo_out/lo__ooxmlexport__tdf105688.odt",
+        "lo_out/lo__poi__test-data_document_WordWithAttachments.odt",
+        "lo_out/lo__poi__test-data_document_checkboxes.odt"
+      ]
+    },
+    {
+      "id": "ODF2-13",
+      "title": "消毒哨兵不得被個資掃描誤報",
+      "why": "2 檔報 PII：FDO78292 的 svg:desc 殘留 C:\\Users\\redacted\\…（消毒後的哨兵路徑），OASIS 規範檔帶 12 個公開 mailto（文件作者聯絡連結，非個資）。掃描器要把「消毒結果＋公開出版聯絡」與真實個資分開，否則紅燈永遠關不掉。",
+      "evidence": [
+        "ext/oasis_opendocument_v1p3_os_part1_introduction.odt",
+        "lo_out/lo__ooxmlexport__FDO78292.odt"
+      ]
+    }
+  ]
 }

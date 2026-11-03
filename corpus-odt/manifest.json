@@ -207,7 +207,7 @@
    "batch": "odf-c1-ext",
    "doc_type": "odt",
    "source_sha": "https://docs.oasis-open.org/office/OpenDocument/v1.3/os/part1-introduction/OpenDocument-v1.3-os-part1-introduction.odt",
-   "why": "規範本体文件：真實世界由 ODF 1.3 全功能 writer 產出、目錄＋交叉引用＋長文件，且是「解析器要解的規格自己」，可當自對照樣本",
+   "why": "規範本體文件：真實世界由 ODF 1.3 全功能 writer 產出、目錄＋交叉引用＋長文件，且是「解析器要解的規格自己」，可當自對照樣本",
    "tags": [
     "specification",
     "toc",
