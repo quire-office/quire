@@ -1335,7 +1335,7 @@ pub fn build_slots(
                 params,
                 sections,
                 doc_styles,
-                line_h,
+                line_hs,
                 &mut wrap_tops,
             );
             let input = table_input(
@@ -1424,9 +1424,11 @@ fn k17_grow_floors(
     params: &LayoutParams,
     sections: &[SectionSpec],
     styles: Option<&StyleTable>,
-    line_h: f32,
+    // R32：段落索引 → 實際行高（發射端口徑；wrap 推移量化用）。
+    para_line_hs: &[f32],
     wrap_tops: &mut HashMap<usize, f32>,
 ) -> HashMap<usize, f32> {
+    let line_h = params.line_h_pt();
     let mut out: HashMap<usize, f32> = HashMap::new();
     if std::env::var_os("K17_ANCHOR_ROWGROW_BUGGY").is_some() {
         return out;
@@ -1560,8 +1562,16 @@ fn k17_grow_floors(
         // 者（posV < 1.2×line_h）；Textbox2 的 wrapTopAndBottom 與 Textbox3
         // 群組 posV=21.05pt（首行上方、LO 不推）皆排除。
         let wrap_square = matches!(im.wrap_type.as_deref(), None | Some("square"));
-        if wrap_square && let_pos_v < line_h * 1.2 {
-            let off = ((let_pos_v + eff_h) / line_h).ceil() * line_h;
+        // R32：推移量化用的是宿主段的實際行高（`line_hs`，發射端口徑），
+        // 非全域 params.line_h_pt（WC048 的 params 預設行高遠小於 cell 段
+        // 實際行高，用錯口徑會把「框頂壓到首行」的資格判成不成立）。
+        let cell_lh = para_line_hs
+            .get(im.para_index)
+            .copied()
+            .filter(|v| *v > 0.0 && v.is_finite())
+            .unwrap_or(line_h);
+        if wrap_square && let_pos_v < cell_lh * 1.2 {
+            let off = ((let_pos_v + eff_h) / cell_lh).ceil() * cell_lh;
             if off.is_finite() && off > 0.0 && off < 2000.0 {
                 let t = wrap_tops.entry(im.para_index).or_insert(0.0);
                 *t = t.max(off);
