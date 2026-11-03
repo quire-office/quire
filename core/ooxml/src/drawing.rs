@@ -2274,7 +2274,7 @@ impl DrawingParser {
                     if let Some(v) = self.vml.as_mut() {
                         v.note_rid(rid.clone());
                         if self.txbx_depth > 0 {
-                            let entry = v.pending_txbx_drawing.get_or_insert_with(|| (None, None));
+                            let entry = v.pending_txbx_drawing.get_or_insert((None, None));
                             entry.0 = rid;
                         }
                     }
@@ -2288,7 +2288,7 @@ impl DrawingParser {
                             if v.txbx_drawing_extent.is_none() {
                                 v.txbx_drawing_extent = Some([w, h]);
                             }
-                            let entry = v.pending_txbx_drawing.get_or_insert_with(|| (None, None));
+                            let entry = v.pending_txbx_drawing.get_or_insert((None, None));
                             entry.1 = Some([w, h]);
                         }
                     }
@@ -2689,7 +2689,7 @@ impl DrawingParser {
                     if let Some(v) = self.vml.as_mut() {
                         v.note_rid(rid.clone());
                         if self.txbx_depth > 0 {
-                            let entry = v.pending_txbx_drawing.get_or_insert_with(|| (None, None));
+                            let entry = v.pending_txbx_drawing.get_or_insert((None, None));
                             entry.0 = rid;
                         }
                     }
@@ -2711,7 +2711,7 @@ impl DrawingParser {
                             if v.txbx_drawing_extent.is_none() {
                                 v.txbx_drawing_extent = Some([w, h]);
                             }
-                            let entry = v.pending_txbx_drawing.get_or_insert_with(|| (None, None));
+                            let entry = v.pending_txbx_drawing.get_or_insert((None, None));
                             entry.1 = Some([w, h]);
                         }
                     }

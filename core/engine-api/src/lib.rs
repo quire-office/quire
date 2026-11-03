@@ -3347,7 +3347,11 @@ fn emit_txbx_texts(
             // R31：框內內嵌 DrawingML 圖形排版發射
             let mut has_image = false;
             if !skip_drawings {
-                if let Some(td) = shape.and_then(|s| s.group_shapes.iter().find(|d| d.dx_pt as usize == ti && d.stroke_dash.is_some())) {
+                if let Some(td) = shape.and_then(|s| {
+                    s.group_shapes
+                        .iter()
+                        .find(|d| d.dx_pt as usize == ti && d.stroke_dash.is_some())
+                }) {
                     let img_w = td.w_pt;
                     let img_h = td.h_pt;
                     let img_x = if center {
@@ -3381,14 +3385,13 @@ fn emit_txbx_texts(
             }
 
             let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+            let k25b_buggy = std::env::var_os("K25_B_CHILD_STACK_BUGGY").is_some();
             if t.trim().is_empty() {
                 if has_image {
                     blocks.push(block);
                     continue;
                 }
-                let empty_step = if wps {
-                    line_h
-                } else if line_h > 8.0 {
+                let empty_step = if k25b_buggy || wps || line_h > 8.0 {
                     line_h
                 } else {
                     12.0
@@ -3435,7 +3438,7 @@ fn emit_txbx_texts(
                 runs: own_runs.to_vec(),
                 ..Default::default()
             };
-            let step_h = if wps {
+            let step_h = if k25b_buggy || wps {
                 line_h
             } else if line_h > 8.0 {
                 (seg_size * 1.15).max(line_h)
