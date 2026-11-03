@@ -78,7 +78,7 @@ ODF 則完全不採用 `.rels` 關係表間接層，而是遵循 W3C XLink 1.0 �
 
 ### 1.4 `core/odf` 復用 `quire_ooxml::ZipBundle` 的無損紀律與型別提案
 
-在既有架構中，[`core/xlsx/src/lib.rs`](../core/xlsx/src/lib.rs#L62-L80) 的 [`XlsxBundle`](../core/xlsx/src/lib.rs#L62-L64) 已證明 [`ZipBundle`](../core/ooxml/src/zip_struct.rs#L167-L180) 與 OPC 解耦、可作為通用 ZIP 無損容器底座。檢視 [`core/ooxml/src/zip_struct.rs`](../core/ooxml/src/zip_struct.rs#L75-L180) 的內部實作，每一個 [`ZipEntry`](../core/ooxml/src/zip_struct.rs#L75-L102) 均完整保存：
+在既有架構中，[`core/xlsx/src/lib.rs`](../core/xlsx/src/lib.rs#L62-L80) 的 [`XlsxBundle`](../core/xlsx/src/lib.rs#L69-L71) 已證明 [`ZipBundle`](../core/ooxml/src/zip_struct.rs#L167-L180) 與 OPC 解耦、可作為通用 ZIP 無損容器底座。檢視 [`core/ooxml/src/zip_struct.rs`](../core/ooxml/src/zip_struct.rs#L75-L180) 的內部實作，每一個 [`ZipEntry`](../core/ooxml/src/zip_struct.rs#L75-L102) 均完整保存：
 
 - `local_raw: Vec<u8>`（原始 Local File Header 含檔名與原始 extra field bytes）
 - `data_raw: Vec<u8>`（原始壓縮或未壓縮 payload bytes）
