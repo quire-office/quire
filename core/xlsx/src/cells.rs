@@ -21,6 +21,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::attr_val;
+use crate::styles::{EffectiveStyle, StyleSheetModel};
 
 /// sharedStrings part 路徑（ECMA-376 預設命名慣例，corpus 80 檔全數如此）。
 /// workbook rels 才是權威歸屬；本常數是 `XlsxBundle::shared_strings` 的查表起點。
@@ -206,8 +207,8 @@ pub enum CellValue {
     Empty,
 }
 
-/// 一個 cell 的投影（位置＋宣告型別＋值；樣式 `s` 索引屬 X2，本卡不碰）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// 一個 cell 的投影（位置＋宣告型別＋值＋樣式索引＋有效樣式；只讀）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
     /// `c/@r` 原樣（A1 式）；缺＝None（不猜位置）。
     pub reference: Option<String>,
@@ -216,10 +217,14 @@ pub struct Cell {
     /// ref 解析出的欄座標（A=1；非法 ref＝None）。
     pub col: Option<u32>,
     pub value: CellValue,
+    /// 儲存格原始樣式索引（設計書 §1.4 與 §2.3；`c/@s`，缺省為 None）。
+    pub s: Option<u32>,
+    /// 儲存格有效樣式投影（設計書 §2.3；若解析器有傳入 styles 則計算出 EffectiveStyle，否則為 None）。
+    pub style: Option<EffectiveStyle>,
 }
 
 /// 一個 `<row>` 的投影（跳號照實：row 20/21 缺席就缺席，不虛構填充）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RowCells {
     /// `row/@r`（缺省／非法＝None；孤兒 cell 的承載 row 也是 None——虛構
     /// row 編號是謊言）。
@@ -275,7 +280,7 @@ pub enum DimensionStatus {
 }
 
 /// 一個 sheet part 的 cell 級投影。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SheetCells {
     /// `dimension/@ref` 原值（首見即定格，同 `read_sheet_stats` 口徑；缺＝None）。
     pub dimension: Option<String>,
@@ -292,15 +297,19 @@ pub struct SheetCells {
 }
 
 /// 掃描一個 sheet part 的 `sheetData/row/c`（唯讀）。
-///
-/// - `sst`：共享字串表；None＝SST part 缺失 → 所有 `t="s"` cell 投影為懸空
-///   引用（`text=None`，卡面病態容錯口徑）。
-/// - 層級口徑：只認「根 > sheetData > row > c」的直接子孫鏈。繪圖錨點的
-///   `<xdr:row>`（深在 drawing 子樹）與 `rowBreaks/brk` 一律隔開；QName
-///   前綴不驗證命名空間（對齊 ooxml「只比 local_name」一貫口徑）。
-/// - XML 畸形／截斷 → 盡力回報已讀條目＋`truncated`：已閉合的 cell／row 照常
-///   入列，截斷中途的半成品不虛稱完整。
 pub fn read_sheet_cells(xml: &[u8], sst: Option<&SharedStrings>) -> SheetCells {
+    read_sheet_cells_with_styles(xml, sst, None)
+}
+
+/// 掃描一個 sheet part 的 `sheetData/row/c` 並帶入樣式表投影（設計書 §2.3 樣式投影）。
+///
+/// - `sst`：共享字串表；None＝SST part 缺失 → 所有 `t="s"` cell 投影為懸空引用。
+/// - `styles`：樣式表投影；Some 則為每個 cell 計算 EffectiveStyle，None 則 cell.style 為 None。
+pub fn read_sheet_cells_with_styles(
+    xml: &[u8],
+    sst: Option<&SharedStrings>,
+    styles: Option<&StyleSheetModel>,
+) -> SheetCells {
     let text = String::from_utf8_lossy(xml);
     let mut reader = quick_xml::Reader::from_str(&text);
     let mut out = SheetCells::default();
@@ -345,10 +354,14 @@ pub fn read_sheet_cells(xml: &[u8], sst: Option<&SharedStrings>) -> SheetCells {
                         ));
                     }
                     "c" if row.is_some() && d == 4 => {
+                        let s = attr_val(&e, b"s")
+                            .as_deref()
+                            .and_then(|v| v.trim().parse::<u32>().ok());
                         cell = Some((
                             d,
                             CellBuilder {
                                 reference: attr_val(&e, b"r"),
+                                s,
                                 t: attr_val(&e, b"t"),
                                 v: None,
                                 v_seen: false,
@@ -403,15 +416,19 @@ pub fn read_sheet_cells(xml: &[u8], sst: Option<&SharedStrings>) -> SheetCells {
                         out.rows.push(rc);
                     }
                     "c" if row.is_some() && stack.len() == 3 => {
+                        let s = attr_val(&e, b"s")
+                            .as_deref()
+                            .and_then(|v| v.trim().parse::<u32>().ok());
                         let b = CellBuilder {
                             reference: attr_val(&e, b"r"),
+                            s,
                             t: attr_val(&e, b"t"),
                             v: None,
                             v_seen: false,
                             is_runs: 0,
                             is_text: String::new(),
                         };
-                        finish_cell(&mut out, row.as_mut().map(|(_, r)| r), b, sst);
+                        finish_cell(&mut out, row.as_mut().map(|(_, r)| r), b, sst, styles);
                     }
                     "v" if cell.is_some() && stack.len() == 4 && stack[3] == "c" => {
                         // `<v/>`：值標籤存在但零文字 → Some("")（與缺 v 分家）。
@@ -452,7 +469,7 @@ pub fn read_sheet_cells(xml: &[u8], sst: Option<&SharedStrings>) -> SheetCells {
                 }
                 if tag == "c" && cell.as_ref().map(|(d, _)| *d) == Some(stack.len()) {
                     let (_, b) = cell.take().expect("cell");
-                    finish_cell(&mut out, row.as_mut().map(|(_, r)| r), b, sst);
+                    finish_cell(&mut out, row.as_mut().map(|(_, r)| r), b, sst, styles);
                 }
                 if tag == "row" && row.as_ref().map(|(d, _)| *d) == Some(stack.len()) {
                     let (_, rc) = row.take().expect("row");
@@ -504,6 +521,7 @@ pub fn read_sheet_cells(xml: &[u8], sst: Option<&SharedStrings>) -> SheetCells {
 /// 累積中的 cell（解析器內部狀態）。
 struct CellBuilder {
     reference: Option<String>,
+    s: Option<u32>,
     t: Option<String>,
     v: Option<String>,
     v_seen: bool,
@@ -518,6 +536,7 @@ fn finish_cell(
     row: Option<&mut RowCells>,
     b: CellBuilder,
     sst: Option<&SharedStrings>,
+    styles: Option<&StyleSheetModel>,
 ) {
     let (row_no, col_no) = match b.reference.as_deref() {
         Some(r) => parse_cell_ref(r),
@@ -589,11 +608,14 @@ fn finish_cell(
             },
         },
     };
+    let style = styles.map(|st| st.resolve_effective_style(b.s));
     let c = Cell {
         reference: b.reference,
         row: row_no,
         col: col_no,
         value,
+        s: b.s,
+        style,
     };
     match row {
         Some(r) => r.cells.push(c),
