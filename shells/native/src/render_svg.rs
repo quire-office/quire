@@ -367,12 +367,18 @@ mod tests {
         let svg = page_to_svg(&dl);
         let n = svg.matches("<rect ").count();
         // 頁背景白底 1 個＋可見 Rect 2 個＝3；alpha-0 幽靈被跳過。
-        assert_eq!(n, 3, "alpha-0 Rect 不得輸出（SVG 透明 rect 仍 hit-testable）：{svg}");
+        assert_eq!(
+            n, 3,
+            "alpha-0 Rect 不得輸出（SVG 透明 rect 仍 hit-testable）：{svg}"
+        );
         assert!(
             !svg.contains("fill-opacity=\"0.000\""),
             "不得殘留 fill-opacity=0.000 的矩形：{svg}"
         );
         assert!(svg.contains("#4472c4"), "不透明 Rect 照常輸出：{svg}");
-        assert!(svg.contains("#112233"), "alpha=1 的可見 Rect 照常輸出：{svg}");
+        assert!(
+            svg.contains("#112233"),
+            "alpha=1 的可見 Rect 照常輸出：{svg}"
+        );
     }
 }

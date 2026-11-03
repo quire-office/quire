@@ -45,8 +45,11 @@ const PLACEHOLDER_EDGE: u32 = 0xFFCC_CCCC;
 const PLACEHOLDER_GRAY: u32 = 0xFFF0_F0F0;
 const LO_BLUE: u32 = 0xFF44_72C4;
 
+/// p0 全項掃描結果：幽靈 Rect 座標串、佔位框線座標串、佔位灰 Rect 數。
+type Scan = (Vec<String>, Vec<String>, usize);
+
 /// p0 全項掃描：(alpha-0 Rect 數, 0xFFCCCCCC Rule 數, 佔位灰 Rect 數)。
-fn scan(dl: &quire_render_trait::PageDisplayList) -> (Vec<String>, Vec<(f32, f32, f32, f32)>, usize) {
+fn scan(dl: &quire_render_trait::PageDisplayList) -> Scan {
     let mut ghosts = Vec::new();
     let mut edges = Vec::new();
     let mut grays = 0usize;
@@ -73,7 +76,7 @@ fn scan(dl: &quire_render_trait::PageDisplayList) -> (Vec<String>, Vec<(f32, f32
                 color_argb,
                 ..
             } if *color_argb == PLACEHOLDER_EDGE => {
-                edges.push((*x1, *y1, *x2, *y2));
+                edges.push(format!("({x1:.1},{y1:.1})-({x2:.1},{y2:.1})"));
             }
             _ => {}
         }

@@ -202,14 +202,14 @@ fn r34_buggy_regression_lock() {
     let ghosts = dl
         .items
         .iter()
-        .filter(|it| {
-            matches!(it, DrawItem::Rect { fill_argb, .. } if (*fill_argb >> 24) == 0)
-        })
+        .filter(|it| matches!(it, DrawItem::Rect { fill_argb, .. } if (*fill_argb >> 24) == 0))
         .count();
     let edges = dl
         .items
         .iter()
-        .filter(|it| matches!(it, DrawItem::Rule { color_argb, .. } if *color_argb == EDGE_PLACEHOLDER))
+        .filter(
+            |it| matches!(it, DrawItem::Rule { color_argb, .. } if *color_argb == EDGE_PLACEHOLDER),
+        )
         .count();
     assert!(
         ghosts > 0 && edges > 0,
