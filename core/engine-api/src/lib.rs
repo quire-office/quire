@@ -3858,7 +3858,13 @@ fn emit_image_shape(
         return; // 非法尺寸老實不發射（容錯鐵律）
     }
     let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
-    let fill = if shape.is_some_and(|b| deco_off(b.filled)) {
+    // R32：文字框／群組根的「無填充宣告」＝無底色（LO WC048 Textbox2/3）。
+    // 舊碼把「宣告缺位」一律退佔位灰，Textbox3 的 387×185 灰帶因而蓋到
+    // 第 3 列文字。純圖片／EMF 佔位（shape=None）仍走舊灰底零擾動。
+    let textbox_root_nofill = shape.is_some_and(|b| {
+        b.fill_argb.is_none() && (!b.txbx_texts.is_empty() || !b.group_shapes.is_empty())
+    });
+    let fill = if shape.is_some_and(|b| deco_off(b.filled)) || textbox_root_nofill {
         None
     } else {
         Some(
