@@ -799,6 +799,7 @@ def summarize(records: list[dict], manifest_count: int) -> dict:
         "other_cell_type_totals": {},
         "empty_cells_total": 0,
         "cells_missing_r_total": 0,
+        "cells_t_missing_total": 0,
         "sheets_total": 0,
         "worksheet_parts_total": 0,
         "chartsheet_total": 0,
@@ -828,6 +829,7 @@ def summarize(records: list[dict], manifest_count: int) -> dict:
         summary["cell_total"] += record["cells"]["total"]
         summary["empty_cells_total"] += record["cells"]["empty"]
         summary["cells_missing_r_total"] += record["cells"]["missing_r"]
+        summary["cells_t_missing_total"] += record["cells"]["t_missing"]
         summary["sheets_total"] += record["sheet_count"] or 0
         summary["worksheet_parts_total"] += record["worksheet_count"]
         summary["chartsheet_total"] += record["chartsheet_count"]
