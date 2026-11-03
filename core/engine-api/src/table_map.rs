@@ -1594,12 +1594,14 @@ fn k17_grow_floors(
 
 /// 宿主儲存格定位：段落 index 落在本表（含巢狀）哪個直接儲存格 → (列號, 欄號, &Cell)。
 /// 巢狀表內段落＝宿主在最內層表（其表高另有算法，撐**外層**列無據＝None）。
-fn k17_host_cell<'a>(table: &'a Table, para_index: usize) -> Option<(usize, usize, &'a TableCell)> {
+fn k17_host_cell(table: &Table, para_index: usize) -> Option<(usize, usize, &TableCell)> {
     for (ri, row) in table.rows.iter().enumerate() {
         for (ci, cell) in row.cells.iter().enumerate() {
             for b in &cell.blocks {
                 match b {
-                    Block::Paragraph { index } if *index == para_index => return Some((ri, ci, cell)),
+                    Block::Paragraph { index } if *index == para_index => {
+                        return Some((ri, ci, cell))
+                    }
                     Block::Table(inner) => {
                         // 最內層命中＝回 None：撐外層列無 LO 校準依據。
                         let _ = inner;

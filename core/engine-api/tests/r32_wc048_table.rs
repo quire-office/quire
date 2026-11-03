@@ -48,9 +48,15 @@ fn first_row_cell1_text_pushed_below_textbox() {
         first_col.1
     );
     // 第一列列頂（y≈72）三格文字序列斷言 == LO pymupdf span 真值（首格空）：
-    let row0_top_cell1 = texts.iter().find(|(x, y)| *x < 150.0 && (69.0..=76.0).contains(y));
-    let row0_top_cell2 = texts.iter().find(|(x, y)| (150.0..=300.0).contains(x) && (69.0..=76.0).contains(y));
-    let row0_top_cell3 = texts.iter().find(|(x, y)| *x > 300.0 && (69.0..=76.0).contains(y));
+    let row0_top_cell1 = texts
+        .iter()
+        .find(|(x, y)| *x < 150.0 && (69.0..=76.0).contains(y));
+    let row0_top_cell2 = texts
+        .iter()
+        .find(|(x, y)| (150.0..=300.0).contains(x) && (69.0..=76.0).contains(y));
+    let row0_top_cell3 = texts
+        .iter()
+        .find(|(x, y)| *x > 300.0 && (69.0..=76.0).contains(y));
     assert!(
         row0_top_cell1.is_none(),
         "第一列首格在列頂必須為空（LO pymupdf 真值 [空, This is a test., This is a test.]），實得 {row0_top_cell1:?}"
