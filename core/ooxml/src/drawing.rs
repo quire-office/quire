@@ -1433,6 +1433,8 @@ struct Pending {
     duo: Option<DuotoneEffect>,
     /// K27-B：textbox 內嵌 w:drawing 自身宣告的 wp:extent 尺寸（pt，[寬, 高]）。
     txbx_drawing_extent: Option<[f32; 2]>,
+    /// R31：進行中框內段落內嵌 DrawingML 的 (rid, extent)。
+    pending_txbx_drawing: Option<(Option<String>, Option<[f32; 2]>)>,
 }
 
 struct PendingChildShape {
@@ -1588,6 +1590,7 @@ impl Pending {
             duo_node_in: None,
             duo: None,
             txbx_drawing_extent: None,
+            pending_txbx_drawing: None,
         }
     }
 }
@@ -1764,9 +1767,18 @@ impl DrawingParser {
     /// （K4e2：txbxContent——其文字不再走正文流，無框連字都不剩，必須撐位）
     /// 才採納；純裝飾 shape（無圖無框）仍不撐位。
     fn finalize_vml(&mut self) {
-        let Some(v) = self.vml.take() else {
+        let Some(mut v) = self.vml.take() else {
             return;
         };
+        // R31：文字框內既有文字又有內嵌圖形時，外層 shape 是承載文字與邊框的容器，
+        // 內嵌圖應由文字流按段落發射；不可讓內嵌圖 rid 篡奪外層 shape，
+        // 避免發射層把整頁大框誤當圖片發射且丟失 4pt 邊框。
+        if v.txbx.iter().any(|s| !s.trim().is_empty()) && !v.group_shapes.is_empty() {
+            v.rid = None;
+            v.rids.clear();
+            v.vml_image = false;
+            v.txbx_drawing_extent = None;
+        }
         if v.vml_image || v.vml_gfxdata || v.has_txbx {
             self.push_pending(&v);
         }
@@ -2258,19 +2270,26 @@ impl DrawingParser {
                     }
                 }
                 b"blip" => {
+                    let rid = attr_local(e, b"embed");
                     if let Some(v) = self.vml.as_mut() {
-                        v.note_rid(attr_local(e, b"embed"));
+                        v.note_rid(rid.clone());
+                        if self.txbx_depth > 0 {
+                            let entry = v.pending_txbx_drawing.get_or_insert_with(|| (None, None));
+                            entry.0 = rid;
+                        }
                     }
                 }
                 b"extent" if self.txbx_depth > 0 => {
                     if let Some(v) = self.vml.as_mut() {
-                        if v.txbx_drawing_extent.is_none() {
-                            if let (Some(w), Some(h)) = (
-                                emu_to_pt(attr_local(e, b"cx").as_deref()),
-                                emu_to_pt(attr_local(e, b"cy").as_deref()),
-                            ) {
+                        if let (Some(w), Some(h)) = (
+                            emu_to_pt(attr_local(e, b"cx").as_deref()),
+                            emu_to_pt(attr_local(e, b"cy").as_deref()),
+                        ) {
+                            if v.txbx_drawing_extent.is_none() {
                                 v.txbx_drawing_extent = Some([w, h]);
                             }
+                            let entry = v.pending_txbx_drawing.get_or_insert_with(|| (None, None));
+                            entry.1 = Some([w, h]);
                         }
                     }
                 }
@@ -2282,6 +2301,14 @@ impl DrawingParser {
                 b"fill" | b"stroke" | b"textbox" => {
                     if let Some(v) = self.vml.as_mut() {
                         apply_vml_deco(v, name, e);
+                    }
+                }
+                b"tab" if self.txbx_depth > 0 => {
+                    if let Some(v) = self.vml.as_mut() {
+                        v.txbx_cur.push(' ');
+                    }
+                    if let Some(g) = self.graphic.as_mut() {
+                        g.txbx_cur.push(' ');
                     }
                 }
                 b"tbl" | b"tr" => {}
@@ -2658,8 +2685,13 @@ impl DrawingParser {
                 // media part，EMF 也永遠輪不到直讀。只記 rId（像素備選），
                 // 幾何／段落／採納旗標一概不動（同 Fallback 子樹的破例口徑）。
                 b"blip" => {
+                    let rid = attr_local(e, b"embed");
                     if let Some(v) = self.vml.as_mut() {
-                        v.note_rid(attr_local(e, b"embed"));
+                        v.note_rid(rid.clone());
+                        if self.txbx_depth > 0 {
+                            let entry = v.pending_txbx_drawing.get_or_insert_with(|| (None, None));
+                            entry.0 = rid;
+                        }
                     }
                 }
                 b"gfxdata" => {
@@ -2672,13 +2704,15 @@ impl DrawingParser {
                 // 改採此值，不再覆用外層 VML `v:shape` 的 style 框（避免鋪滿整頁）。
                 b"extent" if self.txbx_depth > 0 => {
                     if let Some(v) = self.vml.as_mut() {
-                        if v.txbx_drawing_extent.is_none() {
-                            if let (Some(w), Some(h)) = (
-                                emu_to_pt(attr_local(e, b"cx").as_deref()),
-                                emu_to_pt(attr_local(e, b"cy").as_deref()),
-                            ) {
+                        if let (Some(w), Some(h)) = (
+                            emu_to_pt(attr_local(e, b"cx").as_deref()),
+                            emu_to_pt(attr_local(e, b"cy").as_deref()),
+                        ) {
+                            if v.txbx_drawing_extent.is_none() {
                                 v.txbx_drawing_extent = Some([w, h]);
                             }
+                            let entry = v.pending_txbx_drawing.get_or_insert_with(|| (None, None));
+                            entry.1 = Some([w, h]);
                         }
                     }
                 }
@@ -2688,6 +2722,14 @@ impl DrawingParser {
                 b"fill" | b"stroke" | b"textbox" => {
                     if let Some(v) = self.vml.as_mut() {
                         apply_vml_deco(v, name, e);
+                    }
+                }
+                b"tab" if self.txbx_depth > 0 => {
+                    if let Some(v) = self.vml.as_mut() {
+                        v.txbx_cur.push(' ');
+                    }
+                    if let Some(g) = self.graphic.as_mut() {
+                        g.txbx_cur.push(' ');
                     }
                 }
                 b"shd" if self.txbx_depth > 0 => {
@@ -2859,6 +2901,27 @@ impl DrawingParser {
             if let Some(g) = self.graphic.as_mut() {
                 if g.grp_depth == 0 {
                     g.k17_rpr_depth = g.k17_rpr_depth.saturating_sub(1);
+                }
+            }
+        }
+        // R31：框內 drawing 或段落閉合時，將累積的內嵌圖片刷入 group_shapes
+        if self.txbx_depth > 0 && matches!(name, b"drawing" | b"p") {
+            if let Some(v) = self.vml.as_mut() {
+                if let Some((Some(rid), ext)) = v.pending_txbx_drawing.take() {
+                    let [w, h] = ext.unwrap_or([0.0, 0.0]);
+                    v.group_shapes.push(InlineChildShape {
+                        dx_pt: v.txbx.len() as f32,
+                        dy_pt: 0.0,
+                        w_pt: w,
+                        h_pt: h,
+                        fill_argb: None,
+                        filled: None,
+                        stroke_argb: None,
+                        stroked: None,
+                        stroke_width_pt: None,
+                        stroke_dash: Some(rid),
+                        txbx_texts: Vec::new(),
+                    });
                 }
             }
         }

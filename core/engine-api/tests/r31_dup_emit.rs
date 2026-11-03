@@ -84,9 +84,19 @@ fn r31_lamp1_no_duplicate_emissions() {
         "「PLANT HUMAN RESOURCES DEPARTMENT」發射次數應為 1，實得 {hr_count}"
     );
 
+    let full_text: String = items
+        .iter()
+        .filter_map(|it| it.get("Text").and_then(|m| m.get("text")).and_then(|s| s.as_str()))
+        .collect();
+    let bel_count = full_text.match_indices("BELVIDERE ASSEMBLY PLANT").count();
+    assert_eq!(
+        bel_count, 1,
+        "「BELVIDERE ASSEMBLY PLANT」整篇發射次數應為 1，實得 {bel_count}"
+    );
+
     // 全篇掃描：重要完整詞句不得出現重複發射副本
     for unique_phrase in [
-        "BELVIDERE ASSEMBLY PLANT",
+        "ELVIDERE",
         "World Class Manufacturing Starts Here",
         "SATURDAY APRIL 02, 2011",
         "11-016",
