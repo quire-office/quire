@@ -18,7 +18,7 @@
   {
    "url": "https://commons.wikimedia.org/w/api.php（filetype:office ext:odt 檢索）",
    "title": "Wikimedia Commons ODT 檔案（多筆 CC/PD）",
-   "reason": "API 於本環境回 403 Forbidden（无 UA 白名單），無法完成「逐檔授權欄位實查」；未實查不得登記授權，故整批暫不入库（改天補 UA／鏡像站再議）",
+   "reason": "API 於本環境回 403 Forbidden（無 UA 白名單），無法完成「逐檔授權欄位實查」；未實查不得登記授權，故整批暫不入庫（改天補 UA／鏡像站再議）",
    "http": "403 Forbidden"
   }
  ]
