@@ -8,7 +8,11 @@
 //! - `[Content_Types].xml`：Default/Override 清單；
 //! - `xl/workbook.xml`：sheet 清單（name/sheetId/state）＋ definedNames 計數；
 //! - `xl/_rels/workbook.xml.rels`：rId → part 路徑對照；
-//! - 各 sheet 的 `dimension` 與 row 計數（本卡不解析 cell，留 X1b）。
+//! - 各 sheet 的 `dimension` 與 row 計數（X1）；
+//! - **cell 級投影（X1b）**：`xl/sharedStrings.xml` 的 `<si>` 序列＋rich run
+//!   拼接，`sheetData/row/c` 的 cell 型別五態（＋ECMA 型錄的 str/d）、A1 座標
+//!   解析、dimension 宣告 vs 實掃交叉對照、空 cell／跳號 row／spans 照實投影。
+//!   寫入面仍封鎖：不提供 set_cell／改 part（見 `cells` 模組頭）。
 //!
 //! 病態容錯鐵律（對齊 ooxml 既有口徑，不虛構）：
 //! - zip 結構毀損／加密 entry → `Err`（[`ZipBundle::open`] 的誠實拒絕）；
@@ -18,8 +22,13 @@
 //!
 //! 純 std＋quick-xml＋復用的 ZipBundle，無檔案系統相依 → wasm32 可編譯。
 
+mod cells;
 mod model;
 
+pub use cells::{
+    read_shared_strings, read_sheet_cells, Cell, CellValue, DimensionStatus, RowCells,
+    ScannedExtent, SharedStringItem, SharedStrings, SheetCells, SHARED_STRINGS_PART,
+};
 pub use model::{
     read_content_types, read_sheet_stats, read_workbook, read_workbook_rels, ContentTypes,
     DeclaredSheet, SheetInfo, SheetState, WorkbookDecl, WorkbookModel, WorkbookRel, WorksheetStats,
@@ -108,5 +117,36 @@ impl XlsxBundle {
         );
         m.content_types = content_types;
         m
+    }
+
+    /// `xl/sharedStrings.xml` 投影（X1b，只讀）。歸屬順序：**workbook rels 的
+    /// sharedStrings 關係為準**（權威；POI InlineStrings.xlsx 實證 SST 不在慣例
+    /// 路徑），查無才退回慣例路徑 [`SHARED_STRINGS_PART`]。part 缺失 → None
+    /// （誠實；`sheet_cells` 對 `t="s"` 走懸空引用口徑）。
+    pub fn shared_strings(&self) -> Option<SharedStrings> {
+        let mut path: Option<String> = None;
+        if let Some(rels_bytes) = self.part(model::WORKBOOK_RELS_PART) {
+            for rel in model::read_workbook_rels(&rels_bytes, "xl") {
+                if let Some(target) = rel.target_part {
+                    if target.rsplit('/').next() == Some("sharedStrings.xml") {
+                        path = Some(target);
+                        break;
+                    }
+                }
+            }
+        }
+        // 查無 rels 歸屬才退回慣例路徑（兩條都缺 → None，誠實不虛構）。
+        let bytes = path
+            .as_deref()
+            .and_then(|p| self.part(p))
+            .or_else(|| self.part(SHARED_STRINGS_PART))?;
+        Some(read_shared_strings(&bytes))
+    }
+
+    /// 一個 sheet part 的 cell 級投影（X1b，只讀；自動帶入 SST 查表）。
+    /// part 不存在／CRC 毀損（誠實解碼失敗）→ None，不虛構。
+    pub fn sheet_cells(&self, part: &str) -> Option<SheetCells> {
+        let xml = self.part(part)?;
+        Some(read_sheet_cells(&xml, self.shared_strings().as_ref()))
     }
 }
