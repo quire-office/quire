@@ -774,6 +774,9 @@ pub fn table_input(
     // K17：本表各列的錨定框撐列地板（row_idx→pt；巢狀表傳空表＝不撐，宿主
     // 列定位只認最內層直接格）。空表＝舊行為逐位元組不變。
     grow_floors: &HashMap<usize, f32>,
+    // R32：wrapSquare 文字框對宿主段落的推下量（para_idx→pt）。併入該格
+    // `margins.top`，讓首行文字落到框底之下（LO 口徑）。空表＝舊行為。
+    wrap_tops: &HashMap<usize, f32>,
 ) -> TableInput {
     let p = &t.props;
     // K8-shd：本表（含巢狀）逐列逐格條件閘；巢狀表無自己的閘資料時不虛構
@@ -844,6 +847,8 @@ pub fn table_input(
                         let mut cell_size: Option<f32> = None;
                         // K7-cal：格內水平尺（一格多段取最大＝保守少塞字）。
                         let mut cell_adv: Option<f32> = None;
+                        // R32：本格 anchors 的 wrap 推下量（同格多段取最大）。
+                        let mut wrap_top: Option<f32> = None;
                         for b in &c.blocks {
                             match b {
                                 // 段落索引引用扁平序列：越界＝畸形檔，跳過（容錯）。
@@ -864,6 +869,10 @@ pub fn table_input(
                                     // 混排格保守走舊斷行，零誤窄）。
                                     if let Some(a) = advs.get(index) {
                                         cell_adv = Some(cell_adv.map_or(*a, |v: f32| v.max(*a)));
+                                    }
+                                    // R32：wrapSquare 文字框推下量（LO 首行落框底）。
+                                    if let Some(off) = wrap_tops.get(index) {
+                                        wrap_top = Some(wrap_top.map_or(*off, |v| v.max(*off)));
                                     }
                                     // 錨定在該段的格內圖（t_a1397522）：段落
                                     // 之後依序追加（文件序；查無尺寸＝老實跳過）。
@@ -891,6 +900,8 @@ pub fn table_input(
                                         style_id,
                                         // K17：巢狀表不撐（宿主列定位只認最內層
                                         // 直接格；撐外層列無 LO 校準依據）。
+                                        &HashMap::new(),
+                                        // R32：巢狀表段落無 wrap 推下事實。
                                         &HashMap::new(),
                                     ))));
                                 }
@@ -933,7 +944,17 @@ pub fn table_input(
                             borders: c.props.borders.as_ref().map(edge_set),
                             fill,
                             valign: c.props.valign.clone(),
-                            margins: c.props.margins.as_ref().map(cell_margins),
+                            margins: {
+                                // R32：wrapSquare 文字框推下量併入格頂內距
+                                // （宣告值更大時保留宣告；layout 端再量化帶）。
+                                let mut margins = c.props.margins.as_ref().map(cell_margins);
+                                if let Some(off) = wrap_top {
+                                    let mut m = margins.unwrap_or_default();
+                                    m.top = Some(m.top.unwrap_or(0.0).max(off));
+                                    margins = Some(m);
+                                }
+                                margins
+                            },
                             text_size_pt: cell_size,
                             text_advance_scale: cell_adv,
                             text_line_h_pt: text_line_h,
@@ -1307,7 +1328,16 @@ pub fn build_slots(
         .iter()
         .map(|bt| {
             // K17：錨定框撐列地板（本表宿主列；回塞鎖在函數內整支關閉）。
-            let floors = k17_grow_floors(&bt.table, images, params, sections, doc_styles);
+            let mut wrap_tops: HashMap<usize, f32> = HashMap::new();
+            let floors = k17_grow_floors(
+                &bt.table,
+                images,
+                params,
+                sections,
+                doc_styles,
+                line_h,
+                &mut wrap_tops,
+            );
             let input = table_input(
                 &bt.table,
                 texts,
@@ -1324,6 +1354,7 @@ pub fn build_slots(
                 cond_ctx,
                 None,
                 &floors,
+                &wrap_tops,
             );
             let avail_w = avail_w_for(sections, params, bt.para_start);
             let layout = quire_layout::table::layout_table(&input, avail_w, line_h, &m, 0);
@@ -1393,6 +1424,8 @@ fn k17_grow_floors(
     params: &LayoutParams,
     sections: &[SectionSpec],
     styles: Option<&StyleTable>,
+    line_h: f32,
+    wrap_tops: &mut HashMap<usize, f32>,
 ) -> HashMap<usize, f32> {
     let mut out: HashMap<usize, f32> = HashMap::new();
     if std::env::var_os("K17_ANCHOR_ROWGROW_BUGGY").is_some() {
@@ -1522,6 +1555,18 @@ fn k17_grow_floors(
         let Some(row_idx) = k17_host_row(table, im.para_index) else {
             continue;
         };
+        // R32：wrapSquare 文字框把宿主格首行文字推到框底之下（LO 口徑：
+        // 起點＝ceil((posV+eff_h)/line_h)×line_h）。只認「框頂仍壓到首行帶」
+        // 者（posV < 1.2×line_h）；Textbox2 的 wrapTopAndBottom 與 Textbox3
+        // 群組 posV=21.05pt（首行上方、LO 不推）皆排除。
+        let wrap_square = matches!(im.wrap_type.as_deref(), None | Some("square"));
+        if wrap_square && let_pos_v < line_h * 1.2 {
+            let off = ((let_pos_v + eff_h) / line_h).ceil() * line_h;
+            if off.is_finite() && off > 0.0 && off < 2000.0 {
+                let t = wrap_tops.entry(im.para_index).or_insert(0.0);
+                *t = t.max(off);
+            }
+        }
         let e = out.entry(row_idx).or_insert(0.0);
         *e = e.max(grow);
     }
