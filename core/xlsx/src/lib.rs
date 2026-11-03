@@ -24,15 +24,22 @@
 
 mod cells;
 mod model;
+mod styles;
 
 pub use cells::{
-    read_shared_strings, read_sheet_cells, Cell, CellValue, DimensionStatus, RowCells,
-    ScannedExtent, SharedStringItem, SharedStrings, SheetCells, SHARED_STRINGS_PART,
+    read_shared_strings, read_sheet_cells, read_sheet_cells_with_styles, Cell, CellValue,
+    DimensionStatus, RowCells, ScannedExtent, SharedStringItem, SharedStrings, SheetCells,
+    SHARED_STRINGS_PART,
 };
 pub use model::{
     read_content_types, read_sheet_stats, read_workbook, read_workbook_rels, ContentTypes,
     DeclaredSheet, SheetInfo, SheetState, WorkbookDecl, WorkbookModel, WorkbookRel, WorksheetStats,
     CONTENT_TYPES_PART, WORKBOOK_PART, WORKBOOK_RELS_PART,
+};
+pub use styles::{
+    parse_date_serial, read_styles, AlignmentModel, BorderLine, BorderModel, CellStyleModel,
+    ColorModel, DateSerialError, EffectiveNumFmt, EffectiveStyle, FillModel, FontModel,
+    NumFmtCategory, ParsedDateTime, StyleResolutionStatus, StyleSheetModel, XfRecord, STYLES_PART,
 };
 
 use std::collections::BTreeMap;
@@ -143,10 +150,40 @@ impl XlsxBundle {
         Some(read_shared_strings(&bytes))
     }
 
-    /// 一個 sheet part 的 cell 級投影（X1b，只讀；自動帶入 SST 查表）。
+    /// `xl/styles.xml` 投影（X2，只讀）。歸屬順序：**workbook rels 的
+    /// styles 關係為準**，查無才退回慣例路徑 [`STYLES_PART`]。part 缺失 → 回傳空模型
+    /// （設計書 §4.5 缺樣式檔容錯口徑）。
+    pub fn styles(&self) -> StyleSheetModel {
+        let mut path: Option<String> = None;
+        if let Some(rels_bytes) = self.part(model::WORKBOOK_RELS_PART) {
+            for rel in model::read_workbook_rels(&rels_bytes, "xl") {
+                if let Some(target) = rel.target_part {
+                    if target.rsplit('/').next() == Some("styles.xml") {
+                        path = Some(target);
+                        break;
+                    }
+                }
+            }
+        }
+        let bytes = path
+            .as_deref()
+            .and_then(|p| self.part(p))
+            .or_else(|| self.part(STYLES_PART));
+        match bytes {
+            Some(b) => read_styles(&b),
+            None => StyleSheetModel::default(),
+        }
+    }
+
+    /// 一個 sheet part 的 cell 級投影（X1b / X2，只讀；自動帶入 SST 查表與 styles 樣式投影）。
     /// part 不存在／CRC 毀損（誠實解碼失敗）→ None，不虛構。
     pub fn sheet_cells(&self, part: &str) -> Option<SheetCells> {
         let xml = self.part(part)?;
-        Some(read_sheet_cells(&xml, self.shared_strings().as_ref()))
+        let styles = self.styles();
+        Some(read_sheet_cells_with_styles(
+            &xml,
+            self.shared_strings().as_ref(),
+            Some(&styles),
+        ))
     }
 }

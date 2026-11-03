@@ -192,13 +192,15 @@ pub struct DeclaredSheet {
     pub rid: Option<String>,
 }
 
-/// workbook.xml 解析結果：sheet 宣告序列＋definedNames 計數。
+/// workbook.xml 解析結果：sheet 宣告序列＋definedNames 計數＋date1904 旗標。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkbookDecl {
     /// `sheets` 直接子 element 序列（宣告序）。
     pub sheets: Vec<DeclaredSheet>,
     /// `definedNames` 直接子 `definedName` 個數（§18.6；型別計數留後續卡）。
     pub defined_names: usize,
+    /// 是否啟用 1904 日期系統（設計書 §3.3；`workbookPr/@date1904`）。
+    pub date1904: bool,
 }
 
 /// 解析 `xl/workbook.xml`：只認 workbook 根之下 `sheets/w:sheet` 與
@@ -219,7 +221,10 @@ pub fn read_workbook_sheets(xml: &[u8]) -> WorkbookDecl {
                 let name = e.local_name();
                 let tag = local_tag(name.as_ref());
                 stack.push(tag);
-                if stack.len() == 3 {
+                if stack.len() == 2 && tag == "workbookPr" {
+                    // 設計書 §3.3 與 §4.4：解析 workbookPr/@date1904
+                    out.date1904 = parse_bool_attr(attr_val(&e, b"date1904").as_deref());
+                } else if stack.len() == 3 {
                     // sheets/definedNames 的**直接**子女（層級判定；無名前空間驗證——
                     // 對齊本專案「只比 local_name」的一貫口徑）。
                     if tag == "sheet" && stack[1] == "sheets" {
@@ -243,7 +248,10 @@ pub fn read_workbook_sheets(xml: &[u8]) -> WorkbookDecl {
             quick_xml::events::Event::Empty(e) => {
                 let name = e.local_name();
                 let tag = local_tag(name.as_ref());
-                if stack.len() == 2 {
+                if stack.len() == 1 && tag == "workbookPr" {
+                    // 設計書 §3.3 與 §4.4：自閉合 workbookPr/@date1904
+                    out.date1904 = parse_bool_attr(attr_val(&e, b"date1904").as_deref());
+                } else if stack.len() == 2 {
                     if tag == "sheet" && stack[1] == "sheets" {
                         out.sheets.push(parse_sheet(&e));
                     } else if tag == "definedName" && stack[1] == "definedNames" {
@@ -257,17 +265,26 @@ pub fn read_workbook_sheets(xml: &[u8]) -> WorkbookDecl {
     out
 }
 
-/// 靜態標籤名映射（只區分本模型關心的五個；其餘一律 "other"——
-/// 棧只需為判定 sheets/definedNames 的層級存在即可）。
+/// 靜態標籤名映射（只區分本模型關心的標籤；其餘一律 "other"——
+/// 棧只需為判定層級存在即可）。
 fn local_tag(name: &[u8]) -> &'static str {
     match name {
         b"workbook" => "workbook",
+        b"workbookPr" => "workbookPr",
         b"sheets" => "sheets",
         b"sheet" => "sheet",
         b"definedNames" => "definedNames",
         b"definedName" => "definedName",
         _ => "other",
     }
+}
+
+/// 解析布林值屬性（設計書 §4.4 情境 B；支援 "true"/"1" 為 true，其餘退回 false）。
+pub(crate) fn parse_bool_attr(v: Option<&str>) -> bool {
+    matches!(
+        v.map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+        Some("true") | Some("1")
+    )
 }
 
 fn parse_sheet(e: &quick_xml::events::BytesStart) -> DeclaredSheet {
@@ -364,6 +381,8 @@ pub struct WorkbookModel {
     pub sheets: Vec<SheetInfo>,
     /// `definedNames` 個數（缺 workbook.xml＝0）。
     pub defined_names: usize,
+    /// 是否啟用 1904 日期系統（設計書 §3.3；`workbookPr/@date1904`）。
+    pub date1904: bool,
 }
 
 /// 組合三個獨立解析器成 workbook 模型（純函數：資料由呼叫端注入，
@@ -385,6 +404,7 @@ pub fn read_workbook(
     };
     let decl = read_workbook_sheets(xml);
     model.defined_names = decl.defined_names;
+    model.date1904 = decl.date1904;
     let Some(rels) = rels else {
         return model; // 缺 rels：sheet 清單空（卡面口徑）
     };
