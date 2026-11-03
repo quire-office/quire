@@ -54,7 +54,11 @@ fn r31_lamp1_no_duplicate_emissions() {
 
     let mut texts: Vec<String> = Vec::new();
     for it in items {
-        if let Some(t) = it.get("Text").and_then(|m| m.get("text")).and_then(|s| s.as_str()) {
+        if let Some(t) = it
+            .get("Text")
+            .and_then(|m| m.get("text"))
+            .and_then(|s| s.as_str())
+        {
             let trimmed = t.trim();
             if !trimmed.is_empty() {
                 texts.push(trimmed.to_string());
@@ -63,9 +67,8 @@ fn r31_lamp1_no_duplicate_emissions() {
     }
 
     // 斷言關鍵標題字串在發射項中出現次數
-    let count_occurrences = |needle: &str| -> usize {
-        texts.iter().filter(|t| t.contains(needle)).count()
-    };
+    let count_occurrences =
+        |needle: &str| -> usize { texts.iter().filter(|t| t.contains(needle)).count() };
 
     let overtime_count = count_occurrences("Scheduled Saturday Overtime");
     let notice_count = count_occurrences("IMPORTANT NOTICE");
@@ -86,7 +89,11 @@ fn r31_lamp1_no_duplicate_emissions() {
 
     let full_text: String = items
         .iter()
-        .filter_map(|it| it.get("Text").and_then(|m| m.get("text")).and_then(|s| s.as_str()))
+        .filter_map(|it| {
+            it.get("Text")
+                .and_then(|m| m.get("text"))
+                .and_then(|s| s.as_str())
+        })
         .collect();
     let bel_count = full_text.match_indices("BELVIDERE ASSEMBLY PLANT").count();
     assert_eq!(
@@ -103,10 +110,7 @@ fn r31_lamp1_no_duplicate_emissions() {
         "3-23-2011",
     ] {
         let c = count_occurrences(unique_phrase);
-        assert_eq!(
-            c, 1,
-            "詞句「{unique_phrase}」發射次數應為 1，實得 {c}"
-        );
+        assert_eq!(c, 1, "詞句「{unique_phrase}」發射次數應為 1，實得 {c}");
     }
 }
 
@@ -143,7 +147,12 @@ fn r31_lamp2_logo_band_y_and_images_no_overlap() {
         }
     }
 
-    assert_eq!(images.len(), 3, "fdo76591 應發射 3 張點陣圖，實得 {}", images.len());
+    assert_eq!(
+        images.len(),
+        3,
+        "fdo76591 應發射 3 張點陣圖，實得 {}",
+        images.len()
+    );
 
     // 尋找寬度約 495.75pt 的 logo 帶（image3.png）
     let logo_band = images
@@ -203,24 +212,22 @@ fn r31_lamp3_shift_schedule_no_overlap_with_top_block() {
             let txt = t["text"].as_str().unwrap_or("");
             let y = t["y"].as_f64().expect("y");
 
-            if txt.contains("BELVIDERE")
+            if (txt.contains("BELVIDERE")
                 || txt.contains("World Class")
                 || txt.contains("IMPORTANT NOTICE")
-                || txt.contains("Scheduled Saturday Overtime")
+                || txt.contains("Scheduled Saturday Overtime"))
+                && y > top_block_max_y
             {
-                if y > top_block_max_y {
-                    top_block_max_y = y;
-                }
+                top_block_max_y = y;
             }
 
-            if txt.contains("1st Shift")
+            if (txt.contains("1st Shift")
                 || txt.contains("2nd Shift")
                 || txt.contains("Start – 2:30")
-                || txt.contains("12:00 a.m.")
+                || txt.contains("12:00 a.m."))
+                && y < shift_schedule_min_y
             {
-                if y < shift_schedule_min_y {
-                    shift_schedule_min_y = y;
-                }
+                shift_schedule_min_y = y;
             }
         } else if let Some(im) = it.get("Image") {
             // logo 帶屬於頂部塊
@@ -236,14 +243,8 @@ fn r31_lamp3_shift_schedule_no_overlap_with_top_block() {
         }
     }
 
-    assert!(
-        top_block_max_y > 0.0,
-        "頂部塊應存在"
-    );
-    assert!(
-        shift_schedule_min_y < f64::MAX,
-        "班表段落帶應存在"
-    );
+    assert!(top_block_max_y > 0.0, "頂部塊應存在");
+    assert!(shift_schedule_min_y < f64::MAX, "班表段落帶應存在");
 
     assert!(
         shift_schedule_min_y >= top_block_max_y,
