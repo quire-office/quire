@@ -92,7 +92,9 @@ fn textbox2_origin(eng: &Engine) -> (f32, f32) {
                 y2,
                 color_argb,
                 ..
-            } if *color_argb == 0xFF44_72C4 && (y1 - y2).abs() < 0.01 && (y1 - 99.2).abs() < 2.0 =>
+            } if *color_argb == 0xFF44_72C4
+                && (y1 - y2).abs() < 0.01
+                && (y1 - 99.2).abs() < 2.0 =>
             {
                 Some((*x1, *y1))
             }
