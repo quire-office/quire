@@ -982,9 +982,9 @@ impl TableParser {
                     self.frames[i].cell_mut().props.no_wrap = !off;
                 }
             }
-            // ---- 邊框八方位（tblBorders／tcBorders 共用元素名）----
+            // ---- 邊框八方位（tblBorders／tcBorders 共用元素名，含 start/end 相容）----
             b"top" | b"left" | b"bottom" | b"right" | b"insideH" | b"insideV" | b"tl2br"
-            | b"tr2bl"
+            | b"tr2bl" | b"start" | b"end"
                 if self.top_is(&[b"tblBorders"]) || self.top_is(&[b"tcBorders"]) =>
             {
                 let b = read_border(e);
@@ -1122,7 +1122,8 @@ impl TableParser {
     }
 
     /// 表格完結：巢狀→掛到外層儲存格；body 級→roots。
-    fn finish_table(&mut self, table: Box<Table>, para_start: usize) {
+    fn finish_table(&mut self, mut table: Box<Table>, para_start: usize) {
+        inherit_vmerge_borders(&mut table);
         if let Some(i) = self.innermost_cell() {
             self.frames[i].cell_mut().blocks.push(Block::Table(table));
         } else {
@@ -1134,12 +1135,105 @@ impl TableParser {
     }
 }
 
+/// D6：依 ECMA-376 §17.4.4 實作垂直合併儲存格（vMerge）的邊框繼承。
+///
+/// 規則：
+/// 1. 2D 欄位對齊：各列儲存格依 `grid_span` 累加計算起始欄位與結束欄位 `[col_start, col_end)`。
+/// 2. 垂直合併鏈：在相同欄位區間上，以 `vMerge == restart` 為 head，後續相鄰列的
+///    `vMerge == continue` 為 continuation cells。鏈中最後一格為 tail（末格），其餘為 mid。
+/// 3. 邊框繼承語義：
+///    - tail（末格）：承接合併區域的底線；若末格自身未明確宣告 bottom，繼承 head 的 bottom；
+///      若末格自身未宣告 left/right，沿用 head 的 left/right；
+///    - mid（中間格）：內部橫線不畫（bottom 為 None），但 left/right 沿用 head 的 left/right；
+///    - head（起始格）：若有 continuation cells，head 自身的 bottom 清除，由末格承接。
+fn inherit_vmerge_borders(table: &mut Table) {
+    if std::env::var_os("D6_BORDERS_BUGGY").is_some() {
+        return; // 回塞鎖：退回修前無繼承狀態
+    }
+    let n_rows = table.rows.len();
+    if n_rows <= 1 {
+        return;
+    }
+
+    let mut row_spans: Vec<Vec<(usize, usize)>> = Vec::with_capacity(n_rows);
+    for r in &table.rows {
+        let mut spans = Vec::with_capacity(r.cells.len());
+        let mut col = 0usize;
+        for c in &r.cells {
+            let span = c.props.grid_span() as usize;
+            spans.push((col, col + span));
+            col += span;
+        }
+        row_spans.push(spans);
+    }
+
+    for r in 0..n_rows {
+        for c in 0..table.rows[r].cells.len() {
+            let restart = table.rows[r].cells[c].props.vmerge_restart();
+            if restart != Some(true) {
+                continue;
+            }
+            let (col_start, col_end) = row_spans[r][c];
+            let head_borders = table.rows[r].cells[c].props.borders.clone();
+
+            let mut chain: Vec<(usize, usize)> = Vec::new();
+            let mut cur_r = r + 1;
+            while cur_r < n_rows {
+                let cont_idx = row_spans[cur_r]
+                    .iter()
+                    .position(|&(cs, ce)| cs == col_start && ce == col_end);
+                let Some(ci) = cont_idx else { break };
+                if table.rows[cur_r].cells[ci].props.vmerge_restart() == Some(false) {
+                    chain.push((cur_r, ci));
+                    cur_r += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if chain.is_empty() {
+                continue;
+            }
+
+            let Some(head_b) = head_borders else {
+                continue;
+            };
+
+            let tail_idx = chain.len() - 1;
+            for (i, &(cr, ci)) in chain.iter().enumerate() {
+                let is_tail = i == tail_idx;
+                let cell = &mut table.rows[cr].cells[ci];
+                let b = cell.props.borders.get_or_insert_with(Borders::default);
+
+                if b.left.is_none() {
+                    b.left = head_b.left.clone();
+                }
+                if b.right.is_none() {
+                    b.right = head_b.right.clone();
+                }
+
+                if is_tail {
+                    if b.bottom.is_none() {
+                        b.bottom = head_b.bottom.clone();
+                    }
+                } else {
+                    b.bottom = None;
+                }
+            }
+
+            if let Some(hb) = table.rows[r].cells[c].props.borders.as_mut() {
+                hb.bottom = None;
+            }
+        }
+    }
+}
+
 fn apply_border(tb: &mut Borders, pos: &[u8], b: Border) {
     match pos {
         b"top" => tb.top = Some(b),
-        b"left" => tb.left = Some(b),
+        b"left" | b"start" => tb.left = Some(b),
         b"bottom" => tb.bottom = Some(b),
-        b"right" => tb.right = Some(b),
+        b"right" | b"end" => tb.right = Some(b),
         b"insideH" => tb.inside_h = Some(b),
         b"insideV" => tb.inside_v = Some(b),
         b"tl2br" => tb.tl2br = Some(b),
