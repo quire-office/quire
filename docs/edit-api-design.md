@@ -33,9 +33,9 @@
 | 協作面（`feature = "collab"`） | `CollabSession::new`、`commit_local`、`apply_remote` | `core/engine-api/src/lib.rs:2364-2401` | 【已實測】包裝 `quire_crdt::InMemoryBackend` 佔位實作，與 `Engine` 物理分離（詳見 §1.6）。 |
 
 此外，三種外殼（shells）對上述 API 的接線現況如下【已實測】：
-- `shells/web/src/lib.rs:15-77`（`WasmDoc`）：暴露 `from_bytes`、`page_count`、`paragraph_count`、`preserved_part_count`、`page_lines_json`、`page_display_list_json`、`paragraph_text`、`caret_rect_json`、`caret_at_json`、`insert_text_at_caret`、`replace_paragraph`、`set_sync_budget`、`is_settled`、`reflow_step_json`、`save_docx`、`roundtrip_zero_loss`。其中 `WasmDoc` 連 `set_part` 都未暴露，故網頁端目前做完文字編輯後呼叫 `save_docx()` 只會拿到未修改的原檔位元組。
+- `shells/web/src/lib.rs:8-77`（`WasmEngine`）：暴露 `new`、`page_count`、`paragraph_count`、`page_display_list_json`、`replace_paragraph_text`、`paragraph_text`、`caret_rect_json`、`caret_at_json`、`insert_text_at_caret`、`set_sync_budget`、`is_settled`、`reflow_step_json` 共 12 個方法。其中 `WasmEngine` 未暴露 `save_docx`、`set_part`、`roundtrip_check`、`preserved_part_count` 與 `page_lines`，故網頁端目前做完文字編輯後**根本無存檔入口**，文字變更只存活於記憶體。
 - `shells/web-collab/src/lib.rs:12-34`（`WasmCollab`）：僅暴露 `new`、`commit_local(para, run, text)` 與 `apply_remote(msg)`。
-- `shells/native/src/main.rs:34-98`（`quire-cli`）：僅提供 `Inspect`、`Render`、`Roundtrip`、`WriteBaseline`、`VerifyCorpus`、`CrdtSim` 六個非互動式子命令，無互動編輯命令。
+- `shells/native/src/main.rs:39-104`（`quire-cli`）：僅提供 `info`、`page`、`dump`、`footnotes`、`render`、`roundtrip`、`roundtrip-xlsx`、`xlsx-info` 八個非互動式子命令，無互動編輯命令。
 
 ### 1.3 寫回路徑現況：記憶體編輯面與存檔路徑完全斷裂【已實測】
 
@@ -44,7 +44,7 @@
 1. **記憶體文字編輯路徑（有排版與投影更新，無持久化寫回）**【已實測】：
    - `Engine::insert_text_at_caret`（`core/engine-api/src/lib.rs:1888-1903`）將碼點偏移 `cp` 轉為 UTF-8 位元組切口後拼出新字串，轉呼 `self.replace_paragraph_text(para, &next)`（`core/engine-api/src/lib.rs:1902`）。
    - `Engine::replace_paragraph_text`（`core/engine-api/src/lib.rs:2169-2213`）只做三件事：
-     1. 呼叫 `self.layout.replace_paragraph_text(para, text)`（`core/engine-api/src/lib.rs:2170`；定義於 `core/layout/src/lib.rs:2191-2321`），重排該段落斷行、透過 `shift_breaks`（`core/layout/src/lib.rs:981-997`, `core/layout/src/lib.rs:2218-2222`）平移段內硬分頁斷點、更新 `self.pages` 並回傳 `InvalidationEvent`（`PageChanged`、`PagesInserted`、`PagesRemoved`、`ReflowPending`，定義於 `core/layout/src/lib.rs:384-396`）。
+     1. 呼叫 `self.layout.replace_paragraph_text(para, text)`（`core/engine-api/src/lib.rs:2170`；定義於 `core/layout/src/lib.rs:2191-2321`），重排該段落斷行、透過 `shift_breaks`（`core/layout/src/lib.rs:981-997`, `core/layout/src/lib.rs:2218-2222`）平移段內硬分頁斷點、更新 `self.pages` 並回傳 `Invalidation`（變體僅 `Paragraph(usize)`、`Page(usize)`、`ReflowPending { from_page }` 三種，定義於 `core/layout/src/lib.rs:1720-1731`）。
      2. 同步發射投影 `self.paras_eff`（`core/engine-api/src/lib.rs:2180-2208`）：把新文字塞進該段第一個非空 `Run`，撤除其 `r.field = None`（`core/engine-api/src/lib.rs:2191`），並將同段其餘非空 `Run` 的 `r.text` 清空為 `String::new()`（`core/engine-api/src/lib.rs:2194`）。
      3. 呼叫 `self.recompute_notes()`（`core/engine-api/src/lib.rs:2211`；定義於 `core/engine-api/src/lib.rs:723-728`）重算頁首推下、註腳與尾註排布。
    - **斷裂鐵證**：`replace_paragraph_text` 完全沒有修改 `self.doc.paragraphs`（`core/ooxml/src/lib.rs:283`），沒有修改 `self.doc.parts.get_mut("word/document.xml")`（`core/ooxml/src/lib.rs:294`），也沒有將 `"word/document.xml"` 插入 `self.touched`（`core/engine-api/src/lib.rs:74`）。單元測試 `edit_syncs_paras_eff_styles_and_round_trip`（`core/engine-api/src/lib.rs:6346-6372`）在 `core/engine-api/src/lib.rs:6352` 呼叫 `engine.replace_paragraph_text(0, "改後新文字")` 後，於 `core/engine-api/src/lib.rs:6370-6371` 直接斷言：`let saved = engine.save_docx().expect("存檔"); assert_eq!(saved.as_slice(), FX, "編輯發射投影後存檔仍須位元組級相同");`。這證明現況下記憶體編輯被刻意設計為純投影操作，存檔後一切文字變更全部丟失。
@@ -72,11 +72,11 @@ Quire 的容器層無損承諾由 `core/ooxml/src/zip_struct.rs`、`core/ooxml/s
      - 走訪 `self.parts`：凡不在 `known`（原始 `file_entries` 集合）中的鍵，放入 `extras` 作為新增 part（`core/ooxml/src/lib.rs:343-348`）。
 
 3. **容器重封裝與偏移量修補（`ZipBundle::serialize`）**【已實測】：
-   - `ZipBundle::serialize`（`core/ooxml/src/zip_struct.rs:453-582`）將每個原始項目轉為 `Planned`（`core/ooxml/src/zip_struct.rs:183-206`, `core/ooxml/src/zip_struct.rs:653-727`）：
+   - `ZipBundle::serialize`（`core/ooxml/src/zip_struct.rs:453-582`）將每個原始項目轉為 `Planned`（`core/ooxml/src/zip_struct.rs:183-206`, `core/ooxml/src/zip_struct.rs:653-719`）：
      - 未出現在 `changes` 中的項目（以及 `frozen == true` 的項目，`core/ooxml/src/zip_struct.rs:463-466`）呼叫 `Planned::untouched(e)`（`core/ooxml/src/zip_struct.rs:654-666`），直接借用 `&e.local_raw`、`&e.data_raw`、`&e.gap_raw`、`&e.central_raw`，零重壓縮。
      - 即便呼叫端傳入 `Change::Replace(plain)`，若 `e.method == METHOD_STORE` 且重算之 `crc == e.crc && data == e.data_raw`（`core/ooxml/src/zip_struct.rs:475-478`），仍自動降級回 `Planned::untouched(e)`。
-     - 真正變更的項目依原項目 `e.method` 重新壓縮（`METHOD_STORE` 原樣存入、`METHOD_DEFLATE` 以預設等級重壓，其餘壓縮法降級為 `METHOD_DEFLATE`，見 `compress_as` 於 `core/ooxml/src/zip_struct.rs:730-740`），呼叫 `patch_local_header`（`core/ooxml/src/zip_struct.rs:744-769`）抹除 bit 3（data descriptor 旗標，`gp_flag & !0x0008`）、把 `gap_raw` 清空，並呼叫 `patch_central_header`（`core/ooxml/src/zip_struct.rs:772-811`）更新中央目錄的 CRC 與尺寸（同時保留原 extra field、檔案註解與外部屬性）。
-     - 新增的 `extras` 項目呼叫 `Planned::synthesized(name, plain)`（`core/ooxml/src/zip_struct.rs:703-726`），以 `METHOD_DEFLATE` 壓縮並呼叫 `build_local_header`（`core/ooxml/src/zip_struct.rs:881-897`）與 `build_central_header`（`core/ooxml/src/zip_struct.rs:899-921`）合成標頭。
+     - 真正變更的項目依原項目 `e.method` 重新壓縮（`encode_by_method`：`METHOD_STORE` 原樣存入、`METHOD_DEFLATE` 以預設等級重壓，其餘壓縮法降級為 `METHOD_DEFLATE`，於 `core/ooxml/src/zip_struct.rs:1198-1233`），並以 `Planned::replaced`（`core/ooxml/src/zip_struct.rs:677-697`）換上新的壓縮流、CRC 與尺寸（本地標頭由 `build_local_with_extra`、中央目錄由 `build_central` 重建：`core/ooxml/src/zip_struct.rs:732-766`, `core/ooxml/src/zip_struct.rs:767-814`，同時保留原 extra field、檔案註解與外部屬性）。
+     - 新增的 `extras` 項目以 `METHOD_DEFLATE` 壓縮後呼叫 `Planned::fresh(name, plain_len, data, crc, method)`（`core/ooxml/src/zip_struct.rs:699-719`，呼叫點 `core/ooxml/src/zip_struct.rs:487-498`），標頭同樣由 `build_local_with_extra`／`build_central` 合成。
    - **雙序寫出紀律**：
      - 本地檔案區按原始 `local_header_offset` 物理順序排序寫出（`phys_order`，`core/ooxml/src/zip_struct.rs:517-549`），使未觸碰項目的 `gap_raw` 維持在原本相鄰的物理位置（支援 Apache POI `CVLKRA` 等中央目錄順序與物理順序不一致的異常壓縮包，`core/ooxml/src/zip_struct.rs:517-524`）。
      - 中央目錄區按原始中央目錄邏輯順序寫出（`core/ooxml/src/zip_struct.rs:552-576`）；對於未觸碰項目，僅呼叫 `patch_central_offset`（`core/ooxml/src/zip_struct.rs:815-879`）修補因前方 part 長度改變而平移的 `local_header_offset`（含標準 32-bit 欄位與 ZIP64 `0x0001` extra block 內的 8-byte 偏移槽），其餘位元組一字不動。
@@ -89,20 +89,20 @@ Quire 的容器層無損承諾由 `core/ooxml/src/zip_struct.rs`、`core/ooxml/s
 
 1. **模型層 `core/ooxml`（解析期讀取投影＋原始 Part 字典）**【已實測】：
    - `OoxmlDoc`（`core/ooxml/src/lib.rs:282-297`）持久持有五個欄位：
-     - `paragraphs: Vec<Paragraph>`（`core/ooxml/src/lib.rs:283`；`Paragraph` 定義於 `core/ooxml/src/lib.rs:215-279`，內含 `runs: Vec<Run>`、`page_break`、`page_breaks: Vec<usize>`、`style`、`jc`、`line`、`spacing_before_pt`、`spacing_after_pt`、`prun`、`tabs`、`ind_left_pt`、`ind_right_pt`、`ind_first_line_pt`、`keep_next`、`keep_lines`、`contextual_spacing`、`top_border`、`bottom_border`、`txbx_texts`、`txbx_runs`；`Run` 定義於 `core/ooxml/src/lib.rs:88-162`）。
+     - `paragraphs: Vec<Paragraph>`（`core/ooxml/src/lib.rs:283`；`Paragraph` 定義於 `core/ooxml/src/lib.rs:215-279`，實際欄位為 `style`、`runs: Vec<Run>`、`page_breaks: Vec<usize>`、`prun`、`line`、`spacing_before_pt`、`spacing_after_pt`、`jc`、`page_break`、`tab_right_pt`、`tab_center_pt`、`tab_leader`、`txbx_texts`、`txbx_runs`——現況**沒有** `tabs` 向量、`ind_*` 縮進三欄、`keep_next`／`keep_lines`／`contextual_spacing` 與段 borders（這些是 §2.3.2 `ParaPropsPatch` 的**提案新增**欄位，落地時一併補解析）；`Run` 定義於 `core/ooxml/src/lib.rs:78-153`）。
      - `tables: Vec<BodyTable>`（`core/ooxml/src/lib.rs:286`；定義於 `core/ooxml/src/table.rs:456-463`，含 `para_start: usize` 與遞迴 `Table`／`TableRow`／`TableCell`／`Block` 樹，`core/ooxml/src/table.rs:310-452`）。
      - `notes: Notes`（`core/ooxml/src/lib.rs:292`；定義於 `core/ooxml/src/notes.rs:174-187`，解析自 `word/footnotes.xml`、`word/endnotes.xml` 與 `word/settings.xml`）。
-     - `parts: BTreeMap<String, Vec<u8>>`（`core/ooxml/src/lib.rs:294`）與私有的 `bundle: ZipBundle`（`core/ooxml/src/lib.rs:296`）。
+     - `parts: BTreeMap<String, Vec<u8>>`（`core/ooxml/src/lib.rs:294`）與 `pub bundle: ZipBundle`（`core/ooxml/src/lib.rs:296`，公開欄位：`Planned` 零失真搬運所需，外部不直接改寫）。
    - **其餘 OOXML 語義並未存放在 `OoxmlDoc` 結構體欄位中，而是由 `Engine::from_docx_bytes` 在開檔期從 `doc.parts` 按需呼叫無狀態解析函式取得**【已實測】：
-     - 主題色與主題字型：`ThemeColors::from_parts(&doc.parts)`（`core/ooxml/src/theme.rs:117-121`）與 `ThemeFonts::from_parts(&doc.parts)`（`core/ooxml/src/theme.rs:277-281`），註解明確記載：`w:rFonts` 的主題字型引用在解析當下查表落地成直接值，純讀取，存檔路徑不經此層（`core/ooxml/src/theme.rs:17-18`、`core/ooxml/src/lib.rs:365-366`）。
-     - 樣式表：`StyleTable::parse_with_fonts`（`core/ooxml/src/styles.rs:405-413`），且受 `styles_referenced(&doc.parts)`（`core/engine-api/src/lib.rs:238`）守門——必須在 `word/_rels/document.xml.rels` 中存在 `styles` 關聯才生效。
-     - 節幾何與頁首頁尾引用：`read_sections_per_paragraph`（`core/ooxml/src/sectpr.rs:228-235`）、`read_sections_header_footer`（`core/ooxml/src/sectpr.rs:269-289`）、`read_sections_note_pr`（`core/ooxml/src/sectpr.rs:296-298`）、`read_sections_endnote_pr`（`core/ooxml/src/sectpr.rs:307-309`）。
-     - 清單編號：`paragraph_numbering_from_parts`（`core/ooxml/src/numbering.rs:519-524`）與 `Numbering::from_parts`（`core/ooxml/src/numbering.rs:334-339`）。
-     - 圖形、圖片與 VML/DrawingML 文字框：`read_images_with_theme`（`core/ooxml/src/drawing.rs:3324-3326`），產出 `Vec<InlineImage>`（`core/ooxml/src/drawing.rs:225-404`）。`core/ooxml/src/drawing.rs:1-46` 模組頭註解記載其支援 `wp:inline`（佔正文流整數行網格帶）、`wp:anchor`（浮動鎖點、跨欄／負偏移／頁面釘定 `page_pinned`、包裹模式 `wrap_mode`、錨定文字框撐列事實 `TextboxGrowFact` 於 `core/ooxml/src/drawing.rs:180-222`）、DrawingML `wps:wsp`／`wpg:wgp` 與 VML `w:pict`／`v:shape`／`v:group`、以及 `a:blip` 下的雙色調 `DuotoneSpec`（`core/ooxml/src/drawing.rs:138-151`）。
-     - 關聯表：`read_rels` 與 `resolve_relationship`（`core/ooxml/src/rels.rs:57-143`）。
+     - 主題色與主題字型：`ThemeColors::from_parts(&doc.parts)`（`core/ooxml/src/theme.rs:119-123`）與 `ThemeFonts::from_parts(&doc.parts)`（`core/ooxml/src/theme.rs:358-362`），註解明確記載：`w:rFonts` 的主題字型引用在解析當下查表落地成直接值，純讀取，存檔路徑不經此層（`core/ooxml/src/theme.rs:17-18`、`core/ooxml/src/lib.rs:365-366`）。
+     - 樣式表：`StyleTable::parse_with_fonts`（`core/ooxml/src/styles.rs:821-827`），且受 `styles_referenced(&doc.parts)`（`core/engine-api/src/lib.rs:2693`）守門——必須在 `word/_rels/document.xml.rels` 中存在 `styles` 關聯才生效。
+     - 節幾何與頁首頁尾引用：`read_sections_per_paragraph`（`core/ooxml/src/sectpr.rs:228-235`）、`read_sections_header_footer`（`core/ooxml/src/sectpr.rs:273-289`）、`read_sections_note_pr`（`core/ooxml/src/sectpr.rs:301-304`）、`read_sections_endnote_pr`（`core/ooxml/src/sectpr.rs:307-310`）。
+     - 清單編號：`paragraph_numbering_from_parts`（`core/ooxml/src/numbering.rs:823-845`）與 `Numbering::from_parts`（`core/ooxml/src/numbering.rs:711-730`）。
+     - 圖形、圖片與 VML/DrawingML 文字框：`read_images_with_theme`（`core/ooxml/src/drawing.rs:3324-3326`），產出 `Vec<InlineImage>`（`core/ooxml/src/drawing.rs:225-404`）。`core/ooxml/src/drawing.rs:1-46` 模組頭註解記載其支援 `wp:inline`（佔正文流整數行網格帶）、`wp:anchor`（浮動鎖點、跨欄／負偏移／頁面釘定 `page_pinned` 於 `core/ooxml/src/drawing.rs:348`、包裹模式 `wrap_type: Option<String>` 於 `core/ooxml/src/drawing.rs:371`、錨定文字框撐列事實 `TextboxGrow` 於 `core/ooxml/src/drawing.rs:188-222`）、DrawingML `wps:wsp`／`wpg:wgp` 與 VML `w:pict`／`v:shape`／`v:group`、以及 `a:blip` 下的雙色調 `DuotoneEffect`（`core/ooxml/src/drawing.rs:152-160`）。
+     - 關聯表：`read_rels`（`core/ooxml/src/rels.rs:27-60`）與 `resolve_relationship`（`core/ooxml/src/rels.rs:62-80`）。
    - **四大解析器的扁平段落索引對齊不變量（Flat Paragraph Index Invariant）**【已實測】：
      - 在 `word/document.xml` 中，每個非自閉合 `<w:p>`（`Event::Start`）佔一個扁平段落槽位（`Event::Empty` 的 `<w:p/>` 不佔槽），`mc:Fallback` 子樹全部忽略，且 DrawingML `wps:txbx/w:txbxContent` 與 VML `v:textbox/w:txbxContent` 內部的 `<w:p>` **不進入正文扁平段落流**，而是掛載到宿主段落的 `Paragraph::txbx_texts` 與 `Paragraph::txbx_runs`（`core/ooxml/src/lib.rs:272-278`, `core/ooxml/src/lib.rs:599-616`, `core/ooxml/src/lib.rs:668-704`）。
-     - 這套完全相同的計數契約同時被四個解析器實作並依賴：`parse_document_xml_with_fonts`（`core/ooxml/src/lib.rs:569-1233`）、表格解析器 `table::count_flat_paras`（`core/ooxml/src/table.rs:475-490`）、圖形解析器 `drawing::count_paras`（`core/ooxml/src/drawing.rs:3334-3459`），以及節屬性解析器 `sectpr::scan_sections`（`core/ooxml/src/sectpr.rs:395-549`）。任何增刪段落或表格儲存格的 mutation 都必須同步維護這四處索引的對齊。
+     - 這套完全相同的計數契約同時被四個解析器實作並依賴：`parse_document_xml_with_fonts`（`core/ooxml/src/lib.rs:569-1233`）、表格解析器 `table::count_flat_paras`（`core/ooxml/src/table.rs:1251-1253`）、圖形解析器 `drawing::count_paras`（`core/ooxml/src/drawing.rs:3334-3336`），以及節屬性解析器 `sectpr::scan_sections`（`core/ooxml/src/sectpr.rs:382-613`）。任何增刪段落或表格儲存格的 mutation 都必須同步維護這四處索引的對齊。
 
 2. **發射與協調層 `core/engine-api`（級聯烘焙與顯示列表組裝）**【已實測】：
    - `Engine`（`core/engine-api/src/lib.rs:62-129`）持有烘焙後的段落投影 `paras_eff`（由 `cascade_paragraphs` 於 `core/engine-api/src/lib.rs:2834-3126` 合成：把 `StyleTable` 級聯結果、清單 marker 前綴、製表位點引填補字元烘焙進 `Run`）、頁首頁尾快取 `hf`／`hf_parts`（`core/engine-api/src/lib.rs:78-79`，由 `build_hf_layer` 於 `core/engine-api/src/lib.rs:5118-5241` 建立）、註腳與尾註排布 `foot`／`end`（`core/engine-api/src/lib.rs:89-105`）、圖形佔位池 `shape_boxes`（`core/engine-api/src/lib.rs:116`）與圖片像素池 `image_pixels`（`core/engine-api/src/lib.rs:123`）。
@@ -170,7 +170,7 @@ pub struct DocRange {
 2. **統一入口與回傳結構**【設計提案】：
    - `Engine::apply_mutation(&mut self, op: Mutation) -> Result<MutationOutcome, MutationError>`
    - `Engine::apply_batch(&mut self, ops: Vec<Mutation>) -> Result<MutationOutcome, MutationError>`（跨 wasm 邊界另提供 JSON 包裝 `apply_mutation_json(&mut self, op_json: &str) -> String`）。
-   - `MutationOutcome` 包含：`events: Vec<InvalidationEvent>`（供外殼增量重繪）、`touched_parts: Vec<String>`（本次實際改寫的 OPC part 路徑清單）、`inverse: Vec<InverseMutation>`（供 undo 堆疊推入的可逆操作序列）與 `caret_after: Option<DocPos>`（編輯後建議游標落點）。
+   - `MutationOutcome` 包含：`events: Vec<Invalidation>`（沿用現況版面失效型別，`core/layout/src/lib.rs:1720-1731`，供外殼增量重繪）、`touched_parts: Vec<String>`（本次實際改寫的 OPC part 路徑清單）、`inverse: Vec<InverseMutation>`（供 undo 堆疊推入的可逆操作序列）與 `caret_after: Option<DocPos>`（編輯後建議游標落點）。
 
 3. **全有或全無（All-or-Nothing）失敗原子性契約**【設計提案】：
    - 任何 `Mutation` 執行前必須先通過**前置驗證階段（Validation Phase）**與**XML 節點定位階段（Span Resolution Phase）**。
@@ -280,17 +280,17 @@ pub enum MutationError {
      - `char_style: TriState<String>`（`<w:rStyle w:val="..."/>`，ECMA-376 §17.7.2.29，見 `core/ooxml/src/styles.rs:29-30`）
    - `SetParagraphStyle { target: SubDocTarget, para_range: RangeInclusive<usize>, patch: ParaPropsPatch }`：對一或多個段落套用段落級屬性變更。`ParaPropsPatch` 包含：
      - `style_id: TriState<String>`（`<w:pStyle>`，ECMA-376 §17.7.2.32，見 `core/ooxml/src/styles.rs:28-29`；注意：依 Word 慣例，切換段落樣式時預設保留段內 `<w:pPr>` 直接格式覆寫，除非呼叫端指定 `reset_direct_para_props: bool`）
-     - `jc: TriState<ParaAlign>`（`<w:jc>`，ECMA-376 §17.3.1.13，章節號未見於本倉註解，屬推測，待實證；`ParaAlign` 見 `core/ooxml/src/lib.rs:42-51`）
+     - `jc: TriState<ParaAlign>`（`<w:jc>`，ECMA-376 §17.3.1.13，章節號未見於本倉註解，屬推測，待實證；現況對齊型別為 `Align`，見 `core/ooxml/src/styles.rs:183`，`Paragraph::jc` 於 `core/ooxml/src/lib.rs:249`）
      - `line_spacing: TriState<LineSpacing>`（`<w:spacing/@w:line>` 與 `@w:lineRule`，ECMA-376 §17.3.1.33；本倉 `core/ooxml/src/styles.rs:13-14` 記為 §17.4.1.3）
      - `spacing_before_pt: TriState<f32>`、`spacing_after_pt: TriState<f32>`（`<w:spacing/@w:before>` 與 `@w:after`，twip = pt × 20）
-     - `ind_left_pt: TriState<f32>`、`ind_right_pt: TriState<f32>`、`ind_first_line_pt: TriState<f32>`（`<w:ind>`，ECMA-376 §17.3.1.12，章節號未見於本倉註解，屬推測，待實證；欄位見 `core/ooxml/src/lib.rs:248-259`）
-     - `page_break_before: TriState<bool>`、`keep_next: TriState<bool>`、`keep_lines: TriState<bool>`、`contextual_spacing: TriState<bool>`（`<w:pageBreakBefore>`、`<w:keepNext>`、`<w:keepLines>`、`<w:contextualSpacing>`，欄位見 `core/ooxml/src/lib.rs:221`, `core/ooxml/src/lib.rs:261-265`）
-     - `tabs: TriState<Vec<TabStop>>`、`top_border: TriState<ParaBorder>`、`bottom_border: TriState<ParaBorder>`（`<w:tabs>` 與 `<w:pBdr>`，欄位見 `core/ooxml/src/lib.rs:246`, `core/ooxml/src/lib.rs:268-270`）
+     - `ind_left_pt: TriState<f32>`、`ind_right_pt: TriState<f32>`、`ind_first_line_pt: TriState<f32>`（`<w:ind>`，ECMA-376 §17.3.1.12，章節號未見於本倉註解，屬推測，待實證；**現況 `Paragraph` 無此三欄**，需連解析一併新增；現況僅清單層 `numbering::Level` 有 `ind_left_pt`，見 `core/ooxml/src/numbering.rs:137`）
+     - `page_break_before: TriState<bool>`、`keep_next: TriState<bool>`、`keep_lines: TriState<bool>`、`contextual_spacing: TriState<bool>`（`<w:pageBreakBefore>`、`<w:keepNext>`、`<w:keepLines>`、`<w:contextualSpacing>`；**現況 `Paragraph` 只有粗粒度 `page_break: bool`（`core/ooxml/src/lib.rs:255`），其餘三個 keep/contextual 欄位皆為提案新增**）
+     - `tabs: TriState<Vec<TabStop>>`、`top_border: TriState<ParaBorder>`、`bottom_border: TriState<ParaBorder>`（`<w:tabs>` 與 `<w:pBdr>`；**現況 `Paragraph` 只有三個扁平製表位欄 `tab_right_pt`／`tab_center_pt`／`tab_leader`（`core/ooxml/src/lib.rs:259-265`），無 `TabStop`／`ParaBorder` 型別，段 borders 完全未解析——皆為提案新增**）
    - `UpsertNamedStyle { style_id: String, style_type: StyleKind, based_on: Option<String>, para_patch: Option<ParaPropsPatch>, run_patch: Option<RunDirectPatch> }`：修改或新增 `word/styles.xml` 中的具名樣式（ECMA-376 §17.7.2，見 `core/ooxml/src/styles.rs:1`）。
 
 2. **套用模型層級**【設計提案】：
    - `FormatTextRange`：若 `range` 切在既有 `Run` 中間，先將邊界 `Run` 拆分為「前段（原樣）、選取段（套用 `patch` 到 `Run::direct`，`core/ooxml/src/lib.rs:110`）、後段（原樣）」。注意：若 `StyleTable` 的段落樣式鏈或 `docDefaults` 已宣告粗體（`bold == true`），而使用者對該區間執行 `bold: Set(false)`，則在 XML 中必須寫出 `<w:b w:val="0"/>`（或 `w:val="false"`，對齊 `core/ooxml/src/styles.rs:1852` 的明確關閉語義），而非單純刪除 `<w:b/>`。
-   - `SetParagraphStyle`：更新 `OoxmlDoc::paragraphs[p]` 的對應欄位，重算該段的級聯 `paras_eff[p]` 與 `LayoutEngine::grid`（`size_pt`、`bands`、`break_before`、`before_bands`、`after_bands`、`advance_scale`，見 `core/engine-api/src/lib.rs:624-631`），並觸發重排。
+   - `SetParagraphStyle`：更新 `OoxmlDoc::paragraphs[p]` 的對應欄位，重算該段的級聯 `paras_eff[p]` 與 `ParaGrid`（`size_pt`、`bands`、`break_before`、`before_bands`、`after_bands`、`advance_scale`，定義於 `core/layout/src/lib.rs:698-731`，由 `LayoutEngine::grid` 欄位持有於 `core/layout/src/lib.rs:1965`），並觸發重排。
    - `UpsertNamedStyle`：更新 `Engine::style_table`，重跑全文件 `cascade_paragraphs`（`core/engine-api/src/lib.rs:378-390`）與頁首頁尾／註腳級聯，重算 `LayoutEngine`。
 
 3. **對 DOCX Part 的最小影響面與無損保證**【設計提案】：
@@ -333,12 +333,12 @@ pub enum MutationError {
    - `DeleteTable { table: TablePath }`：刪除指定表格及其內部所有扁平段落。
    - `InsertTableRow { table: TablePath, at_row: usize, position: InsertSide }`（`Before` / `After`）：插入一列 `<w:tr>`（ECMA-376 §17.4.78，章節號未見於本倉註解，屬推測，待實證），新列的儲存格數與 `<w:gridSpan>` 配置繼承相鄰基準列；若跨越既有垂直合併區間（`vMerge == Continue`），新列對應格自動帶 `<w:vMerge/>`（Continue）。
    - `DeleteTableRow { table: TablePath, row: usize }`：刪除第 `row` 列。若被刪列含有某垂直合併區的頂格 `vMerge == Restart`（ECMA-376 §17.4.84，本倉 `core/ooxml/src/table.rs:16` 記於 §17.4.79 概覽下），且下一列同欄為 `vMerge == Continue`，則自動將下一列同欄晉升為 `<w:vMerge w:val="restart"/>`，防止孤兒 `Continue` 破壞版面。
-   - `InsertTableColumn { table: TablePath, at_grid_col: usize, position: InsertSide, width_pt: f32 }`／`DeleteTableColumn { table: TablePath, grid_col: usize }`：同步修補 `<w:tblGrid>` 的 `<w:gridCol w:w="..."/>`（ECMA-376 §17.4.48／§17.4.16，章節號未見於本倉註解，屬推測，待實證；型別 `GridCol` 見 `core/ooxml/src/table.rs:348-355`）以及每一列對應網格欄的 `<w:tc>`（若該欄處於某跨欄合併格 `gridSpan > 1` 內部，則增減其 `<w:gridSpan w:val="..."/>`）。
+   - `InsertTableColumn { table: TablePath, at_grid_col: usize, position: InsertSide, width_pt: f32 }`／`DeleteTableColumn { table: TablePath, grid_col: usize }`：同步修補 `<w:tblGrid>` 的 `<w:gridCol w:w="..."/>`（ECMA-376 §17.4.48／§17.4.16，章節號未見於本倉註解，屬推測，待實證；型別 `GridCol` 見 `core/ooxml/src/table.rs:52-56`）以及每一列對應網格欄的 `<w:tc>`（若該欄處於某跨欄合併格 `gridSpan > 1` 內部，則增減其 `<w:gridSpan w:val="..."/>`）。
    - `MergeTableCells { table: TablePath, top_row: usize, bottom_row: usize, left_grid_col: usize, right_grid_col: usize }`：將矩形網格區域合併為單一邏輯儲存格：
      - 水平方向：每列首格設定 `<w:gridSpan w:val="K"/>`（`K = right_grid_col - left_grid_col + 1`），移除同列被吞併的右側 `<w:tc>`，並將其非空段落搬移至首格尾部。
-     - 垂直方向：頂列（`top_row`）首格設定 `<w:vMerge w:val="restart"/>`，`top_row + 1 ..= bottom_row` 首格設定 `<w:vMerge/>`（Continue，對應 `VMerge::Continue`，見 `core/ooxml/src/table.rs:48-54`），並將被合併列非空段落搬移至頂列首格。
+     - 垂直方向：頂列（`top_row`）首格設定 `<w:vMerge w:val="restart"/>`，`top_row + 1 ..= bottom_row` 首格設定 `<w:vMerge/>`（Continue；現況 vMerge 只存 raw 狀態 `vmerge: Option<Option<String>>`——外層 `None`＝元素不存在、`Some(None)`＝省略 `@w:val` 即 continue、`Some(Some("restart"))`＝重啟，見 `core/ooxml/src/table.rs:364-366`，無 `VMerge` 型別），並將被合併列非空段落搬移至頂列首格。
    - `SplitTableCell { table: TablePath, row: usize, cell: usize, into_rows: usize, into_cols: usize }`：解除或細分儲存格合併。
-   - `SetTableProps`、`SetRowProps`、`SetCellProps`：分別修補 `TableProps`（`<w:tblPr>`，ECMA-376 §17.4.79，見 `core/ooxml/src/table.rs:310`；含 `w:tblW` §17.18.90、`w:tblBorders` §17.4.10、`w:shd` §17.18.66、`w:tblCellMar` §17.4.40、`w:tblLook` §17.4.75）、`RowProps`（`<w:trPr>`，ECMA-376 §17.4.77，見 `core/ooxml/src/table.rs:339`；含 `w:trHeight` 與 `w:tblHeader` §17.4.86）與 `CellProps`（`<w:tcPr>`，ECMA-376 §17.4.69，見 `core/ooxml/src/table.rs:358`；含 `w:tcW`、`w:tcBorders`、`w:shd`、`w:tcMar` §17.4.49、`w:vAlign`）。
+   - `SetTableProps`、`SetRowProps`、`SetCellProps`：分別修補 `TableProps`（`<w:tblPr>`，ECMA-376 §17.4.79，見 `core/ooxml/src/table.rs:314`；含 `w:tblW` §17.18.90、`w:tblBorders` §17.4.10、`w:shd` §17.18.66、`w:tblCellMar` §17.4.40、`w:tblLook` §17.4.75）、`RowProps`（`<w:trPr>`，ECMA-376 §17.4.77，見 `core/ooxml/src/table.rs:341`；含 `w:trHeight` 與 `w:tblHeader` §17.4.86）與 `CellProps`（`<w:tcPr>`，ECMA-376 §17.4.69，見 `core/ooxml/src/table.rs:360`；含 `w:tcW`、`w:tcBorders`、`w:shd`、`w:tcMar` §17.4.49、`w:vAlign`）。
 
 3. **套用模型層級與最小 Part 影響面**【設計提案】：
    - 更新 `OoxmlDoc::tables` 對應之 `BodyTable` 樹（`core/ooxml/src/table.rs:456-463`）。
@@ -417,7 +417,7 @@ flowchart TD
     C3 --> E["4. 第二層寫回：OPC 級重打包（OoxmlDoc::save + ZipBundle::serialize）【已實測】"]
     E --> E1["未觸碰 Part：Planned::untouched 原樣搬運 local_raw + data_raw + gap_raw"]
     E --> E2["已觸碰 Part：Planned::replaced 按原 method 重壓並更新 CRC/尺寸"]
-    E --> E3["新增 Part：Planned::synthesized 追加於尾端並修補中央目錄偏移"]
+    E --> E3["新增 Part：Planned::fresh 追加於尾端並修補中央目錄偏移"]
 ```
 
 ### 3.1 第一層寫回：語義模型變更 → Part 級 Surgical XML Patch【設計提案】
@@ -462,8 +462,8 @@ flowchart TD
 | Part 狀態分類 | 觸發條件範例 | 第一層（Part 內 XML 明文）處理方式 | 第二層（OPC ZIP Entry）處理方式 |
 | :--- | :--- | :--- | :--- |
 | **A. 未觸碰之既有 Part** | 正文打字時的 `word/styles.xml`、`word/numbering.xml`、`word/theme/theme1.xml`、`word/media/*`、`docProps/*`、`customXml/*` | **零接觸**：`OoxmlDoc::parts` 內的 `Vec<u8>` 完全不讀寫 | **100% 保 Raw**（`Planned::untouched`，`core/ooxml/src/zip_struct.rs:654-666`）：`local_raw`、`data_raw`、`gap_raw` 原位元組輸出 |
-| **B. 局部修改之既有 XML Part** | 正文打字、改段落樣式、插入表格列、調整圖片大小時的 `word/document.xml`；或追加編號時的既有 `word/numbering.xml` | **Surgical XML Patch**：僅替換受影響節點的 `ByteSpan`，該 Part 內未動段落／樣式／關聯維持原 XML 位元組 | **單 Entry 重壓縮**（`Planned::replaced`，`core/ooxml/src/zip_struct.rs:669-700`）：依原 entry 的 `method` 重壓縮並更新該筆 CRC 與尺寸 |
-| **C. 全新建立之 Part** | 首次插入圖片時的 `word/media/imageN.png`、首次為無編號檔建立的 `word/numbering.xml`、首次新增的 `word/header1.xml` | **全 Part 合成**：依 ECMA-376 最小合法骨架生成完整 XML 或直接寫入媒體二進位流，插入 `OoxmlDoc::parts` | **尾端新增 Entry**（`Planned::synthesized`，`core/ooxml/src/zip_struct.rs:703-726`）：歸入 `extras`，以 `METHOD_DEFLATE` 壓縮並追加至壓縮包尾端 |
+| **B. 局部修改之既有 XML Part** | 正文打字、改段落樣式、插入表格列、調整圖片大小時的 `word/document.xml`；或追加編號時的既有 `word/numbering.xml` | **Surgical XML Patch**：僅替換受影響節點的 `ByteSpan`，該 Part 內未動段落／樣式／關聯維持原 XML 位元組 | **單 Entry 重壓縮**（`Planned::replaced`，`core/ooxml/src/zip_struct.rs:677-697`）：依原 entry 的 `method` 重壓縮並更新該筆 CRC 與尺寸 |
+| **C. 全新建立之 Part** | 首次插入圖片時的 `word/media/imageN.png`、首次為無編號檔建立的 `word/numbering.xml`、首次新增的 `word/header1.xml` | **全 Part 合成**：依 ECMA-376 最小合法骨架生成完整 XML 或直接寫入媒體二進位流，插入 `OoxmlDoc::parts` | **尾端新增 Entry**（`Planned::fresh`，`core/ooxml/src/zip_struct.rs:699-719`）：歸入 `extras`，以 `METHOD_DEFLATE` 壓縮並追加至壓縮包尾端 |
 | **D. 編輯後經 Undo 回到初始狀態之既有 Part** | 對 `word/document.xml` 執行 `InsertText` 後立刻執行 `Undo` | **Surgical 反向還原至初始明文**（詳見 §5.2）：使 `doc.parts["word/document.xml"]` 與開檔解壓縮明文逐位元組相等，並從 `Engine::touched` 移除 | **自動回歸 100% 保 Raw**：因 `OoxmlDoc::save`（`core/ooxml/src/lib.rs:336-339`）比對 `bytes == &e.decoded()?` 為真，不產生 `Change::Replace`，連 Deflate 壓縮流也回復 100% 原位元組一致！ |
 
 ---
@@ -540,7 +540,7 @@ pub trait CrdtBackend {
 2. **核心資料結構與公開介面**【設計提案】：
    - `Engine` 新增 `undo_stack: Vec<UndoEntry>`、`redo_stack: Vec<UndoEntry>` 與 `part_baseline_digests: BTreeMap<String, (u32, usize)>`（記錄開檔時各 part 的 CRC32 與位元組長度，供 §5.2 判定是否退回初始明文）。
    - 公開入口定義如下：
-     - `Engine::undo(&mut self) -> Result<Option<MutationOutcome>, MutationError>`：彈出 `undo_stack` 頂端之 `UndoEntry`，按逆序執行其 `inverse_ops`，將生成的再逆向操作推入 `redo_stack`，並回傳版面 `InvalidationEvent`（`core/layout/src/lib.rs:384-396`）與游標復原點 `caret_before`。
+     - `Engine::undo(&mut self) -> Result<Option<MutationOutcome>, MutationError>`：彈出 `undo_stack` 頂端之 `UndoEntry`，按逆序執行其 `inverse_ops`，將生成的再逆向操作推入 `redo_stack`，並回傳版面 `Invalidation`（`core/layout/src/lib.rs:1720-1731`）與游標復原點 `caret_before`。
      - `Engine::redo(&mut self) -> Result<Option<MutationOutcome>, MutationError>`：彈出 `redo_stack` 頂端項目重新執行，並推回 `undo_stack`。
      - 當使用者提交新的非空正向 `Mutation` 且通過驗證時，若該操作為可逆，推入 `undo_stack` 並清空 `redo_stack`；若該操作觸發不可逆邊界（見 §5.3），則依誠實紅線清理受影響之歷史堆疊。
 
@@ -771,7 +771,7 @@ pub enum ReversibilityLevel {
 ### 6.5 第四片（Slice 4 / `K29d`）：節屬性與分節、頁首頁尾子樹、註腳尾註子樹（M6）與協作外殼接線卡【設計提案】
 
 1. **切片範圍**【設計提案】：
-   - 納管 M6 全家族（`M6.1 SetSectionProperties`、`M6.2 InsertSectionBreak`/`DeleteSectionBreak`、`M6.3 ConfigureHeaderFooterSlot`、`M6.4 InsertNote`/`DeleteNote`/`SetNoteProperties`）、非正文子樹目標 `SubDocTarget::{Header, Footer, Footnote, Endnote, TextBox}` 的完整路由，以及 §4 `CrdtBackend`（`core/crdt/src/lib.rs:18-23`）、`WasmDoc`（`shells/web/src/lib.rs:15-77`）與 `WasmCollab`（`shells/web-collab/src/lib.rs:12-34`）的接線收斂。
+   - 納管 M6 全家族（`M6.1 SetSectionProperties`、`M6.2 InsertSectionBreak`/`DeleteSectionBreak`、`M6.3 ConfigureHeaderFooterSlot`、`M6.4 InsertNote`/`DeleteNote`/`SetNoteProperties`）、非正文子樹目標 `SubDocTarget::{Header, Footer, Footnote, Endnote, TextBox}` 的完整路由，以及 §4 `CrdtBackend`（`core/crdt/src/lib.rs:18-23`）、`WasmEngine`（`shells/web/src/lib.rs:8-77`）與 `WasmCollab`（`shells/web-collab/src/lib.rs:12-34`）的接線收斂。
 
 2. **紅燈定義（先紅後綠驗收判準）**【設計提案】：
    - **紅燈 1（節屬性與分欄動態重排鎖）**：
@@ -813,7 +813,7 @@ pub enum ReversibilityLevel {
 | **2. 第一層（Part 內 XML）寫回機制** | 【已實測】**現況完全無 XML 節點級修補器或序列化器**；唯一能改動 `OoxmlDoc::parts` 的方法只有整 Part 替換 `Engine::set_part`（`core/engine-api/src/lib.rs:2256-2259`）與 `OoxmlDoc::set_part`（`core/ooxml/src/lib.rs:309-311`）。 | 【設計提案】§3.1 定義之 `XmlSpanIndex`、`ByteSpan` 與 `apply_xml_byte_patches` 外科手術式位元組切片替換（Surgical XML Patch），確保同一 XML part 內未觸碰段落與未知屬性（`w:rsidR`、`w14:paraId`、`mc:AlternateContent`）原位元組保留。 |
 | **3. 語義編輯 API 與持久化閉環** | 【已實測】`Engine::insert_text_at_caret`（`core/engine-api/src/lib.rs:1888-1903`）與 `Engine::replace_paragraph_text`（`core/engine-api/src/lib.rs:2169-2213`）僅更新 `self.layout` 與 `self.paras_eff`，**完全不改 `self.doc.paragraphs` 與 `self.doc.parts`**，存檔後編輯全部丟失（見 `core/engine-api/src/lib.rs:6370-6371`）。 | 【設計提案】§2 定義之 `Engine::apply_mutation`、`apply_batch`、跨子樹尋址 `SubDocTarget`／`DocPos`／`DocRange`、錯誤型別 `MutationError` 以及 `M1.1`～`M6.4` 全 20 項語義編輯閉環寫回。 |
 | **4. Undo / Redo 歷史管理** | 【已實測】**現況 `Engine` 完全無 `undo`／`redo` 方法或歷史堆疊**。 | 【設計提案】§5 定義之 `InverseMutation`、`XmlReversePatch`、`UndoEntry`、`Engine::undo`／`Engine::redo`、IME 交易合併、以及針對圖片強制 GC 與 `set_part` 的不可逆誠實處理契約。 |
-| **5. 多人協作（CRDT）與外殼接線** | 【已實測】`core/crdt/src/lib.rs:1-170` 為 Phase 4 落地前之佔位實作（`InMemoryBackend` 僅支援 `EditOp::ReplaceRunText` 的 `(para, run)` LWW 覆寫），且 `WasmDoc`（`shells/web/src/lib.rs:15-77`）尚未暴露持久化編輯能力。 | 【設計提案】§4 定義之 `CollabIntent` 轉正準 `Mutation`、穩定邏輯 ID（`ParaId`／`TableId` 等）、字元級相對錨點與拆併段重綁定契約，以及 Slice 4 的外殼統一接線。 |
+| **5. 多人協作（CRDT）與外殼接線** | 【已實測】`core/crdt/src/lib.rs:1-170` 為 Phase 4 落地前之佔位實作（`InMemoryBackend` 僅支援 `EditOp::ReplaceRunText` 的 `(para, run)` LWW 覆寫），且 `WasmEngine`（`shells/web/src/lib.rs:8-77`）尚未暴露持久化編輯能力。 | 【設計提案】§4 定義之 `CollabIntent` 轉正準 `Mutation`、穩定邏輯 ID（`ParaId`／`TableId` 等）、字元級相對錨點與拆併段重綁定契約，以及 Slice 4 的外殼統一接線。 |
 
 ---
 
