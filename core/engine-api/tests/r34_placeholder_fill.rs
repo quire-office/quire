@@ -23,7 +23,7 @@
 //!   照舊發灰底 Rect＋四條佔位 Rule——誠實近似不得被本卡閂誤殺。
 //! - 燈 4：SVG 兜底閂（alpha-0 Rect 不落 SVG）在 native 殼單元測試
 //!   `shells/native/tests/render_svg_alpha_gate.rs`（本檔不依賴 native 殼）。
-//! - 燈 5（**#[ignore]，待 D5 落地解鎖**）：fdo76591 頂部塊樣式真值。S1
+//! - 燈 5（**已解 ignore**，D5 合併 main=5badcb8 後 PM 實跑 4/4 綠）：fdo76591 頂部塊樣式真值。S1
 //!   根因＝框內 `w:tab` 停靠點定義被誤轉偽造前導空格 → `txbx_runs_for`
 //!   配對全滅（core/ooxml 面，PM 已裁定移交 D5 t_ed8bbd01，本卡禁碰）。
 
@@ -200,10 +200,8 @@ fn emf_watermark_placeholder_untouched() {
 /// 與 lib.rs 側（不轉）口徑不一致 → `txbx_runs_for` 字串配對恆 false →
 /// 整個文字框樣式退化成 12pt／無粗體／無字型。PM 裁定 tab 口徑屬 core/ooxml
 /// 面、與 D5 撞車，本卡（engine-api＋render_svg 白名單）禁碰 core/ooxml。
-/// D5 合併後由 PM 解除本 `#[ignore]` 重跑；斷言值取自基線 a6dadee／LO 實測
-/// （PM A/B 腳本 ow-style-ab.py 坐實的 7 條回退主角）。
+/// D5 合併後（main=5badcb8）PM 已解 ignore：fdo76591 頂部塊樣式燈實跑 4/4 綠。
 #[test]
-#[ignore = "S1 屬 D5 t_ed8bbd01（core/ooxml tab 口徑）；D5 合併後解 ignore 重跑"]
 fn fdo76591_top_block_style_matches_lo_truth() {
     let eng = load_corpus("ooxmlexport/fdo76591.docx");
     let dl = eng.page_display_list(0).expect("p0 存在");
