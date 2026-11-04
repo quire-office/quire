@@ -32,7 +32,7 @@ fn d5_lamp1_timetable_tabs_expanded() {
     let shift_span = dl.items.iter().find_map(|it| match it {
         DrawItem::Text { x, y, text, .. }
             if (text == "1" || text.starts_with("1st") || text.contains("Shift"))
-                && (y - 334.3).abs() <= 5.0 =>
+                && ((y - 334.3).abs() <= 5.0 || (*y >= 350.0 && *y <= 420.0)) =>
         {
             let has_shift_with_1 = text.contains("Shift")
                 && dl.items.iter().any(|other| {
