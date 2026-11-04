@@ -15,6 +15,7 @@ mod emf_dib;
 mod notes;
 mod numbering;
 mod png_duotone;
+mod qx;
 mod rels;
 mod sectpr;
 mod styles;
@@ -1336,7 +1337,7 @@ fn parse_document_xml_with_fonts(
                     // 框內文字：只收文字進 txbx_cur（不進正文 run、不動 cp_done）；
                     // 同步進採集 run（發射層按 run 分段取樣式，K4e2）。
                     if txbx_in_t {
-                        let s = t.unescape().map_err(|e| OoxmlError::Xml(e.to_string()))?;
+                        let s = qx::unescape_text(&t).map_err(OoxmlError::Xml)?;
                         txbx_cur.push_str(&s);
                         if let Some(r) = txbx_run.as_mut() {
                             r.text.push_str(&s);
@@ -1348,7 +1349,7 @@ fn parse_document_xml_with_fonts(
                     // 欄位指令文字（可能跨多個 Text 事件）：寫進**最內層**進行中
                     // 的複雜欄緩衝（instrText 必落在其所屬域的 begin..separate
                     // 區間，棧頂就是所屬層；t_c1fb4c69 S2-6 逐層隔離）。
-                    if let Ok(s) = t.unescape() {
+                    if let Ok(s) = qx::unescape_text(&t) {
                         if let Some(top) = complex_stack.last_mut() {
                             top.2.push_str(&s);
                         }
@@ -1356,8 +1357,35 @@ fn parse_document_xml_with_fonts(
                     continue;
                 }
                 if let Some(r) = cur_run.as_mut().filter(|_| in_t || in_del_t) {
-                    let s = t.unescape().map_err(|e| OoxmlError::Xml(e.to_string()))?;
+                    let s = qx::unescape_text(&t).map_err(OoxmlError::Xml)?;
                     // 已入文碼點計數隨文字增長——br-page 記錄偏移的標尺。
+                    if let Some((_, _, cp_done)) = stack.last_mut() {
+                        *cp_done += s.chars().count();
+                    }
+                    r.text.push_str(&s);
+                }
+            }
+            Event::GeneralRef(r) => {
+                if fb > 0 {
+                    continue;
+                }
+                let s = qx::resolve_general_ref(&r).map_err(OoxmlError::Xml)?;
+                if txbx_depth > 0 {
+                    if txbx_in_t {
+                        txbx_cur.push_str(&s);
+                        if let Some(r) = txbx_run.as_mut() {
+                            r.text.push_str(&s);
+                        }
+                    }
+                    continue;
+                }
+                if instr_active {
+                    if let Some(top) = complex_stack.last_mut() {
+                        top.2.push_str(&s);
+                    }
+                    continue;
+                }
+                if let Some(r) = cur_run.as_mut().filter(|_| in_t || in_del_t) {
                     if let Some((_, _, cp_done)) = stack.last_mut() {
                         *cp_done += s.chars().count();
                     }
@@ -1406,7 +1434,7 @@ fn attach_txbx(p: &mut Paragraph, texts: Vec<String>, runs: Vec<Vec<Run>>) {
 fn attr_val(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
     e.attributes().flatten().find_map(|a| {
         if a.key.local_name().as_ref() == key.as_bytes() {
-            a.unescape_value().ok().map(|v| v.to_string())
+            qx::decode_and_unescape_attr(&a)
         } else {
             None
         }
