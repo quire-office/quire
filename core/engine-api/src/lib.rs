@@ -6,8 +6,9 @@
 //! - 型別全 serde 化，跨 wasm 邊界走 JSON 字串。
 
 use quire_layout::{
-    breaks_from_pages, section_capacity, CaretPos, LayoutEngine, LayoutParams, Page, ParaGrid,
-    SectionGeometry, SectionSpec, TableSlot, TextMeasurer, MARGIN_BOTTOM, MARGIN_LEFT, MARGIN_TOP,
+    breaks_from_pages, section_capacity, CaretPos, LayoutEngine, LayoutParams, LineFlow, Page,
+    ParaGrid, SectionGeometry, SectionSpec, TableSlot, TextMeasurer, FLAG_DIR_EAVERT,
+    FLAG_DIR_VERT, FLAG_DIR_VERT270, MARGIN_BOTTOM, MARGIN_LEFT, MARGIN_TOP,
 };
 use quire_ooxml::{
     diff_untouched, diff_zip_structure, parse, parse_header_footer_part_with_fonts,
@@ -3403,48 +3404,110 @@ fn emit_txbx_texts(
     );
     let mut blocks: Vec<Vec<DrawItem>> = Vec::with_capacity(texts.len());
 
-    // ---- K4c 契約 7：layout-flow:vertical → 逐字堆疊（y 單調、x 依框右緣
-    // 起欄；既有 DrawItem::Text 逐字發射，零新變體）。欄寬取段字級近似。----
-    let vertical = shape.is_some_and(|b| b.txbx_vertical);
-    if vertical {
-        for (ti, t) in texts.iter().enumerate() {
-            let mut block: Vec<DrawItem> = Vec::new();
-            if !t.is_empty() {
-                let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
-                let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
-                let (flags, color_argb, _) =
-                    own_runs
+    // E2：直排文字流向區分（K4c 逐字堆疊 vs E2 整行旋轉 vert/vert270）
+    let vert_attr = shape.and_then(|b| b.txbx_vert.as_deref());
+    let vml_vert = shape.is_some_and(|b| b.txbx_vertical);
+    let flow = LineFlow::from_vert_str(vert_attr, vml_vert);
+
+    match flow {
+        LineFlow::EastAsianVertical => {
+            for (ti, t) in texts.iter().enumerate() {
+                let mut block: Vec<DrawItem> = Vec::new();
+                if !t.is_empty() {
+                    let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+                    let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+                    let (flags, color_argb, _) =
+                        own_runs
+                            .first()
+                            .map(run_style)
+                            .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
+                    let fam = own_runs
                         .first()
-                        .map(run_style)
-                        .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
-                let fam = own_runs
-                    .first()
-                    .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
-                let sz_eff = seg_size.max(1.0);
-                // 欄起點＝框右緣往內退 inset_r 再退一欄寬（一個字 Advance 近似）。
-                let col_w = TextMeasurer::new(sz_eff).text_width("n").max(sz_eff * 0.6);
-                let col_x = (bx + bw - inset_r - col_w).max(bx);
-                let step = (sz_eff * 1.2).max(1.0);
-                let mut yy = inner_y;
-                for c in t.chars() {
-                    if yy > inner_y + inner_h + step {
-                        break; // 超出框高：老實停發（不溢出到別頁別框）
+                        .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
+                    let sz_eff = seg_size.max(1.0);
+                    // 欄起點＝框右緣往內退 inset_r 再退一欄寬（一個字 Advance 近似）。
+                    let col_w = TextMeasurer::new(sz_eff).text_width("n").max(sz_eff * 0.6);
+                    let col_x = (bx + bw - inset_r - col_w).max(bx);
+                    let step = (sz_eff * 1.2).max(1.0);
+                    let mut yy = inner_y;
+                    for c in t.chars() {
+                        if yy > inner_y + inner_h + step {
+                            break; // 超出框高：老實停發（不溢出到別頁別框）
+                        }
+                        block.push(DrawItem::Text {
+                            x: col_x,
+                            y: yy,
+                            size_pt: sz_eff,
+                            flags: flags | FLAG_DIR_EAVERT,
+                            color_argb,
+                            family: fam.clone(),
+                            text: c.to_string(),
+                        });
+                        yy += step;
                     }
-                    block.push(DrawItem::Text {
-                        x: col_x,
-                        y: yy,
-                        size_pt: sz_eff,
-                        flags,
-                        color_argb,
-                        family: fam.clone(),
-                        text: c.to_string(),
-                    });
-                    yy += step;
                 }
+                blocks.push(block);
             }
-            blocks.push(block);
         }
-    } else {
+        LineFlow::Vertical270 => {
+            // E2：vert270 整行由下而上旋轉（dir≈[0, -1]），段落沿 x 軸由左向右分欄
+            let num_paras = texts.len();
+            let mut cur_x = if num_paras == 1 && bw > 30.0 {
+                let seg_sz = runs
+                    .first()
+                    .and_then(|r| r.iter().find_map(|x| x.size_pt))
+                    .unwrap_or(size_pt);
+                let col_w = seg_sz * 1.17;
+                bx + ((bw - col_w) * 0.5).max(0.0)
+            } else {
+                bx + 3.83
+            };
+
+            for (ti, t) in texts.iter().enumerate() {
+                let mut block: Vec<DrawItem> = Vec::new();
+                if !t.is_empty() {
+                    let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+                    let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+                    let (flags, color_argb, _) =
+                        own_runs
+                            .first()
+                            .map(run_style)
+                            .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
+                    let fam = own_runs
+                        .first()
+                        .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
+                    let sz_eff = seg_size.max(1.0);
+                    let col_w = sz_eff * 1.22;
+
+                    let para_align = own_runs.first().and_then(|r| r.para_align);
+                    let is_align_right = matches!(para_align, Some(quire_ooxml::Align::Right))
+                        || shape.and_then(|s| s.txbx_align.as_deref()) == Some("right");
+
+                    let m = TextMeasurer::new(sz_eff);
+                    let line_len = m.text_width(t);
+
+                    let base_y = if is_align_right {
+                        by + 0.57 + line_len
+                    } else {
+                        by + bh - 7.24
+                    };
+
+                    block.push(DrawItem::Text {
+                        x: cur_x,
+                        y: base_y,
+                        size_pt: sz_eff,
+                        flags: flags | FLAG_DIR_VERT270,
+                        color_argb,
+                        family: fam,
+                        text: t.clone(),
+                    });
+
+                    cur_x += col_w;
+                }
+                blocks.push(block);
+            }
+        }
+        _ => {
         // R31：若外層 shape 本身已作為圖片發射，文字框不再重疊發射內嵌圖形
         let skip_drawings = shape.and_then(|s| s.embed_rid.as_ref()).is_some();
         let mut yy = inner_y;
@@ -3633,6 +3696,7 @@ fn emit_txbx_texts(
             }
             blocks.push(block);
         }
+    }
     }
     for &ti in &order {
         if let Some(b) = blocks.get_mut(ti) {

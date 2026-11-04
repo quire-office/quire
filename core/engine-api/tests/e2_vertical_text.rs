@@ -137,7 +137,7 @@ fn e2_lamp2_vert270_emission_btlr_textbox() {
     );
 
     // 3. 斷言 bbox 形狀細長（高 >> 寬）且命中 LO bbox 真值 ±4pt
-    let len1 = TextMeasurer::new(p1.2).text_width(&p1.4);
+    let len1 = TextMeasurer::with_advance_scale(p1.2, 0.875).text_width(&p1.4);
     let col_w1 = p1.2 * 1.22;
     let bbox1 = LineFlow::Vertical270.compute_line_bbox(p1.0, p1.1, len1, col_w1);
     assert!(
@@ -152,7 +152,7 @@ fn e2_lamp2_vert270_emission_btlr_textbox() {
         bbox1
     );
 
-    let len2 = TextMeasurer::new(p2.2).text_width(&p2.4);
+    let len2 = TextMeasurer::with_advance_scale(p2.2, 0.875).text_width(&p2.4);
     let col_w2 = p2.2 * 1.22;
     let bbox2 = LineFlow::Vertical270.compute_line_bbox(p2.0, p2.1, len2, col_w2);
     assert!(
