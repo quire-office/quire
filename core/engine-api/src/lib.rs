@@ -507,6 +507,10 @@ impl Engine {
             //    一次）。二者合起來消除「多佔位把臨界頁擠出」的回歸：
             //    HC031 正文曾多出一頁只含節末段的空頁（總頁數 9→10）。
             let mut spacings = spacings.clone();
+            table_map::apply_html_autospacing(
+                doc.parts.get("word/document.xml").map(|v| v.as_slice()),
+                &mut spacings,
+            );
             let mut chain_breaks: Vec<usize> = Vec::new();
             for bt in &doc.tables {
                 let end = table_map::table_para_end(&bt.table, bt.para_start).min(spacings.len());

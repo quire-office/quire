@@ -1614,6 +1614,108 @@ fn k17_host_cell(table: &Table, para_index: usize) -> Option<(usize, usize, &Tab
     None
 }
 
+/// E1（ECMA-376 §17.3.1.33）：消費正文段落 `w:spacing` 之 `w:beforeAutospacing` 與 `w:afterAutospacing`。
+/// 當屬性為 `"1"` 或 `"true"` 時，以 HTML 自動段距 `280` twip（`14.0` pt）覆寫該段前／段後距，並對頁首首段上距及相鄰自動段距執行 HTML 邊距折疊。
+pub fn apply_html_autospacing(doc_xml: Option<&[u8]>, spacings: &mut [(Option<f32>, Option<f32>)]) {
+    let Some(raw) = doc_xml else {
+        return;
+    };
+    let xml = String::from_utf8_lossy(raw);
+    if !xml.contains("Autospacing=\"1\"") && !xml.contains("Autospacing=\"true\"") {
+        return;
+    }
+    let mut fb_depth: usize = 0;
+    let mut txbx_depth: usize = 0;
+    let mut tbl_depth: usize = 0;
+    let mut cur_para: Option<usize> = None;
+    let mut flags: Vec<(bool, bool, bool)> = Vec::new();
+    let mut rest = xml.as_ref();
+    while let Some(lt) = rest.find('<') {
+        let after_lt = &rest[lt + 1..];
+        let Some(gt) = after_lt.find('>') else {
+            break;
+        };
+        let seg = after_lt[..gt].trim();
+        rest = &after_lt[gt + 1..];
+        if seg.is_empty() || seg.starts_with('?') || seg.starts_with('!') {
+            continue;
+        }
+        let is_end = seg.starts_with('/');
+        let is_empty = seg.ends_with('/');
+        let core = seg.trim_start_matches('/').trim_end_matches('/').trim();
+        let tag_name = core.split_ascii_whitespace().next().unwrap_or("");
+        let local = tag_name.rsplit(':').next().unwrap_or(tag_name);
+        if local == "Fallback" {
+            if is_end {
+                fb_depth = fb_depth.saturating_sub(1);
+            } else if !is_empty {
+                fb_depth += 1;
+            }
+            continue;
+        }
+        if fb_depth > 0 {
+            continue;
+        }
+        if local == "txbxContent" {
+            if is_end {
+                txbx_depth = txbx_depth.saturating_sub(1);
+            } else if !is_empty {
+                txbx_depth += 1;
+            }
+            continue;
+        }
+        if txbx_depth > 0 {
+            continue;
+        }
+        match local {
+            "tbl" => {
+                if is_end {
+                    tbl_depth = tbl_depth.saturating_sub(1);
+                } else if !is_empty {
+                    tbl_depth += 1;
+                }
+            }
+            "p" => {
+                if is_end {
+                    cur_para = None;
+                } else if !is_empty {
+                    cur_para = Some(flags.len());
+                    flags.push((false, false, tbl_depth > 0));
+                }
+            }
+            "spacing" => {
+                if let Some(pi) = cur_para {
+                    if matches!(
+                        attr(seg, "w:beforeAutospacing").as_deref(),
+                        Some("1" | "true")
+                    ) {
+                        flags[pi].0 = true;
+                    }
+                    if matches!(
+                        attr(seg, "w:afterAutospacing").as_deref(),
+                        Some("1" | "true")
+                    ) {
+                        flags[pi].1 = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for (i, &(before_auto, after_auto, in_tbl)) in flags.iter().enumerate() {
+        if in_tbl || i >= spacings.len() {
+            continue;
+        }
+        if before_auto {
+            let prev_after_auto = i > 0 && flags.get(i - 1).is_some_and(|f| !f.2 && f.1);
+            spacings[i].0 = Some(if i == 0 || prev_after_auto { 0.0 } else { 14.0 });
+        }
+        if after_auto {
+            spacings[i].1 = Some(14.0);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 測試
 // ---------------------------------------------------------------------------
