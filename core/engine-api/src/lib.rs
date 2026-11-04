@@ -1923,6 +1923,23 @@ impl Engine {
         self.replace_paragraph_text(para, &next)
     }
 
+    /// E2 考卷取樣：回傳第一個包含非 "horz" 的 `txbx_vert` 宣告之 vert 值（若無則首個非空值）。
+    pub fn shape_boxes_vert_declared(&self) -> Option<String> {
+        self.shape_boxes
+            .iter()
+            .find_map(|(_, b)| {
+                b.txbx_vert
+                    .as_ref()
+                    .filter(|v| v.as_str() != "horz")
+                    .cloned()
+            })
+            .or_else(|| {
+                self.shape_boxes
+                    .iter()
+                    .find_map(|(_, b)| b.txbx_vert.clone())
+            })
+    }
+
     /// 第 `page` 頁的顯示列表。
     ///
     /// 頁碼域：**正文頁 0..body_page_count**（末頁含尾註接排）＋

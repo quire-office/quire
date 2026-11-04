@@ -363,6 +363,85 @@ impl Default for LayoutParams {
     }
 }
 
+/// 行方向旗標（復用 DrawItem::Text.flags 高 4 位，向後相容零架構侵入）。
+pub const FLAG_DIR_VERT270: u8 = 16;
+pub const FLAG_DIR_VERT: u8 = 32;
+pub const FLAG_DIR_EAVERT: u8 = 64;
+
+/// 行方向與排版流向模型（對齊 ECMA-376 ST_TextVerticalType 與 pymupdf dir 向量）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LineFlow {
+    /// 橫排（預設）：dir = [1.0, 0.0]，文字沿 x 正方向由左而右，行沿 y 正方向由上而下。
+    #[default]
+    Horizontal,
+    /// 旋轉 270 度（btlr，bottom-to-top）：dir = [0.0, -1.0]，文字沿 y 負方向由下而上，段落沿 x 正方向由左而右。
+    Vertical270,
+    /// 旋轉 90 度（tbrl，top-to-bottom）：dir = [0.0, 1.0]，文字沿 y 正方向由上而下，段落沿 x 負方向由右而左。
+    Vertical,
+    /// 東亞文字直排（CJK 逐字堆疊）：dir = [0.0, 1.0]，逐字向下堆疊，行沿 x 負方向由右而左。
+    EastAsianVertical,
+}
+
+impl LineFlow {
+    /// 回傳 pymupdf 同口徑的單位方向向量 (dx, dy)。
+    pub fn dir_vector(&self) -> [f32; 2] {
+        match self {
+            LineFlow::Horizontal => [1.0, 0.0],
+            LineFlow::Vertical270 => [0.0, -1.0],
+            LineFlow::Vertical => [0.0, 1.0],
+            LineFlow::EastAsianVertical => [0.0, 1.0],
+        }
+    }
+
+    /// 從 OOXML vert 屬性字串或 VML 標記解析三族分類。
+    pub fn from_vert_str(vert: Option<&str>, vml_vertical: bool) -> Self {
+        if let Some(v) = vert {
+            let s = v.trim();
+            match s {
+                "vert270" => LineFlow::Vertical270,
+                "vert" => LineFlow::Vertical,
+                s if s.starts_with("eaVert")
+                    || s.starts_with("vertEastAsian")
+                    || matches!(s, "mongolianVert" | "wordArtVert" | "wordArtVertRtl") =>
+                {
+                    LineFlow::EastAsianVertical
+                }
+                "horz" => LineFlow::Horizontal,
+                _ => LineFlow::Horizontal,
+            }
+        } else if vml_vertical {
+            LineFlow::EastAsianVertical
+        } else {
+            LineFlow::Horizontal
+        }
+    }
+
+    /// 計算給定基準點、文字長度、列寬時的行 bbox [x0, y0, x1, y1]。
+    pub fn compute_line_bbox(
+        &self,
+        base_x: f32,
+        base_y: f32,
+        line_len_pt: f32,
+        col_w_pt: f32,
+    ) -> [f32; 4] {
+        match self {
+            LineFlow::Horizontal => [base_x, base_y, base_x + line_len_pt, base_y + col_w_pt],
+            LineFlow::Vertical270 => [
+                base_x,
+                base_y - line_len_pt,
+                base_x + col_w_pt,
+                base_y,
+            ],
+            LineFlow::Vertical | LineFlow::EastAsianVertical => [
+                base_x,
+                base_y,
+                base_x + col_w_pt,
+                base_y + line_len_pt,
+            ],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Line {
     pub text: String,
