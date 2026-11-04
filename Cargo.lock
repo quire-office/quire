@@ -139,6 +139,7 @@ name = "quire-cli"
 version = "0.1.0"
 dependencies = [
  "quire-engine",
+ "quire-odf",
  "serde",
  "serde_json",
 ]
@@ -180,6 +181,7 @@ name = "quire-odf"
 version = "0.1.0"
 dependencies = [
  "quick-xml",
+ "quire-layout",
  "quire-ooxml",
  "serde",
  "serde_json",

@@ -132,6 +132,11 @@ XML 實際宣告：
   `text:h`＋`text:p`＋自閉合 `<text:p/>`）→ 計數 1/2、段落 3 全入列、零文字段
   成形，字級一律 `DEFAULT_FONT_SIZE_PT`（12.0）、粗體一律 normal；降維輸出
   `(Vec<String>, Vec<f32>)` 形狀如實。
+- `run_level_cascade_splits_spans`（綠燈後追加）：合成檔驗證 **run 級**級聯粒度
+  ——段內 `text:span` 換字級／宣告 `font-weight="normal"` 必須拆 run 並如實
+  `((0,2),20.0,true) ((2,4),8.0,true) ((4,6),20.0,false) ((6,7),20.0,true)`；
+  同時鎖住「span 未宣告屬性沿承**段落級聯有效值**（20pt），而非檔案
+  default-style（11pt）」與「顯式宣告 normal ≠ 未宣告（三態級聯）」兩個口徑。
 
 ## 六、記帳缺口（非偷懶，卡面已載明）
 

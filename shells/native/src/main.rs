@@ -30,7 +30,11 @@ fn main() -> ExitCode {
                 --check 斷言 byte-identical（zip 結構級，不碰內容）。
                 dir＝遞迴掃 *.xlsx 與 *.xlsm。非零離開碼＝有失真。
       quire-cli xlsx-info <file.xlsx>       workbook 最小模型 JSON（sheet 清單/
-                definedNames 計數/rels 對照/dimension+row 計數）。";
+                definedNames 計數/rels 對照/dimension+row 計數）。
+      quire-cli odt-render <file.odt>       ODT 文字流投影首切片：讀 .odt →
+                text:p/text:h＋字級級聯投影 → layout（LayoutParams::default()
+                A4；本切片不解析 ODF style:page-layout，記帳缺口）輸出固定 JSON
+                欄位：paragraph_count／total_text_len／page_breaks。";
     if args.len() < 3 {
         eprintln!("{usage}");
         return ExitCode::from(2);
@@ -44,6 +48,9 @@ fn main() -> ExitCode {
     }
     if cmd == "xlsx-info" {
         return xlsx_info(&args[2]);
+    }
+    if cmd == "odt-render" {
+        return odt_render(&args[2]);
     }
     if cmd == "render" {
         return render(&args[2..], usage);
@@ -540,6 +547,52 @@ fn xlsx_info(path: &str) -> ExitCode {
         }
         Err(e) => {
             eprintln!("開啟失敗 {path}: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// odt-render 子命令（ODF-C3 首切片）：讀 .odt → ODF 文字流投影 → layout
+/// 全域後備參數（A4；本切片不解析 ODF `style:page-layout`，記帳缺口）→
+/// 固定 JSON `{"paragraph_count":usize,"total_text_len":usize,"page_breaks":[usize]}`。
+/// 非零離開碼＝開檔／投影失敗（老實報錯，不吞）。
+fn odt_render(path: &str) -> ExitCode {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("讀檔失敗 {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let bundle = match quire_odf::OdfBundle::open(&bytes) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("開啟失敗 {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let projection = match quire_odf::project(&bundle) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("投影失敗 {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let params = quire_odf::LayoutParams::default();
+    let (texts, _) = projection.flatten();
+    let page_breaks = quire_odf::page_break_positions(&texts, &params);
+    let out = serde_json::json!({
+        "paragraph_count": projection.paragraph_count(),
+        "total_text_len": projection.total_text_len,
+        "page_breaks": page_breaks,
+    });
+    match serde_json::to_string(&out) {
+        Ok(s) => {
+            println!("{s}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("JSON 序列化失敗: {e}");
             ExitCode::from(1)
         }
     }
