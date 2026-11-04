@@ -4,8 +4,8 @@
 //! 目的：headless 環境下不需要任何字型 shaping 就能拿到位圖/向量輸出，供 LO 基線對照。
 
 use quire_engine::{
-    DrawItem, PageDisplayList, FLAG_BOLD, FLAG_DIR_EAVERT, FLAG_DIR_VERT, FLAG_DIR_VERT270,
-    FLAG_ITALIC, FLAG_STRIKE, FLAG_UNDERLINE,
+    DrawItem, PageDisplayList, FLAG_BOLD, FLAG_DIR_VERT, FLAG_DIR_VERT270, FLAG_ITALIC,
+    FLAG_STRIKE, FLAG_UNDERLINE,
 };
 use std::fmt::Write as _;
 
@@ -64,14 +64,10 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
                         s,
                         "<text x=\"{base_x:.1}\" y=\"{base_y:.1}\" font-size=\"{size_pt:.1}\" fill=\"#{r:02x}{g:02x}{b:02x}\" transform=\"rotate(90 {base_x:.1} {base_y:.1})\"",
                     );
-                } else if flags & FLAG_DIR_EAVERT != 0 {
-                    // E2b：東亞文字逐字直排標記，帶 data-line-dir 供出貨產物解析直排流向（ADT109119）。
-                    let _ = write!(
-                        s,
-                        "<text x=\"{x:.1}\" y=\"{:.1}\" font-size=\"{size_pt:.1}\" fill=\"#{r:02x}{g:02x}{b:02x}\" data-line-dir=\"ea-vert\"",
-                        y + size_pt
-                    );
                 } else {
+                    // E2b：FLAG_DIR_EAVERT（逐字直排）不在此處發任何自報屬性。度量閘門只准讀**真實幾何**
+                    // （旋轉 transform 或逐字座標推進），自報屬性會讓「旗標報直排、像素畫橫排」從屬性通道
+                    // 再次分家，且該屬性不參與繪製、屬污染出貨產物的度量專用 token（ADT109119）。
                     let _ = write!(
                         s,
                         "<text x=\"{x:.1}\" y=\"{:.1}\" font-size=\"{size_pt:.1}\" fill=\"#{r:02x}{g:02x}{b:02x}\"",

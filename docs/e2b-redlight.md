@@ -70,3 +70,56 @@ test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 1. 修改 `shells/native/src/render_svg.rs`：消費 `DrawItem::Text.flags` 中的直排方向旗標（`FLAG_DIR_VERT270` 與 `FLAG_DIR_VERT`）。
 2. 在 `FLAG_DIR_VERT270` 分支中，發射帶有 `transform="rotate(-90 {base_x} {base_y})"` 的 `<text>` 元素，使文字沿 y 負方向由下而上延伸，字頂落在文字框列寬內，命中 LO 真值 bbox ±4pt。
 3. 確保橫排檔案輸出零擾動，既有五盞考卷及基準檔測試零回退。
+
+## 5. 本卡返修：發現新版閘門仍有自報破口（`data-line-dir`）並予以關閉
+第一版發射層對 `FLAG_DIR_EAVERT`（東亞逐字直排）發的是 `data-line-dir="ea-vert"` 這個**不參與繪製的自報屬性**，
+而 `parse_svg_lines_and_dirs` 又把該屬性當成直排證據。這等於把本卡要消滅的形態（我方自報、非像素）
+從 `dump` 旗標搬到 SVG 屬性通道：純橫排的 `<text>` 只要掛上該屬性，就被新版閘門判成直排。
+實測破口（橫排像素＋自報屬性 ⇒ 被判定直排）：
+```
+lines  = ['Purely horizontal text']
+dirs   = [(0.0, 1.0)]
+被判定為直排？ True
+```
+處置（兩步，缺一不可）：
+1. `shells/native/src/render_svg.rs` 的 `FLAG_DIR_EAVERT` 分支**不再發任何自報屬性**，該旗標不影響 SVG 輸出；
+   自報屬性也不該出現在出貨產物裡（污染出貨產物、且不參與繪製）。
+2. `parse_svg_lines_and_dirs` 改為**只准讀真實幾何**：旋轉 transform，或卡面所指的**逐字直排定位**
+   （連續單字元 `<text>` 同 x、y 單向推進 ⇒ 該欄為逐字堆疊的直排欄，方向依 y 指向取 `(0,±1)`）。
+   `writing-mode`／`data-line-dir` 一律不讀。
+效果：`btlr-frame-vml`／`tbrl-frame-vml`／`groupshape-sdt` 三檔的 SVG 回到與舊引擎**逐位元組相同**，
+但它們的直排判定改由真實像素定位支撐（我方 `any_vert` 仍為真），不再靠宣稱。
+`--selftest` 新增兩盞鎖住此性質：
+```
+PASS 8c 防自報：純橫排像素掛直排自報屬性仍判 (1,0)（不得讀宣稱屬性）（dirs=[(1.0, 0.0), (1.0, 0.0)]）
+PASS 8d 逐字直排定位：同 x 單向 y 推進判 (0,1)、同 y 橫向推進判 (1,0)
+```
+
+## 6. 獨立覆核記錄（非沿用上一輪自報）
+本卡接手時工作區已有上一輪 crash 遺留的 commit，以下全部為本次重跑實測。
+### 6.1 驗收條件 1 反證矩陣（同一份 LO PDF，只換閘門與引擎）
+| 引擎態 | 閘門 | btlr-textbox 版面分 | 判定 |
+|---|---|---|---|
+| 舊（E2 現態：旗標直排、SVG 橫排） | 舊（讀 dump 旗標） | **1.0** | 假綠（本次事故形態） |
+| 舊（E2 現態） | 新（讀 SVG 幾何） | **0.0** | 抓出 `line_direction_mismatch:LO直排我方橫排` |
+| 新（發射層消費旗標） | 新（讀 SVG 幾何） | **1.0** | 通過 |
+### 6.2 零回退（`/usr/bin/python3` 實跑，LO 真值側同一份 PDF）
+btlr-textbox 1.0/1.0、fdo76591 0.98/1.0、WC048 1.0/1.0、99_Fields 1.0/1.0、
+n751077 p1 0.88/0.867（p2 None）、picture-with-schemecolor None/None、dkvert 0.538/0.433
+——新舊兩側逐檔逐軸**完全相同**，無任何 >0.02 抖動。
+另對全部 8 個帶直排旗標的檔案（btlr/tbrl-textbox、fdo69636、tdf103573、tdf124754、
+groupshape-sdt、btlr/tbrl-frame-vml）跑新舊對照，分數逐檔逐軸亦完全相同（無回退）。
+### 6.3 SVG byte 級零擾動（全庫渲染，舊引擎 vs 新引擎）
+只有 **5 個**檔案的 SVG 變化，且全部是消費旋轉旗標的直排分支：
+`btlr-textbox`、`tbrl-textbox`、`fdo69636`、`tdf103573`、`tdf124754`；其餘檔案逐位元組相同。
+### 6.4 肉眼對照（驗收條件 2）
+LO 真值 `lo-png/btlr-textbox-p0.png`：細長框內由下而上、兩行左右並排。
+我方 `ow-png/btlr-textbox-p0.png`：同一版面（文字置於框內左下角、由下而上、兩欄並排、無疊字無溢出）。
+發射產物實抓（兩段基線 x 差 13.4pt 不共線 ⇒ 不疊字，bbox 命中 LO 真值 ±4pt）：
+```
+<text x="236.8" y="224.9" font-size="11.0" fill="#000000" transform="rotate(-90 236.8 224.9)" ...>First paragraph.</text>
+<text x="250.2" y="224.9" font-size="11.0" fill="#000000" transform="rotate(-90 250.2 224.9)" ...>Second paragraph.</text>
+```
+### 6.5 八閘
+`bash ~/.hermes/scripts/ow-gate.sh <worktree>` ⇒ `GATE_SUMMARY fail=0`（fmt／clippy -D／test／layering／roundtrip fixtures／roundtrip corpus／wasm32／goldens）。
+

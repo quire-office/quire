@@ -293,43 +293,88 @@ def sect_pr_count(docx: pathlib.Path) -> int | None:
         return None
 
 
-def parse_svg_lines_and_dirs(svg_path: pathlib.Path) -> tuple[list[str], list[tuple[float, float]]]:
-    """E2b 補強度量閘門：從實際產出的 SVG 解析文字行與行方向向量，防止旗標與像素分家（ADT109119）。
+def _attr_num(attrs_str: str, name: str) -> float | None:
+    """取 <text> 屬性上的純數值（缺屬性或不可解析 ⇒ None）。"""
+    m = re.search(rf'\b{name}="(-?[\d.]+)"', attrs_str)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
 
-    解析口徑：
-    1. SVG <text> 帶旋轉 transform（如 rotate(-90 ...) 或 rotate(270 ...) ⇒ (0.0, -1.0)；rotate(90 ...) ⇒ (0.0, 1.0)）。
-    2. 帶直排屬性（如 writing-mode="vertical-*" 或 data-line-dir 等逐字直排標記）⇒ (0.0, 1.0)。
-    3. 純 <text> 無旋轉 ⇒ (1.0, 0.0) 橫排。
+
+def _svg_rotate_dir(attrs_str: str) -> tuple[float, float] | None:
+    """從 transform 的 rotate 角推繪製方向；無旋轉（或只 0/180 度）⇒ None（不改判）。"""
+    tr_m = re.search(r'transform=["\']([^"\']+)["\']', attrs_str)
+    if not tr_m:
+        return None
+    rot_m = re.search(r"rotate\(\s*(-?\d+(?:\.\d+)?)\b", tr_m.group(1))
+    if not rot_m:
+        return None
+    deg = float(rot_m.group(1)) % 360
+    if abs(deg - 270) < 1.0:
+        return (0.0, -1.0)
+    if abs(deg - 90) < 1.0:
+        return (0.0, 1.0)
+    return None
+
+
+def parse_svg_lines_and_dirs(svg_path: pathlib.Path) -> tuple[list[str], list[tuple[float, float]]]:
+    """E2b 補強度量閘門：從實際出貨 SVG 的**真實幾何**解析文字行與行方向向量，防旗標與像素分家（ADT109119）。
+
+    只准讀會參與繪製的幾何，禁讀任何自報屬性（本卡事故形態＝「旗標報直排、SVG 畫橫排」，
+    自報屬性 `writing-mode`／`data-line-dir` 與旗標同屬我方宣稱，讀它們等於把破口從
+    dump 搬到 SVG）：
+    1. `<text>` 帶 `rotate(-90 …)`／`rotate(270 …)` ⇒ (0.0, -1.0)（btlr，由下而上）；
+       帶 `rotate(90 …)` ⇒ (0.0, 1.0)（tbrl，由上而下）。
+    2. **逐字直排定位**：連續單字元 `<text>` 同 x（|Δx|≤0.5）且 y 單調推進（步距 ≥0.3 字級）
+       ⇒ 該欄為逐字堆疊的直排欄，方向依 y 指向取 (0.0, ±1.0)。
+    3. 其餘（純 `<text>` 無旋轉、逐字橫向並排）⇒ (1.0, 0.0) 橫排。
     """
     if not svg_path.exists():
         return [], []
     content = svg_path.read_text(encoding="utf-8")
-    lines = []
-    line_dirs = []
+    items: list[tuple[str, tuple[float, float], float | None, float | None, float | None]] = []
     for m in re.finditer(r"<text\b([^>]*)>(.*?)</text>", content, re.DOTALL):
         attrs_str = m.group(1)
-        raw_text = m.group(2)
-        text = norm(html.unescape(raw_text))
+        text = norm(html.unescape(m.group(2)))
         if not text:
             continue
-        lines.append(text)
-        direction = (1.0, 0.0)
-        tr_m = re.search(r'transform=["\']([^"\']+)["\']', attrs_str)
-        if tr_m:
-            rot_m = re.search(r"rotate\(\s*(-?\d+(?:\.\d+)?)\b", tr_m.group(1))
-            if rot_m:
-                deg = float(rot_m.group(1)) % 360
-                if abs(deg - 270) < 1.0:
-                    direction = (0.0, -1.0)
-                elif abs(deg - 90) < 1.0:
-                    direction = (0.0, 1.0)
-                elif abs(deg) < 1.0 or abs(deg - 180) < 1.0:
-                    direction = (1.0, 0.0)
-        if direction == (1.0, 0.0):
-            if 'writing-mode="vertical' in attrs_str or 'data-line-dir="vert"' in attrs_str or 'data-line-dir="ea-vert"' in attrs_str:
-                direction = (0.0, 1.0)
-        line_dirs.append(direction)
-    return lines, line_dirs
+        direction = _svg_rotate_dir(attrs_str) or (1.0, 0.0)
+        items.append((text, direction, _attr_num(attrs_str, "x"),
+                      _attr_num(attrs_str, "y"), _attr_num(attrs_str, "font-size")))
+    # 逐字直排偵測：找連續單字元、同 x、y 單調（同號）推進的欄位（真實像素定位，非宣稱）。
+    run_start = 0
+    while run_start < len(items):
+        run_end = run_start
+        run_sign = 0
+        while run_end + 1 < len(items):
+            a, b = items[run_end], items[run_end + 1]
+            if len(a[0]) != 1 or len(b[0]) != 1:
+                break
+            if a[2] is None or b[2] is None or a[3] is None or b[3] is None:
+                break
+            if abs(a[2] - b[2]) > 0.5:  # x 不同 ⇒ 不同欄
+                break
+            step = b[3] - a[3]
+            size = a[4] or b[4] or 1.0
+            if abs(step) < 0.3 * size:  # y 沒推進 ⇒ 疊字而非直排
+                break
+            sign = 1 if step > 0 else -1
+            if run_sign == 0:
+                run_sign = sign
+            elif sign != run_sign:  # 折返 ⇒ 不是一條單向直排欄
+                break
+            run_end += 1
+        if run_end - run_start + 1 >= 3:  # 至少三字才構成逐字欄（兩字易與表格單字元欄誤判）
+            first_y, last_y = items[run_start][3], items[run_end][3]
+            vert = (0.0, 1.0) if last_y > first_y else (0.0, -1.0)
+            for i in range(run_start, run_end + 1):
+                txt, _d, x, y, sz = items[i]
+                items[i] = (txt, vert, x, y, sz)
+        run_start = run_end + 1
+    return [i[0] for i in items], [i[1] for i in items]
 
 
 def run_quire(docx: pathlib.Path, out_dir: pathlib.Path) -> dict:
@@ -1240,6 +1285,35 @@ def selftest() -> int:
               s_lines == ["Horz", "Vert270", "Vert90"]
               and s_dirs == [(1.0, 0.0), (0.0, -1.0), (0.0, 1.0)],
               f"lines={s_lines} dirs={s_dirs}")
+
+    # (8c) E2b 防自報鎖：自報直排屬性（writing-mode／data-line-dir）**不得**改變判定——
+    # 像素是橫排（無旋轉、單行橫向）就必須回報 (1,0)，否則「旗標直排＋SVG 橫排」可繞過閘門（ADT109119）。
+    with tempfile.TemporaryDirectory() as td:
+        tf2 = pathlib.Path(td) / "cheat.svg"
+        tf2.write_text(
+            '<svg><text x="10" y="20" data-line-dir="ea-vert">Purely horizontal</text>\n'
+            '<text x="10" y="34" writing-mode="vertical-rl">Also horizontal pixels</text></svg>',
+            encoding="utf-8"
+        )
+        c_dirs = parse_svg_lines_and_dirs(tf2)[1]
+        check("8c 防自報：純橫排像素掛直排自報屬性仍判 (1,0)（不得讀宣稱屬性）",
+              c_dirs == [(1.0, 0.0), (1.0, 0.0)],
+              f"dirs={c_dirs}")
+
+    # (8d) E2b 逐字直排定位偵測：連續單字元同 x、y 單調推進 ⇒ 直排（真實像素定位，非宣稱）（ADT109119）。
+    with tempfile.TemporaryDirectory() as td:
+        tf3 = pathlib.Path(td) / "perchar.svg"
+        tf3.write_text(
+            '<svg>'
+            + "".join(f'<text x="100" y="{20 + i * 12}" font-size="11">V</text>' for i in range(4))
+            + "".join(f'<text x="{200 + i * 12}" y="30" font-size="11">h</text>' for i in range(4))
+            + "</svg>",
+            encoding="utf-8"
+        )
+        pc_dirs = parse_svg_lines_and_dirs(tf3)[1]
+        check("8d 逐字直排定位：同 x 單向 y 推進判 (0,1)、同 y 橫向推進判 (1,0)",
+              pc_dirs[:4] == [(0.0, 1.0)] * 4 and pc_dirs[4:] == [(1.0, 0.0)] * 4,
+              f"dirs={pc_dirs}")
 
     print("SELFTEST", "ALL-PASS" if fails == 0 else f"{fails}-FAIL")
     return 0 if fails == 0 else 1
