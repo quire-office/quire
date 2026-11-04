@@ -146,3 +146,26 @@ error: could not compile `quire-ooxml` (lib) due to 6 previous errors; 7 warning
 2. `Attribute::unescape_value()` → `Attribute::decode_and_unescape_value(quick_xml::reader::Decoder::utf8())`。
 3. 建立各 crate 內部私有 `mod qx` 小工具函式，避免重複代碼，嚴禁新建 workspace crate。
 4. 每修好一組站點 commit 一次，落實「零回退鐵條」驗收。
+
+## 5. 綠燈全收案與零回退全量閘門驗證
+所有 19 處站點已全數完成遷移，並對 quick-xml 0.41 的 `Event::GeneralRef` 實體事件進行了對齊與無損還原。各項零回退鐵條指標驗收如下：
+
+1. **考卷 `core/ooxml/tests/qx_unescape_parity.rs` 全綠**：
+   - `test_unescape_and_decode_parity_entities_and_multilingual`: ok（逐字元比對含實體與多語種文字）
+   - `test_cve_2026_0194_duplicate_attributes_dos_defense`: ok（從 0.37 的 564ms 超時紅燈收斂至 <10ms，確認修復）
+   - `test_cve_2026_0195_deep_nested_namespaces_dos_defense`: ok（深巢狀命名空間在線性空間完成，無記憶體耗盡）
+2. **全工作區單元測試（`cargo test --workspace`）**：
+   - 76 test suites（75 基線 + 1 新增）全綠，通過數 670+ 項，0 失敗。
+3. **語料庫 roundtrip byte-identical 驗證（`cargo run -p quire-cli -- roundtrip corpus --check`）**：
+   - 399 檔全過（另 1 檔隔離待上游修復），byte-identical 399 檔，失敗 0。
+   - 屬性正規化無行為變化完整證明。
+4. **ODF 語料庫驗證（`cargo test -p quire-odf`）**：
+   - 50 檔 roundtrip byte-identical 全綠。
+5. **render_lab 基準六檔零回退**：
+   - `corpus/ooxmlexport/fdo76591.docx`: 版面 [1.0] / 內容 [0.98]（門檻：版面 ≥1.000／內容 ≥0.98）
+   - `corpus/xopt/TestFiles_WC_WC048-Text-Box-in-Cell.docx`: 版面 [1.0] / 內容 [1.0]
+   - `corpus/ooxmlexport/btlr-textbox.docx`: 版面 [1.0] / 內容 [1.0]
+   - `corpus/ooxmlexport/99_Fields.docx`: 版面 [1.0] / 內容 [1.0]
+   - `corpus/ooxmlimport/n751077.docx`: 零回退（版面 [0.867, None] / 內容 [0.88, None]，真缺字 0）
+   - `corpus/ooxmlexport/picture-with-schemecolor.docx`: 零回退（色 [0.686] / 圖 [0.774]，真缺字 0）
+
