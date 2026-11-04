@@ -31,19 +31,39 @@ fn d7_lamp1_header_overlap_and_boundary() {
     let eng = Engine::from_docx_bytes(&bytes).expect("開啟 fdo76591 失敗");
     let dl = eng.page_display_list(0).expect("首頁存在");
 
-    let line1 = dl.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, size_pt, text, flags, .. } if text.contains("BELVIDERE") => {
-            Some((*x, *y, *size_pt, *flags, text.clone()))
-        }
-        _ => None,
-    }).expect("必須存在「BELVIDERE」文字項");
+    let line1 = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                text,
+                flags,
+                ..
+            } if text.contains("BELVIDERE") => Some((*x, *y, *size_pt, *flags, text.clone())),
+            _ => None,
+        })
+        .expect("必須存在「BELVIDERE」文字項");
 
-    let line2 = dl.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, size_pt, text, flags, .. } if text.contains("World Class Manufacturing") => {
-            Some((*x, *y, *size_pt, *flags, text.clone()))
-        }
-        _ => None,
-    }).expect("必須存在「World Class Manufacturing」文字項");
+    let line2 = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                text,
+                flags,
+                ..
+            } if text.contains("World Class Manufacturing") => {
+                Some((*x, *y, *size_pt, *flags, text.clone()))
+            }
+            _ => None,
+        })
+        .expect("必須存在「World Class Manufacturing」文字項");
 
     let (l1_x, l1_y, l1_sz, _l1_flags, l1_text) = line1;
     let (l2_x, l2_y, _l2_sz, _l2_flags, l2_text) = line2;
@@ -92,28 +112,53 @@ fn d7_lamp2_bold_advance_non_overlapping() {
     let eng = Engine::from_docx_bytes(&bytes).expect("開啟 fdo76591 失敗");
     let dl = eng.page_display_list(0).expect("首頁存在");
 
-    let span1 = dl.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, size_pt, text, .. } if text.contains("THE WORK HOURS FOR") => {
-            Some((*x, *y, *size_pt, text.clone()))
-        }
-        _ => None,
-    }).expect("必須存在「THE WORK HOURS FOR」文字項");
+    let span1 = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                text,
+                ..
+            } if text.contains("THE WORK HOURS FOR") => Some((*x, *y, *size_pt, text.clone())),
+            _ => None,
+        })
+        .expect("必須存在「THE WORK HOURS FOR」文字項");
 
-    let span2 = dl.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, size_pt, text, flags, .. }
-            if text.contains("SATURDAY, APRIL 02, 2011") && (flags & FLAG_BOLD != 0) =>
-        {
-            Some((*x, *y, *size_pt, text.clone()))
-        }
-        _ => None,
-    }).expect("必須存在「SATURDAY, APRIL 02, 2011」粗體文字項");
+    let span2 = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                text,
+                flags,
+                ..
+            } if text.contains("SATURDAY, APRIL 02, 2011") && (flags & FLAG_BOLD != 0) => {
+                Some((*x, *y, *size_pt, text.clone()))
+            }
+            _ => None,
+        })
+        .expect("必須存在「SATURDAY, APRIL 02, 2011」粗體文字項");
 
-    let span3 = dl.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, size_pt, text, .. } if text.contains("WILL BE AS SCHEDULED") => {
-            Some((*x, *y, *size_pt, text.clone()))
-        }
-        _ => None,
-    }).expect("必須存在「WILL BE AS SCHEDULED」文字項");
+    let span3 = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                text,
+                ..
+            } if text.contains("WILL BE AS SCHEDULED") => Some((*x, *y, *size_pt, text.clone())),
+            _ => None,
+        })
+        .expect("必須存在「WILL BE AS SCHEDULED」文字項");
 
     let (s1_x, _, _s1_sz, s1_text) = span1;
     let (s2_x, _, _s2_sz, s2_text) = span2;
@@ -156,30 +201,48 @@ fn d7_lamp3_important_notice_shading_width() {
     let eng = Engine::from_docx_bytes(&bytes).expect("開啟 fdo76591 失敗");
     let dl = eng.page_display_list(0).expect("首頁存在");
 
-    let (text_x, text_y, _text_sz, text) = dl.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, size_pt, text, .. } if text.contains("IMPORTANT NOTICE") => {
-            Some((*x, *y, *size_pt, text.clone()))
-        }
-        _ => None,
-    }).expect("必須存在「IMPORTANT NOTICE」文字項");
+    let (text_x, text_y, _text_sz, text) = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                text,
+                ..
+            } if text.contains("IMPORTANT NOTICE") => Some((*x, *y, *size_pt, text.clone())),
+            _ => None,
+        })
+        .expect("必須存在「IMPORTANT NOTICE」文字項");
 
     // LO 中「IMPORTANT NOTICE」文字真實寬度約 166.7pt
     let text_w = 166.7f32;
 
     // 尋找對應的黑底矩形
-    let bg_rect = dl.items.iter().find_map(|it| match it {
-        DrawItem::Rect { x, y, w, h, fill_argb } => {
-            let matches_x = (*x - text_x).abs() <= 5.0;
-            let matches_y = (*y - text_y).abs() <= 10.0;
-            let is_black = (*fill_argb & 0x00FF_FFFF) == 0;
-            if matches_x && matches_y && is_black {
-                Some((*x, *y, *w, *h))
-            } else {
-                None
+    let bg_rect = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Rect {
+                x,
+                y,
+                w,
+                h,
+                fill_argb,
+            } => {
+                let matches_x = (*x - text_x).abs() <= 5.0;
+                let matches_y = (*y - text_y).abs() <= 10.0;
+                let is_black = (*fill_argb & 0x00FF_FFFF) == 0;
+                if matches_x && matches_y && is_black {
+                    Some((*x, *y, *w, *h))
+                } else {
+                    None
+                }
             }
-        }
-        _ => None,
-    }).expect("必須存在覆蓋「IMPORTANT NOTICE」的黑底矩形");
+            _ => None,
+        })
+        .expect("必須存在覆蓋「IMPORTANT NOTICE」的黑底矩形");
 
     let (_rect_x, _rect_y, rect_w, _rect_h) = bg_rect;
 
@@ -212,16 +275,16 @@ fn d7_lamp4_timetable_tabs_alignment() {
         if let DrawItem::Text { x, y, text, .. } = it {
             if *y >= 330.0 && *y <= 500.0 {
                 // 排除時間欄 (x ≈ 177) 與 Shift 標籤 (x ≈ 91)
-                if *x > 300.0 {
-                    if text == "1" || text == "2" || text == "Lunch" || text.contains("Break") {
-                        // 避免重複計入拆分後的「Break」
-                        if text.contains("Break") && dl.items.iter().any(|o| {
-                            matches!(o, DrawItem::Text { text: t, x: ox, y: oy, .. } if (t == "1" || t == "2") && (oy - y).abs() <= 1.0 && *ox < *x)
-                        }) {
-                            continue;
-                        }
-                        col3_items.push((*x, *y, text.clone()));
+                if *x > 300.0
+                    && (text == "1" || text == "2" || text == "Lunch" || text.contains("Break"))
+                {
+                    // 避免重複計入拆分後的「Break」
+                    if text.contains("Break") && dl.items.iter().any(|o| {
+                        matches!(o, DrawItem::Text { text: t, x: ox, y: oy, .. } if (t == "1" || t == "2") && (oy - y).abs() <= 1.0 && *ox < *x)
+                    }) {
+                        continue;
                     }
+                    col3_items.push((*x, *y, text.clone()));
                 }
             }
         }
