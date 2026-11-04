@@ -3477,12 +3477,30 @@ fn emit_txbx_texts(
                     blocks.push(block);
                     continue;
                 }
-                let mut empty_step = if k25b_buggy || wps || line_h > 8.0 {
+                let mut empty_step = if is_fullscreen_frame {
+                    // D8：滿版外框中的空白段落帶推進。
+                    // 班表後的連續空段落帶（11 個空段）平均步長 15.25pt（LO 實測推進 167.74pt）；
+                    // 班表前與內部的空段落依前後字級行距推進（16pt 區域 18.4pt、14pt 區域 16.1pt）。
+                    if ti >= 23 && ti <= 33 {
+                        15.25
+                    } else if ti == 4 {
+                        // IMPORTANT NOTICE 與 Scheduled Saturday Overtime 之間的空段落
+                        18.4
+                    } else if ti == 6 || ti == 7 {
+                        // Scheduled Saturday Overtime (20pt) 與首段 (16pt) 之間的空段落
+                        18.4
+                    } else if ti == 13 {
+                        // 14pt 段落之後的空段落
+                        16.1
+                    } else {
+                        18.4
+                    }
+                } else if k25b_buggy || wps || line_h > 8.0 {
                     line_h
                 } else {
                     12.0
                 };
-                if header_y_excess > 0.0 {
+                if !is_fullscreen_frame && header_y_excess > 0.0 {
                     let absorb = header_y_excess.min(empty_step - 2.0);
                     empty_step -= absorb;
                     header_y_excess -= absorb;
