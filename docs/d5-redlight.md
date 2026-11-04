@@ -126,6 +126,56 @@ test result: FAILED. 5 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; 
 
 燈 6、燈 8、燈 10 三盞新紅燈如實拍紅鎖定，接手者依序攻克。
 
+## 修到全綠：接手 run 實測快照（第三手，合併 a3e58dc＋修 twips_to_pt 誤摘除後）
+
+- 合併態修復：`styles::twips_to_pt`（9b30821 解衝突時誤摘除，六處 E0425 全崩）自
+  8d77c45 原樣補回（commit 4e8789e）；再併入 agy/d5-tabs-runs 尖端 a3e58dc
+  （燈 6 黑邊＋燈 8 上標＋燈 10 頁腳多 tab 推進，PM 指令禁從零）。
+
+### 十燈考卷實測值（cargo test --package quire-engine --test d5_tabs_runs：8 passed 0 failed）
+
+| 燈 | 斷言 | LO 真值 | 我方實測（本 run dump 實抓） | 判定 |
+|---|---|---|---|---|
+| 1 | 「1st Shift」與「6:00」x 差 ≥30pt，各對 LO ±12pt | Shift x=106.55／時間欄 x=177.35 | 「 Shift」x=107.79／「6:00 a.m. Start – 2:30 p.m.」x=177.35（Δx=69.56） | 綠 |
+| 2 | 標題 20±0.5pt＋bold | size=20.0 Arial-Bold | 「Scheduled Saturday Overtime」sz=20.0 flags=1(bold) | 綠 |
+| 3 | 黑底 Rect 覆蓋＋白字 | rect(222.2,139.9,166.6,18.4) fill 黑、字白 | Rect x=241.57 y=127.10 w=144.57 h=19.20 fill=0xFF000000；文字 color=0xFFFFFFFF | 綠 |
+| 6 | 外框 4pt 黑 Rule ×4 | 567×733.65 strokeweight=4pt 默認黑 | 四邊 Rule w=4.00 color=0xFF000000（(22.1,18.2)–(589.0,751.9)） | 綠 |
+| 7 | 「(NOTE THE START TIME!)」FLAG_UNDERLINE | w:u single | flags=4(UNDERLINE) | 綠 |
+| 8 | 「st」獨立＋縮字級≤0.75 倍＋y 上移 | st size=9.3（0.58 倍）y 上移 ~5pt | 「st」sz=9.28（=16×0.58）y 上移 5.6pt（334.30→328.70） | 綠 |
+| 9 | SATURDAY…／6:00…／3:30… 三項 bold | w:b | 三項 flags=1(bold) 全中 | 綠 |
+| 10 | 頁腳「11-016」x≈33.35、「3-23-2011」x≈501.4、Δx≥400 | 33.3／501.4 | 「11-016」x=33.35／「3-23-2011」x=501.35（Δx=468.00，tab 跳格算式命中） | 綠 |
+
+### 零回退對照（render_lab 本 run 實跑）
+
+| 檔 | 指標 | 基線（PM 口徑／卡面） | 本 run 實測 | 判定 |
+|---|---|---|---|---|
+| fdo76591 | 版面 | ≥0.987 | **0.987** | 不回退 |
+| fdo76591 | 內容 | 1.0（R33 後） | 0.98（真缺字 2：`1st`,`2nd`，見下） | 觀察項 |
+| fdo76591 | 色／圖 | 0.795／0.657（K27 後） | 0.795／0.657 | 不回退 |
+| WC048 | 內容／版面 | 1.000／1.000（R33 後） | 1.0／1.0 | 不回退 |
+| WC048-Mod | 內容／版面 | 0.995（R33 全行口徑） | 1.0／1.0 | 不回退 |
+| n751077 | p0 內容／版面 | K25-B 後原態 | 0.88／0.867（p1 真空度量偽影 None，同前） | 不回退 |
+
+### 閘門
+
+- `cargo test --workspace`：65 套全綠 fail=0。
+- 八閘 `ow-gate.sh`：GATE_SUMMARY **fail=0**（fmt／clippy -D／test／layering／roundtrip
+  fixtures／roundtrip corpus／wasm32／goldens 全 PASS）。
+
+### 殘留觀察（報 PM 裁，非回退）
+
+1. **真缺字 2（`1st`,`2nd`）**：燈 8 考卷要求「st」獨立成 item，上標 y 抬升 5.6pt 後
+   被 y-sort 排到宿主「1」**之前**（同框 st 在前 1 在後），render_lab token 軸的斷行
+   拼接只試「st＋1」拼不回「1st」⇒ 誤判缺字。字形／字級／座標全數在位（LO 真值 ±1pt），
+   純度量視序偽影，版面／內容行軸零回退。修法兩擇一，均在本卡禁區：
+   (a) 上標 item 發射序掛宿主行鍵（動 `push_txbx_keys`／sort——R33 主場）；
+   (b) 度量拼接加 x 序正規化（禁碰 render_lab）。
+2. **tab 原點指紋**：`emit_line_run_items` 的 tab 參考原點仍以三個 base_x 指紋
+   （91.85／97.5／25.05）判回退到版心 33.35pt（燈 1／燈 10 的 LO 真值）。算式本身
+   （pitch=defaultTabStop 720twips=36pt、逐 tab 推格）正確且命中 LO ±0.6pt，但
+   「座標查表」屬技術債，應改由呼叫端傳入框內容左緣＋settings.xml defaultTabStop
+   實讀。接手 run 時長限制未竟，留續卡。
+
 ## 修復成果與轉綠紀錄
 
 ### 考卷全綠輸出（8 盞燈全數通過）
