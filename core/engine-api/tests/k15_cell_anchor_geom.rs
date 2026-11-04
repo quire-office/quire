@@ -65,6 +65,45 @@ fn rect_xy(eng: &Engine, w: f32, h: f32) -> (f32, f32) {
         .unwrap_or_else(|| panic!("p0 找不到 {w}×{h} 的 Rect"))
 }
 
+/// R34 探針換位（**斷言值零改動**，只換被踩的圖元）：R32 之前 Textbox2/3 的
+/// 群組根發可見灰 Rect、R32 改 alpha-0 幽靈、R34（PM 裁定「幽靈矩形是錯的」）
+/// 起根框直接不發。Textbox3 根框原點改踩**同原點的可見子件白框**（387×98.5，
+/// 群組 dx/dy=0——實測原點與根框逐位元組同值：修態 (72.0,158.5)、
+/// `K15_CELL_ANCHOR_BUGGY=1` 回退態 (208.3,21.0)，兩個態下子件都跟根框整體
+/// 位移，鑑別力與舊 Rect 探針等價）。
+fn textbox3_origin(eng: &Engine) -> (f32, f32) {
+    rect_xy(eng, 387.0, 98.5)
+}
+
+/// R34：Textbox2 根框（273.6×110.55）無任何可見 Rect 留世（LO 本來就只有
+/// 兩條藍線），原點改踩藍線反推。內縮量由 LO 真值自身推得（本檔頭表：框
+/// 273.6 置中頁中軸 297.6 → 左緣 160.8；藍線 x0=171.7 → 內縮 10.9；線
+/// y=99.2、框頂 93.6 → 內縮 5.6）。回退態下藍線同樣跟根框整體位移。
+fn textbox2_origin(eng: &Engine) -> (f32, f32) {
+    let dl = eng.page_display_list(0).expect("p0 存在");
+    let (lx, ly) = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Rule {
+                x1,
+                y1,
+                x2,
+                y2,
+                color_argb,
+                ..
+            } if *color_argb == 0xFF44_72C4
+                && (y1 - y2).abs() < 0.01
+                && (y1 - 99.2).abs() < 2.0 =>
+            {
+                Some((*x1, *y1))
+            }
+            _ => None,
+        })
+        .expect("p0 找不到 Textbox2 藍線（y≈99.2）");
+    (lx - 10.925, ly - 5.6)
+}
+
 /// p0 全部橫向**表格**線 y（Rule 且 y1==y2；表格框線 0.5pt，文字框邊框 0.75pt，
 /// 以線寬排除文字框自己的邊——避免巧合自證）。
 fn horizontal_rule_ys(eng: &Engine) -> Vec<f32> {
@@ -84,7 +123,7 @@ fn horizontal_rule_ys(eng: &Engine) -> Vec<f32> {
 #[test]
 fn wc048_textbox3_anchored_to_host_cell() {
     let eng = load_corpus(WC048);
-    let (x, y) = rect_xy(&eng, 387.0, 185.0);
+    let (x, y) = textbox3_origin(&eng);
     // 相對宿主格頂：y − posOffset(21.0475pt) 必須踩在某條表格橫線上（容差 0.6）。
     let cell_top = y - 21.0475;
     let ys = horizontal_rule_ys(&eng);
@@ -112,7 +151,7 @@ fn wc048_textbox3_anchored_to_host_cell() {
 fn wc048_textbox1_textbox2_position_locked() {
     let eng = load_corpus(WC048);
     // Textbox2（273.6×110.55）：頁置中＝欄置中（中欄恰在頁中軸），LO 兩線中心 297.6。
-    let (x2, y2) = rect_xy(&eng, 273.6, 110.55);
+    let (x2, y2) = textbox2_origin(&eng);
     assert!(
         (x2 - 160.85).abs() <= 1.0,
         "Textbox2 x 零回退（160.85±1），實得 {x2}"

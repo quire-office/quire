@@ -84,6 +84,13 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
                 h,
                 fill_argb,
             } => {
+                // R34：alpha-0 的矩形在 SVG 仍 hit-testable（透明≠不存在），
+                // 會無形中吃掉上層事件的 pointer 命中 ⇒ 填色全透明的 Rect
+                // 一律不輸出（發射層 R34 起對表內無填充框根已改「不發 Rect」，
+                // 此處是兜底閂：任何其他來源的 alpha-0 矩形同樣不落 SVG）。
+                if (*fill_argb >> 24) == 0 {
+                    continue;
+                }
                 let a = ((*fill_argb >> 24) & 0xFF) as f64 / 255.0;
                 let r = (fill_argb >> 16) & 0xFF;
                 let g = (fill_argb >> 8) & 0xFF;
@@ -321,6 +328,57 @@ mod tests {
         assert!(
             svg.contains("font-family=\"Calibri\""),
             "docDefaults 宣告 w:ascii=Calibri → SVG 應寫 font-family：{svg}"
+        );
+    }
+
+    /// R34 兜底閂：alpha-0（全透明）Rect 一律不落 SVG——SVG 的透明 fill 仍
+    /// hit-testable（透明≠不存在），會無形中吃掉上層 pointer 命中。本測直接
+    /// 構造顯示列表餵 `page_to_svg`（不依賴特定 corpus 檔的發射態）。
+    #[test]
+    fn svg_skips_fully_transparent_rects() {
+        let dl = PageDisplayList {
+            page: 0,
+            width_pt: 400.0,
+            height_pt: 300.0,
+            items: vec![
+                DrawItem::Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    w: 100.0,
+                    h: 50.0,
+                    fill_argb: 0x0000_0000, // alpha=0：幽靈矩形
+                },
+                DrawItem::Rect {
+                    x: 20.0,
+                    y: 20.0,
+                    w: 60.0,
+                    h: 30.0,
+                    fill_argb: 0x0111_2233, // alpha=1：仍算可見，照常輸出
+                },
+                DrawItem::Rect {
+                    x: 30.0,
+                    y: 30.0,
+                    w: 40.0,
+                    h: 20.0,
+                    fill_argb: 0xFF44_72C4, // 不透明：照常輸出
+                },
+            ],
+        };
+        let svg = page_to_svg(&dl);
+        let n = svg.matches("<rect ").count();
+        // 頁背景白底 1 個＋可見 Rect 2 個＝3；alpha-0 幽靈被跳過。
+        assert_eq!(
+            n, 3,
+            "alpha-0 Rect 不得輸出（SVG 透明 rect 仍 hit-testable）：{svg}"
+        );
+        assert!(
+            !svg.contains("fill-opacity=\"0.000\""),
+            "不得殘留 fill-opacity=0.000 的矩形：{svg}"
+        );
+        assert!(svg.contains("#4472c4"), "不透明 Rect 照常輸出：{svg}");
+        assert!(
+            svg.contains("#112233"),
+            "alpha=1 的可見 Rect 照常輸出：{svg}"
         );
     }
 }

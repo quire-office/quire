@@ -1829,7 +1829,7 @@ impl Engine {
         // 條目區：自分隔線佔帶之後起（margin_top ＋ 佔帶×帶尺）。
         let top0 = geo.margin_top_pt + footnotes::endnote_sep_bands(band) as f32 * band;
         self.push_endnote_item_text(&mut out, items, geo.margin_left_pt, top0, band);
-        sort_display_items(&mut out, &[]);
+        sort_display_items(&mut out, &[], &[]);
         Some(PageDisplayList {
             page,
             width_pt: geo.page_w_pt,
@@ -1978,6 +1978,8 @@ impl Engine {
                 .or_insert(ly);
         }
         let mut txbx_keys: Vec<(usize, f32, i64, i64, i64)> = Vec::new();
+        // R33：帶 z 宣告浮動框的「圖層鍵」（顯示列表索引 → relativeHeight）。
+        let mut txbx_layer_keys: Vec<(usize, i64)> = Vec::new();
         // 底層先畫表格（填色＋框線＋格內文字），再疊正文行；最後對「文字項」
         // 依 (y, x) 幾何閱讀序重排——跨表格/正文統一由上而下、由左而右。
         // 填色與框線保持推入序（穩定排序 key 同鍵，不互相顛倒遮蓋次序）。
@@ -2128,6 +2130,23 @@ impl Engine {
                     &txbx_host_y,
                     fm.y_pt,
                 );
+                // R33：帶 z 宣告的浮動框（wp:anchor＋relativeHeight）其框內文字
+                // 改蓋「圖層鍵」——LO 把整層壓在正文之後發射，層內依 relH 遞增。
+                // 圖層鍵在排序鍵最外層，同索引蓋過 R5 群組鍵（帶 1→帶 2）：
+                // 群組框同 relH 時仍保持推入序＝R5 落地的框內序（shapes-with-text
+                // 「Where→A group」實據），既有鎖逐位等序、零擾動。
+                // 回塞界縫對齊：圖層鍵屬「z 序抽取口徑」家族，`R6_CLIP_BUGGY`／
+                // `R5_R2_BUGGY` 關閉該口徑時一併退回舊 y-sort（兩卡回塞鎖必紅語意
+                // 逐位不變），`R33_LAYER_BUGGY` 則只關本卡（見 `sort_display_items`）。
+                if !r6_buggy && std::env::var_os("R5_R2_BUGGY").is_none() {
+                    if let Some(relh) = r33_layer_key(b) {
+                        for (i, it) in items.iter().enumerate().skip(start) {
+                            if matches!(it, DrawItem::Text { .. }) {
+                                txbx_layer_keys.push((i, relh));
+                            }
+                        }
+                    }
+                }
             }
         }
         for (i, l) in p.lines.iter().enumerate() {
@@ -2164,7 +2183,8 @@ impl Engine {
         }
         // 穩定排序：非文字項（填色/框線）同鍵保持原序且恆在前；文字項依基線 y
         // 再依 x 排列，讓「正文→表格→正文」的閱讀序與 PDF 抽取端一致。
-        sort_display_items(&mut items, &txbx_keys);
+        // R33：帶 z 宣告的浮動框文字另成第二層，恆排在正文層之後（見函式註解）。
+        sort_display_items(&mut items, &txbx_keys, &txbx_layer_keys);
         Some(PageDisplayList {
             page,
             width_pt: p.width_pt,
@@ -3971,10 +3991,15 @@ fn emit_image_shape(
         return; // 非法尺寸老實不發射（容錯鐵律）
     }
     let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
-    // R32：表內文字框／群組根（in_cell 或 layout_in_cell）的「無填充宣告」＝透明底（LO WC048 Textbox2/3）。
-    // 舊碼把「宣告缺位」一律退佔位灰（0xFFF0F0F0），表內 Textbox3 的 387×185 灰帶
-    // 因而蓋到第 3 列文字。此處改發全透明 Rect（0x00000000），既消滅灰帶遮蓋，
-    // 又保持 K15 幾何原點錨定驗證（w=387 h=185、w=273.6 h=110.55）零回退。
+    // R34 回塞鎖（照 K12/K17 BUGGY 先例，只在發射期讀一次）：
+    // `R34_PLACEHOLDER_GATE_BUGGY=1` 還原 R32 舊口徑（alpha-0 幽靈 Rect＋
+    // 無條件四條佔位 Rule）——r32/r34 考卷的防假綠燈據此證明紅燈由本修復驅動。
+    let r34_buggy = std::env::var_os("R34_PLACEHOLDER_GATE_BUGGY").is_some();
+    // ＝LO 無底色（WC048 Textbox2/3 實測零墨跡）。R32 當時改發全透明 Rect
+    // （0x0000_0000）消滅灰帶，但幽靈矩形留在顯示列表裡：SVG 端 alpha-0
+    // rect 仍 hit-testable（PM 覆核定為錯誤口徑，R34 起改「直接不 push」）。
+    // K15 錨定驗證原以這批 Rect 為探針，R34 起 k15/k17 改踩同原點的可見圖元
+    // （探針換位、斷言 LO 真值逐字不動，見各檔註解）。
     // 純圖片／EMF／正文浮動佔位（shape=None 或非表內框）仍走舊灰底零擾動。
     let textbox_root_nofill = shape.is_some_and(|b| {
         (b.in_cell || b.layout_in_cell)
@@ -3984,7 +4009,13 @@ fn emit_image_shape(
     let fill = if shape.is_some_and(|b| deco_off(b.filled)) {
         None
     } else if textbox_root_nofill {
-        Some(0x0000_0000)
+        // R34：無填充宣告的表內框根＝不發 Rect（LO 真值無底色，也不留幽靈）。
+        // BUGGY 回塞態＝R32 舊口徑（alpha-0 幽靈 Rect 照發）。
+        if r34_buggy {
+            Some(0x0000_0000)
+        } else {
+            None
+        }
     } else {
         Some(
             shape
@@ -4047,6 +4078,21 @@ fn emit_image_shape(
                 }
             }
         }
+    }
+    // R34（S2）：表內文字框／群組根的「無描邊宣告」＝LO 無框線（WC048 Textbox3
+    // 實測 LO 零框線）。舊碼在 `stroke_argb` 缺位時無條件退佔位邊
+    // （IMAGE_PLACEHOLDER_EDGE 0xFFCCCCCC ×4），R32 把填色改透明後，這四條
+    // 淺灰佔位線仍蓋在框區（PM 實跑坐實）。口徑與本函數填充臂對稱：
+    // `filled="f"` 是「宣告不填」、`stroked="f"` 是「宣告不描邊」，兩者皆
+    // 未宣告的表內文字框根＝LO 依內容繪製、框本身無墨跡 ⇒ 不發佔位四邊。
+    // 本閂位置在群組子件發射**之後**：子件（白框／藍塊）各有自己的宣告，
+    // 照常發射，閂只掐根框的佔位邊。純圖片／EMF 的灰底佔位框（shape=None
+    // 或無框內文字與子件）照舊發四邊，K4c-image 誠實佔位契約零擾動。
+    if !r34_buggy
+        && textbox_root_nofill
+        && shape.is_some_and(|b| b.stroke_argb.is_none() && b.stroked != Some(true))
+    {
+        return;
     }
     if shape.is_some_and(|b| deco_off(b.stroked)) {
         return;
@@ -5225,13 +5271,55 @@ fn note_chain(
 /// 抽取端一致。
 ///
 /// 正文頁與尾註頁共用本函式（同一份閱讀序口徑）。
-fn sort_display_items(items: &mut [DrawItem], txbx_keys: &[(usize, f32, i64, i64, i64)]) {
+fn sort_display_items(
+    items: &mut [DrawItem],
+    txbx_keys: &[(usize, f32, i64, i64, i64)],
+    layer_keys: &[(usize, i64)],
+) {
     // R5（R2）：框內文字項帶群組鍵——主鍵取「宿主段落末行 y」（整數化後與
     // 正文同尺度），同 y 時正文（kind 0）先於框內文（kind 1）；框內文再依
     // （宿主段, 錨定圖序, 框內段序）排，不再被 y-sort 打散。無鍵（單框宿主／
     // 表格切片／頁首尾）＝舊 y,x 口徑，零位移。
     // R6：wps 標註的「錨定圖序」改帶 relativeHeight（LO z 序抽取口徑）。
-    if txbx_keys.is_empty() {
+    //
+    // R33：LO 的文字流是**兩層**，不是一條 y 軸——
+    //   第一層＝正文（含表格格內文、inline 圖框文、VML 內嵌框文）：依幾何
+    //     閱讀序 (y, x)，與既有口徑逐位不變。
+    //   第二層＝帶 z 宣告的浮動層（`wp:anchor` 且有 `relativeHeight`）：LO 把
+    //     整層壓在第一層**之後**發射，層內依 `relativeHeight` 遞增。
+    //   實據（LO 25.8 headless ＋ pymupdf span 流序，全 corpus 覆核）：
+    //     * WC048 p0：表格 9 句「This is a test.」依格序連續發完，Textbox1/2/3
+    //       （relH 251659264／251661312／251663360）依 relH 遞增排在最後三位。
+    //     * WC049 p0：正文 11 行發完後才發 `Textbox1 this is a test.`（relH
+    //       251659264，框身 y=118.6 落在正文中段，LO 仍發最後）。
+    //     * HC031 p7：`Here is a text box.`（relH 251654656）＝該頁最後一個 span。
+    //     * fdo76591：三個 `wp:inline` VML 框（relH 缺＝0）**不屬**浮動層——
+    //       LO 照段落序把它們夾在正文中間，故本規則對 relH=0 一概不套（零回退）。
+    //   `R33_LAYER_BUGGY=1`＝整層規則關閉（浮動文字退回第一層 y-sort）＝紅燈回塞鎖。
+    if std::env::var_os("R33_LAYER_BUGGY").is_some() {
+        let empty: &[(usize, i64)] = &[];
+        sort_display_items_inner(items, txbx_keys, empty);
+        return;
+    }
+    sort_display_items_inner(items, txbx_keys, layer_keys);
+}
+
+/// `sort_display_items` 的排序實身（R33 抽出，供回塞鎖共用語意）。
+/// 鍵寬（由外而內）：圖層（0 填色框線／1 正文／2 浮動層）→ 主鍵 → 同層序。
+fn sort_display_items_inner(
+    items: &mut [DrawItem],
+    txbx_keys: &[(usize, f32, i64, i64, i64)],
+    layer_keys: &[(usize, i64)],
+) {
+    let mut keymap: HashMap<usize, (f32, i64, i64, i64)> = HashMap::with_capacity(txbx_keys.len());
+    for &(i, ey, host, ord, seq) in txbx_keys {
+        keymap.insert(i, (ey, host, ord, seq));
+    }
+    let mut band: HashMap<usize, i64> = HashMap::with_capacity(layer_keys.len());
+    for &(i, relh) in layer_keys {
+        band.insert(i, relh);
+    }
+    if txbx_keys.is_empty() && band.is_empty() {
         items.sort_by_key(|it| match it {
             DrawItem::Text { x, y, .. } => (
                 1i8,
@@ -5245,22 +5333,30 @@ fn sort_display_items(items: &mut [DrawItem], txbx_keys: &[(usize, f32, i64, i64
         });
         return;
     }
-    let mut keymap: HashMap<usize, (f32, i64, i64, i64)> = HashMap::with_capacity(txbx_keys.len());
-    for &(i, ey, host, ord, seq) in txbx_keys {
-        keymap.insert(i, (ey, host, ord, seq));
-    }
     let key = |i: usize| -> (i8, i64, i8, i64, i64, i64) {
         match &items[i] {
-            DrawItem::Text { x, y, .. } => match keymap.get(&i) {
-                Some((ey, host, ord, seq)) => (1, (*ey * 4.0).round() as i64, 1, *host, *ord, *seq),
-                None => (
-                    1,
-                    (*y * 4.0).round() as i64,
-                    0,
-                    0,
-                    0,
-                    (*x * 4.0).round() as i64,
-                ),
+            DrawItem::Text { x, y, .. } => match band.get(&i) {
+                // 浮動層：主鍵＝relativeHeight（LO z 序）；層內次鍵沿用 R5 群組鍵
+                // （宿主段, 錨定圖序, 框內段序）——同 relH 的群組子框維持 R5 落地
+                // 的框內序（shapes-with-text「Where→A group」實據逐位不變），無群組
+                // 鍵者退回推入序（emit 序＝框序）。
+                Some(&relh) => match keymap.get(&i) {
+                    Some((_, host, ord, seq)) => (2, relh, 1, *host, *ord, *seq),
+                    None => (2, relh, 0, 0, 0, i as i64),
+                },
+                None => match keymap.get(&i) {
+                    Some((ey, host, ord, seq)) => {
+                        (1, (*ey * 4.0).round() as i64, 1, *host, *ord, *seq)
+                    }
+                    None => (
+                        1,
+                        (*y * 4.0).round() as i64,
+                        0,
+                        0,
+                        0,
+                        (*x * 4.0).round() as i64,
+                    ),
+                },
             },
             _ => (0, 0, 0, 0, 0, 0),
         }
@@ -5269,6 +5365,14 @@ fn sort_display_items(items: &mut [DrawItem], txbx_keys: &[(usize, f32, i64, i64
     order.sort_by_key(|&a| key(a));
     let reordered: Vec<DrawItem> = order.iter().map(|&i| items[i].clone()).collect();
     items.clone_from_slice(&reordered);
+}
+
+/// R33：本候選是否屬「帶 z 宣告的浮動層」——LO 把這類框的文字整層壓到正文之後。
+/// 資格＝`floating`（`wp:anchor`／VML 絕對定位）且 `relativeHeight` 有宣告。
+/// `wp:inline`、VML 內嵌框（relH 缺＝0）、VML 群組（relH 缺＝0）一概不入層＝
+/// 維持段落流 y,x 口徑（fdo76591／n751077 零回退實據）。
+fn r33_layer_key(b: &quire_ooxml::InlineImage) -> Option<i64> {
+    (b.floating && b.rel_height != 0).then_some(b.rel_height)
 }
 
 /// R6：wps 標註的排序鍵——LO 抽取序＝`wp:anchor/@relativeHeight`（z 序）。
