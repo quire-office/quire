@@ -4529,7 +4529,8 @@ mod tests {
                     p.on_empty(&n, &e);
                 }
                 Ok(Event::Text(t)) => {
-                    if let Ok(s) = t.unescape() {
+                    // QX 遷移：0.37 BytesText::unescape 等價改走 qx::unescape_text（PM 合併 R35×QX 漂移修正）
+                    if let Ok(s) = crate::qx::unescape_text(&t) {
                         p.on_text(&s);
                     }
                 }
