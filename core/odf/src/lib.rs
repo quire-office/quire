@@ -11,10 +11,15 @@
 //! - docs/odf-survey/survey.json
 
 mod body;
+pub mod layout_glue;
 mod manifest;
 mod skeleton;
 
 pub use body::{BodyModel, OdfParagraph};
+pub use layout_glue::{
+    layout_projection, page_break_positions, project, project_bytes, LayoutParams, OdfLayoutParagraph,
+    OdfProjection, DEFAULT_FONT_SIZE_PT, MAX_STYLE_HOPS,
+};
 pub use manifest::{Manifest, ManifestEntry};
 pub use skeleton::OdfSkeleton;
 
