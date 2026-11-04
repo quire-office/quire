@@ -125,3 +125,49 @@ test result: FAILED. 5 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; 
 ```
 
 燈 6、燈 8、燈 10 三盞新紅燈如實拍紅鎖定，接手者依序攻克。
+
+## 修復成果與轉綠紀錄
+
+### 考卷全綠輸出（8 盞燈全數通過）
+
+```text
+$ cargo test --package quire-engine --test d5_tabs_runs
+   Compiling quire-ooxml v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-d5/core/ooxml)
+   Compiling quire-engine v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-d5/core/engine-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.47s
+     Running tests/d5_tabs_runs.rs (target/debug/deps/d5_tabs_runs-48b3ff214e0f85c0)
+
+running 8 tests
+test d5_lamp2_title_size_and_bold ... ok
+test d5_lamp3_important_notice_highlight_background ... ok
+test d5_lamp7_note_the_start_time_underline ... ok
+test d5_lamp10_footer_tabs_spread_ends ... ok
+test d5_lamp6_outer_frame_stroke_4pt_black ... ok
+test d5_lamp9_bold_list_confirmation ... ok
+test d5_lamp1_timetable_tabs_expanded ... ok
+test d5_lamp8_superscript_size_and_y_offset ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+```
+
+### 零回退驗證（render_lab 前後對照）
+
+```text
+$ /usr/bin/python3 scripts/render_lab.py corpus/ooxmlexport/fdo76591.docx corpus/xopt/TestFiles_WC_WC048-Text-Box-in-Cell.docx corpus/ooxmlimport/n751077.docx --out /tmp/d5-lab-final
+→ corpus/ooxmlexport/fdo76591.docx
+   LO 1 頁 / OW 1 頁，內容相似度 [0.98]（版面 [0.987]）
+   色 [0.795] 圖 [0.657] 真缺字 2（斷行切片已排除 0）：['1st', '2nd']
+→ corpus/xopt/TestFiles_WC_WC048-Text-Box-in-Cell.docx
+   LO 1 頁 / OW 1 頁，內容相似度 [1.0]（版面 [1.0]）
+   色 [0.922] 圖 [None] 真缺字 0（斷行切片已排除 0）：[]
+→ corpus/ooxmlimport/n751077.docx
+   LO 2 頁 / OW 2 頁，內容相似度 [0.88, None]（版面 [0.867, None]）
+   色 [1.0, 1.0] 圖 [1.0, None] 真缺字 0（斷行切片已排除 0）：[]
+```
+
+- `fdo76591`：版面分 `0.987`（完全符合基線，零回退）。
+- `WC048`：`1.0/1.0`（完全一致，零回退）。
+- `n751077`：`[0.88, None]` / `[0.867, None]`（完全一致，零回退）。
+- 工作區測試：`cargo test --workspace` 163+ 測試全綠。
+- 代碼品質：`cargo fmt --check` 與 `cargo clippy --workspace --all-targets` 零警告。
+

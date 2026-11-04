@@ -30,9 +30,16 @@ fn d5_lamp1_timetable_tabs_expanded() {
     let dl = eng.page_display_list(0).expect("首頁存在");
 
     let shift_span = dl.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, text, .. } if text.contains("1st") || text.contains("Shift") => {
-            if text.contains("6:00") {
-                None // 未拆開
+        DrawItem::Text { x, y, text, .. }
+            if (text == "1" || text.starts_with("1st") || text.contains("Shift"))
+                && (y - 334.3).abs() <= 5.0 =>
+        {
+            let has_shift_with_1 = text.contains("Shift")
+                && dl.items.iter().any(|other| {
+                    matches!(other, DrawItem::Text { text: t, y: oy, .. } if t == "1" && (oy - y).abs() <= 1.0)
+                });
+            if text.contains("6:00") || has_shift_with_1 {
+                None // 未拆開或上標拆分形態下優先取起點「1」
             } else {
                 Some((*x, *y, text.clone()))
             }
@@ -256,7 +263,10 @@ fn d5_lamp7_note_the_start_time_underline() {
         _ => None,
     });
 
-    assert!(note_item.is_some(), "未找到包含「NOTE THE START TIME」的文字項");
+    assert!(
+        note_item.is_some(),
+        "未找到包含「NOTE THE START TIME」的文字項"
+    );
     let (flags, text) = note_item.unwrap();
     assert_ne!(
         flags & FLAG_UNDERLINE,
@@ -360,6 +370,7 @@ fn d5_lamp9_bold_list_confirmation() {
 /// LO pymupdf 真值：
 /// - 「11-016」起點 x≈33.3pt
 /// - 「3-23-2011」起點 x≈501.4pt
+///
 /// 兩者 x 差 = 501.4 - 33.3 = 468.1pt ≥ 400pt。
 #[test]
 fn d5_lamp10_footer_tabs_spread_ends() {
