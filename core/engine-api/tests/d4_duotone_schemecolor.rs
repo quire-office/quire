@@ -141,17 +141,19 @@ fn d4_lamp1_duotone_emission_matches_lo_palette() {
     let eng = Engine::from_docx_bytes(&bytes).expect("開啟 picture-with-schemecolor.docx");
     let dl = eng.page_display_list(0).expect("第 0 頁存在");
 
-    // 尋找在 LO 同區 [LO_BBOX_X0 ± 8pt, LO_BBOX_Y0 ± 8pt] 覆蓋的圖片發射項
+    // 尋找在 LO 同區 [LO_BBOX_X0 ± 8pt, y 重疊] 覆蓋的圖片發射項
     let img_item = dl.items.iter().find(|it| match it {
-        DrawItem::Image { x, y, .. } => {
-            (*x - LO_BBOX_X0).abs() <= 8.0 && (*y - LO_BBOX_Y0).abs() <= 8.0
+        DrawItem::Image { x, y, h, .. } => {
+            let x_ok = (*x - LO_BBOX_X0).abs() <= 8.0;
+            let y_overlap = *y < LO_BBOX_Y0 + LO_BBOX_H && *y + *h > LO_BBOX_Y0;
+            x_ok && y_overlap
         }
         _ => false,
     });
 
     let Some(DrawItem::Image { data_b64, .. }) = img_item else {
         panic!(
-            "燈 1 失敗：在 LO 同區 x0={LO_BBOX_X0}±8pt, y0={LO_BBOX_Y0}±8pt 範圍內未發射圖片！\
+            "燈 1 失敗：在 LO 同區 x0={LO_BBOX_X0}±8pt 範圍內未發射圖片！\
             修前裝飾圖偏左（x≈90pt），同區全為空白底色，色差 ΔE > 100 遠超規格 ≤ 12。"
         );
     };

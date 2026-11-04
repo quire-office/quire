@@ -2020,6 +2020,21 @@ impl Engine {
         // 填充／描邊／虛線／filled=f；配不到＝None＝舊灰底零擾動。
         for im in &p.images {
             let y = p.margin_top_pt + im.band as f32 * line_h;
+            // D4：正文流圖片依宿主段落對齊計算 x 坐標（w:jc="center" 置中；無宣告＝版心左緣零擾動）。
+            let content_w = self
+                .sec_geo_all
+                .get(&p.section_id)
+                .map(|g| (g.page_w_pt - g.margin_left_pt - g.margin_right_pt).max(1.0))
+                .unwrap_or_else(|| self.params.content_w_pt());
+            let img_x = match paras.get(im.para).and_then(|pr| pr.jc) {
+                Some(quire_ooxml::Align::Center) => {
+                    p.margin_left_pt + (content_w - im.w_pt).max(0.0) / 2.0
+                }
+                Some(quire_ooxml::Align::Right) => {
+                    p.margin_left_pt + (content_w - im.w_pt).max(0.0)
+                }
+                _ => p.margin_left_pt,
+            };
             // K4c 合併語意（像素×實色）：像素池命中（宿主段＋同寬）⇒ 發
             // DrawItem::Image 且**跳過發框**（真像素取代佔位框/實色框，同位
             // 不雙發）；未命中 ⇒ emit_image_shape 實色框（無 shape 候補＝
@@ -2027,7 +2042,7 @@ impl Engine {
             let pix = take_image_pixel(
                 (self.image_pixels.as_slice(), &mut px_used, &self.doc.parts),
                 |s| s.para == im.para && (s.w_pt - im.w_pt).abs() < 0.01,
-                p.margin_left_pt,
+                img_x,
                 y,
                 im.w_pt,
                 im.h_pt,
@@ -2038,14 +2053,14 @@ impl Engine {
             let box_im = hit.map(|(_, (_, b))| b);
             match pix {
                 Some(it) => items.push(it),
-                None => emit_image_shape(&mut items, p.margin_left_pt, y, im.w_pt, im.h_pt, box_im),
+                None => emit_image_shape(&mut items, img_x, y, im.w_pt, im.h_pt, box_im),
             }
             if let Some((bi, (_, box_im))) = hit {
                 box_used[bi] = true;
                 let start = items.len();
                 emit_txbx_texts(
                     &mut items,
-                    p.margin_left_pt,
+                    img_x,
                     y,
                     im.w_pt,
                     im.h_pt,
