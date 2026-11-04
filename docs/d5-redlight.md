@@ -57,3 +57,71 @@ error: test failed, to rerun pass `-p quire-engine --test d5_tabs_runs`
 ```
 
 三盞紅燈全部如實拍紅，基線鎖定完畢。
+
+## 用戶肉眼比對新實錘（燈 6～燈 10）實拍紀錄
+
+- 基準 commit：`00b19c8`
+- 日期：2026-11-04
+- 考卷更新：納入五條新實錘（外框 4pt 黑 stroke、下劃線、上標、粗體確認、頁腳 tab）
+
+### 新增項目 LO 真值與現行狀態對照
+6. 外框 4pt 黑 stroke：源檔 VML shape `_x0000_s1026`（567×733.65pt、filled="f"、strokeweight="4pt"、默認 strokecolor=black）。
+   - LO 真值：外框四邊 4pt 黑色線條（color=black, width=4.0）。
+   - 現行實測：線寬 4.0pt，但顏色退為淺灰佔位邊（0xFFCCCCCC）。
+7. 下劃線：「(NOTE THE START TIME!)」源檔 `w:u single`。
+   - 現行實測：帶有 FLAG_UNDERLINE（flags=4），已生效。
+8. 上標：「1st」「2nd」的 st/nd 是 `w:vertAlign=superscript`。
+   - LO 真值：「1」size=16.0pt, y=391.3；「st」size=9.3pt (約 0.58倍), y=391.0（縮字級＋y 向上偏移）。
+   - 現行實測：未採集 vertAlign，壓成純文字「1st Shift」，st 未獨立且未縮小/偏移。
+9. 粗體清單確認：SATURDAY, APRIL 02, 2011、班表時間欄、1st/2nd Shift 標籤段皆 `w:b`。
+   - 現行實測：已帶有 FLAG_BOLD，確認生效。
+10. 頁腳 tab：「11-016」靠左＋「3-23-2011」靠右（LO 分佈兩端）。
+   - LO 真值：「11-016」起點 x≈33.3pt，「3-23-2011」起點 x≈501.4pt，兩者 x 差 468.1pt ≥ 400pt。
+   - 現行實測：兩者相距僅 72pt（相鄰置中）。
+
+### 實跑拍紅輸出
+
+```text
+$ cargo test --package quire-engine --test d5_tabs_runs
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running tests/d5_tabs_runs.rs (target/debug/deps/d5_tabs_runs-48b3ff214e0f85c0)
+
+running 8 tests
+test d5_lamp6_outer_frame_stroke_4pt_black ... FAILED
+test d5_lamp1_timetable_tabs_expanded ... ok
+test d5_lamp3_important_notice_highlight_background ... ok
+test d5_lamp10_footer_tabs_spread_ends ... FAILED
+test d5_lamp8_superscript_size_and_y_offset ... FAILED
+test d5_lamp7_note_the_start_time_underline ... ok
+test d5_lamp9_bold_list_confirmation ... ok
+test d5_lamp2_title_size_and_bold ... ok
+
+failures:
+
+---- d5_lamp6_outer_frame_stroke_4pt_black stdout ----
+
+thread 'd5_lamp6_outer_frame_stroke_4pt_black' (27068) panicked at core/engine-api/tests/d5_tabs_runs.rs:238:9:
+assertion `left == right` failed: 外框 Rule（寬度 4pt）顏色應為黑色 (0xFF000000)，實得 0xFFCCCCCC
+  left: 13421772
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- d5_lamp10_footer_tabs_spread_ends stdout ----
+
+thread 'd5_lamp10_footer_tabs_spread_ends' (27064) panicked at core/engine-api/tests/d5_tabs_runs.rs:391:5:
+頁腳「11-016」(25.05) 與「3-23-2011」(97.05) 的 x 差應 ≥ 400pt，實得 72pt（LO 分佈兩端）
+
+---- d5_lamp8_superscript_size_and_y_offset stdout ----
+
+thread 'd5_lamp8_superscript_size_and_y_offset' (27070) panicked at core/engine-api/tests/d5_tabs_runs.rs:289:5:
+「1st」中的「st」未獨立成上標 item（現行被壓入同一純文字字串）
+
+failures:
+    d5_lamp10_footer_tabs_spread_ends
+    d5_lamp6_outer_frame_stroke_4pt_black
+    d5_lamp8_superscript_size_and_y_offset
+
+test result: FAILED. 5 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+```
+
+燈 6、燈 8、燈 10 三盞新紅燈如實拍紅鎖定，接手者依序攻克。

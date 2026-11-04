@@ -1624,6 +1624,8 @@ struct DrawingParser {
     /// K4e2：`w:txbxContent` 文字框子樹深度。>0 時其內 `w:p` **不入扁平口徑**
     /// （主解析器改掛外層段落的 `txbx_texts`）——四解析器同口徑鐵律的改寫點。
     txbx_depth: usize,
+    /// 框內 `w:pPr` 開閉深度。
+    txbx_ppr_depth: usize,
     /// R5：宿主段落 → 已完結候選累積的框內段落數（含不受理候選）。發射層的
     /// `txbx_texts` 是跨圖展平的，本游標在解析層逐框蓋章 `txbx_start`，讓
     /// 「第 N 框」對到自己的 run 組，不再錯採前框樣式。
@@ -1665,6 +1667,7 @@ impl DrawingParser {
             skip_tag: None,
             fb: 0,
             txbx_depth: 0,
+            txbx_ppr_depth: 0,
             txbx_seen: Vec::new(),
             ac_stack: Vec::new(),
             buggy: std::env::var("K4D_BUGGY").is_ok(),
@@ -2211,6 +2214,10 @@ impl DrawingParser {
             return;
         }
 
+        if self.txbx_depth > 0 && name == b"pPr" && !empty {
+            self.txbx_ppr_depth += 1;
+        }
+
         // K10：文字框內對齊（例如 <w:jc w:val="center"/>）。
         if self.txbx_depth > 0 && name == b"jc" {
             let val = attr_local(e, b"val");
@@ -2304,12 +2311,7 @@ impl DrawingParser {
                     }
                 }
                 b"tab" if self.txbx_depth > 0 => {
-                    if let Some(v) = self.vml.as_mut() {
-                        v.txbx_cur.push(' ');
-                    }
-                    if let Some(g) = self.graphic.as_mut() {
-                        g.txbx_cur.push(' ');
-                    }
+                    // D5：不在 txbx_cur 填充假空格，保持文字與 run 碼點對齊，製表位交發射層展開
                 }
                 b"tbl" | b"tr" => {}
                 b"tc" if !empty => {
@@ -2725,12 +2727,7 @@ impl DrawingParser {
                     }
                 }
                 b"tab" if self.txbx_depth > 0 => {
-                    if let Some(v) = self.vml.as_mut() {
-                        v.txbx_cur.push(' ');
-                    }
-                    if let Some(g) = self.graphic.as_mut() {
-                        g.txbx_cur.push(' ');
-                    }
+                    // D5：不在 txbx_cur 填充假空格，保持文字與 run 碼點對齊，製表位交發射層展開
                 }
                 b"shd" if self.txbx_depth > 0 => {
                     // 框內表格格填色（n780563 三色列實據）：Empty 形態同警。
@@ -2893,6 +2890,9 @@ impl DrawingParser {
         // ---- K4e2：txbxContent 完結（先於各分支，與計數點同深度口徑）----
         if name == b"txbxContent" {
             self.txbx_depth = self.txbx_depth.saturating_sub(1);
+        }
+        if self.txbx_depth > 0 && name == b"pPr" {
+            self.txbx_ppr_depth = self.txbx_ppr_depth.saturating_sub(1);
         }
         // ---- K17：框內 rPr 深度對稱退棧（與 on_start 的 +1 配對；必須先於
         // p/t 分支——rPr 的 End 事件不是 p/t，放進那個 matches 永遠進不去；

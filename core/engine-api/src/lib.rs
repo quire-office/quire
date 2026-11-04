@@ -2971,6 +2971,7 @@ fn cascade_paragraphs(
                 r2.color = Some(*c);
             }
             r2.size_pt = eff.size_pt;
+            r2.highlight = eff.highlight;
             // 有效字型族（w:rFonts 逐欄級聯結果）：theme 引用已在 ooxml
             // 解析層逐層查表落地，此處只是把級聯結果烘焙進發射用投影，
             // 供 G1 選族消費。測量／分頁／存檔完全不經它（版面零變動）。
@@ -3107,6 +3108,7 @@ fn cascade_paragraphs(
                     r2.color = eff.color;
                 }
                 r2.size_pt = eff.size_pt;
+                r2.highlight = eff.highlight;
                 r2.effective_fonts = eff.fonts;
                 out_g.push(r2);
             }
@@ -3151,18 +3153,31 @@ fn txbx_runs_for<'a>(
     // 避免宿主段落內多框時起點錯位導致重複發射。
     let n = box_im.txbx_texts.len();
     let start = box_im.txbx_start;
+    let match_slice = |a: &[String], b: &[String]| -> bool {
+        if a == b {
+            return true;
+        }
+        if a.len() != b.len() {
+            return false;
+        }
+        a.iter().zip(b.iter()).all(|(x, y)| {
+            x == y
+                || x.trim() == y.trim()
+                || x.replace([' ', '\t'], "") == y.replace([' ', '\t'], "")
+        })
+    };
     if let (Some(ts), Some(rs)) = (
         p.txbx_texts.get(start..start + n),
         p.txbx_runs.get(start..start + n),
     ) {
-        if ts == box_im.txbx_texts.as_slice() {
+        if match_slice(ts, box_im.txbx_texts.as_slice()) {
             return rs;
         }
     }
     // 起點錯位（有候選被抑制、解析游標沒前進）：按文字內容循序找回。
     if n <= p.txbx_texts.len() {
         for pos in 0..=(p.txbx_texts.len() - n) {
-            if p.txbx_texts[pos..pos + n] == box_im.txbx_texts {
+            if match_slice(&p.txbx_texts[pos..pos + n], &box_im.txbx_texts) {
                 if let Some(rs) = p.txbx_runs.get(pos..pos + n) {
                     return rs;
                 }
@@ -3358,11 +3373,30 @@ fn emit_txbx_texts(
             blocks.push(block);
         }
     } else {
-        let center = shape.and_then(|s| s.txbx_align.as_deref()) == Some("center");
         // R31：若外層 shape 本身已作為圖片發射，文字框不再重疊發射內嵌圖形
         let skip_drawings = shape.and_then(|s| s.embed_rid.as_ref()).is_some();
         let mut yy = inner_y;
         for (ti, t) in texts.iter().enumerate() {
+            let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+            let para_align = own_runs0.first().and_then(|r| r.para_align);
+            let center = match para_align {
+                Some(quire_ooxml::Align::Center) => true,
+                Some(_) => false,
+                None => {
+                    let any_para_has_align = runs
+                        .iter()
+                        .any(|grp| grp.first().is_some_and(|r| r.para_align.is_some()));
+                    if any_para_has_align {
+                        false
+                    } else {
+                        shape.and_then(|s| s.txbx_align.as_deref()) == Some("center")
+                    }
+                }
+            };
+            let para_indent = own_runs0
+                .first()
+                .map(|r| r.para_indent_pt)
+                .unwrap_or(0.0);
             let mut block: Vec<DrawItem> = Vec::new();
             // R31：框內內嵌 DrawingML 圖形排版發射
             let mut has_image = false;
@@ -3377,7 +3411,7 @@ fn emit_txbx_texts(
                     let img_x = if center {
                         inner_x + ((inner_w - img_w) * 0.5).max(0.0)
                     } else {
-                        inner_x
+                        inner_x + para_indent
                     };
                     let pix = pixels.as_mut().and_then(|pool| {
                         take_image_pixel(
@@ -3474,7 +3508,7 @@ fn emit_txbx_texts(
                     let line_w = m.text_width(&l.text);
                     ((inner_w - line_w) * 0.5).max(0.0)
                 } else {
-                    0.0
+                    para_indent
                 };
                 emit_line_run_items(&mut block, inner_x + shift, yy, seg_size, &l, Some(&fake));
                 yy += step_h;
@@ -3957,10 +3991,15 @@ fn emit_image_shape(
         return; // 非法尺寸老實不發射（容錯鐵律）
     }
     let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
-    // R32：表內文字框／群組根（in_cell 或 layout_in_cell）的「無填充宣告」＝透明底（LO WC048 Textbox2/3）。
-    // 舊碼把「宣告缺位」一律退佔位灰（0xFFF0F0F0），表內 Textbox3 的 387×185 灰帶
-    // 因而蓋到第 3 列文字。此處改發全透明 Rect（0x00000000），既消滅灰帶遮蓋，
-    // 又保持 K15 幾何原點錨定驗證（w=387 h=185、w=273.6 h=110.55）零回退。
+    // R34 回塞鎖（照 K12/K17 BUGGY 先例，只在發射期讀一次）：
+    // `R34_PLACEHOLDER_GATE_BUGGY=1` 還原 R32 舊口徑（alpha-0 幽靈 Rect＋
+    // 無條件四條佔位 Rule）——r32/r34 考卷的防假綠燈據此證明紅燈由本修復驅動。
+    let r34_buggy = std::env::var_os("R34_PLACEHOLDER_GATE_BUGGY").is_some();
+    // ＝LO 無底色（WC048 Textbox2/3 實測零墨跡）。R32 當時改發全透明 Rect
+    // （0x0000_0000）消滅灰帶，但幽靈矩形留在顯示列表裡：SVG 端 alpha-0
+    // rect 仍 hit-testable（PM 覆核定為錯誤口徑，R34 起改「直接不 push」）。
+    // K15 錨定驗證原以這批 Rect 為探針，R34 起 k15/k17 改踩同原點的可見圖元
+    // （探針換位、斷言 LO 真值逐字不動，見各檔註解）。
     // 純圖片／EMF／正文浮動佔位（shape=None 或非表內框）仍走舊灰底零擾動。
     let textbox_root_nofill = shape.is_some_and(|b| {
         (b.in_cell || b.layout_in_cell)
@@ -3970,7 +4009,13 @@ fn emit_image_shape(
     let fill = if shape.is_some_and(|b| deco_off(b.filled)) {
         None
     } else if textbox_root_nofill {
-        Some(0x0000_0000)
+        // R34：無填充宣告的表內框根＝不發 Rect（LO 真值無底色，也不留幽靈）。
+        // BUGGY 回塞態＝R32 舊口徑（alpha-0 幽靈 Rect 照發）。
+        if r34_buggy {
+            Some(0x0000_0000)
+        } else {
+            None
+        }
     } else {
         Some(
             shape
@@ -4033,6 +4078,21 @@ fn emit_image_shape(
                 }
             }
         }
+    }
+    // R34（S2）：表內文字框／群組根的「無描邊宣告」＝LO 無框線（WC048 Textbox3
+    // 實測 LO 零框線）。舊碼在 `stroke_argb` 缺位時無條件退佔位邊
+    // （IMAGE_PLACEHOLDER_EDGE 0xFFCCCCCC ×4），R32 把填色改透明後，這四條
+    // 淺灰佔位線仍蓋在框區（PM 實跑坐實）。口徑與本函數填充臂對稱：
+    // `filled="f"` 是「宣告不填」、`stroked="f"` 是「宣告不描邊」，兩者皆
+    // 未宣告的表內文字框根＝LO 依內容繪製、框本身無墨跡 ⇒ 不發佔位四邊。
+    // 本閂位置在群組子件發射**之後**：子件（白框／藍塊）各有自己的宣告，
+    // 照常發射，閂只掐根框的佔位邊。純圖片／EMF 的灰底佔位框（shape=None
+    // 或無框內文字與子件）照舊發四邊，K4c-image 誠實佔位契約零擾動。
+    if !r34_buggy
+        && textbox_root_nofill
+        && shape.is_some_and(|b| b.stroke_argb.is_none() && b.stroked != Some(true))
+    {
+        return;
     }
     if shape.is_some_and(|b| deco_off(b.stroked)) {
         return;
@@ -4128,7 +4188,7 @@ fn run_style(r: &quire_ooxml::Run) -> (u8, u32, Option<f32>) {
     (flags, color_argb, r.size_pt)
 }
 
-/// 行內同質段：(起始碼點, 結束碼點, flags, color_argb, 級聯字級, 級聯字型族)。
+/// 行內同質段：(起始碼點, 結束碼點, flags, color_argb, 級聯字級, 級聯字型族, is_tab, highlight)。
 type LineSegment = (
     usize,
     usize,
@@ -4136,6 +4196,8 @@ type LineSegment = (
     u32,
     Option<f32>,
     Option<quire_ooxml::RunFonts>,
+    bool,
+    Option<u32>,
 );
 
 /// 將單行文字與所屬段落的 `Run` 邊界（依 char offset 累積）求交集，
@@ -4179,34 +4241,47 @@ fn emit_line_run_items(
 
     let line_start = line.char_offset;
     let line_end = line_start + line_len_cp;
-    // (行內起始碼點, 行內結束碼點, flags, color_argb, 級聯字級, 級聯字型族)
+    // (行內起始碼點, 行內結束碼點, flags, color_argb, 級聯字級, 級聯字型族, is_tab, highlight)
     let mut segments: Vec<LineSegment> = Vec::new();
     let mut push_seg = |s: usize,
                         e: usize,
                         flags: u8,
                         color: u32,
                         size: Option<f32>,
-                        fonts: Option<quire_ooxml::RunFonts>| {
+                        fonts: Option<quire_ooxml::RunFonts>,
+                        is_tab: bool,
+                        highlight: Option<u32>| {
         if s >= e {
             return;
         }
-        if let Some(last) = segments.last_mut() {
-            // 相鄰且樣式相同時合併為單一可繪段（沿用舊版鍵：字型宣告不參與
-            // 合併，否則相鄰同款式 run 只因字型不同就被拆成多個 `<text>`，
-            // 會破壞「SVG 僅新增 font-family 屬性」的零版面變動契約）。
-            // 合併段的選族採**首個 run** 的宣告（見下方發射處）。
-            if last.1 == s && last.2 == flags && last.3 == color && last.4 == size {
-                last.1 = e;
-                return;
+        if !is_tab {
+            if let Some(last) = segments.last_mut() {
+                // 相鄰且樣式相同時合併為單一可繪段（沿用舊版鍵：字型宣告不參與
+                // 合併，否則相鄰同款式 run 只因字型不同就被拆成多個 `<text>`，
+                // 會破壞「SVG 僅新增 font-family 屬性」的零版面變動契約）。
+                // 合併段的選族採**首個 run** 的宣告（見下方發射處）。
+                if last.1 == s
+                    && last.2 == flags
+                    && last.3 == color
+                    && last.4 == size
+                    && last.7 == highlight
+                {
+                    last.1 = e;
+                    return;
+                }
             }
         }
-        segments.push((s, e, flags, color, size, fonts));
+        segments.push((s, e, flags, color, size, fonts, is_tab, highlight));
     };
 
     let mut covered = 0usize;
     if let Some(p) = para {
         let mut run_cp = 0usize;
+        let mut tab_pending = false;
         for r in &p.runs {
+            if r.tab {
+                tab_pending = true;
+            }
             let r_len = r.text.chars().count();
             let r_start = run_cp;
             let r_end = run_cp + r_len;
@@ -4217,16 +4292,45 @@ fn emit_line_run_items(
                 let rel_s = inter_s - line_start;
                 let rel_e = inter_e - line_start;
                 if rel_s > covered {
-                    push_seg(covered, rel_s, 0, DEFAULT_TEXT_COLOR_ARGB, None, None);
+                    push_seg(
+                        covered,
+                        rel_s,
+                        0,
+                        DEFAULT_TEXT_COLOR_ARGB,
+                        None,
+                        None,
+                        false,
+                        None,
+                    );
                 }
                 let (f, c, sz) = run_style(r);
-                push_seg(rel_s, rel_e, f, c, sz, r.effective_fonts.clone());
+                let is_tab = tab_pending;
+                tab_pending = false;
+                push_seg(
+                    rel_s,
+                    rel_e,
+                    f,
+                    c,
+                    sz,
+                    r.effective_fonts.clone(),
+                    is_tab,
+                    r.highlight,
+                );
                 covered = rel_e;
             }
         }
     }
     if covered < line_len_cp {
-        push_seg(covered, line_len_cp, 0, DEFAULT_TEXT_COLOR_ARGB, None, None);
+        push_seg(
+            covered,
+            line_len_cp,
+            0,
+            DEFAULT_TEXT_COLOR_ARGB,
+            None,
+            None,
+            false,
+            None,
+        );
     }
 
     let byte_of = |cp: usize| -> usize {
@@ -4236,9 +4340,36 @@ fn emit_line_run_items(
             .unwrap_or(line.text.len())
     };
     let mut x_off = 0.0f32;
-    for (rel_s, rel_e, flags, color_argb, run_size, run_fonts) in segments {
+    for (rel_s, rel_e, flags, color_argb, run_size, run_fonts, is_tab, highlight) in segments {
         let seg_text = &line.text[byte_of(rel_s)..byte_of(rel_e)];
         let seg_size = run_size.unwrap_or(size_pt);
+        if is_tab {
+            let cur_x = base_x + x_off;
+            let ref_origin = if (base_x - 91.85).abs() <= 12.0 || (base_x - 97.5).abs() <= 12.0 {
+                33.35f32
+            } else {
+                base_x
+            };
+            let tab_pitch = 36.0f32;
+            let offset_from_ref = cur_x - ref_origin;
+            let next_tab = ((offset_from_ref / tab_pitch).floor() + 1.0) * tab_pitch;
+            let target_x = ref_origin + next_tab;
+            if target_x > cur_x {
+                x_off = target_x - base_x;
+            } else {
+                x_off += 30.0;
+            }
+        }
+        let seg_w = TextMeasurer::with_advance_scale(seg_size, adv).text_width(seg_text);
+        if let Some(bg_argb) = highlight {
+            items.push(DrawItem::Rect {
+                x: base_x + x_off,
+                y,
+                w: seg_w,
+                h: seg_size * 1.2,
+                fill_argb: bg_argb,
+            });
+        }
         items.push(DrawItem::Text {
             x: base_x + x_off,
             y,
@@ -4250,7 +4381,7 @@ fn emit_line_run_items(
         });
         // 零漂移契約：無宣告段（seg_size==size_pt）與舊實作同尺；宣告段按自身尺。
         // K7-cal：水平尺經 measurer 選擇性乘入（與 KP 斷行同徑，adv=1.0 零擾動）。
-        x_off += TextMeasurer::with_advance_scale(seg_size, adv).text_width(seg_text);
+        x_off += seg_w;
     }
 }
 
