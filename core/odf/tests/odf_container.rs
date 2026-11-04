@@ -28,12 +28,7 @@ fn manifest_files() -> Vec<String> {
         .as_array()
         .expect("files 欄位應為陣列")
         .iter()
-        .map(|f| {
-            f["file"]
-                .as_str()
-                .expect("file 欄位應為字串")
-                .to_string()
-        })
+        .map(|f| f["file"].as_str().expect("file 欄位應為字串").to_string())
         .collect::<Vec<_>>();
     assert_eq!(files.len(), 50, "語料庫應恰有 50 檔");
     files
@@ -101,10 +96,7 @@ fn test_mimetype_violation_classification() {
                 "{rel} 應被歸類為非首條目違例檔，實際狀態為: {:?}",
                 status
             );
-            assert!(
-                !status.is_compliant(),
-                "{rel} 不得標記為合規"
-            );
+            assert!(!status.is_compliant(), "{rel} 不得標記為合規");
             detected_violations.insert(rel.clone());
         } else {
             assert!(
@@ -115,11 +107,7 @@ fn test_mimetype_violation_classification() {
         }
     }
 
-    assert_eq!(
-        detected_violations.len(),
-        3,
-        "必須精確抓出三檔違例檔"
-    );
+    assert_eq!(detected_violations.len(), 3, "必須精確抓出三檔違例檔");
 
     // 測試合成 fixture 檔
     let fixtures_dir = corpus_root().join("fixtures");
@@ -163,18 +151,14 @@ fn test_paragraph_count_matches_survey_19687() {
     let content = std::fs::read_to_string(&survey_path).expect("讀取 survey.json 失敗");
     let json: Value = serde_json::from_str(&content).expect("解析 survey.json 失敗");
 
-    let files_rec = json["files"]
-        .as_array()
-        .expect("files 欄位應為陣列");
+    let files_rec = json["files"].as_array().expect("files 欄位應為陣列");
 
     let mut total_paragraphs = 0usize;
     let mut non_empty_text_files = 0usize;
 
     for rec in files_rec {
         let rel = rec["file"].as_str().expect("檔案路徑");
-        let expected_p = rec["content"]["text_p"]
-            .as_u64()
-            .unwrap_or(0) as usize;
+        let expected_p = rec["content"]["text_p"].as_u64().unwrap_or(0) as usize;
 
         let bytes = read_file(rel);
         let bundle = OdfBundle::open(&bytes).unwrap_or_else(|e| panic!("{rel} 開啟失敗: {e}"));
@@ -188,8 +172,7 @@ fn test_paragraph_count_matches_survey_19687() {
             "{rel}：段落數應與 survey.json 一致"
         );
         assert_eq!(
-            body.text_p_count,
-            expected_p,
+            body.text_p_count, expected_p,
             "{rel}：text_p_count 應與 survey.json 一致"
         );
 
@@ -199,14 +182,8 @@ fn test_paragraph_count_matches_survey_19687() {
         }
     }
 
-    assert_eq!(
-        total_paragraphs, 19687,
-        "50 檔段落總數必須恰好等於 19687"
-    );
-    assert!(
-        non_empty_text_files > 40,
-        "絕大多數檔案應有文字總量"
-    );
+    assert_eq!(total_paragraphs, 19687, "50 檔段落總數必須恰好等於 19687");
+    assert!(non_empty_text_files > 40, "絕大多數檔案應有文字總量");
 }
 
 /// 考卷 5：骨架與 XML 健康度掃描
