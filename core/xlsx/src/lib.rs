@@ -24,6 +24,7 @@
 
 mod cells;
 mod model;
+mod qx;
 mod styles;
 
 pub use cells::{
