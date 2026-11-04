@@ -139,7 +139,14 @@ pub fn read_shared_strings(xml: &[u8]) -> SharedStrings {
             }
             quick_xml::events::Event::Text(e) => {
                 if t_depth == Some(stack.len()) {
-                    if let (Some(c), Ok(v)) = (cur.as_mut(), e.unescape()) {
+                    if let (Some(c), Ok(v)) = (cur.as_mut(), crate::qx::unescape_text(&e)) {
+                        c.text.push_str(&v);
+                    }
+                }
+            }
+            quick_xml::events::Event::GeneralRef(e) => {
+                if t_depth == Some(stack.len()) {
+                    if let (Some(c), Ok(v)) = (cur.as_mut(), crate::qx::resolve_general_ref(&e)) {
                         c.text.push_str(&v);
                     }
                 }
@@ -445,13 +452,30 @@ pub fn read_sheet_cells_with_styles(
             }
             quick_xml::events::Event::Text(e) => {
                 if v_depth == Some(stack.len()) {
-                    if let (Some((_, c)), Ok(v)) = (cell.as_mut(), e.unescape()) {
+                    if let (Some((_, c)), Ok(v)) = (cell.as_mut(), crate::qx::unescape_text(&e)) {
                         if let Some(buf) = c.v.as_mut() {
                             buf.push_str(&v);
                         }
                     }
                 } else if t_depth == Some(stack.len()) {
-                    if let (Some((_, c)), Ok(v)) = (cell.as_mut(), e.unescape()) {
+                    if let (Some((_, c)), Ok(v)) = (cell.as_mut(), crate::qx::unescape_text(&e)) {
+                        c.is_text.push_str(&v);
+                    }
+                }
+            }
+            quick_xml::events::Event::GeneralRef(e) => {
+                if v_depth == Some(stack.len()) {
+                    if let (Some((_, c)), Ok(v)) =
+                        (cell.as_mut(), crate::qx::resolve_general_ref(&e))
+                    {
+                        if let Some(buf) = c.v.as_mut() {
+                            buf.push_str(&v);
+                        }
+                    }
+                } else if t_depth == Some(stack.len()) {
+                    if let (Some((_, c)), Ok(v)) =
+                        (cell.as_mut(), crate::qx::resolve_general_ref(&e))
+                    {
                         c.is_text.push_str(&v);
                     }
                 }

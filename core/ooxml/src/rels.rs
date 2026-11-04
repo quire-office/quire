@@ -114,7 +114,7 @@ fn percent_decode(s: &str) -> String {
 fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes().flatten().find_map(|a| {
         if a.key.local_name().as_ref() == key {
-            a.unescape_value().ok().map(|v| v.to_string())
+            crate::qx::decode_and_unescape_attr(&a)
         } else {
             None
         }

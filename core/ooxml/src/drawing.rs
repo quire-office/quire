@@ -3267,7 +3267,7 @@ impl DrawingParser {
 fn attr_local(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes().flatten().find_map(|a| {
         if a.key.local_name().as_ref() == key {
-            a.unescape_value().ok().map(|v| v.into_owned())
+            crate::qx::decode_and_unescape_attr(&a)
         } else {
             None
         }
@@ -3292,7 +3292,7 @@ fn run_parser_with_theme(xml: &[u8], theme: crate::ThemeColors) -> DrawingParser
                 p.on_empty(&name, &e);
             }
             Ok(Event::Text(t)) => {
-                if let Ok(s) = t.unescape() {
+                if let Ok(s) = crate::qx::unescape_text(&t) {
                     p.on_text(&s);
                 }
             }
@@ -4103,7 +4103,7 @@ mod tests {
                     p.on_empty(&n, &e);
                 }
                 Ok(Event::Text(t)) => {
-                    if let Ok(s) = t.unescape() {
+                    if let Ok(s) = crate::qx::unescape_text(&t) {
                         p.on_text(&s);
                     }
                 }
@@ -4134,7 +4134,7 @@ mod tests {
                     fixed.on_empty(&n, &e);
                 }
                 Ok(Event::Text(t)) => {
-                    if let Ok(s) = t.unescape() {
+                    if let Ok(s) = crate::qx::unescape_text(&t) {
                         fixed.on_text(&s);
                     }
                 }

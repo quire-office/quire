@@ -868,7 +868,7 @@ fn skip_element(reader: &mut quick_xml::Reader<&[u8]>, close: &[u8]) {
 fn attr_val(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
     e.attributes().flatten().find_map(|a| {
         if a.key.local_name().as_ref() == key.as_bytes() {
-            a.unescape_value().ok().map(|v| v.to_string())
+            crate::qx::decode_and_unescape_attr(&a)
         } else {
             None
         }
