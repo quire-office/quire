@@ -4436,7 +4436,26 @@ fn emit_line_run_items(
             }
             x_off = cur_x - base_x;
         }
-        let seg_w = TextMeasurer::with_advance_scale(seg_size, adv).text_width(seg_text);
+        let seg_fam = select_text_family(run_fonts.as_ref(), seg_text);
+        let seg_adv = {
+            let base_adv = seg_fam.as_ref().map(|f| face_advance_scale(f)).unwrap_or(adv);
+            let is_caps = seg_text.chars().any(|c| c.is_ascii_uppercase())
+                && !seg_text.chars().any(|c| c.is_ascii_lowercase());
+            let mut scale = if is_caps {
+                seg_fam
+                    .as_ref()
+                    .map(|f| face_advance_scale_caps(f))
+                    .unwrap_or(base_adv)
+            } else {
+                base_adv
+            };
+            if (flags & FLAG_BOLD) != 0 {
+                // 粗體 run 在真實渲染時寬度明顯大於常規體，測寬需乘入粗體因子推進游標以防字群疊印。
+                scale *= 1.05;
+            }
+            scale
+        };
+        let seg_w = TextMeasurer::with_advance_scale(seg_size, seg_adv).text_width(seg_text);
         if let Some(bg_argb) = highlight {
             items.push(DrawItem::Rect {
                 x: base_x + x_off,
@@ -4452,7 +4471,7 @@ fn emit_line_run_items(
             size_pt: seg_size,
             flags,
             color_argb,
-            family: select_text_family(run_fonts.as_ref(), seg_text),
+            family: seg_fam,
             text: seg_text.to_string(),
         });
         x_off += seg_w;
