@@ -26,7 +26,7 @@ cargo run -p quire-cli -- roundtrip corpus --check
 
 **Done** — DOCX lossless open/save (ZIP64, extra fields, comments); Knuth-Plass line breaking with UAX#14 and real font metrics; incremental pagination (p95 < 8 ms on a 500-page document); tables that slice across pages with repeated headers; headers/footers with field substitution; the full style cascade; multi-column sections (`w:cols`); revision-mark rendering (`w:ins`/`w:del`); floating images, table shading, duotone.
 
-**In progress** — the document editing API (the next engine milestone). XLSX shares the same lossless container today: `core/xlsx` round-trips its 80-file real-world corpus (POI 40 + LibreOffice QA 40) byte-identically at the container level with a read-only workbook model; cell parsing is not done.
+**In progress** — the document editing API (the next engine milestone). XLSX shares the same lossless container today: `core/xlsx` round-trips its 80-file real-world corpus (POI 40 + LibreOffice QA 40) byte-identically at the container level, with a read-only workbook model, cell projection (five value types over sharedStrings) and the style cascade (fonts/fills/borders/number formats) resolved to effective styles; the formula engine is next.
 
 **Planned** — ODF family, ODT first; the CRDT collaboration layer; browser editor, Tauri desktop app, self-hostable collaboration backend. No dates attached; see [quireoffice.dev/roadmap](https://quireoffice.dev/roadmap).
 
