@@ -1,0 +1,25 @@
+{
+  "schema": "quire-corpus-quarantine/1",
+  "description": "授權／完整性查證不過，或轉換與下載失敗的 DOC 清單：清單內檔案不入正庫，必須逐檔列出原因。",
+  "files": {},
+  "tried_and_rejected": [
+    {
+      "url": "https://templates.office.com/en-us/templates-for-Word（微軟官方範本庫）",
+      "title": "Microsoft Official Templates (Word .doc)",
+      "reason": "微軟服務協議（Microsoft Services Agreement）明確規定範本僅限終端使用者個人使用，嚴禁在第三方開源專案中重新散布原檔；授權查核不通過，依專案紀律拒絕入正庫",
+      "http": "授權查核拒絕（非開源授權）"
+    },
+    {
+      "url": "https://bz.apache.org/ooo/attachment.cgi?id=12345（早期 OpenOffice Bugzilla 附件）",
+      "title": "Legacy OpenOffice Bugzilla attachments",
+      "reason": "多數附件年代久遠已失效（HTTP 404/410 或需內部認證），且歷史用戶上傳未附標準授權聲明（All rights reserved / unknown license），無法完成逐檔授權查驗，故不入庫",
+      "http": "404 Not Found / 授權未明"
+    },
+    {
+      "url": "https://file-examples.com/wp-content/uploads/2017/02/file-sample_100kB.doc",
+      "title": "File-Examples Public Sample DOC",
+      "reason": "該網站未提供明確之開源再散布許可條款（無 CC/MIT/Apache/GPL 宣告），且內容為無意義 lorem ipsum，授權查證不過，拒絕入庫",
+      "http": "授權條款缺失"
+    }
+  ]
+}
