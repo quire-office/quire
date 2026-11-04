@@ -60,9 +60,17 @@ const EXPECTED_COUNTS: [(&str, usize, usize); 50] = [
     ("ext/lo_core_sw_qa_odfexport_tdf140437.odt", 4, 0),
     ("ext/lo_core_sw_qa_odfexport_tdf152710.odt", 48, 1),
     ("ext/lo_core_sw_qa_odfexport_tdf77961.odt", 7, 0),
-    ("ext/lo_core_sw_qa_odfimport_feature_table_merged-cells.odt", 4, 0),
+    (
+        "ext/lo_core_sw_qa_odfimport_feature_table_merged-cells.odt",
+        4,
+        0,
+    ),
     ("ext/lo_core_sw_qa_odfimport_ooo32780-1.odt", 32, 0),
-    ("ext/oasis_opendocument_v1p3_os_part1_introduction.odt", 177, 7),
+    (
+        "ext/oasis_opendocument_v1p3_os_part1_introduction.odt",
+        177,
+        7,
+    ),
     ("lo_out/lo__ooxmlexport__FDO76312.odt", 25, 1),
     ("lo_out/lo__ooxmlexport__FDO78292.odt", 62, 2),
     ("lo_out/lo__ooxmlexport__fdo69616.odt", 4, 0),
@@ -72,25 +80,53 @@ const EXPECTED_COUNTS: [(&str, usize, usize); 50] = [
     ("lo_out/lo__ooxmlexport__lvlPicBulletId.odt", 16, 1),
     ("lo_out/lo__ooxmlexport__mce-nested.odt", 8, 0),
     ("lo_out/lo__ooxmlexport__strict.odt", 6, 0),
-    ("lo_out/lo__ooxmlexport__table-row-data-displayed-twice.odt", 57, 0),
+    (
+        "lo_out/lo__ooxmlexport__table-row-data-displayed-twice.odt",
+        57,
+        0,
+    ),
     ("lo_out/lo__ooxmlexport__tdf102466.odt", 431, 25),
-    ("lo_out/lo__ooxmlexport__tdf104061_tableSectionColumns.odt", 322, 47),
+    (
+        "lo_out/lo__ooxmlexport__tdf104061_tableSectionColumns.odt",
+        322,
+        47,
+    ),
     ("lo_out/lo__ooxmlexport__tdf105688.odt", 22, 0),
     ("lo_out/lo__ooxmlexport__tdf123054.odt", 97, 0),
     ("lo_out/lo__ooxmlexport__tdf123705.odt", 305, 0),
     ("lo_out/lo__ooxmlexport__tdf124637_sectionMargin.odt", 26, 4),
     ("lo_out/lo__ooxmlimport__tdf87533_bidi.odt", 6, 0),
-    ("lo_out/lo__phpword__samples_resources_Sample_11_ReadWord2007.odt", 28, 4),
-    ("lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader-styles.odt", 38, 6),
-    ("lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader.odt", 35, 4),
+    (
+        "lo_out/lo__phpword__samples_resources_Sample_11_ReadWord2007.odt",
+        28,
+        4,
+    ),
+    (
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader-styles.odt",
+        38,
+        6,
+    ),
+    (
+        "lo_out/lo__phpword__tests_PhpWordTests__files_documents_reader.odt",
+        35,
+        4,
+    ),
     ("lo_out/lo__poi__test-data_document_Bug54849.odt", 45, 0),
-    ("lo_out/lo__poi__test-data_document_WordWithAttachments.odt", 61, 0),
+    (
+        "lo_out/lo__poi__test-data_document_WordWithAttachments.odt",
+        61,
+        0,
+    ),
     ("lo_out/lo__poi__test-data_document_bug57031.odt", 1353, 0),
     ("lo_out/lo__poi__test-data_document_bug59058.odt", 935, 18),
     ("lo_out/lo__poi__test-data_document_bug65649.odt", 14161, 60),
     ("lo_out/lo__poi__test-data_document_checkboxes.odt", 16, 0),
     ("lo_out/lo__poi__test-data_document_drawing.odt", 214, 19),
-    ("lo_out/lo__poi__test-data_document_form_footnotes.odt", 211, 9),
+    (
+        "lo_out/lo__poi__test-data_document_form_footnotes.odt",
+        211,
+        9,
+    ),
     ("lo_out/lo__selfgen__altchunk_customxml.odt", 1, 1),
     ("lo_out/lo__selfgen__dropcap_toc_fields.odt", 2, 2),
     ("lo_out/lo__selfgen__embedded_font_odttf.odt", 1, 0),
@@ -124,13 +160,21 @@ const EXPECTED_COUNTS: [(&str, usize, usize); 50] = [
         61,
         1,
     ),
-    ("lo_out/lo__xopt__OpenXmlPowerToolsExamples_DocumentBuilder04_Sun.odt", 18, 4),
+    (
+        "lo_out/lo__xopt__OpenXmlPowerToolsExamples_DocumentBuilder04_Sun.odt",
+        18,
+        4,
+    ),
     (
         "lo_out/lo__xopt__OpenXmlPowerToolsExamples_HtmlConverter01_Test-03.odt",
         108,
         0,
     ),
-    ("lo_out/lo__xopt__TestFiles_HC031-Complicated-Document.odt", 141, 10),
+    (
+        "lo_out/lo__xopt__TestFiles_HC031-Complicated-Document.odt",
+        141,
+        10,
+    ),
 ];
 
 /// mimetype 違例三檔（比照 C2 考卷 3：皆「非首條目」違例）。
@@ -210,6 +254,7 @@ fn a_projection_over_corpus_50() {
 /// - content.xml automatic-style `P3`（parent=`Standard`）宣告
 ///   `fo:font-size="10pt"`。
 /// - styles.xml default-style(family=paragraph) 宣告 `fo:font-size="12pt"`。
+///
 /// 段落文件序（text:p＋text:h 混排）：[1] 是 `<text:h>`（style=P5，文字
 /// 「Laisvos programos vaikų lavinimui」），[2] 是 `<text:p>`（style=P3）。
 #[test]
@@ -259,6 +304,7 @@ fn b1_font_size_cascade_tdf152710() {
 /// - styles.xml default-style(family=paragraph) 宣告 `fo:font-size="10pt"`
 ///   ＋`fo:font-weight="normal"`；content.xml automatic-style `P15`
 ///   （parent=Normal）無字級宣告 → 級聯落到 default-style 的 10pt。
+///
 /// 段落文件序：[0] `<text:p>` style=P15、[1] `<text:p>` style=Title
 /// （「Open Document Format …」）。
 #[test]
@@ -350,10 +396,7 @@ fn layout_integration_smoke() {
             "{rel}：每段都必須有一筆斷行結果"
         );
         let total_lines: usize = pls.iter().map(|p| p.lines.len()).sum();
-        assert!(
-            total_lines > 0,
-            "{rel}：有文字的檔案斷行輸出不得為空"
-        );
+        assert!(total_lines > 0, "{rel}：有文字的檔案斷行輸出不得為空");
 
         let (texts, _) = proj.flatten();
         let breaks = page_break_positions(&texts, &params);
@@ -389,7 +432,10 @@ fn project_bytes_falls_back_to_12pt() {
     assert_eq!(proj.paragraph_count(), 3, "text:p＋text:h 一律入列");
     assert_eq!(proj.paragraphs[0].text, "標題一");
     assert_eq!(proj.paragraphs[1].text, "正文一");
-    assert!(proj.paragraphs[2].text.is_empty(), "自闭合 text:p 是零文字段");
+    assert!(
+        proj.paragraphs[2].text.is_empty(),
+        "自閉合 text:p 是零文字段"
+    );
     for p in &proj.paragraphs {
         assert_eq!(
             p.font_size_pt(),
@@ -401,4 +447,47 @@ fn project_bytes_falls_back_to_12pt() {
     let (texts, sizes) = proj.flatten();
     assert_eq!(texts.len(), 3);
     assert_eq!(sizes, vec![12.0, 12.0, 12.0], "降維輸出（文字＋逐段字級）");
+}
+
+/// 附考卷：run 級級聯粒度——同段落內 `text:span` 換字級／換字重必須拆成
+/// 多個 run，`(碼點區間, 字級pt, 粗體)` 逐片段如實；span 顯式宣告
+/// `font-weight="normal"` 必須壓過段落級粗體（三態級聯：宣告 normal ≠ 未宣告）。
+#[test]
+fn run_level_cascade_splits_spans() {
+    let styles = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0">
+<office:styles>
+<style:default-style style:family="paragraph"><style:text-properties fo:font-size="11pt"/></style:default-style>
+<style:style style:name="Heading" style:family="paragraph"><style:text-properties fo:font-size="20pt" fo:font-weight="bold"/></style:style>
+<style:style style:name="TSmall" style:family="text"><style:text-properties fo:font-size="8pt"/></style:style>
+<style:style style:name="TNormal" style:family="text"><style:text-properties fo:font-weight="normal"/></style:style>
+</office:styles>
+</office:document-styles>"#;
+    let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+<office:body><office:text>
+<text:p text:style-name="Heading">AB<text:span text:style-name="TSmall">CD</text:span><text:span text:style-name="TNormal">EF</text:span>G</text:p>
+</office:text></office:body></office:document-content>"#;
+    let proj = project_bytes(content.as_bytes(), Some(styles.as_bytes())).expect("合成檔投影");
+    assert_eq!(proj.paragraph_count(), 1);
+    let p = &proj.paragraphs[0];
+    assert_eq!(p.text, "ABCDEFG");
+    assert_eq!(
+        p.font_size_pt(),
+        20.0,
+        "段落代表字級＝首 run（Heading 20pt）"
+    );
+    assert!(p.bold(), "段落代表粗體＝首 run（Heading bold）");
+    // run 邊界：AB(20,bold) CD(8,bold 沿承) EF(20,normal 顯式壓過) G(20,bold 回到段級)
+    let runs: Vec<((usize, usize), f32, bool)> = p.runs.clone();
+    assert_eq!(
+        runs,
+        vec![
+            ((0, 2), 20.0, true),
+            ((2, 4), 8.0, true),
+            ((4, 6), 20.0, false),
+            ((6, 7), 20.0, true),
+        ],
+        "run 級碼點區間＋字級＋粗體必須逐片段如實（相鄰同属性合併）"
+    );
 }
