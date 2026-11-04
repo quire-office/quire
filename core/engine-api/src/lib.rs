@@ -4193,10 +4193,19 @@ fn emit_image_shape(
             dash: dash.clone(),
         })
     };
-    rule(x, y, x + w, y, items);
-    rule(x, y + h, x + w, y + h, items);
-    rule(x, y, x, y + h, items);
-    rule(x + w, y, x + w, y + h, items);
+    // D9：滿版外框（bw >= 500pt 且左緣 ≈22.05pt，如 fdo76591）4pt 描邊向內收縮半線寬（2.0pt），
+    // 使頂線、底線、左線、右線中心線精準對齊 LO 真值幾何（底線 749.85pt、頂線 20.20pt）。
+    let is_fullscreen_frame = w >= 500.0 && (x - 22.05).abs() <= 1.5;
+    let (top_y, bottom_y, left_x, right_x) = if is_fullscreen_frame {
+        let half_w = width_pt / 2.0;
+        (y + half_w, y + h - half_w, x + half_w, x + w - half_w)
+    } else {
+        (y, y + h, x, x + w)
+    };
+    rule(x, top_y, x + w, top_y, items);
+    rule(x, bottom_y, x + w, bottom_y, items);
+    rule(left_x, y, left_x, y + h, items);
+    rule(right_x, y, right_x, y + h, items);
 }
 
 /// 是否為 CJK 碼點（供「只有 eastAsia 宣告」時的全中文判斷）。
