@@ -35,7 +35,9 @@ pub use sectpr::{
     read_sections_note_pr, read_sections_per_paragraph, SectionGeometry, SectionHeaderFooter,
     SectionSpec, SlotRefs,
 };
-pub use styles::{Align, CondShading, LineSpacing, ParaStyle, RunFonts, RunStyle, StyleTable};
+pub use styles::{
+    Align, CondShading, LineSpacing, ParaStyle, RunFonts, RunStyle, StyleTable, VertAlign,
+};
 pub use table::{
     Block, BodyTable, Border, Borders, CellProps, EffectiveLook, GridCol, Margins, RowProps,
     Shading, Table, TableCell, TableLook, TableProps, TableRow, TblWidth,
@@ -150,6 +152,22 @@ pub struct Run {
     /// ins 吞」不一致由來。存檔不經此欄位（parts passthrough）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub rev_delete: bool,
+    /// run 內文字背景高亮／底色（`w:highlight` 或 `w:shd`；0xAARRGGBB）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<u32>,
+    /// 所屬段落的對齊宣告（`w:pPr/w:jc`；供框內段落排版消費）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub para_align: Option<styles::Align>,
+    /// 所屬段落的縮進（pt，`w:pPr/w:ind/@w:left + @w:firstLine - @w:hanging`；供框內段落排版消費）。
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub para_indent_pt: f32,
+    /// 上標／下標宣告（`w:vertAlign`；供發射層字級縮放與基線偏移消費）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vert_align: Option<styles::VertAlign>,
+}
+
+fn is_zero_f32(v: &f32) -> bool {
+    v.abs() < f32::EPSILON
 }
 
 /// `skip_serializing_if` 用：布爾欄位為 false 時不外露，保既有序列化輸出
@@ -491,8 +509,10 @@ fn apply_style_tag(
     // direct 材料化成 Some（None＝「未見任何 rPr 宣告」的語義必須守住）。
     // `w:rFonts`（字型族）另有一道閘：空元素（無任何族別屬性）不材料化
     // direct——否則「未見任何 rPr 宣告」的 None 語義會被一個空宣告破掉。
-    if matches!(name, b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz")
-        || (name == b"rFonts" && styles::rfonts_of(e, tf).is_some())
+    if matches!(
+        name,
+        b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz" | b"highlight" | b"shd" | b"vertAlign"
+    ) || (name == b"rFonts" && styles::rfonts_of(e, tf).is_some())
     {
         if let Some(r) = cur_run.as_mut() {
             styles::apply_run_tag(
@@ -505,6 +525,18 @@ fn apply_style_tag(
         }
     }
     match name {
+        b"vertAlign" => {
+            if let Some(r) = cur_run.as_mut() {
+                if let Some(v) = attr_val(e, "val") {
+                    match v.trim() {
+                        "superscript" => r.vert_align = Some(styles::VertAlign::Superscript),
+                        "subscript" => r.vert_align = Some(styles::VertAlign::Subscript),
+                        "baseline" => r.vert_align = Some(styles::VertAlign::Baseline),
+                        _ => {}
+                    }
+                }
+            }
+        }
         b"rStyle" => {
             // 字元樣式引用（styleId）：級聯層在 run 直接格式之下作基底查表。
             if let Some(r) = cur_run.as_mut() {
@@ -539,6 +571,24 @@ fn apply_style_tag(
                 // w:val 回退值（ECMA-376 §17.3.2.25）；查不到 → 退回 w:val
                 // （誠實近似，不虛構）。auto/非法 → None（發射層的黑）。
                 r.color = theme::resolve_color(theme, e);
+            }
+        }
+        b"highlight" => {
+            if let Some(r) = cur_run.as_mut() {
+                if let Some(v) = attr_val(e, "val") {
+                    r.highlight = styles::highlight_color_of(&v);
+                }
+            }
+        }
+        b"shd" => {
+            if let Some(r) = cur_run.as_mut() {
+                if let Some(v) = attr_val(e, "fill") {
+                    if v != "auto" && v != "none" {
+                        if let Some(c) = parse_color_val(&v) {
+                            r.highlight = Some(c);
+                        }
+                    }
+                }
             }
         }
         _ => {}
@@ -614,6 +664,9 @@ fn parse_document_xml_with_fonts(
     // 框內 pPr 子樹（段落標記樣式：忽略，不灌 run）＋其內 rPr 深度。
     let mut txbx_ppr_depth: usize = 0;
     let mut txbx_rpr_depth: usize = 0;
+    // 框內段落對齊與縮進緩衝（供框內 run 攜帶段級排版屬性）。
+    let mut txbx_cur_jc: Option<styles::Align> = None;
+    let mut txbx_cur_ind_pt: f32 = 0.0;
     // ---- 欄位（ECMA-376 §17.5）：只標記 PAGE／NUMPAGES 結果 run ----
     // 簡單欄 `<w:fldSimple w:instr="…">` 巢狀棧（棧頂 None＝非頁碼欄位）。
     let mut fld_simple_stack: Vec<Option<FieldKind>> = Vec::new();
@@ -670,15 +723,47 @@ fn parse_document_xml_with_fonts(
                         b"txbxContent" => txbx_depth += 1,
                         b"p" => {
                             txbx_para_depth += 1;
-                            // 框內段落起點：run 採集緩衝歸零（段內序）。
+                            // 框內段落起點：run 採集緩衝與段級格式歸零（段內序）。
+                            txbx_cur_jc = None;
+                            txbx_cur_ind_pt = 0.0;
                             txbx_run = None;
                             txbx_para_runs.clear();
                         }
                         b"t" => txbx_in_t = true,
                         // 框內 run：建採集緩衝（發射層的樣式來源）。
-                        b"r" => txbx_run = Some(Run::default()),
-                        // pPr 子樹（段落標記）與其內 rPr：只標深度、不消費。
+                        b"r" => {
+                            txbx_run = Some(Run {
+                                para_align: txbx_cur_jc,
+                                para_indent_pt: txbx_cur_ind_pt,
+                                ..Default::default()
+                            });
+                        }
+                        // pPr 子樹（段落標記）與其內 rPr：標深度並採集段落對齊與縮進。
                         b"pPr" => txbx_ppr_depth += 1,
+                        b"jc" if txbx_ppr_depth > 0 => {
+                            txbx_cur_jc = styles::align_of(attr_val(&e, "val").as_deref());
+                            if let Some(r) = txbx_run.as_mut() {
+                                r.para_align = txbx_cur_jc;
+                            }
+                            for r in &mut txbx_para_runs {
+                                r.para_align = txbx_cur_jc;
+                            }
+                        }
+                        b"ind" if txbx_ppr_depth > 0 => {
+                            let left =
+                                styles::twips_to_pt(attr_val(&e, "left").as_deref()).unwrap_or(0.0);
+                            let fl = styles::twips_to_pt(attr_val(&e, "firstLine").as_deref())
+                                .unwrap_or(0.0);
+                            let hang = styles::twips_to_pt(attr_val(&e, "hanging").as_deref())
+                                .unwrap_or(0.0);
+                            txbx_cur_ind_pt = left + fl - hang;
+                            if let Some(r) = txbx_run.as_mut() {
+                                r.para_indent_pt = txbx_cur_ind_pt;
+                            }
+                            for r in &mut txbx_para_runs {
+                                r.para_indent_pt = txbx_cur_ind_pt;
+                            }
+                        }
                         b"rPr" => {
                             if txbx_ppr_depth > 0 {
                                 txbx_ppr_depth += 1;
@@ -689,6 +774,12 @@ fn parse_document_xml_with_fonts(
                         // run 直接格式標籤（rPr 內、非 pPr 內）→ 灌採集 run。
                         _ if txbx_rpr_depth > 0 && txbx_ppr_depth == 0 => {
                             apply_style_tag(&name, &e, &mut txbx_run, theme, tf);
+                        }
+                        b"tab" if txbx_ppr_depth == 0 => {
+                            if let Some(r) = txbx_run.as_mut() {
+                                r.tab = true;
+                                r.tab_count = r.tab_count.saturating_add(1);
+                            }
                         }
                         // 其餘框內標籤（pStyle／lang／noProof…）一概不消費。
                         _ => {}
@@ -879,18 +970,55 @@ fn parse_document_xml_with_fonts(
                     continue;
                 }
                 if txbx_depth > 0 {
-                    // 框內自閉合標籤：只有 rPr 內的**字型族**（w:rFonts，Word
-                    // 產出恆自閉合）進採集 run（HC031 majorHAnsi 實據——它落在
-                    // 自閉合 rFonts 上，Start 臂看不到）。其餘（pStyle／br／
-                    // sz／color…）一概不消費：正文段落、run、分頁不受框內污染。
-                    if txbx_rpr_depth > 0 && txbx_ppr_depth == 0 {
-                        let name = e.local_name().as_ref().to_vec();
+                    // 框內自閉合標籤：
+                    // - pPr 內：採集段落對齊（w:jc）與縮進（w:ind）。
+                    // - rPr 內：字型族與樣式（w:rFonts／w:sz／w:color／w:b／w:highlight／w:shd…）進採集 run。
+                    // - 正文區：非 rPr 內且非 pPr 內的 w:tab 標記為 run 級製表符。
+                    // 其餘（pStyle／br…）一概不消費：正文段落、run、分頁不受框內污染。
+                    let name = e.local_name().as_ref().to_vec();
+                    if txbx_ppr_depth > 0 {
+                        if name.as_slice() == b"jc" {
+                            txbx_cur_jc = styles::align_of(attr_val(&e, "val").as_deref());
+                            if let Some(r) = txbx_run.as_mut() {
+                                r.para_align = txbx_cur_jc;
+                            }
+                            for r in &mut txbx_para_runs {
+                                r.para_align = txbx_cur_jc;
+                            }
+                        } else if name.as_slice() == b"ind" {
+                            let left =
+                                styles::twips_to_pt(attr_val(&e, "left").as_deref()).unwrap_or(0.0);
+                            let fl = styles::twips_to_pt(attr_val(&e, "firstLine").as_deref())
+                                .unwrap_or(0.0);
+                            let hang = styles::twips_to_pt(attr_val(&e, "hanging").as_deref())
+                                .unwrap_or(0.0);
+                            txbx_cur_ind_pt = left + fl - hang;
+                            if let Some(r) = txbx_run.as_mut() {
+                                r.para_indent_pt = txbx_cur_ind_pt;
+                            }
+                            for r in &mut txbx_para_runs {
+                                r.para_indent_pt = txbx_cur_ind_pt;
+                            }
+                        }
+                    } else if txbx_rpr_depth > 0 {
                         if matches!(
                             name.as_slice(),
-                            b"rFonts" | b"sz" | b"color" | b"b" | b"i" | b"u"
+                            b"rFonts"
+                                | b"sz"
+                                | b"color"
+                                | b"b"
+                                | b"i"
+                                | b"u"
+                                | b"highlight"
+                                | b"shd"
+                                | b"vertAlign"
                         ) {
                             apply_style_tag(&name, &e, &mut txbx_run, theme, tf);
                         }
+                    } else if name.as_slice() == b"tab" {
+                        let r = txbx_run.get_or_insert_with(Run::default);
+                        r.tab = true;
+                        r.tab_count = r.tab_count.saturating_add(1);
                     }
                     continue;
                 }
@@ -1013,12 +1141,6 @@ fn parse_document_xml_with_fonts(
                             ppr_rpr_depth,
                         );
                     }
-                    if txbx_depth > 0 && name.as_slice() == b"tab" {
-                        txbx_cur.push(' ');
-                        if let Some(r) = cur_run.as_mut() {
-                            r.text.push(' ');
-                        }
-                    }
                 } else if matches!(name.as_slice(), b"footnoteReference" | b"endnoteReference") {
                     // 註引用標記（自閉合＝Word 常態寫法）：標進進行中的 run。
                     record_note_ref(name.as_slice(), &e, &mut cur_run);
@@ -1105,6 +1227,14 @@ fn parse_document_xml_with_fonts(
                         b"p" => {
                             txbx_para_depth = txbx_para_depth.saturating_sub(1);
                             if txbx_para_depth == 0 {
+                                if txbx_para_runs.is_empty() && !txbx_cur.is_empty() {
+                                    txbx_para_runs.push(Run {
+                                        text: txbx_cur.clone(),
+                                        para_align: txbx_cur_jc,
+                                        para_indent_pt: txbx_cur_ind_pt,
+                                        ..Default::default()
+                                    });
+                                }
                                 // 空段照推（""＋空 runs）：texts 與 runs 逐段對齊。
                                 txbx_done.push(std::mem::take(&mut txbx_cur));
                                 txbx_runs_done.push(std::mem::take(&mut txbx_para_runs));
@@ -1113,7 +1243,9 @@ fn parse_document_xml_with_fonts(
                         b"t" => txbx_in_t = false,
                         // 框內 run 完結：連同 rPr 快照進段內 run 緩衝。
                         b"r" => {
-                            if let Some(r) = txbx_run.take() {
+                            if let Some(mut r) = txbx_run.take() {
+                                r.para_align = txbx_cur_jc;
+                                r.para_indent_pt = txbx_cur_ind_pt;
                                 txbx_para_runs.push(r);
                             }
                         }
