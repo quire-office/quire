@@ -31,10 +31,7 @@ const LO_TOP5_COLORS: &[(u8, u8, u8)] = &[
 ];
 
 fn load_corpus(rel: &str) -> Vec<u8> {
-    let path = format!(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../corpus/{}"),
-        rel
-    );
+    let path = format!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../corpus/{}"), rel);
     std::fs::read(&path).unwrap_or_else(|e| panic!("讀 corpus/{rel}: {e}"))
 }
 
@@ -215,9 +212,7 @@ fn d4_lamp2_image_emission_bbox_centered() {
 
     if let DrawItem::Image { x, y, w, h, .. } = imgs[0] {
         println!("我方圖片發射 bbox: x={x}, y={y}, w={w}, h={h}");
-        println!(
-            "LO 實測 bbox: x0={LO_BBOX_X0}, y0={LO_BBOX_Y0}, w={LO_BBOX_W}, h={LO_BBOX_H}"
-        );
+        println!("LO 實測 bbox: x0={LO_BBOX_X0}, y0={LO_BBOX_Y0}, w={LO_BBOX_W}, h={LO_BBOX_H}");
 
         // 1. 斷言 x 置中（對 LO bbox x0 ±8pt）
         let x_diff = (*x - LO_BBOX_X0).abs();
