@@ -137,8 +137,13 @@ BOX5 = (
     "</v:shape></w:pict></w:r></w:p>"
 )
 
-# 卡 5：畸形閉合——blip 在 txbx 深度內採集，`</w:drawing>` 在 txbxContent
-# 之後才閉合（quick_xml 不驗證嵌套，照實餵）。
+# 卡 5（誠實註記）：畸形閉合——blip 在 txbx 深度內採集，`</w:drawing>` 在
+# txbxContent 之後才閉合。**本形態無法做進 corpus 級考卷**：quick_xml 的
+# well-formedness 閘（check_end_names）在 `parse()` 入口就整檔拒絕
+# （`ill-formed document: expected </w:drawing>, but </w:txbxContent> was
+# found`），輪不到採集狀態機；LO／Word 亦不產出此類檔案，corpus 全掃零實
+# 例。洩漏防禦（txbxContent 歸零強制出幀）保留在採集層，紅燈改由本檔註
+# 記＋代碼註解覆蓋，不虛構通過。下方 BOX3 保留供手工診斷用，不入 DOC。
 BOX3 = (
     f'<w:p><w:r><w:pict {V} {O}>'
     '<v:shape type="#_x0000_t202" style="width:120pt;height:60pt">'
@@ -172,8 +177,10 @@ DOC = (
     f"<w:document {W} {R} {V} {O}><w:body>"
     + BOX1
     + BOX2
-    + BOX3
     + BOX5
+    # BOX3（卡 5 畸形閉合）不入 DOC：quick_xml 整檔 well-formedness 閘先拒
+    # （見上註），入檔會讓考卷解析失敗。洩漏防禦由 core/ooxml/src/drawing.rs
+    # 單元紅燈 `txbx_content_close_flushes_frame_no_leak` 以事件層直餵覆蓋。
     + '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
     '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" '
     'w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>'
