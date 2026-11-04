@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "core/ooxml",
     "core/xlsx",
+    "core/odf",
     "core/layout",
     "core/render-trait",
     "core/crdt",
@@ -20,6 +21,7 @@ edition = "2021"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+quire-odf = { path = "core/odf" }
 quire-ooxml = { path = "core/ooxml" }
 quire-xlsx = { path = "core/xlsx" }
 quire-layout = { path = "core/layout" }
