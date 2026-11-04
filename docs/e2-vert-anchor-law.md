@@ -2,8 +2,9 @@
 
 署名：ADT109119。數據來源：`scripts/e2_probe_law.py` 對合成框（lIns/tIns/rIns/bIns=0、
 11pt Calibri、框 100x300 與 200x300、段數 1-3）走 `render_lab` 同一條 LO 轉換路徑後，
-pymupdf `get_text("dict")` 逐行抽 `dir` 與 `bbox`；原始數值見附件 `probe_truth.json`
-（2026-11-05 跑於 `e2_probe/probe_truth.json`，冪等可重跑）。座標系為 pymupdf top-origin。
+pymupdf `get_text("dict")` 逐行抽 `dir` 與 `bbox`；原始數值固化於
+`docs/e2-vert-truth/`（`probe_truth.json` 合成網格、`corpus_truth.json` 實檔逐行、
+`lo_frames.json` 框矩形；冪等可重跑覆核）。座標系為 pymupdf top-origin。
 
 ## vert270（dir=[0,-1]，整行由下而上）
 

@@ -1,0 +1,2238 @@
+{
+ "corpus/ooxmlexport/fdo78957.docx": [
+  {
+   "page": 0,
+   "dir": [
+    0.0,
+    -1.0
+   ],
+   "bbox": [
+    561.6,
+    380.0,
+    577.1,
+    411.9
+   ],
+   "text": "Quire",
+   "size": 14.0,
+   "font": "TimesNewRomanPSMT"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    90.1,
+    59.1,
+    109.5,
+    74.6
+   ],
+   "text": "test",
+   "size": 14.0,
+   "font": "TimesNewRomanPSMT"
+  }
+ ],
+ "corpus/ooxmlexport/tdf103573.docx": [
+  {
+   "page": 0,
+   "dir": [
+    0.0,
+    -1.0
+   ],
+   "bbox": [
+    30.6,
+    144.7,
+    44.0,
+    270.3
+   ],
+   "text": "Centered in left margin area",
+   "size": 11.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    0.0,
+    -1.0
+   ],
+   "bbox": [
+    532.4,
+    130.2,
+    545.8,
+    262.0
+   ],
+   "text": "Centered in right margin area",
+   "size": 11.0,
+   "font": "Calibri"
+  }
+ ],
+ "corpus/ooxmlimport/btlr-frame-vml.docx": [
+  {
+   "page": 0,
+   "dir": [
+    0.0,
+    -1.0
+   ],
+   "bbox": [
+    79.2,
+    72.6,
+    100.3,
+    170.5
+   ],
+   "text": "Vertical Text",
+   "size": 18.0,
+   "font": "Cambria"
+  }
+ ],
+ "corpus/ooxmlexport/tbrl-frame-vml.docx": [
+  {
+   "page": 0,
+   "dir": [
+    0.0,
+    1.0
+   ],
+   "bbox": [
+    100.9,
+    358.9,
+    121.9,
+    456.8
+   ],
+   "text": "Vertical Text",
+   "size": 18.0,
+   "font": "Cambria"
+  }
+ ],
+ "corpus/ooxmlimport/n779627.docx": [
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    92.4,
+    72.4,
+    97.3,
+    84.6
+   ],
+   "text": "a",
+   "size": 11.0,
+   "font": "LiberationSerif"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    161.6,
+    72.4,
+    167.1,
+    84.6
+   ],
+   "text": "b",
+   "size": 11.0,
+   "font": "LiberationSerif"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    250.6,
+    72.4,
+    255.5,
+    84.6
+   ],
+   "text": "c",
+   "size": 11.0,
+   "font": "LiberationSerif"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    366.5,
+    72.4,
+    372.0,
+    84.6
+   ],
+   "text": "d",
+   "size": 11.0,
+   "font": "LiberationSerif"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    458.0,
+    72.4,
+    462.9,
+    84.6
+   ],
+   "text": "e",
+   "size": 11.0,
+   "font": "LiberationSerif"
+  }
+ ],
+ "corpus/ooxmlexport/fdo74605.docx": [
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    418.2,
+    533.2,
+    423.8,
+    546.6
+   ],
+   "text": "1",
+   "size": 11.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    43.5,
+    384.7,
+    105.0,
+    395.7
+   ],
+   "text": "Stronger gender ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    45.4,
+    397.4,
+    103.2,
+    408.4
+   ],
+   "text": "knowledge and ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    56.8,
+    410.0,
+    89.6,
+    421.0
+   ],
+   "text": "evidence",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    33.7,
+    458.3,
+    68.6,
+    468.1
+   ],
+   "text": "Policy and ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    33.7,
+    469.5,
+    68.6,
+    479.3
+   ],
+   "text": "legislation ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    39.3,
+    480.7,
+    61.2,
+    490.5
+   ],
+   "text": "review",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    775.2,
+    381.9,
+    804.5,
+    392.9
+   ],
+   "text": "Gender ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    769.1,
+    394.6,
+    810.6,
+    405.6
+   ],
+   "text": "responsive ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    768.5,
+    407.2,
+    811.2,
+    418.2
+   ],
+   "text": "health/edu ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    774.3,
+    419.9,
+    803.3,
+    430.9
+   ],
+   "text": "services",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    184.6,
+    200.1,
+    230.5,
+    209.9
+   ],
+   "text": "Male leaders’ ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    184.6,
+    211.3,
+    225.3,
+    221.1
+   ],
+   "text": "engagement",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    558.6,
+    118.2,
+    679.3,
+    127.9
+   ],
+   "text": "Violence against women is reduced, ",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    559.2,
+    129.4,
+    678.6,
+    139.1
+   ],
+   "text": "survivors of violence have access to ",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    567.7,
+    140.6,
+    668.3,
+    150.3
+   ],
+   "text": "support services and to justice",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    104.1,
+    194.7,
+    155.3,
+    204.4
+   ],
+   "text": "Women’s skills, ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    104.1,
+    205.9,
+    155.4,
+    215.6
+   ],
+   "text": "knowledge and ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    110.9,
+    217.1,
+    148.5,
+    226.8
+   ],
+   "text": "confidence ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    320.3,
+    121.5,
+    434.3,
+    131.2
+   ],
+   "text": "Women have expanded economic ",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    320.6,
+    132.7,
+    434.0,
+    142.4
+   ],
+   "text": "opportunities to earn income and ",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    329.2,
+    143.9,
+    423.4,
+    153.6
+   ],
+   "text": "accumulate economic assets",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    89.8,
+    117.6,
+    210.9,
+    127.4
+   ],
+   "text": "Women, and women’s interests, are ",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    92.6,
+    128.8,
+    208.1,
+    138.6
+   ],
+   "text": "increasingly represented, effective ",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    89.1,
+    140.0,
+    211.6,
+    149.8
+   ],
+   "text": "and visible in leadership positions at ",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    103.2,
+    151.2,
+    195.6,
+    161.0
+   ],
+   "text": "all levels of decision making",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    265.8,
+    48.0,
+    469.2,
+    60.2
+   ],
+   "text": "Women in the Pacific participate fully, freely and ",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    279.8,
+    62.0,
+    452.7,
+    74.2
+   ],
+   "text": "safely in political, economic and social life",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    35.3,
+    188.7,
+    76.7,
+    198.4
+   ],
+   "text": "Legal, policy ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    49.0,
+    199.9,
+    63.1,
+    209.6
+   ],
+   "text": "and ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    38.3,
+    211.1,
+    73.7,
+    220.8
+   ],
+   "text": "regulatory ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    35.8,
+    222.3,
+    74.4,
+    232.0
+   ],
+   "text": "frameworks",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    277.5,
+    189.6,
+    318.9,
+    199.3
+   ],
+   "text": "Legal, policy ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    291.2,
+    200.8,
+    305.3,
+    210.5
+   ],
+   "text": "and ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    280.5,
+    212.0,
+    315.9,
+    221.7
+   ],
+   "text": "regulatory ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    278.0,
+    223.2,
+    316.6,
+    232.9
+   ],
+   "text": "frameworks",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    357.6,
+    189.6,
+    383.6,
+    199.3
+   ],
+   "text": "Income ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    352.0,
+    200.8,
+    389.3,
+    210.5
+   ],
+   "text": "generation ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    352.0,
+    212.0,
+    389.3,
+    221.7
+   ],
+   "text": "knowledge ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    355.0,
+    223.2,
+    384.4,
+    232.9
+   ],
+   "text": "and skills",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    525.6,
+    195.3,
+    548.4,
+    205.0
+   ],
+   "text": "Policy, ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    512.5,
+    206.5,
+    561.5,
+    216.2
+   ],
+   "text": "legislation and ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    515.0,
+    217.7,
+    557.2,
+    227.4
+   ],
+   "text": "enforcement",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    600.8,
+    189.2,
+    627.4,
+    199.0
+   ],
+   "text": "Quality, ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    595.6,
+    200.4,
+    632.7,
+    210.2
+   ],
+   "text": "affordable, ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    596.5,
+    211.6,
+    631.8,
+    221.4
+   ],
+   "text": "integrated ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    600.2,
+    222.8,
+    626.1,
+    232.6
+   ],
+   "text": "services",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    667.2,
+    206.5,
+    702.7,
+    216.2
+   ],
+   "text": "Prevention",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    428.8,
+    195.2,
+    460.8,
+    204.9
+   ],
+   "text": "Access to ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    430.2,
+    206.4,
+    459.4,
+    216.1
+   ],
+   "text": "financial ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    430.9,
+    217.6,
+    456.8,
+    227.3
+   ],
+   "text": "services",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    33.7,
+    324.0,
+    89.5,
+    333.8
+   ],
+   "text": "Australia’s areas ",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    43.5,
+    335.2,
+    77.7,
+    345.0
+   ],
+   "text": "of interest",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    38.3,
+    48.1,
+    108.8,
+    57.8
+   ],
+   "text": "Higher Development ",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    55.8,
+    59.3,
+    89.5,
+    69.0
+   ],
+   "text": "Outcomes",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    114.4,
+    541.2,
+    141.2,
+    553.4
+   ],
+   "text": "Policy ",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    100.8,
+    555.2,
+    152.5,
+    567.4
+   ],
+   "text": "Engagement",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    130.1,
+    270.7,
+    268.7,
+    280.5
+   ],
+   "text": "Changes to social norms, values, practices",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    324.9,
+    270.7,
+    445.5,
+    280.5
+   ],
+   "text": "Advocacy/Change Agents/Coalitions",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    534.5,
+    270.7,
+    605.7,
+    280.5
+   ],
+   "text": "Health and Education",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    548.3,
+    385.8,
+    585.8,
+    396.8
+   ],
+   "text": "Increased ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    548.2,
+    398.5,
+    585.8,
+    409.5
+   ],
+   "text": "economic ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    541.2,
+    411.1,
+    592.9,
+    422.1
+   ],
+   "text": "opportunities ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    660.7,
+    381.7,
+    724.5,
+    392.7
+   ],
+   "text": "Reduce violence, ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    653.6,
+    394.4,
+    731.7,
+    405.4
+   ],
+   "text": "expand services, and ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    662.2,
+    407.0,
+    723.1,
+    418.0
+   ],
+   "text": "access to justice ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    290.9,
+    386.4,
+    354.2,
+    397.4
+   ],
+   "text": "More supportive ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    292.2,
+    399.0,
+    352.8,
+    410.0
+   ],
+   "text": "social norms for ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    291.0,
+    411.7,
+    351.9,
+    422.7
+   ],
+   "text": "women’s agency",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    409.3,
+    384.2,
+    476.4,
+    395.2
+   ],
+   "text": "Increased women ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    422.4,
+    396.8,
+    463.3,
+    407.8
+   ],
+   "text": "in decision ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    428.5,
+    409.5,
+    455.1,
+    420.5
+   ],
+   "text": "making",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    164.3,
+    320.9,
+    574.1,
+    331.9
+   ],
+   "text": "Targeted communities in the Pacific support women to have increased knowledge, skills and opportunities to ",
+   "size": 9.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    251.0,
+    333.5,
+    485.0,
+    344.5
+   ],
+   "text": "enable them to participate in political, economic and social life",
+   "size": 9.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    102.6,
+    457.6,
+    136.3,
+    467.4
+   ],
+   "text": "Pilots and ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    107.2,
+    468.8,
+    131.6,
+    478.6
+   ],
+   "text": "Impact ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    101.4,
+    480.0,
+    135.5,
+    489.8
+   ],
+   "text": "Evaluation",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    455.9,
+    465.7,
+    491.4,
+    475.5
+   ],
+   "text": "Local level ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    455.7,
+    476.9,
+    489.7,
+    486.7
+   ],
+   "text": "leadership",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    526.7,
+    460.0,
+    556.5,
+    469.8
+   ],
+   "text": "Safe and ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    523.2,
+    471.2,
+    560.0,
+    481.0
+   ],
+   "text": "Productive ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    527.2,
+    482.4,
+    554.1,
+    492.2
+   ],
+   "text": "Markets",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    588.5,
+    460.0,
+    619.0,
+    469.8
+   ],
+   "text": "Financial ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    589.3,
+    471.2,
+    618.2,
+    481.0
+   ],
+   "text": "literacy/ ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    588.4,
+    482.4,
+    617.2,
+    492.2
+   ],
+   "text": "products",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    660.5,
+    457.7,
+    688.7,
+    467.5
+   ],
+   "text": "Services ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    669.0,
+    468.9,
+    680.2,
+    478.7
+   ],
+   "text": "for ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    656.5,
+    480.1,
+    690.8,
+    489.9
+   ],
+   "text": "survivors s",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    726.8,
+    458.3,
+    750.3,
+    468.0
+   ],
+   "text": "Justice ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    716.6,
+    469.5,
+    758.7,
+    479.2
+   ],
+   "text": "-formal/non-",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    726.9,
+    480.7,
+    748.4,
+    490.4
+   ],
+   "text": "formal",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    259.2,
+    460.1,
+    283.6,
+    469.8
+   ],
+   "text": "Group. ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    252.0,
+    471.3,
+    290.8,
+    481.0
+   ],
+   "text": "community ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    250.1,
+    482.5,
+    290.8,
+    492.2
+   ],
+   "text": "engagement",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    397.2,
+    460.0,
+    424.1,
+    469.8
+   ],
+   "text": "MP and ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    393.7,
+    471.2,
+    427.7,
+    481.0
+   ],
+   "text": "candidate ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    397.0,
+    482.4,
+    422.5,
+    492.2
+   ],
+   "text": "support",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    320.1,
+    460.1,
+    364.5,
+    469.8
+   ],
+   "text": "Understandin",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    333.5,
+    471.3,
+    353.1,
+    481.0
+   ],
+   "text": "g and ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    324.5,
+    482.5,
+    360.1,
+    492.2
+   ],
+   "text": "knowledge",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    29.2,
+    529.2,
+    77.7,
+    539.0
+   ],
+   "text": "How Australia ",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    37.3,
+    540.4,
+    67.8,
+    550.2
+   ],
+   "text": "will work",
+   "size": 8.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    206.9,
+    541.1,
+    273.4,
+    553.3
+   ],
+   "text": "Knowledge and ",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    201.6,
+    555.1,
+    276.5,
+    567.3
+   ],
+   "text": "Management Hub",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    330.5,
+    541.1,
+    385.4,
+    553.3
+   ],
+   "text": "Country led/ ",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    327.6,
+    555.1,
+    385.9,
+    567.3
+   ],
+   "text": "criteria driven",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    441.0,
+    534.1,
+    476.5,
+    546.3
+   ],
+   "text": "Support ",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    447.9,
+    548.1,
+    469.6,
+    560.3
+   ],
+   "text": "local ",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    439.2,
+    562.1,
+    475.9,
+    574.3
+   ],
+   "text": "initiative",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    537.2,
+    541.2,
+    583.1,
+    553.4
+   ],
+   "text": "Integrated ",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    535.0,
+    555.2,
+    583.0,
+    567.4
+   ],
+   "text": "approaches",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    629.7,
+    534.1,
+    680.3,
+    546.3
+   ],
+   "text": "Partnership ",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    633.7,
+    548.1,
+    676.3,
+    560.3
+   ],
+   "text": "with local ",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    641.1,
+    562.1,
+    666.6,
+    574.3
+   ],
+   "text": "actors",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    732.5,
+    534.1,
+    775.4,
+    546.3
+   ],
+   "text": "Sustained ",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    734.9,
+    548.1,
+    773.0,
+    560.3
+   ],
+   "text": "and long ",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    742.7,
+    562.1,
+    762.9,
+    574.3
+   ],
+   "text": "term",
+   "size": 10.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    698.0,
+    37.1,
+    744.6,
+    50.5
+   ],
+   "text": "Diagram 1",
+   "size": 11.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    166.6,
+    384.7,
+    218.5,
+    395.7
+   ],
+   "text": "Strengthened ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    159.8,
+    397.3,
+    225.3,
+    408.3
+   ],
+   "text": "Women’s Groups ",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    165.6,
+    410.0,
+    217.4,
+    421.0
+   ],
+   "text": "and Coalitions",
+   "size": 9.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    177.2,
+    459.8,
+    212.2,
+    469.5
+   ],
+   "text": "Long term ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    174.2,
+    471.0,
+    215.3,
+    480.7
+   ],
+   "text": "Institutional ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 0,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    171.1,
+    482.2,
+    218.3,
+    491.9
+   ],
+   "text": "strengthening ",
+   "size": 8.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 1,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    63.1,
+    36.2,
+    479.4,
+    49.6
+   ],
+   "text": "____________________________________________________________________________",
+   "size": 11.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 1,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    63.1,
+    702.4,
+    473.9,
+    715.8
+   ],
+   "text": "___________________________________________________________________________",
+   "size": 11.0,
+   "font": "Calibri"
+  },
+  {
+   "page": 1,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    72.1,
+    110.9,
+    204.7,
+    128.0
+   ],
+   "text": "Section 1: Introduction",
+   "size": 14.0,
+   "font": "Calibri-Bold"
+  },
+  {
+   "page": 1,
+   "dir": [
+    1.0,
+    0.0
+   ],
+   "bbox": [
+    531.0,
+    702.5,
+    536.0,
+    715.0
+   ],
+   "text": "2",
+   "size": 11.0,
+   "font": "LiberationSansNarrow"
+  }
+ ]
+}

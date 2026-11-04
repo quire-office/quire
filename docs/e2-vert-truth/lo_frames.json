@@ -1,0 +1,106 @@
+{
+ "corpus/ooxmlexport/btlr-textbox.docx": [
+  {
+   "page": 0,
+   "rect": [
+    221.9,
+    70.8,
+    390.0,
+    232.2
+   ],
+   "type": "fs",
+   "items": 5
+  }
+ ],
+ "corpus/ooxmlexport/tbrl-textbox.docx": [
+  {
+   "page": 0,
+   "rect": [
+    212.3,
+    71.4,
+    399.5,
+    200.6
+   ],
+   "type": "fs",
+   "items": 5
+  }
+ ],
+ "corpus/ooxmlexport/fdo69636.docx": [
+  {
+   "page": 0,
+   "rect": [
+    72.0,
+    72.0,
+    129.1,
+    457.4
+   ],
+   "type": "f",
+   "items": 5
+  }
+ ],
+ "corpus/ooxmlexport/tdf103573.docx": [
+  {
+   "page": 0,
+   "rect": [
+    26.8,
+    80.2,
+    90.1,
+    277.5
+   ],
+   "type": "fs",
+   "items": 5
+  },
+  {
+   "page": 0,
+   "rect": [
+    528.5,
+    72.0,
+    591.8,
+    269.3
+   ],
+   "type": "fs",
+   "items": 5
+  }
+ ],
+ "corpus/ooxmlimport/btlr-frame-vml.docx": [
+  {
+   "page": 0,
+   "rect": [
+    72.1,
+    72.0,
+    129.1,
+    457.4
+   ],
+   "type": "f",
+   "items": 4
+  }
+ ],
+ "corpus/ooxmlimport/tdf124754.docx": [
+  {
+   "page": 0,
+   "rect": [
+    99.9,
+    74.0,
+    141.8,
+    184.6
+   ],
+   "type": "fs",
+   "items": 5
+  }
+ ],
+ "corpus/ooxmlexport/tbrl-frame-vml.docx": [
+  {
+   "page": 0,
+   "rect": [
+    72.1,
+    72.0,
+    129.1,
+    457.4
+   ],
+   "type": "f",
+   "items": 4
+  }
+ ],
+ "corpus/ooxmlimport/n779627.docx": [],
+ "corpus/ooxmlimport/groupshape-sdt.docx": []
+}
