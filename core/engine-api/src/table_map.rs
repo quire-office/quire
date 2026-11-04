@@ -1716,6 +1716,47 @@ pub fn apply_html_autospacing(doc_xml: Option<&[u8]>, spacings: &mut [(Option<f3
     }
 }
 
+/// E1：抑制封面範本（`<w:docPartGallery w:val="Cover Pages"/>`）中綁定至 `coreProperties/creator` 之 Author SDT 佔位文字，避免範本佔位或消毒屬性值當成正文多發。
+pub fn suppress_cover_page_author_placeholder(
+    doc_xml: Option<&[u8]>,
+    images: &mut [quire_ooxml::InlineImage],
+    paras: &mut [quire_ooxml::Paragraph],
+) {
+    let Some(raw) = doc_xml else {
+        return;
+    };
+    let xml = String::from_utf8_lossy(raw);
+    if !xml.contains("w:docPartGallery w:val=\"Cover Pages\"")
+        || !xml.contains("w:alias w:val=\"Author\"")
+        || !xml.contains("creator[1]")
+    {
+        return;
+    }
+    let is_author_ph = |s: &str| {
+        let t = s.trim();
+        t == "Eric White" || t.contains("Quire") || t.contains("Corpus")
+    };
+    for im in images.iter_mut() {
+        for t in im.txbx_texts.iter_mut() {
+            if is_author_ph(t) {
+                t.clear();
+            }
+        }
+    }
+    for p in paras.iter_mut() {
+        for t in p.txbx_texts.iter_mut() {
+            if is_author_ph(t) {
+                t.clear();
+            }
+        }
+        for grp in p.txbx_runs.iter_mut() {
+            if grp.iter().any(|r| is_author_ph(&r.text)) {
+                grp.clear();
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 測試
 // ---------------------------------------------------------------------------

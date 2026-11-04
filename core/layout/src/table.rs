@@ -1137,7 +1137,7 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
                 hg.block_head_row = head;
                 hg.block_end_row = last;
                 hg.block_tail = last == head;
-                // block 底邊交給末格；head 自身底邊清空（內部橫線不畫）。
+                // block 底邊交給末格（末格無明確底邊時繼承 head 底邊）；head 自身底邊清空（內部橫線不畫）。
                 let bottom = hg.edges[EDGE_BOTTOM].clone();
                 if last > head {
                     hg.edges[EDGE_BOTTOM] = None;
@@ -1146,7 +1146,9 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
                         .iter_mut()
                         .find(|g| g.col == c && g.col_span == head_span)
                     {
-                        tg.edges[EDGE_BOTTOM] = bottom;
+                        if tg.edges[EDGE_BOTTOM].is_none() {
+                            tg.edges[EDGE_BOTTOM] = bottom;
+                        }
                     }
                 }
             }
