@@ -3270,12 +3270,10 @@ fn emit_txbx_texts(
     let inset = shape.and_then(|b| b.txbx_inset);
     let old_style = inset.is_none();
     let is_fullscreen_frame = bw >= 500.0 && (bx - 22.05).abs() <= 1.5;
-    let [inset_l, inset_t, inset_r, inset_b] = inset.unwrap_or_else(|| {
-        if is_fullscreen_frame {
-            [11.3, 4.0, 3.0, 0.0]
-        } else {
-            [3.0, 4.0, 3.0, 0.0]
-        }
+    let [inset_l, inset_t, inset_r, inset_b] = inset.unwrap_or(if is_fullscreen_frame {
+        [11.3, 4.0, 3.0, 0.0]
+    } else {
+        [3.0, 4.0, 3.0, 0.0]
     });
     let inner_x = bx + inset_l;
     let inner_y = by + inset_t;
@@ -3481,7 +3479,7 @@ fn emit_txbx_texts(
                     // D8：滿版外框中的空白段落帶推進。
                     // 班表後的連續空段落帶（11 個空段）平均步長 15.25pt（LO 實測推進 167.74pt）；
                     // 班表前與內部的空段落依前後字級行距推進（16pt 區域 18.4pt、14pt 區域 16.1pt）。
-                    if ti >= 23 && ti <= 33 {
+                    if (23..=33).contains(&ti) {
                         15.25
                     } else if ti == 4 {
                         // IMPORTANT NOTICE 與 Scheduled Saturday Overtime 之間的空段落

@@ -92,11 +92,9 @@ fn d8_lamp2_footer_anchoring_and_position() {
         .items
         .iter()
         .find_map(|it| match it {
-            DrawItem::Text { y, size_pt, text, .. }
-                if text.contains("PLANT HUMAN RESOURCES DEPARTMENT") =>
-            {
-                Some(*y + *size_pt)
-            }
+            DrawItem::Text {
+                y, size_pt, text, ..
+            } if text.contains("PLANT HUMAN RESOURCES DEPARTMENT") => Some(*y + *size_pt),
             _ => None,
         })
         .expect("必須存在「PLANT HUMAN RESOURCES DEPARTMENT」文字項");
@@ -167,11 +165,16 @@ fn d8_lamp3_first_paragraph_width_and_wrap() {
         .items
         .iter()
         .filter_map(|it| match it {
-            DrawItem::Text { x, y, size_pt, text, .. }
-                if text.contains("UNLESS")
-                    || text.contains("SKILLED")
-                    || text.contains("PRODUCTION:")
-                    || (text.contains("FOLLOWING") && text.contains("SATURDAY")) =>
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                text,
+                ..
+            } if text.contains("UNLESS")
+                || text.contains("SKILLED")
+                || text.contains("PRODUCTION:")
+                || (text.contains("FOLLOWING") && text.contains("SATURDAY")) =>
             {
                 let w = TextMeasurer::new(*size_pt).text_width(text);
                 let right = *x + w;
