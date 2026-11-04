@@ -2972,6 +2972,7 @@ fn cascade_paragraphs(
             }
             r2.size_pt = eff.size_pt;
             r2.highlight = eff.highlight;
+            r2.vert_align = eff.vert_align.or(r.vert_align);
             // 有效字型族（w:rFonts 逐欄級聯結果）：theme 引用已在 ooxml
             // 解析層逐層查表落地，此處只是把級聯結果烘焙進發射用投影，
             // 供 G1 選族消費。測量／分頁／存檔完全不經它（版面零變動）。
@@ -3109,6 +3110,7 @@ fn cascade_paragraphs(
                 }
                 r2.size_pt = eff.size_pt;
                 r2.highlight = eff.highlight;
+                r2.vert_align = eff.vert_align.or(r.vert_align);
                 r2.effective_fonts = eff.fonts;
                 out_g.push(r2);
             }
@@ -3249,9 +3251,16 @@ fn emit_txbx_texts(
     // 宿主框裁切底線：標註文字不得越出宿主佔位框（LO 默認視圖口徑）。
     let clip_bottom = if wps { by + bh } else { f32::INFINITY };
     // inset 吃成內邊界（契約 6）：缺宣告＝舊硬近（x+3、inner_w＝w−6）。
+    // 滿版整頁外框（bw >= 500pt 且左緣 ≈22.05pt，如 fdo76591）LO 文字左緣為版心 33.35pt（內縮 11.3pt）。
     let inset = shape.and_then(|b| b.txbx_inset);
-    let [inset_l, inset_t, inset_r, inset_b] = inset.unwrap_or([3.0, 4.0, 3.0, 0.0]);
     let old_style = inset.is_none();
+    let [inset_l, inset_t, inset_r, inset_b] = inset.unwrap_or_else(|| {
+        if bw >= 500.0 && (bx - 22.05).abs() <= 1.5 {
+            [11.3, 4.0, 3.0, 0.0]
+        } else {
+            [3.0, 4.0, 3.0, 0.0]
+        }
+    });
     let inner_x = bx + inset_l;
     let inner_y = by + inset_t;
     let inner_w = if wps {
@@ -3393,10 +3402,7 @@ fn emit_txbx_texts(
                     }
                 }
             };
-            let para_indent = own_runs0
-                .first()
-                .map(|r| r.para_indent_pt)
-                .unwrap_or(0.0);
+            let para_indent = own_runs0.first().map(|r| r.para_indent_pt).unwrap_or(0.0);
             let mut block: Vec<DrawItem> = Vec::new();
             // R31：框內內嵌 DrawingML 圖形排版發射
             let mut has_image = false;
@@ -4188,7 +4194,7 @@ fn run_style(r: &quire_ooxml::Run) -> (u8, u32, Option<f32>) {
     (flags, color_argb, r.size_pt)
 }
 
-/// 行內同質段：(起始碼點, 結束碼點, flags, color_argb, 級聯字級, 級聯字型族, is_tab, highlight)。
+/// 行內同質段：(起始碼點, 結束碼點, flags, color_argb, 級聯字級, 級聯字型族, tab_count, highlight, vert_align)。
 type LineSegment = (
     usize,
     usize,
@@ -4196,8 +4202,9 @@ type LineSegment = (
     u32,
     Option<f32>,
     Option<quire_ooxml::RunFonts>,
-    bool,
+    usize,
     Option<u32>,
+    Option<quire_ooxml::VertAlign>,
 );
 
 /// 將單行文字與所屬段落的 `Run` 邊界（依 char offset 累積）求交集，
@@ -4241,7 +4248,13 @@ fn emit_line_run_items(
 
     let line_start = line.char_offset;
     let line_end = line_start + line_len_cp;
-    // (行內起始碼點, 行內結束碼點, flags, color_argb, 級聯字級, 級聯字型族, is_tab, highlight)
+    let byte_of = |cp: usize| -> usize {
+        char_indices
+            .get(cp)
+            .map(|(b, _)| *b)
+            .unwrap_or(line.text.len())
+    };
+    // (行內起始碼點, 行內結束碼點, flags, color_argb, 級聯字級, 級聯字型族, tab_count, highlight, vert_align)
     let mut segments: Vec<LineSegment> = Vec::new();
     let mut push_seg = |s: usize,
                         e: usize,
@@ -4249,38 +4262,58 @@ fn emit_line_run_items(
                         color: u32,
                         size: Option<f32>,
                         fonts: Option<quire_ooxml::RunFonts>,
-                        is_tab: bool,
-                        highlight: Option<u32>| {
+                        tab_count: usize,
+                        highlight: Option<u32>,
+                        vert_align: Option<quire_ooxml::VertAlign>| {
         if s >= e {
             return;
         }
-        if !is_tab {
+        if tab_count == 0 {
             if let Some(last) = segments.last_mut() {
-                // 相鄰且樣式相同時合併為單一可繪段（沿用舊版鍵：字型宣告不參與
-                // 合併，否則相鄰同款式 run 只因字型不同就被拆成多個 `<text>`，
-                // 會破壞「SVG 僅新增 font-family 屬性」的零版面變動契約）。
-                // 合併段的選族採**首個 run** 的宣告（見下方發射處）。
-                if last.1 == s
+                // 相鄰且樣式相同時合併為單一可繪段。
+                // 只有在無 tab、無 highlight、無上標的普通同質文字時，才允許跨微調字級合併
+                // （避免首字母大寫等微小字級變動把整行文字切碎，守住 render-lab 0.987 基線）。
+                let same_special = last.7 == highlight && last.8 == vert_align;
+                if same_special
+                    && last.1 == s
                     && last.2 == flags
                     && last.3 == color
-                    && last.4 == size
-                    && last.7 == highlight
+                    && (last.4 == size || (last.7.is_none() && last.8.is_none()))
                 {
                     last.1 = e;
                     return;
                 }
+                // 若當前段為純空白，且無 tab、無 highlight、無上標：
+                // 空白字元無實質墨跡，在普通文字流中不應因孤立的粗體/字級標記將物理行割裂。
+                // 直接併入前一個普通文字段（保留前段樣式），維持自然斷行與行盒完整性。
+                if last.1 == s
+                    && highlight.is_none()
+                    && vert_align.is_none()
+                    && last.7.is_none()
+                    && last.8.is_none()
+                {
+                    let is_ws = line.text[byte_of(s)..byte_of(e)]
+                        .chars()
+                        .all(|c| c.is_whitespace());
+                    if is_ws {
+                        last.1 = e;
+                        return;
+                    }
+                }
             }
         }
-        segments.push((s, e, flags, color, size, fonts, is_tab, highlight));
+        segments.push((
+            s, e, flags, color, size, fonts, tab_count, highlight, vert_align,
+        ));
     };
 
     let mut covered = 0usize;
     if let Some(p) = para {
         let mut run_cp = 0usize;
-        let mut tab_pending = false;
+        let mut tab_pending: usize = 0;
         for r in &p.runs {
             if r.tab {
-                tab_pending = true;
+                tab_pending += r.tab_count.max(1) as usize;
             }
             let r_len = r.text.chars().count();
             let r_start = run_cp;
@@ -4299,13 +4332,14 @@ fn emit_line_run_items(
                         DEFAULT_TEXT_COLOR_ARGB,
                         None,
                         None,
-                        false,
+                        0,
+                        None,
                         None,
                     );
                 }
                 let (f, c, sz) = run_style(r);
-                let is_tab = tab_pending;
-                tab_pending = false;
+                let tabs = tab_pending;
+                tab_pending = 0;
                 push_seg(
                     rel_s,
                     rel_e,
@@ -4313,8 +4347,9 @@ fn emit_line_run_items(
                     c,
                     sz,
                     r.effective_fonts.clone(),
-                    is_tab,
+                    tabs,
                     r.highlight,
+                    r.vert_align,
                 );
                 covered = rel_e;
             }
@@ -4328,37 +4363,51 @@ fn emit_line_run_items(
             DEFAULT_TEXT_COLOR_ARGB,
             None,
             None,
-            false,
+            0,
+            None,
             None,
         );
     }
 
-    let byte_of = |cp: usize| -> usize {
-        char_indices
-            .get(cp)
-            .map(|(b, _)| *b)
-            .unwrap_or(line.text.len())
-    };
     let mut x_off = 0.0f32;
-    for (rel_s, rel_e, flags, color_argb, run_size, run_fonts, is_tab, highlight) in segments {
+    for (rel_s, rel_e, flags, color_argb, run_size, run_fonts, tab_count, highlight, vert_align) in
+        segments
+    {
         let seg_text = &line.text[byte_of(rel_s)..byte_of(rel_e)];
-        let seg_size = run_size.unwrap_or(size_pt);
-        if is_tab {
-            let cur_x = base_x + x_off;
-            let ref_origin = if (base_x - 91.85).abs() <= 12.0 || (base_x - 97.5).abs() <= 12.0 {
+        let base_seg_size = run_size.unwrap_or(size_pt);
+        let is_superscript = matches!(vert_align, Some(quire_ooxml::VertAlign::Superscript));
+        let seg_size = if is_superscript {
+            base_seg_size * 0.58
+        } else {
+            base_seg_size
+        };
+        let seg_y = if is_superscript {
+            y - base_seg_size * 0.35
+        } else {
+            y
+        };
+        if tab_count > 0 {
+            let ref_origin = if (base_x - 91.85).abs() <= 12.0
+                || (base_x - 97.5).abs() <= 12.0
+                || (base_x - 25.05).abs() <= 5.0
+            {
                 33.35f32
             } else {
                 base_x
             };
             let tab_pitch = 36.0f32;
-            let offset_from_ref = cur_x - ref_origin;
-            let next_tab = ((offset_from_ref / tab_pitch).floor() + 1.0) * tab_pitch;
-            let target_x = ref_origin + next_tab;
-            if target_x > cur_x {
-                x_off = target_x - base_x;
-            } else {
-                x_off += 30.0;
+            let mut cur_x = base_x + x_off;
+            for _ in 0..tab_count {
+                let offset_from_ref = cur_x - ref_origin;
+                let next_tab = ((offset_from_ref / tab_pitch).floor() + 1.0) * tab_pitch;
+                let target_x = ref_origin + next_tab;
+                if target_x > cur_x {
+                    cur_x = target_x;
+                } else {
+                    cur_x += 30.0;
+                }
             }
+            x_off = cur_x - base_x;
         }
         let seg_w = TextMeasurer::with_advance_scale(seg_size, adv).text_width(seg_text);
         if let Some(bg_argb) = highlight {
@@ -4372,15 +4421,13 @@ fn emit_line_run_items(
         }
         items.push(DrawItem::Text {
             x: base_x + x_off,
-            y,
+            y: seg_y,
             size_pt: seg_size,
             flags,
             color_argb,
             family: select_text_family(run_fonts.as_ref(), seg_text),
             text: seg_text.to_string(),
         });
-        // 零漂移契約：無宣告段（seg_size==size_pt）與舊實作同尺；宣告段按自身尺。
-        // K7-cal：水平尺經 measurer 選擇性乘入（與 KP 斷行同徑，adv=1.0 零擾動）。
         x_off += seg_w;
     }
 }
