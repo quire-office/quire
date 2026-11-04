@@ -4435,7 +4435,10 @@ fn emit_line_run_items(
         }
         let seg_fam = select_text_family(run_fonts.as_ref(), seg_text);
         let seg_adv = {
-            let base_adv = seg_fam.as_ref().map(|f| face_advance_scale(f)).unwrap_or(adv);
+            let base_adv = seg_fam
+                .as_ref()
+                .map(|f| face_advance_scale(f))
+                .unwrap_or(adv);
             let is_caps = seg_text.chars().any(|c| c.is_ascii_uppercase())
                 && !seg_text.chars().any(|c| c.is_ascii_lowercase());
             let mut scale = if is_caps {
