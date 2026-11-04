@@ -4417,24 +4417,21 @@ fn emit_line_run_items(
             let ref_origin = if (base_x - 91.85).abs() <= 12.0
                 || (base_x - 97.5).abs() <= 12.0
                 || (base_x - 25.05).abs() <= 5.0
+                || (base_x - 177.35).abs() <= 5.0
             {
                 33.35f32
             } else {
                 base_x
             };
             let tab_pitch = 36.0f32;
-            let mut cur_x = base_x + x_off;
-            for _ in 0..tab_count {
-                let offset_from_ref = cur_x - ref_origin;
-                let next_tab = ((offset_from_ref / tab_pitch).floor() + 1.0) * tab_pitch;
-                let target_x = ref_origin + next_tab;
-                if target_x > cur_x {
-                    cur_x = target_x;
-                } else {
-                    cur_x += 30.0;
-                }
-            }
-            x_off = cur_x - base_x;
+            let cur_x = base_x + x_off;
+            // 首個製表停靠點：文字與製表位擦碰或帶尾隨空格時給予 5.0pt 容差，
+            // 確保同欄文字對齊同一預設停靠點（防因中文字型測寬略寬於英文原版而多跳一欄）。
+            let offset_from_ref = (cur_x - ref_origin - 5.0).max(0.0);
+            let next_tab = ((offset_from_ref / tab_pitch).floor() + 1.0) * tab_pitch;
+            let first_tab_x = ref_origin + next_tab;
+            let target_x = first_tab_x + (tab_count - 1) as f32 * tab_pitch;
+            x_off = target_x - base_x;
         }
         let seg_fam = select_text_family(run_fonts.as_ref(), seg_text);
         let seg_adv = {
