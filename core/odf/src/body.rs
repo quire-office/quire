@@ -84,7 +84,11 @@ pub fn extract_body_from_bytes(
             }
             Ok(Event::Text(e)) => {
                 if let Some(cur) = p_stack.last_mut() {
-                    if let Ok(unescaped) = e.unescape() {
+                    if let Ok(unescaped) = e.decode().map_err(|e| e.to_string()).and_then(|d| {
+                        quick_xml::escape::unescape(&d)
+                            .map(|u| u.into_owned())
+                            .map_err(|e| e.to_string())
+                    }) {
                         cur.push_str(&unescaped);
                     }
                 }
