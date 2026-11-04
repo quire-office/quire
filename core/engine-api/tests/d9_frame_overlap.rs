@@ -135,9 +135,7 @@ fn d9_lamp3_logo_bottom_within_page() {
         .items
         .iter()
         .find_map(|it| match it {
-            DrawItem::Image { y, w, h, .. } if *w > 200.0 && *y > 700.0 => {
-                Some((*y, *h, *y + *h))
-            }
+            DrawItem::Image { y, w, h, .. } if *w > 200.0 && *y > 700.0 => Some((*y, *h, *y + *h)),
             _ => None,
         })
         .expect("必須存在 CHRYSLER logo Image");
