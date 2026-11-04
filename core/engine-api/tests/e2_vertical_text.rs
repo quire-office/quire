@@ -272,7 +272,8 @@ fn e2_lamp4_vert_emission_tbrl_and_tdf124754() {
         "tdf124754 flags={:#x} 未帶 FLAG_DIR_VERT 方向旗標",
         item2.3
     );
-    let len2 = TextMeasurer::new(item2.2).text_width(&item2.4);
+    // Times New Roman 字型（tdf124754）水平 advance scale 為 0.904
+    let len2 = TextMeasurer::with_advance_scale(item2.2, 0.904).text_width(&item2.4);
     let col_w2 = item2.2 * 1.22;
     let bbox2 = LineFlow::Vertical.compute_line_bbox(item2.0, item2.1, len2, col_w2);
     assert!(

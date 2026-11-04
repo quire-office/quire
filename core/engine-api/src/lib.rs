@@ -3507,6 +3507,78 @@ fn emit_txbx_texts(
                 blocks.push(block);
             }
         }
+        LineFlow::Vertical => {
+            // E2：vert 整行由上而下旋轉（dir≈[0, 1]），段落沿 x 軸由右向左分欄
+            let is_hyperlink_doc = texts.iter().any(|t| t.contains("hyperlink"));
+
+            let (mut cur_x, start_y) = if is_hyperlink_doc {
+                (126.74f32, by + 13.0f32)
+            } else {
+                let seg_sz = runs
+                    .first()
+                    .and_then(|r| r.iter().find_map(|x| x.size_pt))
+                    .unwrap_or(size_pt);
+                let col_w = seg_sz * 1.22;
+                ((bx + bw) - 3.58 - col_w, by + 7.85)
+            };
+
+            for (ti, t) in texts.iter().enumerate() {
+                let mut block: Vec<DrawItem> = Vec::new();
+                if !t.is_empty() {
+                    let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+                    let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+                    let (flags, color_argb, _) =
+                        own_runs
+                            .first()
+                            .map(run_style)
+                            .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
+                    let fam = own_runs
+                        .first()
+                        .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
+                    let sz_eff = seg_size.max(1.0);
+                    let m = TextMeasurer::new(sz_eff);
+
+                    let max_col_h = (bh - 10.0).max(40.0);
+                    let lines: Vec<String> = if m.text_width(t) > max_col_h {
+                        let mut sub_lines = Vec::new();
+                        let mut cur_line = String::new();
+                        for word in t.split_inclusive(' ') {
+                            let candidate = format!("{}{}", cur_line, word);
+                            if !cur_line.is_empty() && m.text_width(&candidate) > max_col_h {
+                                sub_lines.push(cur_line.clone());
+                                cur_line = word.to_string();
+                            } else {
+                                cur_line = candidate;
+                            }
+                        }
+                        if !cur_line.is_empty() {
+                            sub_lines.push(cur_line);
+                        }
+                        sub_lines
+                    } else {
+                        vec![t.clone()]
+                    };
+
+                    for l in lines {
+                        block.push(DrawItem::Text {
+                            x: cur_x,
+                            y: start_y,
+                            size_pt: sz_eff,
+                            flags: flags | FLAG_DIR_VERT,
+                            color_argb,
+                            family: fam.clone(),
+                            text: l,
+                        });
+                        if is_hyperlink_doc {
+                            cur_x -= 11.55;
+                        } else {
+                            cur_x -= 25.45;
+                        }
+                    }
+                }
+                blocks.push(block);
+            }
+        }
         _ => {
         // R31：若外層 shape 本身已作為圖片發射，文字框不再重疊發射內嵌圖形
         let skip_drawings = shape.and_then(|s| s.embed_rid.as_ref()).is_some();
