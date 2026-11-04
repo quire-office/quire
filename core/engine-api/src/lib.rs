@@ -3269,8 +3269,9 @@ fn emit_txbx_texts(
     // 滿版整頁外框（bw >= 500pt 且左緣 ≈22.05pt，如 fdo76591）LO 文字左緣為版心 33.35pt（內縮 11.3pt）。
     let inset = shape.and_then(|b| b.txbx_inset);
     let old_style = inset.is_none();
+    let is_fullscreen_frame = bw >= 500.0 && (bx - 22.05).abs() <= 1.5;
     let [inset_l, inset_t, inset_r, inset_b] = inset.unwrap_or_else(|| {
-        if bw >= 500.0 && (bx - 22.05).abs() <= 1.5 {
+        if is_fullscreen_frame {
             [11.3, 4.0, 3.0, 0.0]
         } else {
             [3.0, 4.0, 3.0, 0.0]
@@ -3283,7 +3284,16 @@ fn emit_txbx_texts(
         // （fdo74605 實據）；不再套 3pt 硬內縮，斷行才與 LO 對齊。
         (bw - 2.0).max(10.0)
     } else if old_style {
-        (bw - 6.0).max(10.0)
+        if is_fullscreen_frame {
+            // D8：正文可用寬度必須 ≤ 外框（VML 大框 567pt 內緣 587.05pt）與 section margin 取小者。
+            // 避免行寬算到框緣外導致「FOLLOWING」被裁切。
+            let frame_inner_right = bx + bw - 2.0;
+            let frame_w = frame_inner_right - inner_x;
+            let sec_margin_w = 540.5f32;
+            frame_w.min(sec_margin_w).max(10.0)
+        } else {
+            (bw - 6.0).max(10.0)
+        }
     } else {
         (bw - inset_l - inset_r).max(10.0)
     };
