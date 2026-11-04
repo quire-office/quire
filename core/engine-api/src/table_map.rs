@@ -1668,6 +1668,8 @@ mod tests {
             wrap_type: None,
             textbox_grow: None,
             group_shapes: Vec::new(),
+            // R35：框內內嵌圖獨立欄位——本測只吃幾何，老實缺省。
+            txbx_drawings: Vec::new(),
             txbx_borders: Vec::new(),
             duotone: None,
             txbx_drawing_extent: None,
@@ -1821,6 +1823,79 @@ mod tests {
     fn corpus_bytes(rel: &str) -> Vec<u8> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
         std::fs::read(root.join(rel)).unwrap_or_else(|e| panic!("讀 {rel}: {e}"))
+    }
+
+    /// R35 卡 7（VML 框內嵌圖誤觸 K17 撐列臂）邊界鎖。
+    ///
+    /// 誠實註記（實掃定案）：VML 候補 `layout_in_cell` 恆 false（Start 臂
+    /// `Pending::new` 是唯一設值點，VML 路徑永不置真）⇒ corpus 實際到不了
+    /// 本臂；本燈是**前瞻邊界鎖**——若日後 VML 獲得 in-cell 形態，挪用態
+    /// （R31：內嵌圖塞 `group_shapes.stroke_dash`）必須仍被識別為撐列誤觸
+    /// （紅態重現），獨立欄位態（R35：`txbx_drawings`）必須不撐列（綠態）。
+    /// 與卡 6 同根：獨立欄位即解，本燈鎖住兩態分界。
+    #[test]
+    fn r35_embedded_drawings_do_not_grow_rows_via_group_shapes_arm() {
+        use quire_ooxml::{Block, GridCol, InlineChildShape, Table, TableCell, TableRow};
+        // 單列單格表，格內段落 index=1（宿主段落）。
+        let table = Table {
+            props: Default::default(),
+            grid: vec![GridCol {
+                w_pt: Some(200.0),
+                raw: None,
+            }],
+            rows: vec![TableRow {
+                props: Default::default(),
+                cells: vec![TableCell {
+                    props: Default::default(),
+                    blocks: vec![Block::Paragraph { index: 1 }],
+                }],
+            }],
+        };
+        let params = quire_layout::LayoutParams::default();
+        let mut wrap_tops = HashMap::new();
+        let mut floors = |images: &[quire_ooxml::InlineImage]| {
+            k17_grow_floors(&table, images, &params, &[], None, &[], &mut wrap_tops)
+        };
+        // 資格齊備的 VML 候選（floating＋layoutInCell——後者 corpus 恆 false，
+        // 本測手工點燃以觸達 K17 臂）。
+        let mut host = img(1, 60.0);
+        host.floating = true;
+        host.layout_in_cell = true;
+        host.pos_y_pt = Some(0.0);
+        // 綠態（R35 口徑）：內嵌圖在獨立欄位 ⇒ 群組臂不觸發 ⇒ 不撐列。
+        let mut fixed = host.clone();
+        fixed.txbx_drawings = vec![quire_ooxml::TxbxDrawing {
+            para_ix: 0,
+            rid: "rIdX".into(),
+            extent_pt: [40.0, 30.0],
+        }];
+        assert!(
+            floors(&[fixed]).is_empty(),
+            "獨立欄位態不得誤判 wpg:wgp 群組硬撐列高（卡 7 根治面）"
+        );
+        // 紅態（R31 挪用形態重現）：內嵌圖塞進 group_shapes.stroke_dash ⇒
+        // `None if !group_shapes.is_empty()` 臂照舊撐列（60pt）——證明本燈
+        // 真有鑑別力，非恆綠假鎖。
+        let mut misused = host.clone();
+        misused.group_shapes = vec![InlineChildShape {
+            dx_pt: 0.0,
+            dy_pt: 0.0,
+            w_pt: 40.0,
+            h_pt: 30.0,
+            fill_argb: None,
+            filled: None,
+            stroke_argb: None,
+            stroked: None,
+            stroke_width_pt: None,
+            stroke_dash: Some("rIdX".into()),
+            txbx_texts: Vec::new(),
+        }];
+        let f = floors(&[misused]);
+        assert_eq!(
+            f.get(&0).copied(),
+            Some(60.0),
+            "挪用態必須仍被群組臂撐列（鑑別力證據；R35 後此態自然不再產生）"
+        );
     }
 
     /// 口徑統一回歸（t_580c37ac）：含巢狀 `w:p`（txbxContent）的 corpus 檔，

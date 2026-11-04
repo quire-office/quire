@@ -162,6 +162,10 @@ struct PixelSource {
     emf: Option<EmfRasterPayload>,
     /// K27-B：來源候選帶有 textbox 內嵌 w:drawing 自己的 wp:extent 尺寸。
     txbx_drawing_extent: Option<[f32; 2]>,
+    /// R35：池項所屬 rId（框內段落流內嵌圖帶身——發射層按 rid **精確配對**，
+    /// 不再靠 `w_pt` 近似匹配；同段多圖因此可逐張配對不串位）。舊路徑
+    /// （正文流／浮動圖）填 None＝沿用 w_pt 配對口徑，零擾動。
+    rid: Option<String>,
 }
 
 /// 頁首／頁尾 part 的已解析投影（開啟文件時一次性解析；純讀取）。
@@ -605,10 +609,36 @@ impl Engine {
                     duotone: im.duotone.map(|d| [d.color1, d.color2]),
                     emf,
                     txbx_drawing_extent: im.txbx_drawing_extent,
+                    // 舊路徑（正文流／浮動圖）rid＝None：發射層沿用 w_pt
+                    // 近似配對口徑，零擾動。
+                    rid: None,
                 })
             })
             .collect();
-        // R31：未將自身宣告為圖片的文字框，其內嵌 DrawingML 圖形進入像素池
+        // R35（卡 1/4 根治）：框內段落流內嵌圖走 `txbx_drawings` 獨立欄位入池
+        // ——每張圖自帶 rid＋extent，發射層按 rid 精確配對（同段多圖逐張不
+        // 串位）。舊 R31 挪用 `group_shapes` 的路徑只在 `R35_TXBX_BUGGY=1`
+        // 回塞態下還有料（採集層回塞臂刷 group_shapes），正常態該臂自然
+        // 空轉（框內圖不再進 group_shapes）。
+        for im in &images {
+            for td in &im.txbx_drawings {
+                if let Some((path, mime, emf)) =
+                    resolve_pixel_source(&doc.parts, &doc_rels, &[td.rid.as_str()])
+                {
+                    image_pixels.push(PixelSource {
+                        para: im.para_index,
+                        w_pt: td.extent_pt[0],
+                        src: (path, mime),
+                        duotone: None,
+                        emf,
+                        txbx_drawing_extent: Some(td.extent_pt),
+                        rid: Some(td.rid.clone()),
+                    });
+                }
+            }
+        }
+        // R31 舊態回塞路徑（未將自身宣告為圖片的文字框，其內嵌圖形經挪用
+        // 欄位進像素池）——正常態 group_shapes 已不含框內圖，此環自然空轉。
         for im in &images {
             if im.embed_rid.is_none() {
                 for cs in &im.group_shapes {
@@ -623,6 +653,7 @@ impl Engine {
                                 duotone: None,
                                 emf,
                                 txbx_drawing_extent: Some([cs.w_pt, cs.h_pt]),
+                                rid: None,
                             });
                         }
                     }
@@ -3580,8 +3611,13 @@ fn emit_txbx_texts(
             }
         }
         _ => {
-            // R31：若外層 shape 本身已作為圖片發射，文字框不再重疊發射內嵌圖形
-            let skip_drawings = shape.and_then(|s| s.embed_rid.as_ref()).is_some();
+            // R31：若外層 shape 本身已作為圖片發射，文字框不再重疊發射內嵌圖形。
+            // R35 收窄：舊口徑「框有 rid 就全掐」會連異源圖一起掐掉；正常態改
+            // 為「該圖 rid ∈ 框自身 rid/rids 才掐」（同根圖不雙發、異源圖照發）。
+            // 回塞態（`R35_TXBX_BUGGY=1`）逐字保留舊口徑＋`.find` 單發。
+            let r35_buggy = std::env::var_os("R35_TXBX_BUGGY").is_some();
+            let skip_all_drawings = shape.and_then(|s| s.embed_rid.as_ref()).is_some();
+            let own_rids: Vec<&str> = shape.map(image_rid_candidates).unwrap_or_default();
             let mut yy = inner_y;
             let mut header_y_excess = 0.0f32;
             for (ti, t) in texts.iter().enumerate() {
@@ -3605,14 +3641,63 @@ fn emit_txbx_texts(
                 let mut block: Vec<DrawItem> = Vec::new();
                 // R31：框內內嵌 DrawingML 圖形排版發射
                 let mut has_image = false;
-                if !skip_drawings {
-                    if let Some(td) = shape.and_then(|s| {
-                        s.group_shapes
-                            .iter()
-                            .find(|d| d.dx_pt as usize == ti && d.stroke_dash.is_some())
-                    }) {
-                        let img_w = td.w_pt;
-                        let img_h = td.h_pt;
+                if r35_buggy {
+                    // 回塞態：R31 單發（`.find` 只取段內第一張，第 2..N 張連同其
+                    // 像素池項永不被消耗＝卡 1 的缺陷本體）。
+                    if !skip_all_drawings {
+                        if let Some(td) = shape.and_then(|s| {
+                            s.group_shapes
+                                .iter()
+                                .find(|d| d.dx_pt as usize == ti && d.stroke_dash.is_some())
+                        }) {
+                            let img_w = td.w_pt;
+                            let img_h = td.h_pt;
+                            let img_x = if center {
+                                inner_x + ((inner_w - img_w) * 0.5).max(0.0)
+                            } else {
+                                inner_x + para_indent
+                            };
+                            let pix = pixels.as_mut().and_then(|pool| {
+                                take_image_pixel(
+                                    (pool.0, pool.1, pool.2),
+                                    |s| (s.w_pt - img_w).abs() < 0.01,
+                                    img_x,
+                                    yy,
+                                    img_w,
+                                    img_h,
+                                )
+                            });
+                            match pix {
+                                Some(it) => block.push(it),
+                                None => block.push(DrawItem::Rect {
+                                    x: img_x,
+                                    y: yy,
+                                    w: img_w,
+                                    h: img_h,
+                                    fill_argb: 0x2088_8888,
+                                }),
+                            }
+                            yy += img_h;
+                            has_image = true;
+                        }
+                    }
+                } else {
+                    // R35 卡 1：逐張走訪本段**全部**內嵌圖（獨立欄位帶 para_ix
+                    // 對位，不再挪用 dx_pt/stroke_dash）。入列即有合法 extent
+                    // （卡 4 在採集期已擋掉 0×0），故不再產生退化 Rect 吞空段步進。
+                    let candidates: Vec<(String, f32, f32)> = shape
+                        .map(|s| {
+                            s.txbx_drawings
+                                .iter()
+                                .filter(|d| d.para_ix == ti)
+                                .map(|d| (d.rid.clone(), d.extent_pt[0], d.extent_pt[1]))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    for (rid, img_w, img_h) in candidates {
+                        if own_rids.contains(&rid.as_str()) {
+                            continue; // 與宿主框同源的圖：框已作為圖片發射，不雙發
+                        }
                         let img_x = if center {
                             inner_x + ((inner_w - img_w) * 0.5).max(0.0)
                         } else {
@@ -3621,7 +3706,7 @@ fn emit_txbx_texts(
                         let pix = pixels.as_mut().and_then(|pool| {
                             take_image_pixel(
                                 (pool.0, pool.1, pool.2),
-                                |s| (s.w_pt - img_w).abs() < 0.01,
+                                |s| s.rid.as_deref() == Some(rid.as_str()),
                                 img_x,
                                 yy,
                                 img_w,
