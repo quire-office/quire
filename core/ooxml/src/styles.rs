@@ -127,6 +127,11 @@ pub struct RunStyle {
     /// 任何字型（整包繼承上層）。逐欄繼承見 [`RunFonts`]。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fonts: Option<RunFonts>,
+    /// 文字背景高亮（`w:highlight`／`w:shd`；0xAARRGGBB；D5）。`None`＝本層
+    /// 未宣告。級聯與 `color` 同款逐欄繼承（本層宣告者贏，未宣告者取上層）。
+    /// 純派生欄位：serde default＋None 不外露＝無高亮檔案的序列化位元組不動。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<u32>,
 }
 
 impl RunStyle {
@@ -161,7 +166,7 @@ impl RunStyle {
                 $(if self.$f.is_none() { self.$f = upper.$f; })*
             };
         }
-        fill!(size_pt, bold, italic, underline, strike);
+        fill!(size_pt, bold, italic, underline, strike, highlight);
         if !self.color_set {
             self.color = upper.color;
             self.color_set = upper.color_set;
@@ -445,7 +450,54 @@ pub(crate) fn apply_run_tag(
                 }
             }
         }
+        b"highlight" => {
+            // 文字背景高亮（ECMA-376 §17.3.2.15；D5 fdo76591「IMPORTANT NOTICE」
+            // 黑底白字實據）：`w:val` 是 16 色枚舉名（非 hex）。`none`/`auto`
+            // ＝明確關閉（覆蓋上層宣告，故置 Some(None) 語義由 rs.highlight=None
+            // 且已在此臂觸碰表示——本欄三態以 Option<u32> 表「未宣告/宣告色」，
+            // `none` 老實退回未宣告：corpus 無「上層高亮＋下層關掉」實例，
+            // 不虛構第四態）。
+            if let Some(v) = attr_val(e, "val") {
+                rs.highlight = highlight_color_of(&v);
+            }
+        }
+        b"shd" => {
+            // run 級底紋（`w:shd/@w:fill`）：與 highlight 同落 highlight 欄（LO
+            // 繪製口徑兩者都是文字底方塊）。`auto`/`none` fill＝不著色。
+            if let Some(v) = attr_val(e, "fill") {
+                if v != "auto" && v != "none" {
+                    if let Some(c) = crate::parse_color_val(&v) {
+                        rs.highlight = Some(c);
+                    }
+                }
+            }
+        }
         _ => {}
+    }
+}
+
+/// ECMA-376 §17.3.2.15 標準文字高亮色（16 色枚舉）→ 0xAARRGGBB。
+/// 枚舉名以外（十六進位色值）老實走 `parse_color_val` 兜底；`none`/空＝None。
+pub fn highlight_color_of(val: &str) -> Option<u32> {
+    match val.trim().to_ascii_lowercase().as_str() {
+        "black" => Some(0xFF00_0000),
+        "blue" => Some(0xFF00_00FF),
+        "cyan" => Some(0xFF00_FFFF),
+        "darkblue" => Some(0xFF00_0080),
+        "darkcyan" => Some(0xFF00_8080),
+        "darkgray" | "darkgrey" => Some(0xFF80_8080),
+        "darkgreen" => Some(0xFF00_8000),
+        "darkmagenta" => Some(0xFF80_0080),
+        "darkred" => Some(0xFF80_0000),
+        "darkyellow" => Some(0xFF80_8000),
+        "green" => Some(0xFF00_FF00),
+        "lightgray" | "lightgrey" => Some(0xFFD3_D3D3),
+        "magenta" => Some(0xFFFF_00FF),
+        "red" => Some(0xFFFF_0000),
+        "white" => Some(0xFFFF_FFFF),
+        "yellow" => Some(0xFFFF_FF00),
+        "none" | "auto" | "" => None,
+        other => crate::parse_color_val(other),
     }
 }
 
