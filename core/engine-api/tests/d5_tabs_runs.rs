@@ -5,7 +5,7 @@
 //! 2. 「Scheduled Saturday Overtime」渲染字級 == LO span 字級 ±0.5pt（20pt），bold 生效（FLAG_BOLD）。
 //! 3. 「IMPORTANT NOTICE」item 帶 highlight/shading 底（底層矩形 item 存在且覆蓋文字 bbox）。
 
-use quire_engine::{DrawItem, Engine, FLAG_BOLD};
+use quire_engine::{DrawItem, Engine, FLAG_BOLD, FLAG_UNDERLINE};
 
 fn read_corpus(rel: &str) -> Vec<u8> {
     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -192,5 +192,215 @@ fn d5_lamp3_important_notice_highlight_background() {
     assert_eq!(
         text_rgb, 0xFFFFFF,
         "「IMPORTANT NOTICE」字色應為白色，實得 0x{color_argb:08X}"
+    );
+}
+
+/// 燈 6：外框 4pt 黑 stroke：源檔 VML shape _x0000_s1026（567×733.65pt、filled="f"、strokeweight="4pt"、默認 strokecolor=black）。
+/// LO 整頁包一圈 4pt 黑實線；我方應發射 4pt 黑色 Rule（color_argb=0xFF000000，width_pt=4.0）。
+#[test]
+fn d5_lamp6_outer_frame_stroke_4pt_black() {
+    let bytes = read_corpus("ooxmlexport/fdo76591.docx");
+    let eng = Engine::from_docx_bytes(&bytes).expect("開啟 fdo76591 失敗");
+    let dl = eng.page_display_list(0).expect("首頁存在");
+
+    // 尋找寬度約 567pt、高度約 733.65pt 的外框 Rule（例如頂邊或底邊）
+    let frame_rules: Vec<_> = dl
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            DrawItem::Rule {
+                x1,
+                y1,
+                x2,
+                y2,
+                width_pt,
+                color_argb,
+                ..
+            } => {
+                let len = ((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt();
+                if len >= 500.0 && (*width_pt - 4.0).abs() <= 0.5 {
+                    Some((*width_pt, *color_argb))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        !frame_rules.is_empty(),
+        "外框 4pt Rule 未找到（源檔 _x0000_s1026 strokeweight=4pt）"
+    );
+
+    for (w, color) in frame_rules {
+        let rgb = color & 0x00FF_FFFF;
+        assert_eq!(
+            rgb, 0x000000,
+            "外框 Rule（寬度 {w}pt）顏色應為黑色 (0xFF000000)，實得 0x{color:08X}"
+        );
+    }
+}
+
+/// 燈 7：下劃線：「(NOTE THE START TIME!)」w:u 單線，文字 item 帶 FLAG_UNDERLINE。
+#[test]
+fn d5_lamp7_note_the_start_time_underline() {
+    let bytes = read_corpus("ooxmlexport/fdo76591.docx");
+    let eng = Engine::from_docx_bytes(&bytes).expect("開啟 fdo76591 失敗");
+    let dl = eng.page_display_list(0).expect("首頁存在");
+
+    let note_item = dl.items.iter().find_map(|it| match it {
+        DrawItem::Text { text, flags, .. } if text.contains("NOTE THE START TIME") => {
+            Some((*flags, text.clone()))
+        }
+        _ => None,
+    });
+
+    assert!(note_item.is_some(), "未找到包含「NOTE THE START TIME」的文字項");
+    let (flags, text) = note_item.unwrap();
+    assert_ne!(
+        flags & FLAG_UNDERLINE,
+        0,
+        "「{text}」文字項未帶有下劃線標記 FLAG_UNDERLINE（flags={flags}）"
+    );
+}
+
+/// 燈 8：上標：「1st」「2nd」的 st/nd 是 w:vertAlign=superscript，我方純文字。發射需縮字級＋y 上移。
+/// LO pymupdf 真值：
+/// - 「1」size=16.0, y=391.3
+/// - 「st」size=9.3, y=391.0（縮字級至約 0.58~0.6 倍，且 y 向上偏移）
+#[test]
+fn d5_lamp8_superscript_size_and_y_offset() {
+    let bytes = read_corpus("ooxmlexport/fdo76591.docx");
+    let eng = Engine::from_docx_bytes(&bytes).expect("開啟 fdo76591 失敗");
+    let dl = eng.page_display_list(0).expect("首頁存在");
+
+    let st_item = dl.items.iter().find_map(|it| match it {
+        DrawItem::Text {
+            x,
+            y,
+            size_pt,
+            text,
+            ..
+        } if text.trim() == "st" => Some((*x, *y, *size_pt)),
+        _ => None,
+    });
+
+    assert!(
+        st_item.is_some(),
+        "「1st」中的「st」未獨立成上標 item（現行被壓入同一純文字字串）"
+    );
+
+    let (_st_x, st_y, st_sz) = st_item.unwrap();
+
+    // 尋找同一行宿主基準文字「1」（或「1st Shift」的基線）
+    let base_item = dl.items.iter().find_map(|it| match it {
+        DrawItem::Text {
+            x,
+            y,
+            size_pt,
+            text,
+            ..
+        } if text.contains("1") && !text.contains("1st") && (y - st_y).abs() <= 10.0 => {
+            Some((*x, *y, *size_pt))
+        }
+        _ => None,
+    });
+
+    let base_sz = base_item.map(|(_, _, sz)| sz).unwrap_or(16.0);
+    // 上標字級約 0.58~0.65 倍
+    assert!(
+        st_sz <= base_sz * 0.75,
+        "上標「st」字級應縮小（基線 {base_sz}pt，實得 {st_sz}pt）"
+    );
+    // y 應向上移動（在顯示列表中 y 座標比基線小，或上移 ≥ 1pt）
+    if let Some((_, base_y, _)) = base_item {
+        assert!(
+            st_y <= base_y + 0.01,
+            "上標「st」y 座標應向上偏移（基線 y={base_y}，實得 st_y={st_y}）"
+        );
+    }
+}
+
+/// 燈 9：粗體清單確認：SATURDAY, APRIL 02, 2011、班表時間欄、1st/2nd Shift 標籤段皆 w:b（修 bold 時別漏）。
+#[test]
+fn d5_lamp9_bold_list_confirmation() {
+    let bytes = read_corpus("ooxmlexport/fdo76591.docx");
+    let eng = Engine::from_docx_bytes(&bytes).expect("開啟 fdo76591 失敗");
+    let dl = eng.page_display_list(0).expect("首頁存在");
+
+    let targets = [
+        "SATURDAY, APRIL 02, 2011",
+        "6:00 a.m. Start",
+        "3:30 p.m. Start",
+    ];
+
+    for target in targets {
+        let item = dl.items.iter().find_map(|it| match it {
+            DrawItem::Text { text, flags, .. } if text.contains(target) => {
+                Some((*flags, text.clone()))
+            }
+            _ => None,
+        });
+
+        assert!(
+            item.is_some(),
+            "目標文字項「{target}」未在 display list 中找到"
+        );
+        let (flags, text) = item.unwrap();
+        assert_ne!(
+            flags & FLAG_BOLD,
+            0,
+            "「{text}」粗體未生效（flags={flags}，應含 FLAG_BOLD={FLAG_BOLD}）"
+        );
+    }
+}
+
+/// 燈 10：頁腳 tab：「11-016」靠左＋「3-23-2011」靠右（LO 分佈兩端），我方相鄰置中——同 tab 根因。
+/// LO pymupdf 真值：
+/// - 「11-016」起點 x≈33.3pt
+/// - 「3-23-2011」起點 x≈501.4pt
+/// 兩者 x 差 = 501.4 - 33.3 = 468.1pt ≥ 400pt。
+#[test]
+fn d5_lamp10_footer_tabs_spread_ends() {
+    let bytes = read_corpus("ooxmlexport/fdo76591.docx");
+    let eng = Engine::from_docx_bytes(&bytes).expect("開啟 fdo76591 失敗");
+    let dl = eng.page_display_list(0).expect("首頁存在");
+
+    let left_item = dl.items.iter().find_map(|it| match it {
+        DrawItem::Text { text, x, y, .. } if text.contains("11-016") => {
+            Some((*x, *y, text.clone()))
+        }
+        _ => None,
+    });
+
+    let right_item = dl.items.iter().find_map(|it| match it {
+        DrawItem::Text { text, x, y, .. } if text.contains("3-23-2011") => {
+            Some((*x, *y, text.clone()))
+        }
+        _ => None,
+    });
+
+    assert!(left_item.is_some(), "未找到包含「11-016」的頁腳文字項");
+    assert!(right_item.is_some(), "未找到包含「3-23-2011」的頁腳文字項");
+
+    let (left_x, _left_y, _) = left_item.unwrap();
+    let (right_x, _right_y, _) = right_item.unwrap();
+
+    let diff = right_x - left_x;
+    assert!(
+        diff >= 400.0,
+        "頁腳「11-016」({left_x}) 與「3-23-2011」({right_x}) 的 x 差應 ≥ 400pt，實得 {diff}pt（LO 分佈兩端）"
+    );
+
+    let lo_left_x = 33.3f32;
+    let lo_right_x = 501.4f32;
+    assert!(
+        (left_x - lo_left_x).abs() <= 15.0,
+        "頁腳「11-016」x={left_x} 應在 LO 真值 {lo_left_x} ±15pt 內"
+    );
+    assert!(
+        (right_x - lo_right_x).abs() <= 30.0,
+        "頁腳「3-23-2011」x={right_x} 應在 LO 真值 {lo_right_x} ±30pt 內"
     );
 }
