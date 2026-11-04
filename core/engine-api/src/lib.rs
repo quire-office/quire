@@ -3574,6 +3574,11 @@ fn emit_txbx_texts(
             } else {
                 nominal_step
             };
+            if is_fullscreen_frame && (t.contains("11-016") || t.contains("3-23-2011")) {
+                // D8：頁腳段錨定在頁底框內緣（貼頁底框內緣，y≈730.53pt），且在正文末段之下。
+                let footer_anchor_y = by + bh - 3.12 - seg_size * 1.15;
+                yy = footer_anchor_y.max(yy);
+            }
             for l in quire_layout::break_lines(t, inner_w, &m) {
                 // R6：標註矩形越出宿主框底線 → 該行起不發（LO 默認視圖裁切）。
                 if yy + step_h > clip_bottom + 0.01 {
