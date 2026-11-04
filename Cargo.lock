@@ -52,9 +52,9 @@ dependencies = [
 
 [[package]]
 name = "crc32fast"
-version = "1.5.2"
+version = "1.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
+checksum = "5f97d3416d5337d15c4b0d78c8c91df922ca143f57ec20e2d1c188333047ef04"
 dependencies = [
  "cfg-if",
 ]
@@ -139,6 +139,7 @@ name = "quire-cli"
 version = "0.1.0"
 dependencies = [
  "quire-engine",
+ "quire-odf",
  "serde",
  "serde_json",
 ]
@@ -173,6 +174,18 @@ dependencies = [
  "serde",
  "swash",
  "unicode-linebreak",
+]
+
+[[package]]
+name = "quire-odf"
+version = "0.1.0"
+dependencies = [
+ "quick-xml",
+ "quire-layout",
+ "quire-ooxml",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

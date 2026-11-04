@@ -12,8 +12,8 @@
     "demo": "npm run build:wasm && npm run build:collab && vite demo --config demo/vite.config.mjs"
   },
   "devDependencies": {
-    "vite": "^6",
-    "wasm-pack": "^0.13"
+    "vite": "^6.4.5",
+    "wasm-pack": "^0.15"
   },
   "license": "Apache-2.0"
 }

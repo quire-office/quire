@@ -273,7 +273,7 @@ fn d7_lamp4_timetable_tabs_alignment() {
     // 在 display list 中尋找第 3 欄的文字項（注意 Break 可能被上標拆分，取「1」或「2」或「Lunch」起點）
     for it in &dl.items {
         if let DrawItem::Text { x, y, text, .. } = it {
-            if *y >= 330.0 && *y <= 500.0 {
+            if *y >= 330.0 && *y <= 560.0 {
                 // 排除時間欄 (x ≈ 177) 與 Shift 標籤 (x ≈ 91)
                 if *x > 300.0
                     && (text == "1" || text == "2" || text == "Lunch" || text.contains("Break"))

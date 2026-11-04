@@ -20,7 +20,7 @@ jobs:
     name: 建置並發佈 wasm 資產
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安裝 stable + wasm32 target
         uses: dtolnay/rust-toolchain@stable
@@ -59,7 +59,7 @@ jobs:
           cat /tmp/sha256.txt
 
       - name: 建/更新 release 並掛資產
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.inputs.version || github.ref_name }}
           prerelease: true

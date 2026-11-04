@@ -1,0 +1,15 @@
+# .mailmap：把歷史上寫錯的 noreply 帳號 ID 歸位到本帳號（ADT109119）。
+#
+# 背景：2026-10-31～11-04 間部分 commit 的 author email 誤用了別的帳號 ID 前綴
+# （GitHub noreply 格式為 `<帳號ID>+<帳號login>@users.noreply.github.com`）。
+# GitHub 對「ID 屬於他人」的 noreply email 不做帳號關聯，於是 Insights 貢獻者榜
+# 把這些 commit 掛到該 ID 的真正擁有者名下——本倉實際上沒有任何外部貢獻者，
+# 也沒有任何來自他人的 PR（實查：全部 commit 皆出自本地 worker 的署名設定錯誤）。
+#
+# 本檔只影響顯示層（git shortlog／GitHub Insights），不改寫任何 commit 內容，
+# 對既有歷史與已發出的 tag 零風險。dependabot 的署名不在此映射（應保留其身份）。
+
+ADT109119 <106337749+ADT109119@users.noreply.github.com> <109119+ADT109119@users.noreply.github.com>
+ADT109119 <106337749+ADT109119@users.noreply.github.com> <45760581+ADT109119@users.noreply.github.com>
+ADT109119 <106337749+ADT109119@users.noreply.github.com> <45760581+[REDACTED]@users.noreply.github.com>
+ADT109119 <106337749+ADT109119@users.noreply.github.com> <ADT109119@users.noreply.github.com>

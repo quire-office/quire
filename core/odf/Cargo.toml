@@ -1,0 +1,18 @@
+[package]
+name = "quire-odf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ODF (ODT) 容器層無損往返與最小內文模型"
+
+[dependencies]
+# 容器層復用 core/ooxml 之 zip_struct::ZipBundle（條目級 raw bytes 搬移，格式無關）
+quire-ooxml = { workspace = true }
+# ODF-C3：文字流投影對接 layout 斷行/分頁入口（layout_glue）。
+quire-layout = { workspace = true }
+quick-xml = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

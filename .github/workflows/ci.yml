@@ -42,7 +42,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -98,7 +98,7 @@ jobs:
       - name: ★ 雙目標鐵律——core 必須可編譯進 wasm32（全平台）
         run: |
           cargo check -p quire-ooxml -p quire-layout -p quire-render-trait \
-            -p quire-crdt -p quire-engine -p quire-xlsx --target wasm32-unknown-unknown
+            -p quire-crdt -p quire-engine -p quire-xlsx -p quire-odf --target wasm32-unknown-unknown
           cargo check -p quire-web -p quire-web-collab --target wasm32-unknown-unknown
           # collab feature 也要能編（協作分塊的依賴組合）。
           cargo check -p quire-engine --features collab --target wasm32-unknown-unknown
@@ -127,7 +127,7 @@ jobs:
     runs-on: macos-latest
     if: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -179,11 +179,11 @@ jobs:
     # Web-2：wasm 拆包＋首包體積閘門（記錄 gzip 尺寸、閘死 CRDT 不進首包）。
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: 建置兩個 wasm 分塊（首包＋協作）
