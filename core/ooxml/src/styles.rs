@@ -127,6 +127,9 @@ pub struct RunStyle {
     /// 任何字型（整包繼承上層）。逐欄繼承見 [`RunFonts`]。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fonts: Option<RunFonts>,
+    /// 文字背景高亮色（0xAARRGGBB，`w:highlight` 或 `w:shd`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<u32>,
 }
 
 impl RunStyle {
@@ -161,7 +164,7 @@ impl RunStyle {
                 $(if self.$f.is_none() { self.$f = upper.$f; })*
             };
         }
-        fill!(size_pt, bold, italic, underline, strike);
+        fill!(size_pt, bold, italic, underline, strike, highlight);
         if !self.color_set {
             self.color = upper.color;
             self.color_set = upper.color_set;
@@ -376,6 +379,13 @@ pub(crate) fn space_pt(raw: Option<&str>) -> Option<f32> {
         .map(|v| (v / 20.0) as f32)
 }
 
+/// 將 twips 字串（可正可負）換算為 pt。
+pub(crate) fn twips_to_pt(raw: Option<&str>) -> Option<f32> {
+    raw.and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .map(|v| (v / 20.0) as f32)
+}
+
 pub(crate) fn align_of(val: Option<&str>) -> Option<Align> {
     match val?.trim() {
         "left" | "start" => Some(Align::Left),
@@ -445,7 +455,45 @@ pub(crate) fn apply_run_tag(
                 }
             }
         }
+        b"highlight" => {
+            if let Some(v) = attr_val(e, "val") {
+                rs.highlight = highlight_color_of(&v);
+            }
+        }
+        b"shd" => {
+            if let Some(v) = attr_val(e, "fill") {
+                if v != "auto" && v != "none" {
+                    if let Some(c) = crate::parse_color_val(&v) {
+                        rs.highlight = Some(c);
+                    }
+                }
+            }
+        }
         _ => {}
+    }
+}
+
+/// ECMA-376 §17.3.2.15 標準文字高亮色（16 色）查表。
+pub fn highlight_color_of(val: &str) -> Option<u32> {
+    match val.trim().to_ascii_lowercase().as_str() {
+        "black" => Some(0xFF00_0000),
+        "blue" => Some(0xFF00_00FF),
+        "cyan" => Some(0xFF00_FFFF),
+        "darkblue" => Some(0xFF00_0080),
+        "darkcyan" => Some(0xFF00_8080),
+        "darkgray" | "darkgrey" => Some(0xFF80_8080),
+        "darkgreen" => Some(0xFF00_8000),
+        "darkmagenta" => Some(0xFF80_0080),
+        "darkred" => Some(0xFF80_0000),
+        "darkyellow" => Some(0xFF80_8000),
+        "green" => Some(0xFF00_FF00),
+        "lightgray" | "lightgrey" => Some(0xFFD3_D3D3),
+        "magenta" => Some(0xFFFF_00FF),
+        "red" => Some(0xFFFF_0000),
+        "white" => Some(0xFFFF_FFFF),
+        "yellow" => Some(0xFFFF_FF00),
+        "none" | "" => None,
+        other => crate::parse_color_val(other),
     }
 }
 
