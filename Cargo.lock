@@ -176,6 +176,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "quire-odf"
+version = "0.1.0"
+dependencies = [
+ "quick-xml",
+ "quire-ooxml",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "quire-ooxml"
 version = "0.1.0"
 dependencies = [
