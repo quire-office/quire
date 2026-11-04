@@ -1658,6 +1658,7 @@ mod tests {
             txbx_rect: None,
             txbx_inset: None,
             txbx_vertical: false,
+            txbx_vert: None,
             txbx_table: Vec::new(),
             page_pinned: false,
             rel_height: 0,

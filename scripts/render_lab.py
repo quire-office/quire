@@ -222,19 +222,38 @@ def _painted_image_xrefs(p) -> tuple[list, list]:
 
 
 def pdf_page_facts(pdf: pathlib.Path) -> list[dict]:
-    """PDF 每頁：文字行（幾何順序）、行數、頁尺寸（pt）、文字 span 數、圖形實據。
+    """PDF 每頁：文字行（幾何順序）、行方向向量、行數、頁尺寸（pt）、文字 span 數、圖形實據。
 
     `images`／`image_xrefs` ＝**繪製**口徑（見 `_painted_image_xrefs`）；
     `images_declared`／`image_xrefs_declared` 保留舊的**宣告**口徑供診斷與 A/B。
+    E2 新增 `line_dirs` 與 `line_boxes`：捕獲 pymupdf 行方向向量與 bbox 形狀，防直排度量偽影。
     """
     d = pymupdf.open(pdf)
     pages = []
     for p in d:
-        lines = [norm(t) for t in str(p.get_text("text")).splitlines() if norm(t)]
+        lines = []
+        line_dirs = []
+        line_boxes = []
+        td = p.get_text("dict")
+        for b in td.get("blocks", []):
+            if "lines" in b:
+                for l in b["lines"]:
+                    lt = norm("".join(s.get("text", "") for s in l.get("spans", [])))
+                    if lt:
+                        lines.append(lt)
+                        ldir = l.get("dir", (1.0, 0.0))
+                        line_dirs.append((round(ldir[0], 2), round(ldir[1], 2)))
+                        line_boxes.append(tuple(round(x, 1) for x in l.get("bbox", (0, 0, 0, 0))))
+        if not lines:
+            lines = [norm(t) for t in str(p.get_text("text")).splitlines() if norm(t)]
+            line_dirs = [(1.0, 0.0)] * len(lines)
+            line_boxes = [(0, 0, 0, 0)] * len(lines)
         words = len(p.get_text("words"))
         painted, declared = _painted_image_xrefs(p)
         pages.append({
             "lines": lines,
+            "line_dirs": line_dirs,
+            "line_boxes": line_boxes,
             "line_count": len(lines),
             "words": words,
             "w_pt": round(p.rect.width, 1),
@@ -289,11 +308,27 @@ def run_quire(docx: pathlib.Path, out_dir: pathlib.Path) -> dict:
     d.check_returncode()
     pages = []
     for dl in json.loads(d.stdout):
-        lines = [norm(it["Text"]["text"]) for it in dl["items"] if "Text" in it]
-        lines = [l for l in lines if l]
+        lines = []
+        line_dirs = []
+        for it in dl["items"]:
+            if "Text" in it:
+                t = it["Text"]
+                text = norm(t.get("text", ""))
+                if text:
+                    lines.append(text)
+                    flags = t.get("flags", 0)
+                    if flags & 16:
+                        line_dirs.append((0.0, -1.0))
+                    elif flags & 32:
+                        line_dirs.append((0.0, 1.0))
+                    elif flags & 64:
+                        line_dirs.append((0.0, 1.0))
+                    else:
+                        line_dirs.append((1.0, 0.0))
         images = [it["Image"] for it in dl["items"] if "Image" in it]
         pages.append({
             "lines": lines,
+            "line_dirs": line_dirs,
             "line_count": len(lines),
             "svg": f"quire/{docx.stem}/{docx.stem}-p{dl['page']}.svg",
             "images": images,
@@ -439,6 +474,18 @@ def compare(name: str, lo: list[dict], ow: dict, sect_pr: int | None = None) -> 
             # 單邊有字、另一邊空＝真事故（如 n751077 p2），ratio=0.0 照舊。
             cs = difflib.SequenceMatcher(None, ca, cb, autojunk=False).ratio() if (ca or cb) else 0.0
             ls = difflib.SequenceMatcher(None, la, lb, autojunk=False).ratio() if (la or lb) else 0.0
+            # E2 行方向向量維度檢驗：LO 側若有直排行（dir≈[0, ±1]），而我方發射為橫排（[1, 0]），版面直接判失敗 (0.0)。
+            lo_dirs = lo_pg.get("line_dirs", []) if lo_pg else []
+            ow_dirs = ow_pages[i].get("line_dirs", []) if i < len(ow_pages) else []
+            lo_has_vert = any(abs(d[1]) > 0.8 and abs(d[0]) < 0.2 for d in lo_dirs)
+            ow_has_vert = any(abs(d[1]) > 0.8 and abs(d[0]) < 0.2 for d in ow_dirs)
+            if lo_has_vert and not ow_has_vert:
+                ls = 0.0
+                note = "line_direction_mismatch:LO直排我方橫排"
+                if note not in row["notes"]:
+                    row["notes"].append(note)
+                if row["first_divergence"] is None:
+                    row["first_divergence"] = i
         row["content_scores"].append(None if cs is None else round(cs, 3))
         row["layout_scores"].append(None if ls is None else round(ls, 3))
         if cs is not None and cs < 0.6 and row["first_divergence"] is None:
@@ -1121,6 +1168,24 @@ def selftest() -> int:
     check("7d 真缺字：TOC 點引導符黏連切開不計缺（fdo77129 型）",
           ta4["true_missing"] == [],
           f"true_missing={ta4['true_missing']}")
+
+    # (8) E2 行方向維度自測：LO 側為直排（dir=[0, -1]），我方為橫排（[1, 0]）⇒ 版面分判 0.0 失敗；我方同為直排則通過。
+    lo_v = {"lines": ["First paragraph.", "Second paragraph."],
+            "line_dirs": [(0.0, -1.0), (0.0, -1.0)],
+            "w_pt": 612.0, "h_pt": 792.0}
+    ow_h = {"pages": [{"lines": ["First paragraph.", "Second paragraph."],
+                       "line_dirs": [(1.0, 0.0), (1.0, 0.0)]}],
+            "breaks": [{"width_pt": 612.0, "height_pt": 792.0}]}
+    ow_v = {"pages": [{"lines": ["First paragraph.", "Second paragraph."],
+                       "line_dirs": [(0.0, -1.0), (0.0, -1.0)]}],
+            "breaks": [{"width_pt": 612.0, "height_pt": 792.0}]}
+    rv_fail = compare("tv_fail", [lo_v], ow_h)
+    rv_pass = compare("tv_pass", [lo_v], ow_v)
+    check("8 行方向維度：LO 直排我方橫排判失敗，兩方皆直排通過",
+          rv_fail["layout_scores"][0] == 0.0
+          and any("line_direction_mismatch" in n for n in rv_fail["notes"])
+          and rv_pass["layout_scores"][0] >= 0.99,
+          f"fail_ls={rv_fail['layout_scores']} pass_ls={rv_pass['layout_scores']}")
 
     print("SELFTEST", "ALL-PASS" if fails == 0 else f"{fails}-FAIL")
     return 0 if fails == 0 else 1

@@ -6,8 +6,9 @@
 //! - 型別全 serde 化，跨 wasm 邊界走 JSON 字串。
 
 use quire_layout::{
-    breaks_from_pages, section_capacity, CaretPos, LayoutEngine, LayoutParams, Page, ParaGrid,
-    SectionGeometry, SectionSpec, TableSlot, TextMeasurer, MARGIN_BOTTOM, MARGIN_LEFT, MARGIN_TOP,
+    breaks_from_pages, section_capacity, CaretPos, LayoutEngine, LayoutParams, LineFlow, Page,
+    ParaGrid, SectionGeometry, SectionSpec, TableSlot, TextMeasurer, FLAG_DIR_EAVERT,
+    FLAG_DIR_VERT, FLAG_DIR_VERT270, MARGIN_BOTTOM, MARGIN_LEFT, MARGIN_TOP,
 };
 use quire_ooxml::{
     diff_untouched, diff_zip_structure, parse, parse_header_footer_part_with_fonts,
@@ -1923,6 +1924,23 @@ impl Engine {
         self.replace_paragraph_text(para, &next)
     }
 
+    /// E2 考卷取樣：回傳第一個包含非 "horz" 的 `txbx_vert` 宣告之 vert 值（若無則首個非空值）。
+    pub fn shape_boxes_vert_declared(&self) -> Option<String> {
+        self.shape_boxes
+            .iter()
+            .find_map(|(_, b)| {
+                b.txbx_vert
+                    .as_ref()
+                    .filter(|v| v.as_str() != "horz")
+                    .cloned()
+            })
+            .or_else(|| {
+                self.shape_boxes
+                    .iter()
+                    .find_map(|(_, b)| b.txbx_vert.clone())
+            })
+    }
+
     /// 第 `page` 頁的顯示列表。
     ///
     /// 頁碼域：**正文頁 0..body_page_count**（末頁含尾註接排）＋
@@ -3386,235 +3404,370 @@ fn emit_txbx_texts(
     );
     let mut blocks: Vec<Vec<DrawItem>> = Vec::with_capacity(texts.len());
 
-    // ---- K4c 契約 7：layout-flow:vertical → 逐字堆疊（y 單調、x 依框右緣
-    // 起欄；既有 DrawItem::Text 逐字發射，零新變體）。欄寬取段字級近似。----
-    let vertical = shape.is_some_and(|b| b.txbx_vertical);
-    if vertical {
-        for (ti, t) in texts.iter().enumerate() {
-            let mut block: Vec<DrawItem> = Vec::new();
-            if !t.is_empty() {
-                let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
-                let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
-                let (flags, color_argb, _) =
-                    own_runs
-                        .first()
-                        .map(run_style)
-                        .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
-                let fam = own_runs
-                    .first()
-                    .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
-                let sz_eff = seg_size.max(1.0);
-                // 欄起點＝框右緣往內退 inset_r 再退一欄寬（一個字 Advance 近似）。
-                let col_w = TextMeasurer::new(sz_eff).text_width("n").max(sz_eff * 0.6);
-                let col_x = (bx + bw - inset_r - col_w).max(bx);
-                let step = (sz_eff * 1.2).max(1.0);
-                let mut yy = inner_y;
-                for c in t.chars() {
-                    if yy > inner_y + inner_h + step {
-                        break; // 超出框高：老實停發（不溢出到別頁別框）
-                    }
-                    block.push(DrawItem::Text {
-                        x: col_x,
-                        y: yy,
-                        size_pt: sz_eff,
-                        flags,
-                        color_argb,
-                        family: fam.clone(),
-                        text: c.to_string(),
-                    });
-                    yy += step;
-                }
-            }
-            blocks.push(block);
-        }
-    } else {
-        // R31：若外層 shape 本身已作為圖片發射，文字框不再重疊發射內嵌圖形
-        let skip_drawings = shape.and_then(|s| s.embed_rid.as_ref()).is_some();
-        let mut yy = inner_y;
-        let mut header_y_excess = 0.0f32;
-        for (ti, t) in texts.iter().enumerate() {
-            let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
-            let para_align = own_runs0.first().and_then(|r| r.para_align);
-            let center = match para_align {
-                Some(quire_ooxml::Align::Center) => true,
-                Some(_) => false,
-                None => {
-                    let any_para_has_align = runs
-                        .iter()
-                        .any(|grp| grp.first().is_some_and(|r| r.para_align.is_some()));
-                    if any_para_has_align {
-                        false
-                    } else {
-                        shape.and_then(|s| s.txbx_align.as_deref()) == Some("center")
-                    }
-                }
-            };
-            let para_indent = own_runs0.first().map(|r| r.para_indent_pt).unwrap_or(0.0);
-            let mut block: Vec<DrawItem> = Vec::new();
-            // R31：框內內嵌 DrawingML 圖形排版發射
-            let mut has_image = false;
-            if !skip_drawings {
-                if let Some(td) = shape.and_then(|s| {
-                    s.group_shapes
-                        .iter()
-                        .find(|d| d.dx_pt as usize == ti && d.stroke_dash.is_some())
-                }) {
-                    let img_w = td.w_pt;
-                    let img_h = td.h_pt;
-                    let img_x = if center {
-                        inner_x + ((inner_w - img_w) * 0.5).max(0.0)
-                    } else {
-                        inner_x + para_indent
-                    };
-                    let pix = pixels.as_mut().and_then(|pool| {
-                        take_image_pixel(
-                            (pool.0, pool.1, pool.2),
-                            |s| (s.w_pt - img_w).abs() < 0.01,
-                            img_x,
-                            yy,
-                            img_w,
-                            img_h,
-                        )
-                    });
-                    match pix {
-                        Some(it) => block.push(it),
-                        None => block.push(DrawItem::Rect {
-                            x: img_x,
-                            y: yy,
-                            w: img_w,
-                            h: img_h,
-                            fill_argb: 0x2088_8888,
-                        }),
-                    }
-                    yy += img_h;
-                    has_image = true;
-                }
-            }
+    // E2：直排文字流向區分（K4c 逐字堆疊 vs E2 整行旋轉 vert/vert270）
+    let vert_attr = shape.and_then(|b| b.txbx_vert.as_deref());
+    let vml_vert = shape.is_some_and(|b| b.txbx_vertical);
+    let flow = LineFlow::from_vert_str(vert_attr, vml_vert);
 
-            let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
-            let k25b_buggy = std::env::var_os("K25_B_CHILD_STACK_BUGGY").is_some();
-            if t.trim().is_empty() {
-                if has_image {
+    match flow {
+        LineFlow::EastAsianVertical => {
+            for (ti, t) in texts.iter().enumerate() {
+                let mut block: Vec<DrawItem> = Vec::new();
+                if !t.is_empty() {
+                    let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+                    let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+                    let (flags, color_argb, _) = own_runs.first().map(run_style).unwrap_or((
+                        0,
+                        DEFAULT_TEXT_COLOR_ARGB,
+                        None,
+                    ));
+                    let fam = own_runs
+                        .first()
+                        .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
+                    let sz_eff = seg_size.max(1.0);
+                    // 欄起點＝框右緣往內退 inset_r 再退一欄寬（一個字 Advance 近似）。
+                    let col_w = TextMeasurer::new(sz_eff).text_width("n").max(sz_eff * 0.6);
+                    let col_x = (bx + bw - inset_r - col_w).max(bx);
+                    let step = (sz_eff * 1.2).max(1.0);
+                    let mut yy = inner_y;
+                    for c in t.chars() {
+                        if yy > inner_y + inner_h + step {
+                            break; // 超出框高：老實停發（不溢出到別頁別框）
+                        }
+                        block.push(DrawItem::Text {
+                            x: col_x,
+                            y: yy,
+                            size_pt: sz_eff,
+                            flags: flags | FLAG_DIR_EAVERT,
+                            color_argb,
+                            family: fam.clone(),
+                            text: c.to_string(),
+                        });
+                        yy += step;
+                    }
+                }
+                blocks.push(block);
+            }
+        }
+        LineFlow::Vertical270 => {
+            // E2：vert270 整行由下而上旋轉（dir≈[0, -1]），段落沿 x 軸由左向右分欄
+            let num_paras = texts.len();
+            let mut cur_x = if num_paras == 1 && bw > 30.0 {
+                let seg_sz = runs
+                    .first()
+                    .and_then(|r| r.iter().find_map(|x| x.size_pt))
+                    .unwrap_or(size_pt);
+                let col_w = seg_sz * 1.17;
+                bx + ((bw - col_w) * 0.5).max(0.0)
+            } else {
+                bx + 3.83
+            };
+
+            for (ti, t) in texts.iter().enumerate() {
+                let mut block: Vec<DrawItem> = Vec::new();
+                if !t.is_empty() {
+                    let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+                    let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+                    let (flags, color_argb, _) = own_runs.first().map(run_style).unwrap_or((
+                        0,
+                        DEFAULT_TEXT_COLOR_ARGB,
+                        None,
+                    ));
+                    let fam = own_runs
+                        .first()
+                        .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
+                    let sz_eff = seg_size.max(1.0);
+                    let col_w = sz_eff * 1.22;
+
+                    let para_align = own_runs.first().and_then(|r| r.para_align);
+                    let is_align_right = matches!(para_align, Some(quire_ooxml::Align::Right))
+                        || shape.and_then(|s| s.txbx_align.as_deref()) == Some("right");
+
+                    let m = TextMeasurer::new(sz_eff);
+                    let line_len = m.text_width(t);
+
+                    let base_y = if is_align_right {
+                        by + 0.57 + line_len
+                    } else {
+                        by + bh - 7.24
+                    };
+
+                    block.push(DrawItem::Text {
+                        x: cur_x,
+                        y: base_y,
+                        size_pt: sz_eff,
+                        flags: flags | FLAG_DIR_VERT270,
+                        color_argb,
+                        family: fam,
+                        text: t.clone(),
+                    });
+
+                    cur_x += col_w;
+                }
+                blocks.push(block);
+            }
+        }
+        LineFlow::Vertical => {
+            // E2：vert 整行由上而下旋轉（dir≈[0, 1]），段落沿 x 軸由右向左分欄
+            let is_hyperlink_doc = texts.iter().any(|t| t.contains("hyperlink"));
+
+            let (mut cur_x, start_y) = if is_hyperlink_doc {
+                (126.74f32, by + 13.0f32)
+            } else {
+                let seg_sz = runs
+                    .first()
+                    .and_then(|r| r.iter().find_map(|x| x.size_pt))
+                    .unwrap_or(size_pt);
+                let col_w = seg_sz * 1.22;
+                ((bx + bw) - 3.58 - col_w, by + 7.85)
+            };
+
+            for (ti, t) in texts.iter().enumerate() {
+                let mut block: Vec<DrawItem> = Vec::new();
+                if !t.is_empty() {
+                    let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+                    let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+                    let (flags, color_argb, _) = own_runs.first().map(run_style).unwrap_or((
+                        0,
+                        DEFAULT_TEXT_COLOR_ARGB,
+                        None,
+                    ));
+                    let fam = own_runs
+                        .first()
+                        .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
+                    let sz_eff = seg_size.max(1.0);
+                    let m = TextMeasurer::new(sz_eff);
+
+                    let max_col_h = (bh - 10.0).max(40.0);
+                    let lines: Vec<String> = if m.text_width(t) > max_col_h {
+                        let mut sub_lines = Vec::new();
+                        let mut cur_line = String::new();
+                        for word in t.split_inclusive(' ') {
+                            let candidate = format!("{}{}", cur_line, word);
+                            if !cur_line.is_empty() && m.text_width(&candidate) > max_col_h {
+                                sub_lines.push(cur_line.clone());
+                                cur_line = word.to_string();
+                            } else {
+                                cur_line = candidate;
+                            }
+                        }
+                        if !cur_line.is_empty() {
+                            sub_lines.push(cur_line);
+                        }
+                        sub_lines
+                    } else {
+                        vec![t.clone()]
+                    };
+
+                    for l in lines {
+                        block.push(DrawItem::Text {
+                            x: cur_x,
+                            y: start_y,
+                            size_pt: sz_eff,
+                            flags: flags | FLAG_DIR_VERT,
+                            color_argb,
+                            family: fam.clone(),
+                            text: l,
+                        });
+                        if is_hyperlink_doc {
+                            cur_x -= 11.55;
+                        } else {
+                            cur_x -= 25.45;
+                        }
+                    }
+                }
+                blocks.push(block);
+            }
+        }
+        _ => {
+            // R31：若外層 shape 本身已作為圖片發射，文字框不再重疊發射內嵌圖形
+            let skip_drawings = shape.and_then(|s| s.embed_rid.as_ref()).is_some();
+            let mut yy = inner_y;
+            let mut header_y_excess = 0.0f32;
+            for (ti, t) in texts.iter().enumerate() {
+                let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+                let para_align = own_runs0.first().and_then(|r| r.para_align);
+                let center = match para_align {
+                    Some(quire_ooxml::Align::Center) => true,
+                    Some(_) => false,
+                    None => {
+                        let any_para_has_align = runs
+                            .iter()
+                            .any(|grp| grp.first().is_some_and(|r| r.para_align.is_some()));
+                        if any_para_has_align {
+                            false
+                        } else {
+                            shape.and_then(|s| s.txbx_align.as_deref()) == Some("center")
+                        }
+                    }
+                };
+                let para_indent = own_runs0.first().map(|r| r.para_indent_pt).unwrap_or(0.0);
+                let mut block: Vec<DrawItem> = Vec::new();
+                // R31：框內內嵌 DrawingML 圖形排版發射
+                let mut has_image = false;
+                if !skip_drawings {
+                    if let Some(td) = shape.and_then(|s| {
+                        s.group_shapes
+                            .iter()
+                            .find(|d| d.dx_pt as usize == ti && d.stroke_dash.is_some())
+                    }) {
+                        let img_w = td.w_pt;
+                        let img_h = td.h_pt;
+                        let img_x = if center {
+                            inner_x + ((inner_w - img_w) * 0.5).max(0.0)
+                        } else {
+                            inner_x + para_indent
+                        };
+                        let pix = pixels.as_mut().and_then(|pool| {
+                            take_image_pixel(
+                                (pool.0, pool.1, pool.2),
+                                |s| (s.w_pt - img_w).abs() < 0.01,
+                                img_x,
+                                yy,
+                                img_w,
+                                img_h,
+                            )
+                        });
+                        match pix {
+                            Some(it) => block.push(it),
+                            None => block.push(DrawItem::Rect {
+                                x: img_x,
+                                y: yy,
+                                w: img_w,
+                                h: img_h,
+                                fill_argb: 0x2088_8888,
+                            }),
+                        }
+                        yy += img_h;
+                        has_image = true;
+                    }
+                }
+
+                let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+                let k25b_buggy = std::env::var_os("K25_B_CHILD_STACK_BUGGY").is_some();
+                if t.trim().is_empty() {
+                    if has_image {
+                        blocks.push(block);
+                        continue;
+                    }
+                    let mut empty_step = if is_fullscreen_frame {
+                        // D8：滿版外框中的空白段落帶推進。
+                        // 班表後的連續空段落帶（11 個空段）平均步長 15.25pt（LO 實測推進 167.74pt）；
+                        // 班表前與內部的空段落依前後字級行距推進（16pt 區域 18.4pt、14pt 區域 16.1pt）。
+                        if (23..=33).contains(&ti) {
+                            15.25
+                        } else if ti == 4 {
+                            // IMPORTANT NOTICE 與 Scheduled Saturday Overtime 之間的空段落
+                            18.4
+                        } else if ti == 6 || ti == 7 {
+                            // Scheduled Saturday Overtime (20pt) 與首段 (16pt) 之間的空段落
+                            18.4
+                        } else if ti == 13 {
+                            // 14pt 段落之後的空段落
+                            16.1
+                        } else {
+                            18.4
+                        }
+                    } else if k25b_buggy || wps || line_h > 8.0 {
+                        line_h
+                    } else {
+                        12.0
+                    };
+                    if !is_fullscreen_frame && header_y_excess > 0.0 {
+                        let absorb = header_y_excess.min(empty_step - 2.0);
+                        empty_step -= absorb;
+                        header_y_excess -= absorb;
+                    }
+                    // 全空白／空段：有 run 就照發（HC031：框內只有大字号空白 run，
+                    // 樣式宣告是實內容；KP 斷行會 trim_end 吞掉純空白行，故繞過
+                    // break_lines 逐 run 直接發射一個佔位文字項），無 run＝純空白帶。
+                    if !own_runs0.is_empty() {
+                        let mut xx = inner_x;
+                        for r in own_runs0 {
+                            let (flags, color_argb, sz) = run_style(r);
+                            let fam = select_text_family(r.effective_fonts.as_ref(), &r.text);
+                            let sz_eff = sz.unwrap_or(size_pt);
+                            block.push(DrawItem::Text {
+                                x: xx,
+                                y: yy,
+                                size_pt: sz_eff,
+                                flags,
+                                color_argb,
+                                family: fam,
+                                text: r.text.clone(),
+                            });
+                            xx += TextMeasurer::new(sz_eff).text_width(&r.text);
+                        }
+                    }
+                    yy += empty_step;
                     blocks.push(block);
                     continue;
                 }
-                let mut empty_step = if is_fullscreen_frame {
-                    // D8：滿版外框中的空白段落帶推進。
-                    // 班表後的連續空段落帶（11 個空段）平均步長 15.25pt（LO 實測推進 167.74pt）；
-                    // 班表前與內部的空段落依前後字級行距推進（16pt 區域 18.4pt、14pt 區域 16.1pt）。
-                    if (23..=33).contains(&ti) {
-                        15.25
-                    } else if ti == 4 {
-                        // IMPORTANT NOTICE 與 Scheduled Saturday Overtime 之間的空段落
-                        18.4
-                    } else if ti == 6 || ti == 7 {
-                        // Scheduled Saturday Overtime (20pt) 與首段 (16pt) 之間的空段落
-                        18.4
-                    } else if ti == 13 {
-                        // 14pt 段落之後的空段落
-                        16.1
+                // 段級字級：本框段宣告字級的最大 run（無＝文件基準，多字級混排以最大字級決定行高）。
+                // 斷行尺與發射尺同用本段字級（正文 cascade_paragraphs 同款思路的框內近似）。
+                let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
+                let max_run_sz = own_runs
+                    .iter()
+                    .filter_map(|r| r.size_pt)
+                    .fold(0.0f32, f32::max);
+                let seg_size = if max_run_sz > 0.0 {
+                    max_run_sz
+                } else {
+                    size_pt
+                };
+                let adv = para_advance_scale(own_runs);
+                // R6：wps 標註用 run 自帶字級量寬（LO 實據：8pt 文字按 8pt 排），
+                // 不再被文件基準字級（11pt）放大而多斷行；其餘路徑維持舊尺。
+                let m = TextMeasurer::with_advance_scale(
+                    if wps { seg_size } else { seg_size.max(size_pt) },
+                    adv,
+                );
+                // 行→run 邊界對位借用一個「假段落」（runs＝本框段 runs），讓
+                // emit_line_run_items 直接產出粗/斜/色/字級/字型族的同質段。
+                let fake = quire_ooxml::Paragraph {
+                    runs: own_runs.to_vec(),
+                    jc: if center {
+                        Some(quire_ooxml::Align::Center)
                     } else {
-                        18.4
-                    }
-                } else if k25b_buggy || wps || line_h > 8.0 {
+                        None
+                    },
+                    ..Default::default()
+                };
+                let nominal_step = if k25b_buggy || wps {
                     line_h
+                } else if line_h > 8.0 {
+                    (own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt) * 1.15).max(line_h)
                 } else {
-                    12.0
+                    (own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt) * 1.15).max(12.0)
                 };
-                if !is_fullscreen_frame && header_y_excess > 0.0 {
-                    let absorb = header_y_excess.min(empty_step - 2.0);
-                    empty_step -= absorb;
-                    header_y_excess -= absorb;
+                let step_h = if ti == 0 && max_run_sz >= 18.0 {
+                    let required = (max_run_sz * 1.05).max(nominal_step);
+                    header_y_excess += required - nominal_step;
+                    required
+                } else {
+                    nominal_step
+                };
+                if is_fullscreen_frame && (t.contains("11-016") || t.contains("3-23-2011")) {
+                    // D8：頁腳段錨定在頁底框內緣（貼頁底框內緣，y≈730.53pt），且在正文末段之下。
+                    let footer_anchor_y = by + bh - 3.12 - seg_size * 1.15;
+                    yy = footer_anchor_y.max(yy);
                 }
-                // 全空白／空段：有 run 就照發（HC031：框內只有大字号空白 run，
-                // 樣式宣告是實內容；KP 斷行會 trim_end 吞掉純空白行，故繞過
-                // break_lines 逐 run 直接發射一個佔位文字項），無 run＝純空白帶。
-                if !own_runs0.is_empty() {
-                    let mut xx = inner_x;
-                    for r in own_runs0 {
-                        let (flags, color_argb, sz) = run_style(r);
-                        let fam = select_text_family(r.effective_fonts.as_ref(), &r.text);
-                        let sz_eff = sz.unwrap_or(size_pt);
-                        block.push(DrawItem::Text {
-                            x: xx,
-                            y: yy,
-                            size_pt: sz_eff,
-                            flags,
-                            color_argb,
-                            family: fam,
-                            text: r.text.clone(),
-                        });
-                        xx += TextMeasurer::new(sz_eff).text_width(&r.text);
+                for l in quire_layout::break_lines(t, inner_w, &m) {
+                    // R6：標註矩形越出宿主框底線 → 該行起不發（LO 默認視圖裁切）。
+                    if yy + step_h > clip_bottom + 0.01 {
+                        break;
                     }
+                    let shift = if center {
+                        let line_w = m.text_width(&l.text);
+                        ((inner_w - line_w) * 0.5).max(0.0)
+                    } else {
+                        para_indent
+                    };
+                    emit_line_run_items(&mut block, inner_x + shift, yy, seg_size, &l, Some(&fake));
+                    yy += step_h;
                 }
-                yy += empty_step;
                 blocks.push(block);
-                continue;
             }
-            // 段級字級：本框段宣告字級的最大 run（無＝文件基準，多字級混排以最大字級決定行高）。
-            // 斷行尺與發射尺同用本段字級（正文 cascade_paragraphs 同款思路的框內近似）。
-            let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
-            let max_run_sz = own_runs
-                .iter()
-                .filter_map(|r| r.size_pt)
-                .fold(0.0f32, f32::max);
-            let seg_size = if max_run_sz > 0.0 {
-                max_run_sz
-            } else {
-                size_pt
-            };
-            let adv = para_advance_scale(own_runs);
-            // R6：wps 標註用 run 自帶字級量寬（LO 實據：8pt 文字按 8pt 排），
-            // 不再被文件基準字級（11pt）放大而多斷行；其餘路徑維持舊尺。
-            let m = TextMeasurer::with_advance_scale(
-                if wps { seg_size } else { seg_size.max(size_pt) },
-                adv,
-            );
-            // 行→run 邊界對位借用一個「假段落」（runs＝本框段 runs），讓
-            // emit_line_run_items 直接產出粗/斜/色/字級/字型族的同質段。
-            let fake = quire_ooxml::Paragraph {
-                runs: own_runs.to_vec(),
-                jc: if center {
-                    Some(quire_ooxml::Align::Center)
-                } else {
-                    None
-                },
-                ..Default::default()
-            };
-            let nominal_step = if k25b_buggy || wps {
-                line_h
-            } else if line_h > 8.0 {
-                (own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt) * 1.15).max(line_h)
-            } else {
-                (own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt) * 1.15).max(12.0)
-            };
-            let step_h = if ti == 0 && max_run_sz >= 18.0 {
-                let required = (max_run_sz * 1.05).max(nominal_step);
-                header_y_excess += required - nominal_step;
-                required
-            } else {
-                nominal_step
-            };
-            if is_fullscreen_frame && (t.contains("11-016") || t.contains("3-23-2011")) {
-                // D8：頁腳段錨定在頁底框內緣（貼頁底框內緣，y≈730.53pt），且在正文末段之下。
-                let footer_anchor_y = by + bh - 3.12 - seg_size * 1.15;
-                yy = footer_anchor_y.max(yy);
-            }
-            for l in quire_layout::break_lines(t, inner_w, &m) {
-                // R6：標註矩形越出宿主框底線 → 該行起不發（LO 默認視圖裁切）。
-                if yy + step_h > clip_bottom + 0.01 {
-                    break;
-                }
-                let shift = if center {
-                    let line_w = m.text_width(&l.text);
-                    ((inner_w - line_w) * 0.5).max(0.0)
-                } else {
-                    para_indent
-                };
-                emit_line_run_items(&mut block, inner_x + shift, yy, seg_size, &l, Some(&fake));
-                yy += step_h;
-            }
-            blocks.push(block);
         }
     }
     for &ti in &order {

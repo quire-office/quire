@@ -324,6 +324,9 @@ pub struct InlineImage {
     /// `v:textbox style="layout-flow:vertical"`：框內文字直排（逐字堆疊）。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub txbx_vertical: bool,
+    /// `wps:bodyPr/@vert`：文字方向宣告（"vert" / "vert270" / "eaVert" 等；serde 向後相容）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub txbx_vert: Option<String>,
     /// 框內表格（`w:txbxContent` 內 `w:tbl`）逐格填色（行→列；None＝該格
     /// 無填色宣告）。n780563 三色列表實據：LO 發彩色條，我方至少要落地。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1354,6 +1357,7 @@ struct Pending {
     txbx_rect: Option<[f32; 4]>,
     txbx_inset: Option<[f32; 4]>,
     txbx_vertical: bool,
+    txbx_vert: Option<String>,
     /// 進行中的一列填色（框內表格；None＝該格無填色宣告）。
     tbl_row: Vec<Option<u32>>,
     tbl_rows: Vec<Vec<Option<u32>>>,
@@ -1559,6 +1563,7 @@ impl Pending {
             txbx_rect: None,
             txbx_inset: None,
             txbx_vertical: false,
+            txbx_vert: None,
             tbl_row: Vec::new(),
             tbl_rows: Vec::new(),
             cell_fill: None,
@@ -1757,6 +1762,7 @@ impl DrawingParser {
             txbx_rect: p.txbx_rect.or(p.mapped_rect),
             txbx_inset: p.txbx_inset,
             txbx_vertical: p.txbx_vertical,
+            txbx_vert: p.txbx_vert.clone(),
             txbx_table: p.tbl_rows.clone(),
             embed_rid: p.rid.clone(),
             embed_rids: p.rids.clone(),
@@ -2400,6 +2406,10 @@ impl DrawingParser {
             }
             // K17：撐列事實捕獲（規格 docs/k18-lo-rowgrow-calibration.md §6）。
             k17_capture(&mut p, name, empty, e, self.txbx_depth);
+            // E2：wps:bodyPr/@vert 文字方向解析（vert/vert270/eaVert 等）
+            if name == b"bodyPr" && p.txbx_vert.is_none() {
+                p.txbx_vert = attr_local(e, b"vert");
+            }
             // R6 / K12：DrawingML `wps:wsp` 標註與群組子形狀
             if name == b"wsp" {
                 p.wps_annotation = true;
@@ -2754,6 +2764,10 @@ impl DrawingParser {
             // `<a:spAutoFit/>`、`<w:spacing w:line="240" .../>` 都是空標籤
             //（WC048 實據），Empty 流不收＝撐列全數漏收。
             k17_capture(p, name, true, e, self.txbx_depth);
+            // E2：wps:bodyPr/@vert 文字方向解析（自閉合標籤分支）
+            if name == b"bodyPr" && p.txbx_vert.is_none() {
+                p.txbx_vert = attr_local(e, b"vert");
+            }
             match name {
                 b"extent" => {
                     if p.w.is_none() {
