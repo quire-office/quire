@@ -18,6 +18,7 @@ import argparse
 import atexit
 import datetime
 import difflib
+import html
 import json
 import os
 import random
@@ -292,6 +293,45 @@ def sect_pr_count(docx: pathlib.Path) -> int | None:
         return None
 
 
+def parse_svg_lines_and_dirs(svg_path: pathlib.Path) -> tuple[list[str], list[tuple[float, float]]]:
+    """E2b 補強度量閘門：從實際產出的 SVG 解析文字行與行方向向量，防止旗標與像素分家（ADT109119）。
+
+    解析口徑：
+    1. SVG <text> 帶旋轉 transform（如 rotate(-90 ...) 或 rotate(270 ...) ⇒ (0.0, -1.0)；rotate(90 ...) ⇒ (0.0, 1.0)）。
+    2. 帶直排屬性（如 writing-mode="vertical-*" 或 data-line-dir 等逐字直排標記）⇒ (0.0, 1.0)。
+    3. 純 <text> 無旋轉 ⇒ (1.0, 0.0) 橫排。
+    """
+    if not svg_path.exists():
+        return [], []
+    content = svg_path.read_text(encoding="utf-8")
+    lines = []
+    line_dirs = []
+    for m in re.finditer(r"<text\b([^>]*)>(.*?)</text>", content, re.DOTALL):
+        attrs_str = m.group(1)
+        raw_text = m.group(2)
+        text = norm(html.unescape(raw_text))
+        if not text:
+            continue
+        lines.append(text)
+        direction = (1.0, 0.0)
+        tr_m = re.search(r'transform=["\']([^"\']+)["\']', attrs_str)
+        if tr_m:
+            rot_m = re.search(r"rotate\(\s*(-?\d+(?:\.\d+)?)\b", tr_m.group(1))
+            if rot_m:
+                deg = float(rot_m.group(1)) % 360
+                if abs(deg - 270) < 1.0:
+                    direction = (0.0, -1.0)
+                elif abs(deg - 90) < 1.0:
+                    direction = (0.0, 1.0)
+                elif abs(deg) < 1.0 or abs(deg - 180) < 1.0:
+                    direction = (1.0, 0.0)
+        if direction == (1.0, 0.0):
+            if 'writing-mode="vertical' in attrs_str or 'data-line-dir="vert"' in attrs_str or 'data-line-dir="ea-vert"' in attrs_str:
+                direction = (0.0, 1.0)
+        line_dirs.append(direction)
+    return lines, line_dirs
+
+
 def run_quire(docx: pathlib.Path, out_dir: pathlib.Path) -> dict:
     render_dir = out_dir / "quire" / docx.stem
     r = subprocess.run(
@@ -301,36 +341,35 @@ def run_quire(docx: pathlib.Path, out_dir: pathlib.Path) -> dict:
     if r.returncode != 0:
         raise RuntimeError(f"quire render 失敗: {r.stderr.strip()[:300]}")
     brks = json.loads((render_dir / "pagebreaks.json").read_text(encoding="utf-8"))
-    # 我方每頁文字：由 dump 顯示列表取（與 SVG 同源）。
+    # E2b：改從實際出貨產物 SVG 解析 lines 與 line_dirs，防旗標自報欺騙度量閘門。
     d = subprocess.run(
         ["cargo", "run", "-q", "-p", "quire-cli", "--", "dump", str(docx)],
         capture_output=True, text=True, cwd=REPO, timeout=180)
     d.check_returncode()
     pages = []
     for dl in json.loads(d.stdout):
-        lines = []
-        line_dirs = []
-        for it in dl["items"]:
-            if "Text" in it:
-                t = it["Text"]
-                text = norm(t.get("text", ""))
-                if text:
-                    lines.append(text)
-                    flags = t.get("flags", 0)
-                    if flags & 16:
-                        line_dirs.append((0.0, -1.0))
-                    elif flags & 32:
-                        line_dirs.append((0.0, 1.0))
-                    elif flags & 64:
-                        line_dirs.append((0.0, 1.0))
-                    else:
+        page_idx = dl["page"]
+        svg_file = render_dir / f"{docx.stem}-p{page_idx}.svg"
+        svg_lines, svg_dirs = parse_svg_lines_and_dirs(svg_file)
+        if svg_file.exists():
+            lines = svg_lines
+            line_dirs = svg_dirs
+        else:
+            lines = []
+            line_dirs = []
+            for it in dl["items"]:
+                if "Text" in it:
+                    t = it["Text"]
+                    text = norm(t.get("text", ""))
+                    if text:
+                        lines.append(text)
                         line_dirs.append((1.0, 0.0))
         images = [it["Image"] for it in dl["items"] if "Image" in it]
         pages.append({
             "lines": lines,
             "line_dirs": line_dirs,
             "line_count": len(lines),
-            "svg": f"quire/{docx.stem}/{docx.stem}-p{dl['page']}.svg",
+            "svg": f"quire/{docx.stem}/{docx.stem}-p{page_idx}.svg",
             "images": images,
         })
     return {"pages": pages, "breaks": brks, "n_svg": len(pages)}
@@ -1186,6 +1225,21 @@ def selftest() -> int:
           and any("line_direction_mismatch" in n for n in rv_fail["notes"])
           and rv_pass["layout_scores"][0] >= 0.99,
           f"fail_ls={rv_fail['layout_scores']} pass_ls={rv_pass['layout_scores']}")
+
+    # (8b) E2b SVG 產物文字行方向抽取自測：出貨 SVG 旋轉解析（ADT109119）
+    with tempfile.TemporaryDirectory() as td:
+        tf = pathlib.Path(td) / "test.svg"
+        tf.write_text(
+            '<svg><text x="10" y="20">Horz</text>\n'
+            '<text x="30" y="40" transform="rotate(-90 30 40)">Vert270</text>\n'
+            '<text x="50" y="60" transform="rotate(90 50 60)">Vert90</text></svg>',
+            encoding="utf-8"
+        )
+        s_lines, s_dirs = parse_svg_lines_and_dirs(tf)
+        check("8b SVG 行方向抽取：橫排 (1,0)、rotate(-90) 為 (0,-1)、rotate(90) 為 (0,1)",
+              s_lines == ["Horz", "Vert270", "Vert90"]
+              and s_dirs == [(1.0, 0.0), (0.0, -1.0), (0.0, 1.0)],
+              f"lines={s_lines} dirs={s_dirs}")
 
     print("SELFTEST", "ALL-PASS" if fails == 0 else f"{fails}-FAIL")
     return 0 if fails == 0 else 1

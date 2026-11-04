@@ -4,7 +4,8 @@
 //! 目的：headless 環境下不需要任何字型 shaping 就能拿到位圖/向量輸出，供 LO 基線對照。
 
 use quire_engine::{
-    DrawItem, PageDisplayList, FLAG_BOLD, FLAG_ITALIC, FLAG_STRIKE, FLAG_UNDERLINE,
+    DrawItem, PageDisplayList, FLAG_BOLD, FLAG_DIR_EAVERT, FLAG_DIR_VERT, FLAG_DIR_VERT270,
+    FLAG_ITALIC, FLAG_STRIKE, FLAG_UNDERLINE,
 };
 use std::fmt::Write as _;
 
@@ -47,11 +48,36 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
                 let r = (*color_argb >> 16) & 0xFF;
                 let g = (*color_argb >> 8) & 0xFF;
                 let b = *color_argb & 0xFF;
-                let _ = write!(
-                    s,
-                    "<text x=\"{x:.1}\" y=\"{:.1}\" font-size=\"{size_pt:.1}\" fill=\"#{r:02x}{g:02x}{b:02x}\"",
-                    y + size_pt
-                );
+                if flags & FLAG_DIR_VERT270 != 0 {
+                    // E2b：直排旋轉 270 度（btlr，由下而上）。基線設於右邊界 x + size_pt，逆時針旋轉 90 度（ADT109119）。
+                    let base_x = x + size_pt;
+                    let base_y = *y;
+                    let _ = write!(
+                        s,
+                        "<text x=\"{base_x:.1}\" y=\"{base_y:.1}\" font-size=\"{size_pt:.1}\" fill=\"#{r:02x}{g:02x}{b:02x}\" transform=\"rotate(-90 {base_x:.1} {base_y:.1})\"",
+                    );
+                } else if flags & FLAG_DIR_VERT != 0 {
+                    // E2b：直排旋轉 90 度（tbrl，由上而下）。以起點順時針旋轉 90 度（ADT109119）。
+                    let base_x = *x;
+                    let base_y = *y;
+                    let _ = write!(
+                        s,
+                        "<text x=\"{base_x:.1}\" y=\"{base_y:.1}\" font-size=\"{size_pt:.1}\" fill=\"#{r:02x}{g:02x}{b:02x}\" transform=\"rotate(90 {base_x:.1} {base_y:.1})\"",
+                    );
+                } else if flags & FLAG_DIR_EAVERT != 0 {
+                    // E2b：東亞文字逐字直排標記，帶 data-line-dir 供出貨產物解析直排流向（ADT109119）。
+                    let _ = write!(
+                        s,
+                        "<text x=\"{x:.1}\" y=\"{:.1}\" font-size=\"{size_pt:.1}\" fill=\"#{r:02x}{g:02x}{b:02x}\" data-line-dir=\"ea-vert\"",
+                        y + size_pt
+                    );
+                } else {
+                    let _ = write!(
+                        s,
+                        "<text x=\"{x:.1}\" y=\"{:.1}\" font-size=\"{size_pt:.1}\" fill=\"#{r:02x}{g:02x}{b:02x}\"",
+                        y + size_pt
+                    );
+                }
                 if a < 255 {
                     let _ = write!(s, " fill-opacity=\"{:.3}\"", a as f64 / 255.0);
                 }

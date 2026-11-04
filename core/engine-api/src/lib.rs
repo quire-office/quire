@@ -7,8 +7,8 @@
 
 use quire_layout::{
     breaks_from_pages, section_capacity, CaretPos, LayoutEngine, LayoutParams, LineFlow, Page,
-    ParaGrid, SectionGeometry, SectionSpec, TableSlot, TextMeasurer, FLAG_DIR_EAVERT,
-    FLAG_DIR_VERT, FLAG_DIR_VERT270, MARGIN_BOTTOM, MARGIN_LEFT, MARGIN_TOP,
+    ParaGrid, SectionGeometry, SectionSpec, TableSlot, TextMeasurer, MARGIN_BOTTOM, MARGIN_LEFT,
+    MARGIN_TOP,
 };
 use quire_ooxml::{
     diff_untouched, diff_zip_structure, parse, parse_header_footer_part_with_fonts,
@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
 
 // shells 需要顯示列表型別但只能 import 本 crate：在此 re-export（分層鐵律的唯一合法通道）。
+pub use quire_layout::{FLAG_DIR_EAVERT, FLAG_DIR_VERT, FLAG_DIR_VERT270};
 pub use quire_render_trait::{
     DrawItem, PageDisplayList, Renderer, FLAG_BOLD, FLAG_ITALIC, FLAG_STRIKE, FLAG_UNDERLINE,
 };
