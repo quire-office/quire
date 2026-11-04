@@ -52,7 +52,8 @@ impl ZipBuilder {
         self.buf.extend_from_slice(&crc.to_le_bytes());
         self.buf.extend_from_slice(&(csize as u32).to_le_bytes());
         self.buf.extend_from_slice(&(csize as u32).to_le_bytes());
-        self.buf.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        self.buf
+            .extend_from_slice(&(name.len() as u16).to_le_bytes());
         self.buf.extend_from_slice(&0u16.to_le_bytes());
         self.buf.extend_from_slice(name);
         self.buf.extend_from_slice(data);
@@ -223,9 +224,17 @@ fn test_unescape_and_decode_parity_entities_and_multilingual() {
     ];
 
     let p0 = &doc.paragraphs[0];
-    assert_eq!(p0.runs.len(), expected_runs.len(), "段落 1 的 run 數必須為 6");
+    assert_eq!(
+        p0.runs.len(),
+        expected_runs.len(),
+        "段落 1 的 run 數必須為 6"
+    );
     for (i, expected) in expected_runs.iter().enumerate() {
-        assert_eq!(&p0.runs[i].text, expected, "Run {} 文字逐字元比對必須吻合", i);
+        assert_eq!(
+            &p0.runs[i].text, expected,
+            "Run {} 文字逐字元比對必須吻合",
+            i
+        );
     }
 
     // 段落樣式屬性驗證（lib.rs:1409 attr_val）
@@ -267,20 +276,30 @@ fn test_unescape_and_decode_parity_entities_and_multilingual() {
     };
     let cell_p = &doc.paragraphs[cell_idx];
     assert_eq!(
-        cell_p.runs[0].text,
-        "儲存格文字 & ’格1’",
+        cell_p.runs[0].text, "儲存格文字 & ’格1’",
         "表格儲存格文字 unescape 必須與基線逐字元吻合"
     );
 
     // styles.xml 屬性解析驗證（styles.rs:871 attr_val）
     let style_table = StyleTable::parse(styles_xml.as_bytes());
     let (effective_run, _) = style_table.effective_para(Some("Custom&Style"), Default::default());
-    assert_eq!(effective_run.size_pt, Some(14.0), "sz 28 half-points 應解析為 14.0pt");
-    assert_eq!(effective_run.color, Some(0xFFFF_0000), "color FF0000 應解析為 0xFFFF0000");
+    assert_eq!(
+        effective_run.size_pt,
+        Some(14.0),
+        "sz 28 half-points 應解析為 14.0pt"
+    );
+    assert_eq!(
+        effective_run.color,
+        Some(0xFFFF_0000),
+        "color FF0000 應解析為 0xFFFF0000"
+    );
 
     // rels.rs 屬性解析驗證（rels.rs:117 attr）
     let rels_vec = read_rels(rels_xml.as_bytes());
-    let rel = rels_vec.iter().find(|r| r.id == "rIdStyles").expect("必須找到 rIdStyles 關係");
+    let rel = rels_vec
+        .iter()
+        .find(|r| r.id == "rIdStyles")
+        .expect("必須找到 rIdStyles 關係");
     assert_eq!(
         rel.target_part.as_deref(),
         Some("word/styles_&_target.xml"),
@@ -336,7 +355,11 @@ fn test_cve_2026_0195_deep_nested_namespaces_dos_defense() {
     let mut xml = String::with_capacity(depth * 80);
     for i in 0..depth {
         use std::fmt::Write;
-        let _ = write!(xml, "<ns{}:node xmlns:ns{}=\"http://example.com/{}\">", i, i, i);
+        let _ = write!(
+            xml,
+            "<ns{}:node xmlns:ns{}=\"http://example.com/{}\">",
+            i, i, i
+        );
     }
     xml.push_str("<content>safe</content>");
     for i in (0..depth).rev() {
