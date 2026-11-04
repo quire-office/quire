@@ -3385,6 +3385,7 @@ fn emit_txbx_texts(
         // R31：若外層 shape 本身已作為圖片發射，文字框不再重疊發射內嵌圖形
         let skip_drawings = shape.and_then(|s| s.embed_rid.as_ref()).is_some();
         let mut yy = inner_y;
+        let mut header_y_excess = 0.0f32;
         for (ti, t) in texts.iter().enumerate() {
             let own_runs0 = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
             let para_align = own_runs0.first().and_then(|r| r.para_align);
@@ -3451,11 +3452,16 @@ fn emit_txbx_texts(
                     blocks.push(block);
                     continue;
                 }
-                let empty_step = if k25b_buggy || wps || line_h > 8.0 {
+                let mut empty_step = if k25b_buggy || wps || line_h > 8.0 {
                     line_h
                 } else {
                     12.0
                 };
+                if header_y_excess > 0.0 {
+                    let absorb = header_y_excess.min(empty_step - 2.0);
+                    empty_step -= absorb;
+                    header_y_excess -= absorb;
+                }
                 // 全空白／空段：有 run 就照發（HC031：框內只有大字号空白 run，
                 // 樣式宣告是實內容；KP 斷行會 trim_end 吞掉純空白行，故繞過
                 // break_lines 逐 run 直接發射一個佔位文字項），無 run＝純空白帶。
@@ -3481,10 +3487,18 @@ fn emit_txbx_texts(
                 blocks.push(block);
                 continue;
             }
-            // 段級字級：本框段首個宣告字級的 run（無＝文件基準）。斷行尺與發射
-            // 尺同用本段字級（正文 cascade_paragraphs 同款思路的框內近似）。
+            // 段級字級：本框段宣告字級的最大 run（無＝文件基準，多字級混排以最大字級決定行高）。
+            // 斷行尺與發射尺同用本段字級（正文 cascade_paragraphs 同款思路的框內近似）。
             let own_runs = runs.get(ti).map(Vec::as_slice).unwrap_or(&[]);
-            let seg_size = own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt);
+            let max_run_sz = own_runs
+                .iter()
+                .filter_map(|r| r.size_pt)
+                .fold(0.0f32, f32::max);
+            let seg_size = if max_run_sz > 0.0 {
+                max_run_sz
+            } else {
+                size_pt
+            };
             let adv = para_advance_scale(own_runs);
             // R6：wps 標註用 run 自帶字級量寬（LO 實據：8pt 文字按 8pt 排），
             // 不再被文件基準字級（11pt）放大而多斷行；其餘路徑維持舊尺。
@@ -3496,14 +3510,26 @@ fn emit_txbx_texts(
             // emit_line_run_items 直接產出粗/斜/色/字級/字型族的同質段。
             let fake = quire_ooxml::Paragraph {
                 runs: own_runs.to_vec(),
+                jc: if center {
+                    Some(quire_ooxml::Align::Center)
+                } else {
+                    None
+                },
                 ..Default::default()
             };
-            let step_h = if k25b_buggy || wps {
+            let nominal_step = if k25b_buggy || wps {
                 line_h
             } else if line_h > 8.0 {
-                (seg_size * 1.15).max(line_h)
+                (own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt) * 1.15).max(line_h)
             } else {
-                (seg_size * 1.15).max(12.0)
+                (own_runs.iter().find_map(|r| r.size_pt).unwrap_or(size_pt) * 1.15).max(12.0)
+            };
+            let step_h = if ti == 0 && max_run_sz >= 18.0 {
+                let required = (max_run_sz * 1.05).max(nominal_step);
+                header_y_excess += required - nominal_step;
+                required
+            } else {
+                nominal_step
             };
             for l in quire_layout::break_lines(t, inner_w, &m) {
                 // R6：標註矩形越出宿主框底線 → 該行起不發（LO 默認視圖裁切）。
@@ -4386,7 +4412,8 @@ fn emit_line_run_items(
         } else {
             y
         };
-        if tab_count > 0 {
+        // 居中段落中文字已按行寬置中排版，前後裝飾性 tab 不推進位移（對齊 LO 零溢出）。
+        if tab_count > 0 && para.and_then(|p| p.jc) != Some(quire_ooxml::Align::Center) {
             let ref_origin = if (base_x - 91.85).abs() <= 12.0
                 || (base_x - 97.5).abs() <= 12.0
                 || (base_x - 25.05).abs() <= 5.0
