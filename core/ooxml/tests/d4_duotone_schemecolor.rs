@@ -10,9 +10,7 @@
 //!      折算暗端 color1 與白端 color2。
 //!    - dark1/dk1、dark2/dk2 等 schemeClr 槽位映射與 recolor 容錯測試。
 
-use quire_ooxml::{
-    read_images_with_theme, theme_slot_for, DuotoneEffect, ThemeColors,
-};
+use quire_ooxml::{read_images_with_theme, theme_slot_for, DuotoneEffect, ThemeColors};
 
 /// 本方折算口徑：accent1 經 shade(45000) 於 sRGB 線性域乘 0.45，
 /// 再經 satMod(135000) 於 8bit Rec.601 飽和度調製所得之暗端色。
@@ -29,10 +27,7 @@ const LO_TOP5_COLORS: &[(u8, u8, u8)] = &[
 ];
 
 fn corpus_bytes(rel: &str) -> Vec<u8> {
-    let path = format!(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../corpus/{}"),
-        rel
-    );
+    let path = format!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../corpus/{}"), rel);
     std::fs::read(&path).unwrap_or_else(|e| panic!("讀 corpus/{rel}: {e}"))
 }
 
@@ -136,9 +131,17 @@ fn d4_lamp2_schemecolor_theme_and_duotone_mapping() {
     assert_eq!(theme.resolve("dk1"), Some(0xFF00_0000), "dk1 色值");
     assert_eq!(theme.resolve("dark2"), Some(0xFF44_546A), "dark2 映射 dk2");
     assert_eq!(theme.resolve("dk2"), Some(0xFF44_546A), "dk2 色值");
-    assert_eq!(theme.resolve("light1"), Some(0xFFFF_FFFF), "light1 映射 lt1");
+    assert_eq!(
+        theme.resolve("light1"),
+        Some(0xFFFF_FFFF),
+        "light1 映射 lt1"
+    );
     assert_eq!(theme.resolve("lt1"), Some(0xFFFF_FFFF), "lt1 色值");
-    assert_eq!(theme.resolve("light2"), Some(0xFFE7_E6E6), "light2 映射 lt2");
+    assert_eq!(
+        theme.resolve("light2"),
+        Some(0xFFE7_E6E6),
+        "light2 映射 lt2"
+    );
     assert_eq!(theme.resolve("lt2"), Some(0xFFE7_E6E6), "lt2 色值");
 
     assert_eq!(theme_slot_for("accent1"), Some("accent1"));
