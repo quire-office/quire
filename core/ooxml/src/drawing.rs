@@ -62,6 +62,22 @@ fn is_zero_usize(v: &usize) -> bool {
     *v == 0
 }
 
+/// R35（卡 3/4/5/6/7 同根根治）：`w:txbxContent` 框內**段落流內嵌 DrawingML**
+/// 的獨立投影——R31 把它挪用 `group_shapes`（`stroke_dash` 塞 rid、`dx_pt`
+/// 塞段落索引）造成五條狀態機缺口的共同根因，本欄位與 K12 群組子件徹底分家。
+/// serde default＋空不外露＝無此形態檔案的序列化位元組逐位不變。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TxbxDrawing {
+    /// 宿主框（VML 候補）`txbx_texts` 展平清單的**段落索引**（文档序，
+    /// flush 時取 `v.txbx.len()`＝進行中段落序號；合法值必 < txbx 段數）。
+    pub para_ix: usize,
+    /// `a:blip/@r:embed` 像素 rId（採集期即要求 Some——無 rid 不入列）。
+    pub rid: String,
+    /// 自身 `wp:extent`（pt，[寬, 高]）。採集期即要求兩軸齊備且 >0——
+    /// 缺 extent 不入列（R35 條 4：0×0 灰塊吞空段步進的根除點）。
+    pub extent_pt: [f32; 2],
+}
+
 /// K12：DrawingML 群組（`wpg:wgp`）內的子形狀投影。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InlineChildShape {
@@ -395,6 +411,13 @@ pub struct InlineImage {
     /// serde default＋None 不外露＝無宣告檔案的序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duotone: Option<DuotoneEffect>,
+    /// R35：框內段落流內嵌 DrawingML 的獨立清單（文档序；與 K12 群組子件
+    /// `group_shapes` 徹底分家——後者只吃 `wpg:wgp` 幾何子件，R31 的欄位
+    /// 挪用（stroke_dash 塞 rid／dx_pt 塞段落索引）是七條狀態機缺口的同根，
+    /// 見 [`TxbxDrawing`]）。serde default＋空不外露＝無此形態檔案的
+    /// 序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub txbx_drawings: Vec<TxbxDrawing>,
     /// K27-B：`v:textbox` 內部 `w:drawing` 自採的 `wp:extent` 尺寸（[寬, 高] pt）。
     /// 只有在 textbox 內嵌 w:drawing 形態下為 Some；發射層圖片尺寸優先改採此值，
     /// 不再覆用外層 VML `v:shape` 的 style 邊框（避免內嵌圖以滿版整頁發射）。
@@ -1327,6 +1350,25 @@ struct Pending {
     txbx_in_t: bool,
     /// 框內 `w:p` 開閉深度（完結時 flush txbx_cur）。
     txbx_para_depth: usize,
+    /// R35（卡 3 事實分流）：框內 blip 貢獻的 rId（文档序去重）——finalize
+    /// 據此把「只來自框內內嵌圖的 rId」從宿主 rid/rids 剔除（R31 事後猜測
+    /// 整批清除的誤殺臂由逐 rId 事實判定取代）；`v:imagedata` 的 rId 另樹
+    /// 事實（[`Pending::imagedata_rids`]），一律保留（消滅「群組圖消失」誤殺）。
+    txbx_blip_rids: Vec<String>,
+    /// R35：`v:imagedata` 貢獻的 rId（文档序去重）——finalize 保留判定的
+    /// 獨立事實來源。
+    imagedata_rids: Vec<String>,
+    /// R35：框內進行中 `w:drawing` 幀（blip 開槽、extent 首見補值）。舊
+    /// `pending_txbx_drawing` 單槽被同段多圖覆寫（卡 1）、跨框殘留（卡 5）、
+    /// 缺 extent 刷 0×0（卡 4）——本幀掛在宿主候補身上，隨候補生死，並由
+    /// `</w:drawing>`／`</w:p>`／`</w:txbxContent>`／finalize 四處出幀點清空。
+    txbx_frame: Option<TxbxFrame>,
+    /// R35：框內段落流內嵌 DrawingML 獨立清單（出幀點刷入；文档序）。
+    txbx_drawings: Vec<TxbxDrawing>,
+    /// R35 回塞態專用（`R35_TXBX_BUGGY=1`）：R31 舊單槽 `(rid, extent)`，
+    /// blip／extent 臂無條件覆寫、`p|drawing` 閉合刷進 `group_shapes` 挪用
+    /// 欄——正常態恆 None，行為逐位照抄 5badcb8 供考卷 A/B 對照。
+    pending_txbx_drawing: Option<(Option<String>, Option<[f32; 2]>)>,
     /// R5：框內每個 `w:txbxContent` 子框的段落數（DrawingML 群組子框序用）。
     txbx_children: Vec<usize>,
     /// 框內文字對齊（例如 "center"；K10）。
@@ -1433,8 +1475,86 @@ struct Pending {
     duo: Option<DuotoneEffect>,
     /// K27-B：textbox 內嵌 w:drawing 自身宣告的 wp:extent 尺寸（pt，[寬, 高]）。
     txbx_drawing_extent: Option<[f32; 2]>,
-    /// R31：進行中框內段落內嵌 DrawingML 的 (rid, extent)。
-    pending_txbx_drawing: Option<(Option<String>, Option<[f32; 2]>)>,
+    /// R35 回塞鎖（`R35_TXBX_BUGGY=1`，照 K4D/K19/K24 先例只讀一次）：
+    /// 逐點重現 R31 舊態——blip 單槽無條件覆寫、`p|drawing` 閉合刷
+    /// `group_shapes` 挪用欄（dx_pt 塞段落索引／stroke_dash 塞 rid）、
+    /// finalize 整批誤殺清除。紅燈考卷據此 A/B 對照證明修復驅動。
+    r35_buggy: bool,
+}
+
+/// R35：框內進行中 `w:drawing` 幀——**逐圖開槽**（同段多圖不再互相覆寫，
+/// 卡 1 根除點）。幀掛在宿主 `Pending` 上：隨候補生死（不跨 pict），並由
+/// `</w:drawing>`／`</w:p>`／`</w:txbxContent>`／finalize 四處出幀點清空
+/// （卡 5 洩漏根除點）。
+#[derive(Default)]
+struct TxbxFrame {
+    slots: Vec<TxbxSlot>,
+}
+
+/// R35：幀內一張圖的累積。`seen_blip` 區分「槽尚空」與「見了 blip 但無
+/// `r:embed`」（卡 2 的 r:link/svgBlip 形態——老實不入列，且**不覆寫**
+/// 已捕獲的 rid，R31 `entry.0 = rid` 無條件覆寫的根除點）。
+struct TxbxSlot {
+    seen_blip: bool,
+    rid: Option<String>,
+    extent: Option<[f32; 2]>,
+}
+
+impl TxbxFrame {
+    /// blip 事件：餵給最內層「尚未見 blip」的槽（extent→blip 常態＝同 pic
+    /// 兩事件合流），否則新開槽（同段多圖）。
+    fn note_blip(&mut self, rid: Option<String>) {
+        if let Some(s) = self.slots.iter_mut().rev().find(|s| !s.seen_blip) {
+            s.seen_blip = true;
+            s.rid = rid;
+            return;
+        }
+        self.slots.push(TxbxSlot {
+            seen_blip: true,
+            rid,
+            extent: None,
+        });
+    }
+
+    /// extent 事件：餵給最內層「尚未有 extent」的槽（blip→extent 常態），
+    /// 否則新開槽（extent→blip＝pic 首事件常態）。
+    fn note_extent(&mut self, wh: [f32; 2]) {
+        if let Some(s) = self.slots.iter_mut().rev().find(|s| s.extent.is_none()) {
+            s.extent = Some(wh);
+            return;
+        }
+        self.slots.push(TxbxSlot {
+            seen_blip: false,
+            rid: None,
+            extent: Some(wh),
+        });
+    }
+}
+
+/// R35：幀出幀——合格圖刷進宿主候補的 `txbx_drawings`（文档序），幀歸零。
+/// 資格＝見過 blip＋rid 齊備（無 rid＝無像素來源，老實不入列，卡 2）＋
+/// extent 兩軸齊備且 >0／有限（缺 extent 不入列——R31
+/// `ext.unwrap_or([0.0, 0.0])` 刷 0×0 灰塊吞空段步進的根除點，卡 4）。
+/// `para_ix` 取刷入時點 `v.txbx.len()`＝進行中段落索引（與 R31 舊
+/// `dx_pt: v.txbx.len()` 同口徑，發射層 `texts.iter().enumerate()` 對位）。
+fn drain_txbx_frame(v: &mut Pending) {
+    let Some(f) = v.txbx_frame.take() else {
+        return;
+    };
+    let para_ix = v.txbx.len();
+    for s in f.slots {
+        let (Some(rid), Some([w, h])) = (s.rid.filter(|_| s.seen_blip), s.extent) else {
+            continue;
+        };
+        if !(w > 0.0 && h > 0.0 && w.is_finite() && h.is_finite()) {
+            continue;
+        }
+        v.txbx_drawings.push(TxbxDrawing {
+            para_ix,
+            rid,
+            extent_pt: [w, h],
+        });
+    }
 }
 
 struct PendingChildShape {
@@ -1543,6 +1663,10 @@ impl Pending {
             txbx_cur: String::new(),
             txbx_in_t: false,
             txbx_para_depth: 0,
+            txbx_blip_rids: Vec::new(),
+            txbx_frame: None,
+            txbx_drawings: Vec::new(),
+            pending_txbx_drawing: None,
             txbx_children: Vec::new(),
             txbx_align: None,
             fill: None,
@@ -1674,6 +1798,7 @@ impl DrawingParser {
             cell_anchor_buggy: std::env::var("K10_CELL_ANCHOR_BUGGY").is_ok(),
             duotone_buggy: std::env::var("K19_DUOTONE_BUGGY").is_ok(),
             style_buggy: std::env::var("K24_STYLE_BUGGY").is_ok(),
+            r35_buggy: std::env::var("R35_TXBX_BUGGY").is_ok(),
         }
     }
 
@@ -2285,14 +2410,9 @@ impl DrawingParser {
                     }
                 }
                 b"blip" => {
+                    // R35：統一採集口徑見 [`DrawingParser::note_vml_blip`]。
                     let rid = attr_local(e, b"embed");
-                    if let Some(v) = self.vml.as_mut() {
-                        v.note_rid(rid.clone());
-                        if self.txbx_depth > 0 {
-                            let entry = v.pending_txbx_drawing.get_or_insert((None, None));
-                            entry.0 = rid;
-                        }
-                    }
+                    self.note_vml_blip(rid);
                 }
                 b"extent" if self.txbx_depth > 0 => {
                     if let Some(v) = self.vml.as_mut() {
@@ -2303,8 +2423,14 @@ impl DrawingParser {
                             if v.txbx_drawing_extent.is_none() {
                                 v.txbx_drawing_extent = Some([w, h]);
                             }
-                            let entry = v.pending_txbx_drawing.get_or_insert((None, None));
-                            entry.1 = Some([w, h]);
+                            if self.r35_buggy {
+                                let entry = v.pending_txbx_drawing.get_or_insert((None, None));
+                                entry.1 = Some([w, h]);
+                            } else {
+                                v.txbx_frame
+                                    .get_or_insert_with(TxbxFrame::default)
+                                    .note_extent([w, h]);
+                            }
                         }
                     }
                 }
@@ -2695,14 +2821,10 @@ impl DrawingParser {
                 // media part，EMF 也永遠輪不到直讀。只記 rId（像素備選），
                 // 幾何／段落／採納旗標一概不動（同 Fallback 子樹的破例口徑）。
                 b"blip" => {
+                    // R35：統一採集口徑見 [`DrawingParser::note_vml_blip`]
+                    // （自閉合 blip 是常態，Start／Empty 兩側必須同徑）。
                     let rid = attr_local(e, b"embed");
-                    if let Some(v) = self.vml.as_mut() {
-                        v.note_rid(rid.clone());
-                        if self.txbx_depth > 0 {
-                            let entry = v.pending_txbx_drawing.get_or_insert((None, None));
-                            entry.0 = rid;
-                        }
-                    }
+                    self.note_vml_blip(rid);
                 }
                 b"gfxdata" => {
                     if let Some(v) = self.vml.as_mut() {
@@ -2721,8 +2843,14 @@ impl DrawingParser {
                             if v.txbx_drawing_extent.is_none() {
                                 v.txbx_drawing_extent = Some([w, h]);
                             }
-                            let entry = v.pending_txbx_drawing.get_or_insert((None, None));
-                            entry.1 = Some([w, h]);
+                            if self.r35_buggy {
+                                let entry = v.pending_txbx_drawing.get_or_insert((None, None));
+                                entry.1 = Some([w, h]);
+                            } else {
+                                v.txbx_frame
+                                    .get_or_insert_with(TxbxFrame::default)
+                                    .note_extent([w, h]);
+                            }
                         }
                     }
                 }
