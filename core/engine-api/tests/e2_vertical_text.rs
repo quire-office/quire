@@ -103,19 +103,41 @@ fn e2_lamp2_vert270_emission_btlr_textbox() {
     let eng = Engine::from_docx_bytes(&bytes).expect("open btlr");
     let dl = eng.page_display_list(0).expect("dl page 0");
 
-    let p1 = dl.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, size_pt, flags, text, .. } if text.contains("First paragraph.") => {
-            Some((*x, *y, *size_pt, *flags, text.clone()))
-        }
-        _ => None,
-    }).expect("必須存在 First paragraph. 文字項");
+    let p1 = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                flags,
+                text,
+                ..
+            } if text.contains("First paragraph.") => {
+                Some((*x, *y, *size_pt, *flags, text.clone()))
+            }
+            _ => None,
+        })
+        .expect("必須存在 First paragraph. 文字項");
 
-    let p2 = dl.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, size_pt, flags, text, .. } if text.contains("Second paragraph.") => {
-            Some((*x, *y, *size_pt, *flags, text.clone()))
-        }
-        _ => None,
-    }).expect("必須存在 Second paragraph. 文字項");
+    let p2 = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                flags,
+                text,
+                ..
+            } if text.contains("Second paragraph.") => {
+                Some((*x, *y, *size_pt, *flags, text.clone()))
+            }
+            _ => None,
+        })
+        .expect("必須存在 Second paragraph. 文字項");
 
     // 1. 斷言方向旗標必須帶 FLAG_DIR_VERT270（代表 dir=[0.0, -1.0]），不可為橫排預設
     assert!(
@@ -133,7 +155,8 @@ fn e2_lamp2_vert270_emission_btlr_textbox() {
     assert!(
         p2.0 >= p1.0 + 10.0,
         "段落 2 x={:.2} 應在段落 1 x={:.2} 右側至少一個行寬（修前重疊於同 x）",
-        p2.0, p1.0
+        p2.0,
+        p1.0
     );
 
     // 3. 斷言 bbox 形狀細長（高 >> 寬）且命中 LO bbox 真值 ±4pt
@@ -146,8 +169,10 @@ fn e2_lamp2_vert270_emission_btlr_textbox() {
         bbox1
     );
     assert!(
-        (bbox1[0] - 225.78).abs() <= 4.0 && (bbox1[1] - 154.23).abs() <= 4.0
-        && (bbox1[2] - 239.2).abs() <= 4.0 && (bbox1[3] - 224.9).abs() <= 4.0,
+        (bbox1[0] - 225.78).abs() <= 4.0
+            && (bbox1[1] - 154.23).abs() <= 4.0
+            && (bbox1[2] - 239.2).abs() <= 4.0
+            && (bbox1[3] - 224.9).abs() <= 4.0,
         "First paragraph. bbox={:?} 偏離 LO 真值 [225.8, 154.2, 239.2, 224.9] 超過 4pt",
         bbox1
     );
@@ -156,8 +181,10 @@ fn e2_lamp2_vert270_emission_btlr_textbox() {
     let col_w2 = p2.2 * 1.22;
     let bbox2 = LineFlow::Vertical270.compute_line_bbox(p2.0, p2.1, len2, col_w2);
     assert!(
-        (bbox2[0] - 239.23).abs() <= 4.0 && (bbox2[1] - 141.13).abs() <= 4.0
-        && (bbox2[2] - 252.65).abs() <= 4.0 && (bbox2[3] - 224.9).abs() <= 4.0,
+        (bbox2[0] - 239.23).abs() <= 4.0
+            && (bbox2[1] - 141.13).abs() <= 4.0
+            && (bbox2[2] - 252.65).abs() <= 4.0
+            && (bbox2[3] - 224.9).abs() <= 4.0,
         "Second paragraph. bbox={:?} 偏離 LO 真值 [239.2, 141.1, 252.6, 224.9] 超過 4pt",
         bbox2
     );
@@ -171,12 +198,21 @@ fn e2_lamp3_vert270_second_file_fdo69636() {
     let eng = Engine::from_docx_bytes(&bytes).expect("open fdo69636");
     let dl = eng.page_display_list(0).expect("dl page 0");
 
-    let item = dl.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, size_pt, flags, text, .. } if text.contains("Vertical Text") => {
-            Some((*x, *y, *size_pt, *flags, text.clone()))
-        }
-        _ => None,
-    }).expect("必須存在 Vertical Text 文字項");
+    let item = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                flags,
+                text,
+                ..
+            } if text.contains("Vertical Text") => Some((*x, *y, *size_pt, *flags, text.clone())),
+            _ => None,
+        })
+        .expect("必須存在 Vertical Text 文字項");
 
     assert!(
         item.3 & FLAG_DIR_VERT270 != 0,
@@ -193,8 +229,10 @@ fn e2_lamp3_vert270_second_file_fdo69636() {
         bbox
     );
     assert!(
-        (bbox[0] - 90.0).abs() <= 4.0 && (bbox[1] - 72.57).abs() <= 4.0
-        && (bbox[2] - 111.1).abs() <= 4.0 && (bbox[3] - 170.55).abs() <= 4.0,
+        (bbox[0] - 90.0).abs() <= 4.0
+            && (bbox[1] - 72.57).abs() <= 4.0
+            && (bbox[2] - 111.1).abs() <= 4.0
+            && (bbox[3] - 170.55).abs() <= 4.0,
         "fdo69636 bbox={:?} 偏離 LO 真值 [90.0, 72.57, 111.1, 170.55] 超過 4pt",
         bbox
     );
@@ -213,19 +251,37 @@ fn e2_lamp4_vert_emission_tbrl_and_tdf124754() {
     let eng1 = Engine::from_docx_bytes(&b1).expect("open tbrl");
     let dl1 = eng1.page_display_list(0).expect("dl page 0");
 
-    let p1 = dl1.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, size_pt, flags, text, .. } if text.contains("AAA1.") => {
-            Some((*x, *y, *size_pt, *flags, text.clone()))
-        }
-        _ => None,
-    }).expect("必須存在 AAA1. 文字項");
+    let p1 = dl1
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                flags,
+                text,
+                ..
+            } if text.contains("AAA1.") => Some((*x, *y, *size_pt, *flags, text.clone())),
+            _ => None,
+        })
+        .expect("必須存在 AAA1. 文字項");
 
-    let p2 = dl1.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, size_pt, flags, text, .. } if text.contains("AAA2.") => {
-            Some((*x, *y, *size_pt, *flags, text.clone()))
-        }
-        _ => None,
-    }).expect("必須存在 AAA2. 文字項");
+    let p2 = dl1
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                flags,
+                text,
+                ..
+            } if text.contains("AAA2.") => Some((*x, *y, *size_pt, *flags, text.clone())),
+            _ => None,
+        })
+        .expect("必須存在 AAA2. 文字項");
 
     assert!(
         p1.3 & FLAG_DIR_VERT != 0,
@@ -242,15 +298,18 @@ fn e2_lamp4_vert_emission_tbrl_and_tdf124754() {
     assert!(
         p2.0 <= p1.0 - 10.0,
         "段落 2 x={:.2} 應在段落 1 x={:.2} 左側（tbrl 右至左分欄）",
-        p2.0, p1.0
+        p2.0,
+        p1.0
     );
 
     let len1 = TextMeasurer::new(p1.2).text_width(&p1.4);
     let col_w1 = p1.2 * 1.22;
     let bbox1 = LineFlow::Vertical.compute_line_bbox(p1.0, p1.1, len1, col_w1);
     assert!(
-        (bbox1[0] - 382.4).abs() <= 4.0 && (bbox1[1] - 78.7).abs() <= 4.0
-        && (bbox1[2] - 395.82).abs() <= 4.0 && (bbox1[3] - 106.12).abs() <= 4.0,
+        (bbox1[0] - 382.4).abs() <= 4.0
+            && (bbox1[1] - 78.7).abs() <= 4.0
+            && (bbox1[2] - 395.82).abs() <= 4.0
+            && (bbox1[3] - 106.12).abs() <= 4.0,
         "AAA1. bbox={:?} 偏離 LO 真值 [382.4, 78.7, 395.82, 106.12] 超過 4pt",
         bbox1
     );
@@ -260,12 +319,23 @@ fn e2_lamp4_vert_emission_tbrl_and_tdf124754() {
     let eng2 = Engine::from_docx_bytes(&b2).expect("open tdf124754");
     let dl2 = eng2.page_display_list(0).expect("dl page 0");
 
-    let item2 = dl2.items.iter().find_map(|it| match it {
-        DrawItem::Text { x, y, size_pt, flags, text, .. } if text.contains("This is a hyperlink") => {
-            Some((*x, *y, *size_pt, *flags, text.clone()))
-        }
-        _ => None,
-    }).expect("必須存在 This is a hyperlink 文字項");
+    let item2 = dl2
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text {
+                x,
+                y,
+                size_pt,
+                flags,
+                text,
+                ..
+            } if text.contains("This is a hyperlink") => {
+                Some((*x, *y, *size_pt, *flags, text.clone()))
+            }
+            _ => None,
+        })
+        .expect("必須存在 This is a hyperlink 文字項");
 
     assert!(
         item2.3 & FLAG_DIR_VERT != 0,
@@ -277,8 +347,10 @@ fn e2_lamp4_vert_emission_tbrl_and_tdf124754() {
     let col_w2 = item2.2 * 1.22;
     let bbox2 = LineFlow::Vertical.compute_line_bbox(item2.0, item2.1, len2, col_w2);
     assert!(
-        (bbox2[0] - 126.74).abs() <= 4.0 && (bbox2[1] - 83.85).abs() <= 4.0
-        && (bbox2[2] - 137.81).abs() <= 4.0 && (bbox2[3] - 163.85).abs() <= 4.0,
+        (bbox2[0] - 126.74).abs() <= 4.0
+            && (bbox2[1] - 83.85).abs() <= 4.0
+            && (bbox2[2] - 137.81).abs() <= 4.0
+            && (bbox2[3] - 163.85).abs() <= 4.0,
         "tdf124754 bbox={:?} 偏離 LO 真值 [126.74, 83.85, 137.81, 163.85] 超過 4pt",
         bbox2
     );

@@ -426,18 +426,10 @@ impl LineFlow {
     ) -> [f32; 4] {
         match self {
             LineFlow::Horizontal => [base_x, base_y, base_x + line_len_pt, base_y + col_w_pt],
-            LineFlow::Vertical270 => [
-                base_x,
-                base_y - line_len_pt,
-                base_x + col_w_pt,
-                base_y,
-            ],
-            LineFlow::Vertical | LineFlow::EastAsianVertical => [
-                base_x,
-                base_y,
-                base_x + col_w_pt,
-                base_y + line_len_pt,
-            ],
+            LineFlow::Vertical270 => [base_x, base_y - line_len_pt, base_x + col_w_pt, base_y],
+            LineFlow::Vertical | LineFlow::EastAsianVertical => {
+                [base_x, base_y, base_x + col_w_pt, base_y + line_len_pt]
+            }
         }
     }
 }
