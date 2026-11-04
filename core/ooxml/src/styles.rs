@@ -381,6 +381,13 @@ pub(crate) fn space_pt(raw: Option<&str>) -> Option<f32> {
         .map(|v| (v / 20.0) as f32)
 }
 
+/// 將 twips 字串（可正可負）換算為 pt（1pt ＝ 20twips）。
+pub(crate) fn twips_to_pt(raw: Option<&str>) -> Option<f32> {
+    raw.and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .map(|v| (v / 20.0) as f32)
+}
+
 pub(crate) fn align_of(val: Option<&str>) -> Option<Align> {
     match val?.trim() {
         "left" | "start" => Some(Align::Left),
