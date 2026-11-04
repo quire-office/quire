@@ -35,7 +35,9 @@ pub use sectpr::{
     read_sections_note_pr, read_sections_per_paragraph, SectionGeometry, SectionHeaderFooter,
     SectionSpec, SlotRefs,
 };
-pub use styles::{Align, CondShading, LineSpacing, ParaStyle, RunFonts, RunStyle, StyleTable};
+pub use styles::{
+    Align, CondShading, LineSpacing, ParaStyle, RunFonts, RunStyle, StyleTable, VertAlign,
+};
 pub use table::{
     Block, BodyTable, Border, Borders, CellProps, EffectiveLook, GridCol, Margins, RowProps,
     Shading, Table, TableCell, TableLook, TableProps, TableRow, TblWidth,
@@ -159,6 +161,9 @@ pub struct Run {
     /// 所屬段落的縮進（pt，`w:pPr/w:ind/@w:left + @w:firstLine - @w:hanging`；供框內段落排版消費）。
     #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub para_indent_pt: f32,
+    /// 上標／下標宣告（`w:vertAlign`；供發射層字級縮放與基線偏移消費）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vert_align: Option<styles::VertAlign>,
 }
 
 fn is_zero_f32(v: &f32) -> bool {
@@ -506,7 +511,7 @@ fn apply_style_tag(
     // direct——否則「未見任何 rPr 宣告」的 None 語義會被一個空宣告破掉。
     if matches!(
         name,
-        b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz" | b"highlight" | b"shd"
+        b"b" | b"i" | b"u" | b"strike" | b"color" | b"sz" | b"highlight" | b"shd" | b"vertAlign"
     ) || (name == b"rFonts" && styles::rfonts_of(e, tf).is_some())
     {
         if let Some(r) = cur_run.as_mut() {
@@ -520,6 +525,18 @@ fn apply_style_tag(
         }
     }
     match name {
+        b"vertAlign" => {
+            if let Some(r) = cur_run.as_mut() {
+                if let Some(v) = attr_val(e, "val") {
+                    match v.trim() {
+                        "superscript" => r.vert_align = Some(styles::VertAlign::Superscript),
+                        "subscript" => r.vert_align = Some(styles::VertAlign::Subscript),
+                        "baseline" => r.vert_align = Some(styles::VertAlign::Baseline),
+                        _ => {}
+                    }
+                }
+            }
+        }
         b"rStyle" => {
             // 字元樣式引用（styleId）：級聯層在 run 直接格式之下作基底查表。
             if let Some(r) = cur_run.as_mut() {
@@ -715,10 +732,11 @@ fn parse_document_xml_with_fonts(
                         b"t" => txbx_in_t = true,
                         // 框內 run：建採集緩衝（發射層的樣式來源）。
                         b"r" => {
-                            let mut r = Run::default();
-                            r.para_align = txbx_cur_jc;
-                            r.para_indent_pt = txbx_cur_ind_pt;
-                            txbx_run = Some(r);
+                            txbx_run = Some(Run {
+                                para_align: txbx_cur_jc,
+                                para_indent_pt: txbx_cur_ind_pt,
+                                ..Default::default()
+                            });
                         }
                         // pPr 子樹（段落標記）與其內 rPr：標深度並採集段落對齊與縮進。
                         b"pPr" => txbx_ppr_depth += 1,
@@ -732,9 +750,12 @@ fn parse_document_xml_with_fonts(
                             }
                         }
                         b"ind" if txbx_ppr_depth > 0 => {
-                            let left = styles::twips_to_pt(attr_val(&e, "left").as_deref()).unwrap_or(0.0);
-                            let fl = styles::twips_to_pt(attr_val(&e, "firstLine").as_deref()).unwrap_or(0.0);
-                            let hang = styles::twips_to_pt(attr_val(&e, "hanging").as_deref()).unwrap_or(0.0);
+                            let left =
+                                styles::twips_to_pt(attr_val(&e, "left").as_deref()).unwrap_or(0.0);
+                            let fl = styles::twips_to_pt(attr_val(&e, "firstLine").as_deref())
+                                .unwrap_or(0.0);
+                            let hang = styles::twips_to_pt(attr_val(&e, "hanging").as_deref())
+                                .unwrap_or(0.0);
                             txbx_cur_ind_pt = left + fl - hang;
                             if let Some(r) = txbx_run.as_mut() {
                                 r.para_indent_pt = txbx_cur_ind_pt;
@@ -965,9 +986,12 @@ fn parse_document_xml_with_fonts(
                                 r.para_align = txbx_cur_jc;
                             }
                         } else if name.as_slice() == b"ind" {
-                            let left = styles::twips_to_pt(attr_val(&e, "left").as_deref()).unwrap_or(0.0);
-                            let fl = styles::twips_to_pt(attr_val(&e, "firstLine").as_deref()).unwrap_or(0.0);
-                            let hang = styles::twips_to_pt(attr_val(&e, "hanging").as_deref()).unwrap_or(0.0);
+                            let left =
+                                styles::twips_to_pt(attr_val(&e, "left").as_deref()).unwrap_or(0.0);
+                            let fl = styles::twips_to_pt(attr_val(&e, "firstLine").as_deref())
+                                .unwrap_or(0.0);
+                            let hang = styles::twips_to_pt(attr_val(&e, "hanging").as_deref())
+                                .unwrap_or(0.0);
                             txbx_cur_ind_pt = left + fl - hang;
                             if let Some(r) = txbx_run.as_mut() {
                                 r.para_indent_pt = txbx_cur_ind_pt;
@@ -987,14 +1011,14 @@ fn parse_document_xml_with_fonts(
                                 | b"u"
                                 | b"highlight"
                                 | b"shd"
+                                | b"vertAlign"
                         ) {
                             apply_style_tag(&name, &e, &mut txbx_run, theme, tf);
                         }
                     } else if name.as_slice() == b"tab" {
-                        if let Some(r) = txbx_run.as_mut() {
-                            r.tab = true;
-                            r.tab_count = r.tab_count.saturating_add(1);
-                        }
+                        let r = txbx_run.get_or_insert_with(Run::default);
+                        r.tab = true;
+                        r.tab_count = r.tab_count.saturating_add(1);
                     }
                     continue;
                 }

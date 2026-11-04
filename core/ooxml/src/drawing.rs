@@ -1742,7 +1742,15 @@ impl DrawingParser {
             //（ECMA：spPr 直接格式壓樣式矩陣；既有 spPr 檔零位移）。
             fill_argb: p.fill.or(p.fill_attr).or(p.style.fill),
             filled: if p.filled_f { Some(false) } else { None },
-            stroke_argb: p.stroke.or(p.stroke_attr).or(p.style.stroke),
+            stroke_argb: p.stroke.or(p.stroke_attr).or(p.style.stroke).or_else(|| {
+                // ECMA-376 Part 4 §19.1.2.19：當 VML shape 宣告了線寬（strokeweight）且未禁用描邊時，
+                // 描邊色（strokecolor）預設值為黑色（0xFF000000）。
+                if p.stroke_w.is_some() && !p.stroked_f {
+                    Some(0xFF00_0000)
+                } else {
+                    None
+                }
+            }),
             stroked: if p.stroked_f { Some(false) } else { None },
             stroke_width_pt: p.stroke_w,
             stroke_dash: p.dash.clone(),

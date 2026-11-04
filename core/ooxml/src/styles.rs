@@ -130,6 +130,17 @@ pub struct RunStyle {
     /// 文字背景高亮色（0xAARRGGBB，`w:highlight` 或 `w:shd`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub highlight: Option<u32>,
+    /// 上標／下標宣告（`w:vertAlign`；ECMA-376 §17.3.2.42）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vert_align: Option<VertAlign>,
+}
+
+/// 上標／下標（ECMA-376 §17.3.2.42 `w:vertAlign`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VertAlign {
+    Baseline,
+    Superscript,
+    Subscript,
 }
 
 impl RunStyle {
@@ -164,7 +175,7 @@ impl RunStyle {
                 $(if self.$f.is_none() { self.$f = upper.$f; })*
             };
         }
-        fill!(size_pt, bold, italic, underline, strike, highlight);
+        fill!(size_pt, bold, italic, underline, strike, highlight, vert_align);
         if !self.color_set {
             self.color = upper.color;
             self.color_set = upper.color_set;
@@ -466,6 +477,16 @@ pub(crate) fn apply_run_tag(
                     if let Some(c) = crate::parse_color_val(&v) {
                         rs.highlight = Some(c);
                     }
+                }
+            }
+        }
+        b"vertAlign" => {
+            if let Some(v) = attr_val(e, "val") {
+                match v.trim() {
+                    "superscript" => rs.vert_align = Some(VertAlign::Superscript),
+                    "subscript" => rs.vert_align = Some(VertAlign::Subscript),
+                    "baseline" => rs.vert_align = Some(VertAlign::Baseline),
+                    _ => {}
                 }
             }
         }
