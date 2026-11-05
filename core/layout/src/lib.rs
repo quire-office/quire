@@ -1281,7 +1281,14 @@ fn pack_run(
         let hard = match &flow[fi] {
             FlowItem::Text { para } => {
                 let pl = pls[*para];
-                li < pl.lines.len() && pl.para_breaks.binary_search(&li).is_ok()
+                (li < pl.lines.len() && pl.para_breaks.binary_search(&li).is_ok())
+                    || (li == 0
+                        && band == 0
+                        && fi > 0
+                        && fi + 1 == flow.len()
+                        && pl.lines.len() == 1
+                        && pl.lines[0].text.is_empty()
+                        && !pl.para_breaks.is_empty())
             }
             // 表格切片與圖片佔位項不帶段內斷點（格內 br 屬表格跨頁卡範圍）。
             _ => false,

@@ -1082,7 +1082,7 @@ pub fn layout_table(
     tl
 }
 
-/// 找 vMerge block（同欄 col==c 且 span==1 才參與——跨欄格 vMerge v1 不實作）：
+/// 找 vMerge block（同欄 col==c 且同跨欄數 col_span==head_span 參與合併）：
 /// - head（restart）：保留自身 block 序列；底框搬給末參加格（block 底邊），
 ///   自身底邊清空。
 /// - continue：清空自身 blocks（ECMA-376＋LO ground truth：continue
@@ -1100,22 +1100,22 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
     for c in 0..max_col {
         let mut r = 0usize;
         while r < n_rows {
-            let is_restart = rows[r]
+            let head_span = rows[r]
                 .cells
                 .iter()
-                .find(|g| g.col == c && g.col_span == 1)
-                .is_some_and(|g| matches!(g.merge, Some((_, true))));
-            if !is_restart {
+                .find(|g| g.col == c && matches!(g.merge, Some((_, true))))
+                .map(|g| g.col_span);
+            let Some(head_span) = head_span else {
                 r += 1;
                 continue;
-            }
+            };
             let head = r;
             let mut last = r;
             while last + 1 < n_rows {
                 let cont = rows[last + 1]
                     .cells
                     .iter()
-                    .find(|g| g.col == c && g.col_span == 1);
+                    .find(|g| g.col == c && g.col_span == head_span);
                 if matches!(cont.map(|g| g.merge), Some(Some((_, false)))) {
                     last += 1;
                 } else {
@@ -1131,27 +1131,33 @@ fn assign_merge_blocks(rows: &mut [RowGeom]) {
                 let hg = rows[head]
                     .cells
                     .iter_mut()
-                    .find(|g| g.col == c)
+                    .find(|g| g.col == c && g.col_span == head_span)
                     .expect("head 存在");
                 hg.merge = Some((block, true));
                 hg.block_head_row = head;
                 hg.block_end_row = last;
                 hg.block_tail = last == head;
-                // block 底邊交給末格；head 自身底邊清空（內部橫線不畫）。
+                // block 底邊交給末格（末格無明確底邊時繼承 head 底邊）；head 自身底邊清空（內部橫線不畫）。
                 let bottom = hg.edges[EDGE_BOTTOM].clone();
                 if last > head {
                     hg.edges[EDGE_BOTTOM] = None;
                     if let Some(tg) = rows[last]
                         .cells
                         .iter_mut()
-                        .find(|g| g.col == c && g.col_span == 1)
+                        .find(|g| g.col == c && g.col_span == head_span)
                     {
-                        tg.edges[EDGE_BOTTOM] = bottom;
+                        if tg.edges[EDGE_BOTTOM].is_none() {
+                            tg.edges[EDGE_BOTTOM] = bottom;
+                        }
                     }
                 }
             }
             for (k, row) in rows[head + 1..=last].iter_mut().enumerate() {
-                if let Some(g) = row.cells.iter_mut().find(|g| g.col == c && g.col_span == 1) {
+                if let Some(g) = row
+                    .cells
+                    .iter_mut()
+                    .find(|g| g.col == c && g.col_span == head_span)
+                {
                     let rr = head + 1 + k;
                     g.merge = Some((block, false));
                     g.block_head_row = head;

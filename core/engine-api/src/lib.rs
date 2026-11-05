@@ -507,6 +507,10 @@ impl Engine {
             //    一次）。二者合起來消除「多佔位把臨界頁擠出」的回歸：
             //    HC031 正文曾多出一頁只含節末段的空頁（總頁數 9→10）。
             let mut spacings = spacings.clone();
+            table_map::apply_html_autospacing(
+                doc.parts.get("word/document.xml").map(|v| v.as_slice()),
+                &mut spacings,
+            );
             let mut chain_breaks: Vec<usize> = Vec::new();
             for bt in &doc.tables {
                 let end = table_map::table_para_end(&bt.table, bt.para_start).min(spacings.len());
@@ -521,7 +525,7 @@ impl Engine {
         } else {
             (vec![0; spacings.len()], vec![0; spacings.len()])
         };
-        let paras_eff: Option<Vec<quire_ooxml::Paragraph>> = Some(eff_all);
+        let mut paras_eff: Option<Vec<quire_ooxml::Paragraph>> = Some(eff_all);
         // 版面文字：以發射投影為準（級聯路徑含點引填補——斷行與發射同源，
         // run↔line 碼點對齊不破）。無級聯＝原始串接（舊行為）。
         let texts: Vec<String> = match paras_eff.as_ref() {
@@ -536,11 +540,16 @@ impl Engine {
         // 正文流圖走 ImageBand，浮動鎖點圖附掛錨定頁。
         let styles = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
         let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
-        let images = doc
+        let mut images = doc
             .parts
             .get("word/document.xml")
             .map(|xml| quire_ooxml::read_images_with_theme(xml, &theme))
             .unwrap_or_default();
+        table_map::suppress_cover_page_author_placeholder(
+            doc.parts.get("word/document.xml").map(|v| v.as_slice()),
+            &mut images,
+            paras_eff.as_mut().map_or(&mut [], Vec::as_mut_slice),
+        );
         let eff_refs: &[quire_ooxml::Paragraph] = paras_eff.as_deref().unwrap_or(&doc.paragraphs);
         // K7-cal：逐段水平 advance 尺（級聯主宣告族→LO face 寬比查表；未宣告
         // 族＝1.0 零擾動）。`K7_WRAP_WIDTH_BUGGY=1` 或 `K7_ADVANCE_SCALE_BUGGY=1`
