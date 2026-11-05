@@ -276,3 +276,18 @@ test lamp2_gridspan_slice_geometry_is_locked ... FAILED
 `e1_probe{6..13}.py`、`e1_min{,2,3}.py`、`e1_abl{,2..9}.py`、`e1_const.py`、
 `e1_autosp.py`、`e1_dump.py`、`e1_lh.py`（LO PDF 抽取／docx XML 結構探針／
 LO-vs-我方消融矩陣／autospacing 常數矩陣）。
+
+## 勘誤（11-05，t_8573d294 worker 復證＋PM 收案，合併 commit 見 main `7ac6ef5`）
+
+§3.1 與 §5.2 宣稱的 Trebuchet real-LH ≈1.56–1.57 **為度量誤算**：把 pitch 除以
+size 卻漏乘 `declared_line/240`（本檔 docDefaults 宣告 `w:line="276"`＝1.15；
+15.65/10/1.15＝**1.3609**，15.65/10＝1.565 即誤源）。三口徑復算同落 1.3620
+（真檔無 w:line 段 1.3609、宣告 line=240 段 1.3650、合成探針 sz10/11/14/20→
+1.3700/1.3636/1.3571/1.3600），且 LO 頂替 face（真檔 span font 實測
+`NotoSans-Regular`）hhea asc=1069/desc=-293/gap=0/upm=1000 ⇒ 1.3620 同構。
+**族表已按 1.3620 入庫**（face_line_factor）。§5.2「不可套用 Noto Serif 1.3620」
+一併作廢——實測證明 LO 頂替後的就是 Noto 系同值，入表是實測對齊而非借值。
+本檔 cell-grid-span 分頁切點殘差 1 行的真根因改掛**水平 advance 尺**（該段
+9 run 全 run 級宣告 Trebuchet；A 軌 1.0359 入表實跑行數不動，負結果，依 K7
+維持零擾動，待水平口徑定錨）。autospacing 對本考卷亦非成因（LO 本檔照吃
+宣告值未折疊，我方段距已逐位對齊），corpus 247 處人群另卡處理。
