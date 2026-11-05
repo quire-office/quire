@@ -50,22 +50,20 @@ fn collect_items(eng: &Engine) -> (Vec<ImageItem>, Vec<RectItem>) {
                     h: *h,
                 });
             }
+            // 文字框白色背景矩形（或非 0 尺寸的背景框）
             DrawItem::Rect {
                 x,
                 y,
                 w,
                 h,
                 fill_argb,
-            } => {
-                // 文字框白色背景矩形（或非 0 尺寸的背景框）
-                if *w > 10.0 && *h > 10.0 && *fill_argb != 0x2088_8888 {
-                    rects.push(RectItem {
-                        x: *x,
-                        y: *y,
-                        w: *w,
-                        h: *h,
-                    });
-                }
+            } if *w > 10.0 && *h > 10.0 && *fill_argb != 0x2088_8888 => {
+                rects.push(RectItem {
+                    x: *x,
+                    y: *y,
+                    w: *w,
+                    h: *h,
+                });
             }
             _ => {}
         }
@@ -105,10 +103,7 @@ fn test_f3_txbx_picture_full_suite() {
     );
 
     // 燈 2b：圖片 bbox 必須落在文字框 bbox 內（誤差容許 ±4pt）
-    assert!(
-        !rects.is_empty(),
-        "文字框背景矩形必須存在以作為幾何參考"
-    );
+    assert!(!rects.is_empty(), "文字框背景矩形必須存在以作為幾何參考");
     let txbx = &rects[0];
     let tolerance = 4.0f32;
 

@@ -2812,7 +2812,11 @@ impl DrawingParser {
                     duo_note_mod(&mut p, n, e);
                 }
                 b"drawing" | b"pict" if !empty => {
-                    if self.txbx_depth > 0 && name == b"drawing" && !self.r35_buggy && !self.f3_buggy {
+                    if self.txbx_depth > 0
+                        && name == b"drawing"
+                        && !self.r35_buggy
+                        && !self.f3_buggy
+                    {
                         // F3：文字框內的內嵌 drawing 不吞沒，為其開一張新圖的槽
                         p.txbx_frame
                             .get_or_insert_with(TxbxFrame::default)

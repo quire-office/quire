@@ -4444,7 +4444,9 @@ fn decode_gif_to_rgba8(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     while pos < data.len() {
         let b = data[pos];
         if b == 0x21 {
-            if pos + 2 > data.len() { break; }
+            if pos + 2 > data.len() {
+                break;
+            }
             let label = data[pos + 1];
             if label == 0xF9 && pos + 8 <= data.len() {
                 let flg = data[pos + 3];
@@ -4460,7 +4462,9 @@ fn decode_gif_to_rgba8(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                 pos += 1;
             }
         } else if b == 0x2C {
-            if pos + 10 > data.len() { break; }
+            if pos + 10 > data.len() {
+                break;
+            }
             let img_w = u16::from_le_bytes([data[pos + 5], data[pos + 6]]) as usize;
             let img_h = u16::from_le_bytes([data[pos + 7], data[pos + 8]]) as usize;
             let packed_desc = data[pos + 9];
@@ -4468,18 +4472,24 @@ fn decode_gif_to_rgba8(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
             if packed_desc & 0x80 != 0 {
                 let lct_size = 2usize << (packed_desc & 7);
                 let lct_bytes = lct_size * 3;
-                if pos + lct_bytes > data.len() { break; }
+                if pos + lct_bytes > data.len() {
+                    break;
+                }
                 active_palette = &data[pos..pos + lct_bytes];
                 pos += lct_bytes;
             }
-            if pos >= data.len() { break; }
+            if pos >= data.len() {
+                break;
+            }
             let min_code_size = data[pos] as usize;
             pos += 1;
             let mut comp = Vec::new();
             while pos < data.len() && data[pos] > 0 {
                 let l = data[pos] as usize;
                 pos += 1;
-                if pos + l > data.len() { break; }
+                if pos + l > data.len() {
+                    break;
+                }
                 comp.extend_from_slice(&data[pos..pos + l]);
                 pos += l;
             }
@@ -4503,7 +4513,9 @@ fn decode_gif_to_rgba8(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                     bit_cnt += 8;
                     byte_idx += 1;
                 }
-                if bit_cnt < code_size { break; }
+                if bit_cnt < code_size {
+                    break;
+                }
                 let code = (bit_buf & ((1 << code_size) - 1)) as usize;
                 bit_buf >>= code_size;
                 bit_cnt -= code_size;
@@ -4514,7 +4526,9 @@ fn decode_gif_to_rgba8(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                     old_code = None;
                     continue;
                 }
-                if code == end_code { break; }
+                if code == end_code {
+                    break;
+                }
 
                 let entry = if code < dict.len() {
                     dict[code].clone()
