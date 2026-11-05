@@ -1,0 +1,14 @@
+corpus/xopt/OpenXmlPowerToolsExamples_ChartUpdater01_Chart-Cached-Data-04.docx
+corpus/xopt/OpenXmlPowerToolsExamples_ChartUpdater01_Chart-Cached-Data-05.docx
+corpus/xopt/OpenXmlPowerToolsExamples_ChartUpdater01_Chart-Embedded-Xlsx-08.docx
+corpus/xopt/OpenXmlPowerToolsExamples_DocumentBuilder04_SolarOverview.docx
+corpus/poi/poi-examples_src_main_java_org_apache_poi_examples_xwpf_usermodel_bar-chart-template.docx
+corpus/poi/test-data_document_61745.docx
+corpus/poi/test-data_document_chartex.docx
+corpus/ooxmlimport/tdf124398.docx
+corpus/ooxmlimport/tdf82824.docx
+corpus/ooxmlexport/chart-size.docx
+corpus/ooxmlexport/fdo76098.docx
+corpus/ooxmlexport/fdo78474.docx
+corpus/ooxmlexport/strict.docx
+corpus/ooxmlexport/tdf124398_groupshapeChart.docx
