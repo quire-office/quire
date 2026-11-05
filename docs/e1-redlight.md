@@ -20,7 +20,7 @@
    表格是否走錯分支或高度估算歸零」的前提不成立：該檔無跨列儲存格，且表格本身
    只有 1 列，不可能「超出單頁高度」。實測該表在 LO 與我方都只吃約 1 列高
    （LO：`F1`→`F2` 間隔 45.0pt，含空表列；見 §3 消融 M5）。
-2. **「跨列表格切片後 gridSpan 欄寬與合并不變形」不成立為缺陷——它本來就是對的。**
+2. **「跨列表格切片後 gridSpan 欄寬與合並不變形」不成立為缺陷——它本來就是對的。**
    合成表（5 欄網格 80/1/1/80/200pt、首格 `grid_span=3`、30 列高）走
    `TableLayout::fragment(·,·,20 帶,·)` 出 7 片切片，**每片每格 `(x_pt, w_pt)`
    逐位元組相同**：跨列格 `(0.0, 82.0)`＝前 3 欄和、其餘 `(82.0, 80.0)`／
@@ -154,7 +154,7 @@ test lamp2_gridspan_slice_geometry_is_locked ... FAILED
   喂值處——**`core/ooxml/` 是本卡嚴禁面**。
 - **(B) `Trebuchet MS` 不在 real-LH 族表 ⇒ 該組每行少 4.1–4.2pt。**
   源檔 100% 宣告 `w:rFonts w:ascii="Trebuchet MS"`、100% `w:sz="20"`（＝10pt），
-  另有 `NoSpacing` 樣式段 11pt。LO 側字級分布實測：**21 行 @10.0pt**（Trebuchet 組，
+  另有 `NoSpacing` 樣式段 11pt。LO 側字級分佈實測：**21 行 @10.0pt**（Trebuchet 組，
   行距眾數 **15.6／15.7pt**）＋ **17 行 @11.0pt**（`NoSpacing`，行距眾數 13.4／13.5pt
   ＝11×1.2207，對得上 `docs/k6-lineheight-calibration.md` 的 Calibri→Carlito 因子）。
   我方同組只有 **19 行 @10.0pt**（斷行本身也與 LO 差 2 行），行距眾數 **11.5pt**
@@ -164,7 +164,7 @@ test lamp2_gridspan_slice_geometry_is_locked ... FAILED
   LO 對 Trebuchet 的 real-LH 約 **1.56–1.57**（15.65／10），既不等於 Noto Serif
   1.3620 也不等於任何現存表值——**必須重新實測入庫，不可套用既有因子**。
 
-⇒ **本卡准改面（`core/layout/`、`table_map.rs`、發射清單組裝處）動不到任一成因。**
+⇒ **本卡準改面（`core/layout/`、`table_map.rs`、發射清單組裝處）動不到任一成因。**
 按鐵律「根因若落在禁改面，停在 comment 回報，不硬改」，引擎零動碼。
 
 ### 3.2 CoverPage 少 1 頁 = LO 的空白頁由「錨定圖形 × 尾端 br-page」交互產生
@@ -198,7 +198,7 @@ test lamp2_gridspan_slice_geometry_is_locked ... FAILED
    placeholder」在**頁數**這一席上是錯的方向。
 2. **「尾端 br-page 是否該多開一頁」我方與 LO 一致，不是缺口**：合成 `trail_br`
    LO＝1 頁＝我方（LO 不為孤立 br 開頁）；`trail_br_then_empty_para` LO＝2 頁，
-   我方＝1 頁——該態我方少一頁，但 LO 那頁同样是真空頁，且此態非本檔形態。
+   我方＝1 頁——該態我方少一頁，但 LO 那頁同樣是真空頁，且此態非本檔形態。
 3. **CoverPage 的 p1 空白頁是 LO 側「錨定 wps 圖形＋尾端 br-page」的交互產物**：
    W2/W5 抽掉圖形 ⇒ LO 掉回 1 頁；br 後補段 ⇒ LO 3 頁；保留原樣 ⇒ LO 2 頁。
    我方發射路徑把錨定框當附掛項（不進流、不佔帶），因此該交互在我們的分頁模型裡
@@ -231,7 +231,7 @@ test lamp2_gridspan_slice_geometry_is_locked ... FAILED
   鑑別力證明：`E1_GRIDSPAN_EXPECT_BUGGY=1` 把期望跨列寬改成退化單欄 80.0 ⇒
   該燈必紅（實跑證實），證明斷言真的在比幾何、不是恆真。
 - **燈 1a／1b／3a／3b／4（五盞欠債燈，標 `#[ignore]`）**：斷言值全部取自 LO 實測真值，
-  但它們的主題落在本卡**准改面之外**（`core/ooxml/` 解析面＋engine 行高族表），
+  但它們的主題落在本卡**準改面之外**（`core/ooxml/` 解析面＋engine 行高族表），
   按鐵律「根因若落在禁改面，停在 comment 回報，不硬改」，不得讓零回退閘門紅著。
   故採 PM 掛帳制（比照 `r34_placeholder_fill.rs` 燈 5 慣例）：`#[ignore = "..."]` 字串
   內寫明欠債原因與解鎖條件。實跑：

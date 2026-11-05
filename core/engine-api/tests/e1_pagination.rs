@@ -33,7 +33,7 @@
 //!
 //! ## 燈號狀態（PM 掛帳制；比照 `r34_placeholder_fill.rs` 燈 5 的 `#[ignore]` 慣例）
 //!
-//! 燈 1（兩盞）、燈 3（兩盞）、燈 4 共**五盞**標 `#[ignore]`：它們測的是**本卡准改面
+//! 燈 1（兩盞）、燈 3（兩盞）、燈 4 共**五盞**標 `#[ignore]`：它們測的是**本卡準改面
 //! 之外**的缺陷（autospacing／族表在 `core/ooxml/`＋engine 行高表；dataBinding 覆寫在
 //! `core/ooxml/`），本卡若讓它們紅在 `cargo test --workspace`，等於把零回退鐵條
 //! 的閘門自己弄髒。解 ignore 的條件寫在各自燈的 `#[ignore = "..."]` 字串裡。
@@ -48,7 +48,7 @@
 //! test result: FAILED. 0 passed; 5 failed   ← 這五盞是欠債，修復卡須使其轉綠
 //! ```
 //!
-//! 五盞欠債燈的真實成因（逐條定量見 `docs/e1-redlight.md`）皆**不在本卡准改面**：
+//! 五盞欠債燈的真實成因（逐條定量見 `docs/e1-redlight.md`）皆**不在本卡準改面**：
 //! - cell-grid-span：`w:beforeAutospacing`/`w:afterAutospacing` 未實作（實測 LO 對
 //!   每個 autospacing 段落對加 14.0pt，本檔 8 段宣告）＋ `Trebuchet MS` 不在
 //!   `face_line_factor` 族表（我方吃後備 1.1499 ⇒ 該組行距 11.5pt，LO 實測
@@ -95,10 +95,8 @@ fn norm(s: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
-        .replace('\u{2019}', "'")
-        .replace('\u{2018}', "'")
-        .replace('\u{2013}', "-")
-        .replace('\u{2014}', "-")
+        .replace(['\u{2019}', '\u{2018}'], "'")
+        .replace(['\u{2013}', '\u{2014}'], "-")
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +113,7 @@ fn norm(s: &str) -> String {
 //   LO 對其加 14.0pt 段前距後越過 720pt 下界（定量見 docs/e1-redlight.md §2.1）。
 
 #[test]
-#[ignore = "欠債：頁數差 1 頁的真因（autospacing 未實作＋Trebuchet 族表缺失）落在 core/ooxml/ 與 engine 行高表，本卡准改面（core/layout/、table_map.rs、發射組裝）動不到。見 docs/e1-redlight.md §3.1(A)(B)"]
+#[ignore = "欠債：頁數差 1 頁的真因（autospacing 未實作＋Trebuchet 族表缺失）落在 core/ooxml/ 與 engine 行高表，本卡準改面（core/layout/、table_map.rs、發射組裝）動不到。見 docs/e1-redlight.md §3.1(A)(B)"]
 fn lamp1_cell_grid_span_page_count_matches_lo() {
     let eng = load(GRID_SPAN);
     assert_eq!(
@@ -221,7 +219,7 @@ fn lamp2_gridspan_slice_geometry_is_locked() {
     while cur.0 < tl.row_count() {
         let (frag, next, used) = tl.fragment(cur.0, cur.1, 20, false, 72.0);
         assert!(used > 0, "切片必須有帶數（第 {slices} 片）");
-        assert_ne!(next, cur, "游標必須前進，否则 packer 死循環");
+        assert_ne!(next, cur, "游標必須前進，否則 packer 死循環");
         for rf in &frag.rows {
             assert_eq!(rf.cells.len(), 3, "每列 3 格（首格跨 3 欄）");
             for (ci, c) in rf.cells.iter().enumerate() {
@@ -256,7 +254,7 @@ fn lamp2_gridspan_slice_geometry_is_locked() {
 // 湊分數）。
 
 #[test]
-#[ignore = "欠債：LO 第 2 頁是尾端 w:br type=\"page\" 遇錨定圖形的產物（消融實證，docs/e1-redlight.md §3.2），判頁邏輯屬 core/layout/ 但本卡無准改動可觸及該組合，留待專卡"]
+#[ignore = "欠債：LO 第 2 頁是尾端 w:br type=\"page\" 遇錨定圖形的產物（消融實證，docs/e1-redlight.md §3.2），判頁邏輯屬 core/layout/ 但本卡無準改動可觸及該組合，留待專卡"]
 fn lamp3_coverpage_page_count_matches_lo() {
     let eng = load(COVER);
     assert_eq!(
