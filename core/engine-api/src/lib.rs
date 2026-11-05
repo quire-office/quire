@@ -2641,6 +2641,26 @@ pub(crate) fn face_line_factor(face: &str) -> f32 {
         "arial" | "liberation sans" | "liberationsans" | "helvetica" => 1.1499,
         // theme 斷鏈 fallback（LO 落到自身預設 Noto Serif）。
         "noto serif" | "notoserif" => 1.3620,
+        // E1（t_8573d294）：`Trebuchet MS` 在本基準環境**無本機 face**，LO 25.8
+        // 以自身附帶的 Noto 系頂替（真檔 cell-grid-span 的 Trebuchet 組 span font
+        // 實測 `NotoSans-Regular`；本卡合成探針無 fontTable 時頂到
+        // `NotoSerif-Regular`）。LO 附帶的 NotoSans-Regular 與 NotoSerif-Regular
+        // hhea **同值**（asc=1069 desc=-293 gap=0 upm=1000 ⇒ real-LH 1.3620，
+        // 本機 ttf 實測），故頂替後的 real-LH 與上方 Noto Serif 臂**同因子**——
+        // 這是實測對齊，不是借用他族值湊數。
+        // 定量覆核（本卡，LO 25.8＋pymupdf，K6 `pitch = size×declared/240×LH` 口徑）：
+        //   本檔 Trebuchet 組無 w:line 段（吃 docDefaults 276）行距眾數 15.65
+        //     ⇒ LH = 15.65/(10×276/240) = 1.3609
+        //   直接宣告 w:line=240 段行距眾數 13.65
+        //     ⇒ LH = 13.65/(10×240/240) = 1.3650
+        //   合成探針（零段距、宣告 line=240）sz10/11/14/20 → 1.3700/1.3636/
+        //     1.3571/1.3600（PDF y 0.05pt 量化內）
+        // 三者皆落在 1.3620，**非** e1-redlight.md §3.1(B) 宣稱的 1.56–1.57——
+        // 該數是把 pitch 除以 size 卻漏乘 `declared_line/240`（本檔 docDefaults
+        // 宣告 `w:line="276"`＝1.15；15.65/10/1.15＝1.3609，15.65/10＝1.565 即誤源）。
+        // 水平軸**不入表**：LO 頂替 face 的 advance 寬比本卡未實測，依 K7-cal
+        // 「表沒有實測值的族絕不猜數」守門走 `_ => 1.0` 零擾動（TODO(K7-cal)）。
+        "trebuchet ms" | "trebuchetms" => 1.3620,
         // CJK 宣告族在本基準環境替到 WenQuanYi Zen Hei。
         "pmingliu" | "新細明體" | "kaititc" | "標楷體" | "msyahei" | "microsoft yahei"
         | "微軟雅黑" | "wenquanyi zen hei" | "wenquanyizenhei" => 1.3496,
@@ -2694,6 +2714,15 @@ pub(crate) fn face_advance_scale(face: &str) -> f32 {
         "arial" | "liberation sans" | "liberationsans" | "helvetica" => 0.9627,
         // theme 斷鏈 fallback（LO 落到自身預設 Noto Serif，K6 同口徑）。
         "noto serif" | "notoserif" => 1.0328,
+        // TODO(E1 t_8573d294)：`Trebuchet MS` 的水平軸**暫不入表**（零擾動守門）。
+        // 本卡量過雙軌（LO 25.8 Linux＋pymupdf）：A 軌 mix 1.0359／lower 1.0288／
+        // upper 1.0562／digits 1.0058；真檔 B 軌自然寬行（剔除 justified 拉伸、
+        // 非拉丁標點、粗體污染後 n=4）中位 1.0170。兩軌差 1.8% ≤2.1% 按 K7 規則
+        // 該取 A 軌，但入表實跑把 `TestFiles_RA001-Tracked-Revisions-01`（檔內
+        // 唯一 Trebuchet 宣告在段標 rPr、被級聯當全段主族吃）頁數 6→7——Linux LO
+        // 實轉 PDF＝7 頁（末頁空頁）、K28 記帳的 Windows LO＝6 頁，兩環境因
+        // 「真 Trebuchet MS 有無裝機」分歧，**LO 真值本身未定錨**，依 K7
+        // 「表沒有實測值的族絕不猜數」維持 1.0 後備；待水平口徑定案後入表。
         // TODO(K7-cal)：Tahoma→LO 實際替代 face 未實測（VCL 替代表本機查無
         // 實據），**不虛構**——1.0 後備；補量後入表。
         _ => 1.0,
