@@ -3,6 +3,10 @@ import pathlib
 import sys
 
 t = json.loads(pathlib.Path('docs/f1-survey/lo_chart_truth.json').read_text(encoding='utf-8'))
+if len(sys.argv) > 1 and sys.argv[1] == '--keys':
+    for k in t:
+        print(k, '=>', 'LO_FAIL' if t[k] == 'LO_FAIL' else 'ok lines=%d draws=%d' % (len(t[k]['lines']), len(t[k]['drawings'])))
+    sys.exit(0)
 for name in sys.argv[1:]:
     v = t[name]
     if v == 'LO_FAIL':
