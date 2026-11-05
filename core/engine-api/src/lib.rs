@@ -5755,6 +5755,127 @@ impl Engine {
                 None => emit_image_shape(items, img_x, y, im.w_pt, im.h_pt, Some(im)),
             }
         }
+        // ---- E2c：頁首／頁尾 part 的**直排浮動框**（fdo78957 頁首 TextBox 3
+        // 實據：`word/header1.xml` 的 `wps:bodyPr vert="vert270"`）。上方 inline
+        // 迴路只把候選當「版心左緣的圖佔位」發射，`wp:anchor` 浮動框連框帶字
+        // 完全不發 ⇒ render_lab 版面 0.0＋真缺字 `Quire`。本臂只吃三條件同中：
+        // `floating` ＋ `wps_annotation`（DrawingML 標註；VML `layout-flow:vertical`
+        // 屬鐵條禁區，由 e2c_lamp3 鎖死不得觸發）＋ `@vert` 宣告非 horz，且
+        // `wp14:sizeRel*`／`wp14:pctPos*` 可解出框矩形（解不出＝整臂零發射＝
+        // 既有顯示列表逐位元組不變）。----
+        self.push_hf_vert_frames(items, part, &paragraphs, hf_params, geo);
+    }
+
+    /// E2c：頁首／頁尾 part 直排浮動框的發射臂（呼叫端已守門，本函數只做
+    /// 幾何與文字解析）。幾何定律（`docs/e2-vert-anchor-law.md` E2c 節，全部
+    /// 由 `lo_frames.json`／合成網格 probe 反解，非單檔調參）：
+    /// - 框矩形＝`wp14:pctPos*`／`wp:align`（位置）＋ `wp14:sizeRel*/pct*`
+    ///   （尺寸，基準依 `@relativeFrom`：page＝頁寬高、margin＝版心寬）；宣告
+    ///   extent 被 pct 覆寫（LO 同款優先序）。
+    /// - vert270 的文字軸映射：advance→ −y（上），next-para→ +x（右）⇒
+    ///   段落軸對齊吃 `w:jc`（center＝行中點落在框進位軸中點）、文字軸對齊吃
+    ///   `bodyPr/@anchor`（`t`＝框左緣進 tIns）。
+    #[allow(clippy::too_many_arguments)]
+    fn push_hf_vert_frames(
+        &self,
+        items: &mut Vec<DrawItem>,
+        part: &HfPart,
+        paragraphs: &[quire_ooxml::Paragraph],
+        hf_params: &LayoutParams,
+        geo: &SectionGeometry,
+    ) {
+        let page_w = geo.page_w_pt;
+        let page_h = geo.page_h_pt;
+        let content_w = hf_params.content_w_pt();
+        let margin_l = hf_params.margin(MARGIN_LEFT);
+        for (idx, im) in part.images.iter().enumerate() {
+            // 守門（三條件同中＋有框內文字）；任一不合＝續下一候選（舊行為）。
+            if !im.floating || !im.wps_annotation {
+                continue;
+            }
+            let flow = quire_layout::LineFlow::from_vert_str(im.txbx_vert.as_deref(), false);
+            if flow != quire_layout::LineFlow::Vertical270 {
+                continue;
+            }
+            if !im.txbx_texts.iter().any(|t| !t.trim().is_empty()) {
+                continue;
+            }
+            // 框矩形（解不出＝老實不發，不虛構位置）。
+            let content_h =
+                (geo.page_h_pt - hf_params.margin(MARGIN_TOP) - hf_params.margin(MARGIN_BOTTOM))
+                    .max(1.0);
+            let Some([fx0, fy0, _fx1, fy1]) =
+                hf_anchor_rect(im, page_w, page_h, content_w, content_h, margin_l)
+            else {
+                continue;
+            };
+            // 進位軸（vert270＝畫面 y）可排區：lIns/rIns 內縮（ECMA 預設 7.2pt）。
+            let grow = im.textbox_grow.as_ref();
+            let l_ins = grow.and_then(|g| g.lins_pt).unwrap_or(7.2);
+            let r_ins = grow.and_then(|g| g.rins_pt).unwrap_or(7.2);
+            let t_ins = grow.and_then(|g| g.tins_pt).unwrap_or(3.6);
+            let adv0 = (fy0 + r_ins).min(fy1 - l_ins);
+            let adv1 = (fy1 - l_ins).max(adv0);
+            // 文字軸（畫面 x）起點：anchor=t ⇒ 框左緣進 tIns（ECMA 預設 3.6pt）。
+            let col_x = fx0 + t_ins;
+            // 框內段落跑（txbx_runs 起點＝本框自帶的第一組；LO 只繪有字段）。
+            let host = paragraphs.get(im.para_index);
+            let runs_all: &[Vec<quire_ooxml::Run>] =
+                host.map(|p| p.txbx_runs.as_slice()).unwrap_or(&[]);
+            let base_size = hf_params.font_size_pt;
+            let mut cur_x = col_x;
+            for (ti, t) in im.txbx_texts.iter().enumerate() {
+                // 空段先退（綁定只覆寫**有字**的內容控件段；fdo78957 框內第二
+                // 段是 sdt 外的空段，LO 不繪製，也絕不能被綁定值憑空覆寫成
+                // `Quire` 造成重發）。
+                if t.trim().is_empty() {
+                    continue;
+                }
+                let shown = hf_bound_text(&self.doc.parts, im, t);
+                if shown.trim().is_empty() {
+                    continue; // 空行不發射（同 inline 臂口徑）
+                }
+                let own = runs_all
+                    .get(im.txbx_start + ti)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let seg_size = own
+                    .iter()
+                    .find_map(|r| r.size_pt)
+                    .unwrap_or(base_size)
+                    .max(1.0);
+                let (flags, color_argb, _) =
+                    own.first()
+                        .map(run_style)
+                        .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
+                let fam = own
+                    .first()
+                    .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &shown));
+                let len = TextMeasurer::new(seg_size).text_width(&shown);
+                let col_w = seg_size * 1.22; // E2 定律（docs/e2-vert-anchor-law.md）
+                let jc_center = own
+                    .first()
+                    .and_then(|r| r.para_align)
+                    .is_some_and(|a| matches!(a, quire_ooxml::Align::Center));
+                // 段落軸對齊：center ⇒ 行中點落在可排區中點；否則 text-left＝畫面下緣。
+                let base_y = if jc_center {
+                    (adv0 + adv1) / 2.0 + len / 2.0
+                } else {
+                    adv1
+                };
+                items.push(DrawItem::Text {
+                    x: cur_x,
+                    y: base_y,
+                    size_pt: seg_size,
+                    flags: flags | FLAG_DIR_VERT270,
+                    color_argb,
+                    family: fam,
+                    text: shown,
+                });
+                cur_x += col_w;
+                let _ = idx;
+            }
+        }
     }
 
     /// 頁首表格：整張切片（不跨頁）＋既有 push_frag_items 渲染路徑。
@@ -5912,6 +6033,140 @@ fn pick_slot(slots: &SlotPaths, use_first: bool, use_even: bool) -> Option<&Stri
         }
     }
     slots.default.as_ref()
+}
+
+/// E2c：把頁首／頁尾候選的錨定事實換算成**頁絕對框矩形** `[x0, y0, x1, y1]`。
+///
+/// 優先序與 LO 相同（fdo78957 頁首直排框逐條命中，見
+/// `docs/e2-vert-anchor-law.md` E2c 節）：尺寸 `wp14:sizeRel*/pct*`（基準依
+/// `@relativeFrom`：`page`＝頁寬／頁高、`margin`＝版心寬／高）**覆寫**宣告
+/// extent；位置依 `wp14:pctPos*` → `wp:align` → `wp:posOffset` 三式輪替（基準
+/// 同上）。任一軸解不出位置＝回 None（老實不發射，不虛構位置——鐵律）。
+fn hf_anchor_rect(
+    im: &quire_ooxml::InlineImage,
+    page_w: f32,
+    page_h: f32,
+    content_w: f32,
+    content_h: f32,
+    margin_l: f32,
+) -> Option<[f32; 4]> {
+    // 基準長：page＝整頁、margin／其它＝版心（ECMA-376 `relativeFrom` 兩式）。
+    let base_w = |rel: &Option<String>| {
+        if rel.as_deref() == Some("page") {
+            page_w
+        } else {
+            content_w
+        }
+    };
+    let base_h = |rel: &Option<String>| {
+        if rel.as_deref() == Some("page") {
+            page_h
+        } else {
+            content_h
+        }
+    };
+    // 尺寸：pct 覆寫 extent（缺 pct＝沿用宣告 extent，LO 同款退化）。
+    let w = match im.size_rel_w_pct {
+        Some(p) => base_w(&im.size_rel_w_rel) * p / 100_000.0,
+        None => im.w_pt,
+    };
+    let h = match im.size_rel_h_pct {
+        Some(p) => base_h(&im.size_rel_h_rel) * p / 100_000.0,
+        None => im.h_pt,
+    };
+    if !(w.is_finite() && h.is_finite()) || w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    // 位置 H：pctPos → align → posOffset（三式互斥，文件序首中為準）。
+    let x0 = if let Some(p) = im.pos_x_pct {
+        base_w(&im.pos_x_rel) * p / 100_000.0
+    } else if let Some(off) = im.pos_x_pt {
+        (if im.pos_x_rel.as_deref() == Some("page") {
+            0.0
+        } else {
+            margin_l
+        }) + off
+    } else {
+        match im.pos_x_align.as_deref() {
+            Some("center") => (base_w(&im.pos_x_rel) - w) / 2.0,
+            Some("right") => base_w(&im.pos_x_rel) - w,
+            Some("left") => 0.0,
+            _ => return None,
+        }
+    };
+    // 位置 V：同三式。page 基準原點＝頁頂；`margin` 基準的 posOffset 本卡
+    // 無實據（fdo78957 頁首框實測 `relativeFrom="page"`）⇒ 不猜，判解不出。
+    let y0 = if let Some(p) = im.pos_y_pct {
+        base_h(&im.pos_y_rel) * p / 100_000.0
+    } else if let Some(off) = im.pos_y_pt {
+        if im.pos_y_rel.as_deref() == Some("page") {
+            off
+        } else {
+            return None;
+        }
+    } else {
+        match im.pos_y_align.as_deref() {
+            Some("center") => (page_h - h) / 2.0,
+            Some("bottom") => page_h - h,
+            Some("top") => 0.0,
+            _ => return None,
+        }
+    };
+    if !(x0.is_finite() && y0.is_finite()) {
+        return None;
+    }
+    Some([x0, y0, x0 + w, y0 + h])
+}
+
+/// E2c：框內段落的**顯示文字**——帶 `w:dataBinding` 的內容控件由 LO 覆寫成
+/// 綁定值再排版（fdo78957：字面 `Bull on the Run`、LO 實繪 `Quire`）。
+///
+/// 只吃 `w:xpath` 的最後一段元素名查 `docProps`（`prefixMappings` 決定 core /
+/// extended 哪一份；解析不出＝退回字面值，絕不虛構）。綁定值缺字／空字串
+/// ＝退回字面值（誠實退化）。
+fn hf_bound_text(
+    parts: &std::collections::BTreeMap<String, Vec<u8>>,
+    im: &quire_ooxml::InlineImage,
+    literal: &str,
+) -> String {
+    let Some(xpath) = im.txbx_databinding.as_deref() else {
+        return literal.to_string();
+    };
+    // `/ns0:Properties[1]/ns0:Company[1]` → 末段 `ns0:Company[1]` → 去索引
+    // 後綴 `[1]` → 去命名空間前綴 → local name `Company`（逐步剝，不靠單次
+    // rsplit：`[1]` 與 `:` 混在一式會切錯位）。
+    let seg = xpath.rsplit('/').next().unwrap_or("").trim();
+    let seg = seg.split_once('[').map_or(seg, |(s, _)| s);
+    let leaf = seg.rsplit(':').next().unwrap_or("").trim().to_string();
+    if leaf.is_empty() {
+        return literal.to_string();
+    }
+    // 命名空間宣告決定查哪份 docProps（OOXMLExport 實測兩式皆有）。
+    let prefer_core = xpath.contains("coreProperties") || xpath.contains("core-properties");
+    let order: [&str; 2] = if prefer_core {
+        ["docProps/core.xml", "docProps/app.xml"]
+    } else {
+        ["docProps/app.xml", "docProps/core.xml"]
+    };
+    for path in order {
+        let Some(bytes) = parts.get(path) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        let open = format!("<{leaf}>");
+        let Some(i) = text.find(&open) else {
+            continue;
+        };
+        let rest = &text[i + open.len()..];
+        let Some(j) = rest.find(&format!("</{leaf}>")) else {
+            continue;
+        };
+        let val = rest[..j].trim();
+        if !val.is_empty() {
+            return val.to_string();
+        }
+    }
+    literal.to_string()
 }
 
 /// 頁首頁尾發射層四元組：(section id → 發射資料, part 路徑 → 投影,

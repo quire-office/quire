@@ -427,6 +427,35 @@ pub struct InlineImage {
     /// serde default＋None 不外露＝無此形態檔案的序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub txbx_drawing_extent: Option<[f32; 2]>,
+    // ---- E2c：`wp14:sizeRelH/V`（相對基準的百分比宣告）與框內 `w:sdt`
+    // 資料綁定 xpath（**純事實捕獲**，語意判定全在 engine 發射層）。全部
+    // serde default＋空值不外露＝既有投影序列化位元組逐位不變。----
+    /// `wp14:sizeRelH/wp14:pctWidth`（百分比×100000；缺＝無宣告＝extent 直用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_rel_w_pct: Option<f32>,
+    /// `wp14:sizeRelH/@relativeFrom` 原字串（`page`／`margin` 等；決定換算基準）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_rel_w_rel: Option<String>,
+    /// `wp14:sizeRelV/wp14:pctHeight`（同上，V 軸）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_rel_h_pct: Option<f32>,
+    /// `wp14:sizeRelV/@relativeFrom` 原字串。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_rel_h_rel: Option<String>,
+    /// 框內 `w:txbxContent` 首見 `w:dataBinding/@w:xpath`
+    /// （文件序首見為準；None＝無綁定）。LO 把這類框架的內容控件**覆寫成
+    /// 綁定值**再排版（fdo78957 頁首直排框：字面 `Bull on the Run`、LO 實繪
+    /// `docProps/app.xml` 的 `<Company>Quire</Company>`）；是否覆寫顯示文字由
+    /// 發射層判定，解析層不查 docProps、不改字面 txbx_texts。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub txbx_databinding: Option<String>,
+    /// `wps:bodyPr/@anchor`（文字在**文字軸**上的對齊：`"t"`／`"ctr"`／`"b"`
+    /// 原字串直存；None＝無宣告＝ECMA 預設 `"t"`）。vert270 框的文字軸是
+    /// 畫面 y（段落堆疊軸是 x），發射層據此定行中點／起終點（fdo78957
+    /// `anchor="t"`＋框內 `w:jc="center"` 雙事實）。serde default＋None
+    /// 不外露＝舊投影序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_anchor: Option<String>,
 }
 
 impl InlineImage {
@@ -1479,6 +1508,24 @@ struct Pending {
     duo: Option<DuotoneEffect>,
     /// K27-B：textbox 內嵌 w:drawing 自身宣告的 wp:extent 尺寸（pt，[寬, 高]）。
     txbx_drawing_extent: Option<[f32; 2]>,
+    // ---- E2c：`wp14:sizeRelH/V`（相對基準的百分比尺寸宣告）與框內
+    // `w:sdt/w:sdtPr/w:dataBinding/@w:xpath`——**純事實捕獲**，換算與語意
+    // 判定全在 engine 發射層（解析器不查 docProps、不改字面值）。----
+    /// `wp14:sizeRelH/wp14:pctWidth`（百分比×100000）。
+    size_rel_w_pct: Option<f32>,
+    /// `wp14:sizeRelH/@relativeFrom` 原字串（決定換算基準）。
+    size_rel_w_rel: Option<String>,
+    /// `wp14:sizeRelV/wp14:pctHeight`（同上，V 軸）。
+    size_rel_h_pct: Option<f32>,
+    /// `wp14:sizeRelV/@relativeFrom` 原字串。
+    size_rel_h_rel: Option<String>,
+    /// 進行中的 `<wp14:pctWidth|pctHeight>` 軸向（true=V）：其文字直存
+    /// 百分比×100000 整數（與 pct_axis 分離——那是位置式，這是尺寸式）。
+    size_pct_axis: Option<bool>,
+    /// 框內 `w:txbxContent` 首見 `w:dataBinding/@w:xpath`（文件序首見為準）。
+    txbx_databinding: Option<String>,
+    /// `wps:bodyPr/@anchor`（文字軸對齊 t/ctr/b；Start／Empty 兩流首見為準）。
+    body_anchor: Option<String>,
 }
 
 /// R35：框內進行中 `w:drawing` 幀——**每張圖一個槽**（卡 1「同段多圖互相
@@ -1746,6 +1793,13 @@ impl Pending {
             duo_node_in: None,
             duo: None,
             txbx_drawing_extent: None,
+            size_rel_w_pct: None,
+            size_rel_w_rel: None,
+            size_rel_h_pct: None,
+            size_rel_h_rel: None,
+            size_pct_axis: None,
+            txbx_databinding: None,
+            body_anchor: None,
         }
     }
 }
@@ -1957,6 +2011,13 @@ impl DrawingParser {
             txbx_inset: p.txbx_inset,
             txbx_vertical: p.txbx_vertical,
             txbx_vert: p.txbx_vert.clone(),
+            // E2c：尺寸相對宣告與框內資料綁定（純事實透傳；缺＝None＝舊行為）。
+            size_rel_w_pct: p.size_rel_w_pct,
+            size_rel_w_rel: p.size_rel_w_rel.clone(),
+            size_rel_h_pct: p.size_rel_h_pct,
+            size_rel_h_rel: p.size_rel_h_rel.clone(),
+            txbx_databinding: p.txbx_databinding.clone(),
+            body_anchor: p.body_anchor.clone(),
             txbx_table: p.tbl_rows.clone(),
             embed_rid: p.rid.clone(),
             embed_rids: p.rids.clone(),
@@ -2432,6 +2493,35 @@ impl DrawingParser {
             self.txbx_depth += 1;
         }
 
+        // ---- E2c：框內 `w:sdt/w:sdtPr/w:dataBinding/@w:xpath` 事實捕獲。
+        // 只在框內（txbx_depth>0）且 DrawingML 候選進行中才收（VML 臂屬鐵條
+        // 禁區，一概不動）；文档序首見為準，非法／缺值＝None 不冒充。----
+        if self.txbx_depth > 0 && name == b"dataBinding" {
+            if let Some(g) = self.graphic.as_mut() {
+                if g.txbx_databinding.is_none() {
+                    g.txbx_databinding = attr_local(e, b"xpath")
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty());
+                }
+            }
+        }
+
+        // ---- E2c：`wp14:sizeRelH/V`（尺寸相對宣告）捕獲——外框直下、必在
+        // txbxContent 之外，故與 posOffset/align/pctPos 同一狀態機族。----
+        if self.graphic.is_some() && matches!(name, b"sizeRelH" | b"sizeRelV") && !empty {
+            let vertical = name == b"sizeRelV";
+            if let Some(p) = self.graphic.as_mut() {
+                let rel = attr_local(e, b"relativeFrom");
+                if vertical {
+                    if p.size_rel_h_rel.is_none() {
+                        p.size_rel_h_rel = rel;
+                    }
+                } else if p.size_rel_w_rel.is_none() {
+                    p.size_rel_w_rel = rel;
+                }
+            }
+        }
+
         // ---- 吞沒幀（Graphic 內的巢狀 drawing/pict）：段落照計（口徑），
         // 雙份維護照常，其餘標記不看 ----
         if let Some((tag, depth)) = self.skip_tag {
@@ -2653,6 +2743,14 @@ impl DrawingParser {
             if name == b"bodyPr" && p.txbx_vert.is_none() {
                 p.txbx_vert = attr_local(e, b"vert");
             }
+            // E2c：`wps:bodyPr/@anchor`（文字軸對齊 t/ctr/b）——與 @vert 同族
+            // 事實、同一捕獲點（Start／Empty 兩條流都補，免重蹈 K17「只收
+            // Start」漏收自閉合標籤的坑）。
+            if name == b"bodyPr" && p.body_anchor.is_none() {
+                p.body_anchor = attr_local(e, b"anchor")
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty());
+            }
             // R6 / K12：DrawingML `wps:wsp` 標註與群組子形狀
             if name == b"wsp" {
                 p.wps_annotation = true;
@@ -2766,6 +2864,14 @@ impl DrawingParser {
                 }
                 b"pctPosVOffset" => {
                     p.pct_axis = Some(true);
+                }
+                // E2c：`wp14:pctWidth|pctHeight`（尺寸式百分比文本容器；與位置式
+                // pct_axis 分離，兩者可在同一 anchor 內共存）。
+                b"pctWidth" => {
+                    p.size_pct_axis = Some(false);
+                }
+                b"pctHeight" => {
+                    p.size_pct_axis = Some(true);
                 }
                 b"blip" => {
                     if self.txbx_depth > 0 {
@@ -2956,6 +3062,22 @@ impl DrawingParser {
             return; // 自閉合 w:p 於主解析器同樣不計
         }
 
+        // ---- E2c：框內 `w:sdt/w:sdtPr/w:dataBinding/@w:xpath`——**自閉合才是
+        // 常態**（fdo78957 實測 `<w:dataBinding w:prefixMappings="..." w:xpath=
+        // "/ns0:Properties[1]/ns0:Company[1]" .../>`），只在 Start 分支收會全數
+        // 漏收（K17 同坑：撐列事實因「自閉合只收 Start」全漏，PM 接手實測）。
+        // 條件與 Start 分支同構：框內（txbx_depth>0）＋DrawingML 候選進行中，
+        // VML 臂（鐵條禁區）一概不動；文档序首見為準，非法／缺值＝None 不冒充。----
+        if self.txbx_depth > 0 && name == b"dataBinding" {
+            if let Some(g) = self.graphic.as_mut() {
+                if g.txbx_databinding.is_none() {
+                    g.txbx_databinding = attr_local(e, b"xpath")
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty());
+                }
+            }
+        }
+
         // K10：文字框內對齊（例如 <w:jc w:val="center"/>）。
         if self.txbx_depth > 0 && name == b"jc" {
             let val = attr_local(e, b"val");
@@ -3058,6 +3180,12 @@ impl DrawingParser {
             // E2：wps:bodyPr/@vert 文字方向解析（自閉合標籤分支）
             if name == b"bodyPr" && p.txbx_vert.is_none() {
                 p.txbx_vert = attr_local(e, b"vert");
+            }
+            // E2c：`wps:bodyPr/@anchor` 自閉合分支（與 Start 分支同構，首見為準）。
+            if name == b"bodyPr" && p.body_anchor.is_none() {
+                p.body_anchor = attr_local(e, b"anchor")
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty());
             }
             match name {
                 b"extent" => {
@@ -3183,6 +3311,26 @@ impl DrawingParser {
                         }
                     } else if p.pos_x_pct.is_none() {
                         p.pos_x_pct = Some(val);
+                    }
+                }
+            }
+            if let Some(vertical) = p.size_pct_axis {
+                // E2c：`<wp14:pctWidth|pctHeight>`：尺寸式百分比×100000 整數直存
+                // （換算基準 page/margin 由 engine 發射層依 size_rel_*_rel 決定）。
+                let parsed = text
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|x| x.is_finite() && *x >= 0.0 && *x <= MAX_OOXML_LONG)
+                    .map(|x| x as f32)
+                    .filter(|v| v.is_finite());
+                if let Some(val) = parsed {
+                    if vertical {
+                        if p.size_rel_h_pct.is_none() {
+                            p.size_rel_h_pct = Some(val);
+                        }
+                    } else if p.size_rel_w_pct.is_none() {
+                        p.size_rel_w_pct = Some(val);
                     }
                 }
             }
@@ -3440,6 +3588,14 @@ impl DrawingParser {
                 b"pctPosHOffset" | b"pctPosVOffset" => {
                     if let Some(p) = self.graphic.as_mut() {
                         p.pct_axis = None;
+                    }
+                    return;
+                }
+                // E2c：尺寸式百分比文本容器閉合必清軸向（與 posOffset/pctPos
+                // 同款狀態洩漏防線）。
+                b"pctWidth" | b"pctHeight" => {
+                    if let Some(p) = self.graphic.as_mut() {
+                        p.size_pct_axis = None;
                     }
                     return;
                 }

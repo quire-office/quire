@@ -103,7 +103,11 @@ fn e2c_lamp2_line_dir_and_bbox_hit_lo_truth() {
 
     // 2. 方向向量：LO pymupdf dir=[0.0,-1.0]（整行由下而上），非布林旗標可比。
     let flow = LineFlow::from_vert_str(Some("vert270"), false);
-    assert_eq!(flow, LineFlow::Vertical270, "vert270 應分類為 Vertical270 族");
+    assert_eq!(
+        flow,
+        LineFlow::Vertical270,
+        "vert270 應分類為 Vertical270 族"
+    );
     let dir = flow.dir_vector();
     assert!(
         dir[0].abs() < 1e-6 && (dir[1] + 1.0).abs() < 1e-6,

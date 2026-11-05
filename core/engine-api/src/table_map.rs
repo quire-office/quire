@@ -1791,6 +1791,13 @@ mod tests {
             txbx_start: 0,
             txbx_children: Vec::new(),
             txbx_align: None,
+            // E2c 新增欄位（全部老實缺省＝舊行為；本測試只吃幾何）。
+            size_rel_w_pct: None,
+            size_rel_w_rel: None,
+            size_rel_h_pct: None,
+            size_rel_h_rel: None,
+            txbx_databinding: None,
+            body_anchor: None,
             // K4c 新增欄位（全部老實缺省＝舊行為；本測試只吃幾何）。
             fill_argb: None,
             filled: None,
