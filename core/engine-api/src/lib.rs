@@ -4291,7 +4291,22 @@ fn take_image_pixel(
         }
     };
     used[i] = true;
-    let (data_b64, duotone) = k19_duotone_pixels(bytes, src.duotone);
+    // F3：GIF 位圖解碼為標準 PNG 格式發射（下游 SVG 與光柵渲染器無條件支援，避免 data:image/gif 被整張忽略）。
+    let (gif_png_buf, bytes, mime) = if mime == "image/gif" || bytes.starts_with(b"GIF8") {
+        if let Some(png) = decode_gif_to_png(bytes) {
+            (Some(png), &[][..], "image/png".to_string())
+        } else {
+            (None, bytes, mime)
+        }
+    } else {
+        (None, bytes, mime)
+    };
+    let eff_bytes = if let Some(buf) = &gif_png_buf {
+        buf.as_slice()
+    } else {
+        bytes
+    };
+    let (data_b64, duotone) = k19_duotone_pixels(eff_bytes, src.duotone);
     Some(DrawItem::Image {
         x,
         y,
@@ -4320,6 +4335,247 @@ fn k19_duotone_pixels(bytes: &[u8], duotone: Option<[u32; 2]>) -> (String, Optio
         Some(px) => (base64_encode(&px), Some([c1, c2])),
         None => (base64_encode(bytes), None),
     }
+}
+
+/// F3：最小零依賴 GIF 位圖解碼並轉出無壓縮標準 PNG 位元組（ADT109119）。
+fn decode_gif_to_png(data: &[u8]) -> Option<Vec<u8>> {
+    let (w, h, rgba) = decode_gif_to_rgba8(data)?;
+    make_uncompressed_png(w, h, &rgba)
+}
+
+fn adler32_simple(data: &[u8]) -> u32 {
+    let mut s1 = 1u32;
+    let mut s2 = 0u32;
+    for &b in data {
+        s1 = (s1 + b as u32) % 65521;
+        s2 = (s2 + s1) % 65521;
+    }
+    (s2 << 16) | s1
+}
+
+fn crc32_simple(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
+}
+
+fn make_uncompressed_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    let row_len = (w as usize).checked_mul(4)?;
+    if rgba.len() != row_len.checked_mul(h as usize)? {
+        return None;
+    }
+    let mut raw = Vec::with_capacity((row_len + 1) * h as usize);
+    for y in 0..h as usize {
+        raw.push(0); // filter 0（無濾鏡）
+        raw.extend_from_slice(&rgba[y * row_len..(y + 1) * row_len]);
+    }
+    if raw.len() > 65535 {
+        return None;
+    }
+    let mut zlib_data = Vec::with_capacity(raw.len() + 11);
+    zlib_data.extend_from_slice(&[0x78, 0x01, 0x01]);
+    let len = raw.len() as u16;
+    let nlen = !len;
+    zlib_data.extend_from_slice(&len.to_le_bytes());
+    zlib_data.extend_from_slice(&nlen.to_le_bytes());
+    zlib_data.extend_from_slice(&raw);
+    zlib_data.extend_from_slice(&adler32_simple(&raw).to_be_bytes());
+
+    let mut png = Vec::with_capacity(zlib_data.len() + 64);
+    png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&w.to_be_bytes());
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    let mut ihdr_chunk = Vec::with_capacity(ihdr.len() + 4);
+    ihdr_chunk.extend_from_slice(b"IHDR");
+    ihdr_chunk.extend_from_slice(&ihdr);
+    png.extend_from_slice(&(ihdr.len() as u32).to_be_bytes());
+    png.extend_from_slice(&ihdr_chunk);
+    png.extend_from_slice(&crc32_simple(&ihdr_chunk).to_be_bytes());
+
+    let mut idat_chunk = Vec::with_capacity(zlib_data.len() + 4);
+    idat_chunk.extend_from_slice(b"IDAT");
+    idat_chunk.extend_from_slice(&zlib_data);
+    png.extend_from_slice(&(zlib_data.len() as u32).to_be_bytes());
+    png.extend_from_slice(&idat_chunk);
+    png.extend_from_slice(&crc32_simple(&idat_chunk).to_be_bytes());
+
+    let iend_chunk = b"IEND";
+    png.extend_from_slice(&0u32.to_be_bytes());
+    png.extend_from_slice(iend_chunk);
+    png.extend_from_slice(&crc32_simple(iend_chunk).to_be_bytes());
+
+    Some(png)
+}
+
+fn decode_gif_to_rgba8(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    if data.len() < 13 || (!data.starts_with(b"GIF87a") && !data.starts_with(b"GIF89a")) {
+        return None;
+    }
+    let w = u16::from_le_bytes([data[6], data[7]]) as u32;
+    let h = u16::from_le_bytes([data[8], data[9]]) as u32;
+    if w == 0 || h == 0 || (w as usize * h as usize) > 4096 * 4096 {
+        return None;
+    }
+    let packed = data[10];
+    let gct_flag = (packed & 0x80) != 0;
+    let gct_size = if gct_flag { 2usize << (packed & 7) } else { 0 };
+    let gct_bytes = gct_size * 3;
+    if data.len() < 13 + gct_bytes {
+        return None;
+    }
+    let global_palette = &data[13..13 + gct_bytes];
+    let mut pos = 13 + gct_bytes;
+
+    let mut trans_idx: Option<u8> = None;
+    let mut active_palette = global_palette;
+
+    while pos < data.len() {
+        let b = data[pos];
+        if b == 0x21 {
+            if pos + 2 > data.len() { break; }
+            let label = data[pos + 1];
+            if label == 0xF9 && pos + 8 <= data.len() {
+                let flg = data[pos + 3];
+                if flg & 1 != 0 {
+                    trans_idx = Some(data[pos + 6]);
+                }
+                pos += 8;
+            } else {
+                pos += 2;
+                while pos < data.len() && data[pos] > 0 {
+                    pos += 1 + data[pos] as usize;
+                }
+                pos += 1;
+            }
+        } else if b == 0x2C {
+            if pos + 10 > data.len() { break; }
+            let img_w = u16::from_le_bytes([data[pos + 5], data[pos + 6]]) as usize;
+            let img_h = u16::from_le_bytes([data[pos + 7], data[pos + 8]]) as usize;
+            let packed_desc = data[pos + 9];
+            pos += 10;
+            if packed_desc & 0x80 != 0 {
+                let lct_size = 2usize << (packed_desc & 7);
+                let lct_bytes = lct_size * 3;
+                if pos + lct_bytes > data.len() { break; }
+                active_palette = &data[pos..pos + lct_bytes];
+                pos += lct_bytes;
+            }
+            if pos >= data.len() { break; }
+            let min_code_size = data[pos] as usize;
+            pos += 1;
+            let mut comp = Vec::new();
+            while pos < data.len() && data[pos] > 0 {
+                let l = data[pos] as usize;
+                pos += 1;
+                if pos + l > data.len() { break; }
+                comp.extend_from_slice(&data[pos..pos + l]);
+                pos += l;
+            }
+
+            let clear_code = 1usize << min_code_size;
+            let end_code = clear_code + 1;
+            let mut code_size = min_code_size + 1;
+            let mut dict: Vec<Vec<u8>> = (0..clear_code).map(|i| vec![i as u8]).collect();
+            dict.push(Vec::new());
+            dict.push(Vec::new());
+
+            let mut bit_buf = 0u32;
+            let mut bit_cnt = 0usize;
+            let mut byte_idx = 0usize;
+            let mut pixels = Vec::with_capacity(img_w * img_h);
+            let mut old_code: Option<usize> = None;
+
+            while byte_idx < comp.len() || bit_cnt >= code_size {
+                while bit_cnt < code_size && byte_idx < comp.len() {
+                    bit_buf |= (comp[byte_idx] as u32) << bit_cnt;
+                    bit_cnt += 8;
+                    byte_idx += 1;
+                }
+                if bit_cnt < code_size { break; }
+                let code = (bit_buf & ((1 << code_size) - 1)) as usize;
+                bit_buf >>= code_size;
+                bit_cnt -= code_size;
+
+                if code == clear_code {
+                    dict.truncate(clear_code + 2);
+                    code_size = min_code_size + 1;
+                    old_code = None;
+                    continue;
+                }
+                if code == end_code { break; }
+
+                let entry = if code < dict.len() {
+                    dict[code].clone()
+                } else if code == dict.len() {
+                    if let Some(prev) = old_code {
+                        let mut e = dict[prev].clone();
+                        if let Some(&first) = e.first() {
+                            e.push(first);
+                            e
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                };
+
+                pixels.extend_from_slice(&entry);
+                if let Some(prev) = old_code {
+                    if dict.len() < 4096 {
+                        let mut new_e = dict[prev].clone();
+                        if let Some(&first) = entry.first() {
+                            new_e.push(first);
+                            dict.push(new_e);
+                            if dict.len() == (1 << code_size) && code_size < 12 {
+                                code_size += 1;
+                            }
+                        }
+                    }
+                }
+                old_code = Some(code);
+            }
+
+            let mut rgba = Vec::with_capacity(pixels.len() * 4);
+            for p in pixels {
+                if Some(p) == trans_idx {
+                    rgba.extend_from_slice(&[0, 0, 0, 0]);
+                } else {
+                    let idx = p as usize * 3;
+                    if idx + 2 < active_palette.len() {
+                        rgba.extend_from_slice(&[
+                            active_palette[idx],
+                            active_palette[idx + 1],
+                            active_palette[idx + 2],
+                            255,
+                        ]);
+                    } else {
+                        rgba.extend_from_slice(&[0, 0, 0, 255]);
+                    }
+                }
+            }
+            return Some((w, h, rgba));
+        } else if b == 0x3B {
+            break;
+        } else {
+            pos += 1;
+        }
+    }
+    None
 }
 
 /// 發射圖片佔位框（K4c 升級：真色版）。`shape`=None 或全欄未宣告＝舊行為

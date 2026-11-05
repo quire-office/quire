@@ -1803,6 +1803,8 @@ struct DrawingParser {
     /// （單槽覆寫＋挪用 `group_shapes` 欄位＋finalize 整批誤殺清除）。
     /// 正常態恆 false；同款「只在 `with_theme()` 讀一次 env」先例。
     r35_buggy: bool,
+    /// F3 回塞鎖（`F3_TXBX_PIC_BUGGY=1`）：文字框內 DML 圖片整段跳過舊態（燈 3 鑑別力）。
+    f3_buggy: bool,
 }
 
 impl DrawingParser {
@@ -1834,6 +1836,7 @@ impl DrawingParser {
             duotone_buggy: std::env::var("K19_DUOTONE_BUGGY").is_ok(),
             style_buggy: std::env::var("K24_STYLE_BUGGY").is_ok(),
             r35_buggy: std::env::var("R35_TXBX_BUGGY").is_ok(),
+            f3_buggy: std::env::var("F3_TXBX_PIC_BUGGY").is_ok(),
         }
     }
 
@@ -2712,11 +2715,27 @@ impl DrawingParser {
             }
             match name {
                 b"extent" => {
-                    if p.w.is_none() {
-                        p.w = emu_to_pt(attr_local(e, b"cx").as_deref());
-                    }
-                    if p.h.is_none() {
-                        p.h = emu_to_pt(attr_local(e, b"cy").as_deref());
+                    if self.txbx_depth > 0 {
+                        if let (Some(w), Some(h)) = (
+                            emu_to_pt(attr_local(e, b"cx").as_deref()),
+                            emu_to_pt(attr_local(e, b"cy").as_deref()),
+                        ) {
+                            if p.txbx_drawing_extent.is_none() {
+                                p.txbx_drawing_extent = Some([w, h]);
+                            }
+                            if !self.r35_buggy && !self.f3_buggy {
+                                p.txbx_frame
+                                    .get_or_insert_with(TxbxFrame::default)
+                                    .note_extent([w, h]);
+                            }
+                        }
+                    } else {
+                        if p.w.is_none() {
+                            p.w = emu_to_pt(attr_local(e, b"cx").as_deref());
+                        }
+                        if p.h.is_none() {
+                            p.h = emu_to_pt(attr_local(e, b"cy").as_deref());
+                        }
                     }
                 }
                 b"positionH" | b"positionV" => {
@@ -2749,9 +2768,18 @@ impl DrawingParser {
                     p.pct_axis = Some(true);
                 }
                 b"blip" => {
-                    // K4c-image：經 note_rid 統一記錄（首見進 rid＋全部進
-                    // rids）；rid 語義與舊「首見才設」逐位相同。
-                    p.note_rid(attr_local(e, b"embed"));
+                    if self.txbx_depth > 0 {
+                        let rid = attr_local(e, b"embed");
+                        if !self.r35_buggy && !self.f3_buggy {
+                            p.txbx_frame
+                                .get_or_insert_with(TxbxFrame::default)
+                                .note_blip(rid);
+                        }
+                    } else {
+                        // K4c-image：經 note_rid 統一記錄（首見進 rid＋全部進
+                        // rids）；rid 語義與舊「首見才設」逐位相同。
+                        p.note_rid(attr_local(e, b"embed"));
+                    }
                 }
                 // ---- K19：`a:blip` 色彩效果（duotone／biLevel／grayscl）----
                 b"duotone" if p.duo_nodes.is_none() && p.duo.is_none() => {
@@ -2784,12 +2812,19 @@ impl DrawingParser {
                     duo_note_mod(&mut p, n, e);
                 }
                 b"drawing" | b"pict" if !empty => {
-                    let close: &'static [u8] = if name == b"drawing" {
-                        b"drawing"
+                    if self.txbx_depth > 0 && name == b"drawing" && !self.r35_buggy && !self.f3_buggy {
+                        // F3：文字框內的內嵌 drawing 不吞沒，為其開一張新圖的槽
+                        p.txbx_frame
+                            .get_or_insert_with(TxbxFrame::default)
+                            .open_slot();
                     } else {
-                        b"pict"
-                    };
-                    self.skip_tag = Some((close, 0));
+                        let close: &'static [u8] = if name == b"drawing" {
+                            b"drawing"
+                        } else {
+                            b"pict"
+                        };
+                        self.skip_tag = Some((close, 0));
+                    }
                 }
                 _ => {}
             }
@@ -3022,16 +3057,41 @@ impl DrawingParser {
             }
             match name {
                 b"extent" => {
-                    if p.w.is_none() {
-                        p.w = emu_to_pt(attr_local(e, b"cx").as_deref());
-                    }
-                    if p.h.is_none() {
-                        p.h = emu_to_pt(attr_local(e, b"cy").as_deref());
+                    if self.txbx_depth > 0 {
+                        if let (Some(w), Some(h)) = (
+                            emu_to_pt(attr_local(e, b"cx").as_deref()),
+                            emu_to_pt(attr_local(e, b"cy").as_deref()),
+                        ) {
+                            if p.txbx_drawing_extent.is_none() {
+                                p.txbx_drawing_extent = Some([w, h]);
+                            }
+                            if !self.r35_buggy && !self.f3_buggy {
+                                p.txbx_frame
+                                    .get_or_insert_with(TxbxFrame::default)
+                                    .note_extent([w, h]);
+                            }
+                        }
+                    } else {
+                        if p.w.is_none() {
+                            p.w = emu_to_pt(attr_local(e, b"cx").as_deref());
+                        }
+                        if p.h.is_none() {
+                            p.h = emu_to_pt(attr_local(e, b"cy").as_deref());
+                        }
                     }
                 }
                 b"blip" => {
-                    // K4c-image：同 Start 分支，經 note_rid 統一記錄。
-                    p.note_rid(attr_local(e, b"embed"));
+                    if self.txbx_depth > 0 {
+                        let rid = attr_local(e, b"embed");
+                        if !self.r35_buggy && !self.f3_buggy {
+                            p.txbx_frame
+                                .get_or_insert_with(TxbxFrame::default)
+                                .note_blip(rid);
+                        }
+                    } else {
+                        // K4c-image：同 Start 分支，經 note_rid 統一記錄。
+                        p.note_rid(attr_local(e, b"embed"));
+                    }
                 }
                 // ---- K19：自閉合形態（常態）：`<a:prstClr val="white"/>`、
                 // `<a:shade val="45000"/>`、`<a:grayscl/>` 都是自閉合標籤 ----
@@ -3172,6 +3232,11 @@ impl DrawingParser {
                 if let Some(v) = self.vml.as_mut() {
                     drain_txbx_frame(v);
                 }
+                if let Some(g) = self.graphic.as_mut() {
+                    if !self.f3_buggy {
+                        drain_txbx_frame(g);
+                    }
+                }
             }
             self.txbx_depth = self.txbx_depth.saturating_sub(1);
         }
@@ -3184,6 +3249,11 @@ impl DrawingParser {
             if let Some(v) = self.vml.as_mut() {
                 if v.txbx_frame.is_some() {
                     drain_txbx_frame(v);
+                }
+            }
+            if let Some(g) = self.graphic.as_mut() {
+                if !self.f3_buggy && g.txbx_frame.is_some() {
+                    drain_txbx_frame(g);
                 }
             }
         }
@@ -3224,6 +3294,11 @@ impl DrawingParser {
                     }
                 } else {
                     drain_txbx_frame(v);
+                }
+            }
+            if let Some(g) = self.graphic.as_mut() {
+                if !self.r35_buggy && !self.f3_buggy {
+                    drain_txbx_frame(g);
                 }
             }
         }
@@ -3530,8 +3605,8 @@ impl DrawingParser {
             }
         }
 
-        // ---- DrawingML 完結 ----
-        if self.graphic.is_some() && matches!(name, b"inline" | b"anchor") {
+        // ---- DrawingML 完結（框內內嵌 drawing 閉合不得提前 take 外層文字框）----
+        if self.graphic.is_some() && self.txbx_depth == 0 && matches!(name, b"inline" | b"anchor") {
             if let Some(p) = self.graphic.take() {
                 self.push_pending(&p);
             }

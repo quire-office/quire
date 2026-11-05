@@ -73,16 +73,17 @@ fn collect_items(eng: &Engine) -> (Vec<ImageItem>, Vec<RectItem>) {
     (images, rects)
 }
 
-/// 燈 1 與燈 2：正常態發射檢驗
+/// 燈 1、燈 2 與燈 3 鑑別力依序驗證（遵守 k25b 紀律：env 只在單一測試內依序設與清，不跨執行緒平行污染）
 #[test]
-fn test_f3_txbx_picture_emitted_and_geometry() {
+fn test_f3_txbx_picture_full_suite() {
+    // ---- 正常態：燈 1 與燈 2 ----
     let eng = load_engine();
     let (images, rects) = collect_items(&eng);
 
     // 燈 1：該檔發射清單圖形 item 數 ≥ 1
     assert!(
         !images.is_empty(),
-        "燈 1 紅燈：文字框內 DML 圖片未發射，發射清單圖片數為 0"
+        "燈 1：文字框內 DML 圖片未發射，發射清單圖片數為 0"
     );
 
     let img = &images[0];
@@ -92,13 +93,13 @@ fn test_f3_txbx_picture_emitted_and_geometry() {
     let expected_h = 173.25f32;
     assert!(
         (img.w - expected_w).abs() <= 2.0,
-        "燈 2a 紅燈：圖片寬度 {} 與源檔換算值 {} 差距超出 ±2pt",
+        "燈 2a：圖片寬度 {} 與源檔換算值 {} 差距超出 ±2pt",
         img.w,
         expected_w
     );
     assert!(
         (img.h - expected_h).abs() <= 2.0,
-        "燈 2a 紅燈：圖片高度 {} 與源檔換算值 {} 差距超出 ±2pt",
+        "燈 2a：圖片高度 {} 與源檔換算值 {} 差距超出 ±2pt",
         img.h,
         expected_h
     );
@@ -113,40 +114,37 @@ fn test_f3_txbx_picture_emitted_and_geometry() {
 
     assert!(
         img.x >= txbx.x - tolerance,
-        "燈 2b 紅燈：圖片左緣 {} 溢出文字框左緣 {}（容差 ±4pt）",
+        "燈 2b：圖片左緣 {} 溢出文字框左緣 {}（容差 ±4pt）",
         img.x,
         txbx.x
     );
     assert!(
         img.y >= txbx.y - tolerance,
-        "燈 2b 紅燈：圖片上緣 {} 溢出文字框上緣 {}（容差 ±4pt）",
+        "燈 2b：圖片上緣 {} 溢出文字框上緣 {}（容差 ±4pt）",
         img.y,
         txbx.y
     );
     assert!(
         img.x + img.w <= txbx.x + txbx.w + tolerance,
-        "燈 2b 紅燈：圖片右緣 {} 溢出文字框右緣 {}（容差 ±4pt）",
+        "燈 2b：圖片右緣 {} 溢出文字框右緣 {}（容差 ±4pt）",
         img.x + img.w,
         txbx.x + txbx.w
     );
     assert!(
         img.y + img.h <= txbx.y + txbx.h + tolerance,
-        "燈 2b 紅燈：圖片底緣 {} 溢出文字框底緣 {}（容差 ±4pt）",
+        "燈 2b：圖片底緣 {} 溢出文字框底緣 {}（容差 ±4pt）",
         img.y + img.h,
         txbx.y + txbx.h
     );
-}
 
-/// 燈 3：鑑別力驗證（F3_TXBX_PIC_BUGGY=1 舊行為下圖片數為 0）
-#[test]
-fn test_f3_discriminative_power_under_buggy_mode() {
+    // ---- 燈 3：鑑別力驗證（F3_TXBX_PIC_BUGGY=1 舊行為下圖片數為 0）----
     std::env::set_var("F3_TXBX_PIC_BUGGY", "1");
-    let eng = load_engine();
+    let eng_buggy = load_engine();
     std::env::remove_var("F3_TXBX_PIC_BUGGY");
 
-    let (images, _) = collect_items(&eng);
+    let (buggy_images, _) = collect_items(&eng_buggy);
     assert_eq!(
-        images.len(),
+        buggy_images.len(),
         0,
         "燈 3 鑑別力：在 F3_TXBX_PIC_BUGGY=1 舊行為模式下，文字框內圖片必須被整段跳過（圖片數應為 0）"
     );
