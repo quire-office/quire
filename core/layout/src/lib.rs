@@ -849,6 +849,17 @@ pub struct ImageBand {
     /// true＝浮動圖附掛到「所屬 section 起始頁」，而非錨定段落流頁
     /// （K5-diag §2.1 n751077 的 LO 真值語義）。
     pub page_pinned: bool,
+    /// D9b：宿主框 `v:textbox/@inset`（左,上,右,下 pt）原樣搬運。
+    /// None＝源檔**未宣告**（發射層退 VML 預設內縮，見 engine 層
+    /// `VML_TEXTBOX_DEFAULT_INSET`）；Some＝宣告值（含顯式 0，語義與未宣告
+    /// 不同——n792778 宣告 `0,0,0,0`、fdo76591 未宣告，兩者在 LO 是同一個
+    /// 文字區起點，但源檔事實不同，不得在排版層抹平成同一個字面量）。
+    pub txbx_inset: Option<[f32; 4]>,
+    /// D9b：發射像素是**框內 `w:txbxContent` 的內嵌 `w:drawing`**（K27-B
+    /// `txbx_drawing_extent` 落地態），不是 `v:imagedata` 填色。
+    /// 內嵌圖是框的**文字區內容**，LO 按「框原點＋inset」排版；
+    /// `v:imagedata` 填色圖是框本身幾何，不吃 inset（fdo61343 實據）。
+    pub txbx_content_pic: bool,
 }
 
 /// 鎖點原點系（ECMA-376 `wp:positionX/@relativeFrom` 的三檔近似分類）。
@@ -907,6 +918,17 @@ pub struct PageFloatingImage {
     /// serde default＝舊快照可解析（舊資料無此欄＝usize::MAX＝發射層跳過）。
     #[serde(default = "usize_max")]
     pub para: usize,
+    /// D9b：宿主框 `v:textbox/@inset`（左,上,右,下 pt）——由 `ImageBand` 蓋章
+    /// 搬運至此，發射層據以定位「框內 `w:drawing` 內容圖」（圖是框的文字區
+    /// 內容，LO 排版原點＝框原點＋inset）。None＝源檔未宣告（發射層退 VML
+    /// 預設 7.2/3.6，**不寫死檔案座標**）。serde default＝舊快照可解析。
+    #[serde(default)]
+    pub txbx_inset: Option<[f32; 4]>,
+    /// D9b：發射像素是框內 `w:txbxContent` 的內嵌 `w:drawing`（K27-B 落地態）
+    /// ＝true，該圖吃 `txbx_inset`；`v:imagedata` 填色圖＝false（圖＝框本身幾何，
+    /// LO 不吃 inset）。serde default＝false（舊快照舊行為）。
+    #[serde(default)]
+    pub txbx_content_pic: bool,
 }
 
 /// 頁面上的表格放置（pack_run flush 時蓋章）。
@@ -1790,6 +1812,8 @@ fn attach_floating_images(
             w_pt: im.w_pt,
             h_pt: im.h_pt,
             para: im.para,
+            txbx_inset: im.txbx_inset,
+            txbx_content_pic: im.txbx_content_pic,
         });
     }
 }
@@ -3639,6 +3663,9 @@ mod tests {
             bands: (h_pt / line_h).ceil().max(1.0) as u32,
             anchor: None,
             page_pinned: false,
+            // D9b：合成帶構造器不宣告 inset、非框內圖（本組測試尺不動）。
+            txbx_inset: None,
+            txbx_content_pic: false,
         }
     }
 

@@ -1920,6 +1920,15 @@ impl Engine {
             .map(|p| p.lines.iter().map(|l| l.text.clone()).collect())
     }
 
+    /// 頁面上的浮動圖片投影（含 D9b 的 `txbx_inset`／`txbx_content_pic` 事實）：
+    /// 發射層的輸入面，供考卷與診斷直接讀源檔推導出的資料，不必靠顯示列表反推。
+    pub fn page_floating_images(&self, page: usize) -> Option<&[quire_layout::PageFloatingImage]> {
+        self.layout
+            .pages()
+            .get(page)
+            .map(|p| p.floating_images.as_slice())
+    }
+
     /// 段落純文字（Web-1 隱形錨點游標插入讀目前段落用）。
     pub fn paragraph_text(&self, para: usize) -> Option<String> {
         self.layout.paragraph_text(para).map(str::to_owned)
@@ -2145,10 +2154,13 @@ impl Engine {
         }
         // D9：外框為負 z-index 背景層（如 fdo76591 大框 _x0000_s1026 為 -251659776），
         // 浮動圖發射時背景滿版框優先於前景圖發射，使外框底線先繪，前景圖（logo）繪於框線之上。
+        // D9b 回塞鎖（照 K12/R34 BUGGY 先例，熱路徑只在循環外讀一次 env）：
+        // `D9B_INSET_BUGGY=1` ⇒ 框內圖退回框原點（＝不吃 inset），燈 1 必紅。
+        let d9b_inset_buggy = std::env::var_os("D9B_INSET_BUGGY").is_some();
         let mut sorted_floating: Vec<&quire_layout::PageFloatingImage> =
             p.floating_images.iter().collect();
         sorted_floating.sort_by_key(|fm| {
-            let is_fullscreen = fm.w_pt >= 500.0 && (fm.x_pt - 22.05).abs() <= 1.5;
+            let is_fullscreen = is_full_bleed_frame(fm.w_pt, fm.x_pt, fm.h_pt, p);
             if is_fullscreen {
                 0i32
             } else {
@@ -2156,14 +2168,17 @@ impl Engine {
             }
         });
         for fm in sorted_floating {
-            // D9：頁腳 CHRYSLER logo 框（225×45pt 於 (193.8, 729.2)）內部圖片依據 textbox inset
-            // 向內偏移（dx=7.25pt, dy=3.60pt），使頂緣 y 精準對齊 LO 真值 732.80pt。
-            let is_footer_logo = (fm.w_pt - 225.0).abs() < 1.0
-                && (fm.h_pt - 45.0).abs() < 1.0
-                && (fm.x_pt - 193.8).abs() < 1.5
-                && (fm.y_pt - 729.2).abs() < 1.5;
-            let (target_x, target_y) = if is_footer_logo {
-                (fm.x_pt + 7.25, fm.y_pt + 3.60)
+            // D9b：框內 `w:drawing` 內容圖（K27-B `txbx_drawing_extent` 落地態）是
+            // 宿主框**文字區的內容**，LO 的排版原點＝框原點＋宿主框宣告的
+            // `v:textbox/@inset`（未宣告時退 VML 預設內縮 7.2/3.6，與
+            // `core/ooxml/src/drawing.rs` 的 `VML` 預設口徑一致）。
+            // 取代 D9 對 fdo76591 logo 框 (193.8,729.2,225×45) 的字面量比對＋
+            // 字面量位移 (7.25,3.60)——換一個檔案、同一個 `v:textbox/@inset`
+            // 語義，此臂照樣觸發（n792778／tdf102466 考卷鎖）。
+            let (target_x, target_y) = if fm.txbx_content_pic && !d9b_inset_buggy {
+                let [inset_l, inset_t, _inset_r, _inset_b] =
+                    fm.txbx_inset.unwrap_or(VML_TEXTBOX_DEFAULT_INSET);
+                (fm.x_pt + inset_l, fm.y_pt + inset_t)
             } else {
                 (fm.x_pt, fm.y_pt)
             };

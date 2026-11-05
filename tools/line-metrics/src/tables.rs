@@ -523,6 +523,9 @@ pub fn build_images(
                 bands,
                 anchor,
                 page_pinned: im.page_pinned,
+                // D9b：與 engine 投影同口徑——宿主框 inset 宣告與框內圖事實隨帶搬運。
+                txbx_inset: im.txbx_inset,
+                txbx_content_pic: im.txbx_drawing_extent.is_some(),
             }
         })
         .collect();

@@ -1253,6 +1253,11 @@ pub fn build_images(
                 bands,
                 anchor,
                 page_pinned: im.page_pinned,
+                // D9b：宿主框的 `v:textbox/@inset` 宣告與「像素是框內 w:drawing
+                // 內容圖」的事實（K27-B extent 落地態）隨投影一路搬到發射層，
+                // 發射層據此定位框內圖，不再對單一檔案座標做字面量比對。
+                txbx_inset: im.txbx_inset,
+                txbx_content_pic: im.txbx_drawing_extent.is_some(),
             }
         })
         .collect();
