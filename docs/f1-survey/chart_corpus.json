@@ -1,0 +1,272 @@
+[
+ {
+  "file": "corpus/ooxmlexport/chart-size.docx",
+  "chart_parts": [
+   "word/charts/chart1.xml"
+  ],
+  "kinds": {
+   "barChart": 1
+  },
+  "cache": {
+   "numCache": 1,
+   "strCache": 0
+  },
+  "ref": {
+   "numRef": 1,
+   "strRef": 0
+  },
+  "title_nodes": 1
+ },
+ {
+  "file": "corpus/ooxmlexport/fdo76098.docx",
+  "chart_parts": [
+   "word/charts/chart1.xml"
+  ],
+  "kinds": {
+   "pieChart": 1
+  },
+  "cache": {
+   "numCache": 1,
+   "strCache": 2
+  },
+  "ref": {
+   "numRef": 1,
+   "strRef": 2
+  },
+  "title_nodes": 1
+ },
+ {
+  "file": "corpus/ooxmlexport/fdo78474.docx",
+  "chart_parts": [
+   "word/charts/chart2.xml",
+   "word/charts/chart1.xml"
+  ],
+  "kinds": {
+   "pieChart": 2
+  },
+  "cache": {
+   "numCache": 2,
+   "strCache": 4
+  },
+  "ref": {
+   "numRef": 2,
+   "strRef": 4
+  },
+  "title_nodes": 2
+ },
+ {
+  "file": "corpus/ooxmlexport/strict.docx",
+  "chart_parts": [
+   "word/charts/chart1.xml"
+  ],
+  "kinds": {
+   "barChart": 1
+  },
+  "cache": {
+   "numCache": 1,
+   "strCache": 0
+  },
+  "ref": {
+   "numRef": 1,
+   "strRef": 0
+  },
+  "title_nodes": 1
+ },
+ {
+  "file": "corpus/ooxmlexport/tdf124398_groupshapeChart.docx",
+  "chart_parts": [
+   "word/charts/chart1.xml"
+  ],
+  "kinds": {
+   "scatterChart": 2
+  },
+  "cache": {
+   "numCache": 4,
+   "strCache": 1
+  },
+  "ref": {
+   "numRef": 4,
+   "strRef": 1
+  },
+  "title_nodes": 3
+ },
+ {
+  "file": "corpus/ooxmlimport/tdf124398.docx",
+  "chart_parts": [
+   "word/charts/chart1.xml"
+  ],
+  "kinds": {
+   "barChart": 1
+  },
+  "cache": {
+   "numCache": 3,
+   "strCache": 6
+  },
+  "ref": {
+   "numRef": 3,
+   "strRef": 6
+  },
+  "title_nodes": 0
+ },
+ {
+  "file": "corpus/ooxmlimport/tdf82824.docx",
+  "chart_parts": [
+   "word/charts/chart1.xml"
+  ],
+  "kinds": {
+   "areaChart": 1
+  },
+  "cache": {
+   "numCache": 4,
+   "strCache": 2
+  },
+  "ref": {
+   "numRef": 4,
+   "strRef": 2
+  },
+  "title_nodes": 1
+ },
+ {
+  "file": "corpus/phpword/tests_PhpWordTests__files_templates_clone-merge-with-custom-macro.docx",
+  "chart_parts": [],
+  "kinds": {},
+  "cache": {},
+  "ref": {},
+  "title_nodes": 0
+ },
+ {
+  "file": "corpus/poi/poi-examples_src_main_java_org_apache_poi_examples_xwpf_usermodel_bar-chart-template.docx",
+  "chart_parts": [
+   "word/charts/chart1.xml",
+   "word/charts/chart2.xml"
+  ],
+  "kinds": {
+   "barChart": 2
+  },
+  "cache": {
+   "numCache": 4,
+   "strCache": 8
+  },
+  "ref": {
+   "numRef": 4,
+   "strRef": 8
+  },
+  "title_nodes": 2
+ },
+ {
+  "file": "corpus/poi/test-data_document_61745.docx",
+  "chart_parts": [
+   "word/charts/chart1.xml",
+   "word/charts/chart2.xml"
+  ],
+  "kinds": {
+   "barChart": 2
+  },
+  "cache": {
+   "numCache": 6,
+   "strCache": 12
+  },
+  "ref": {
+   "numRef": 6,
+   "strRef": 12
+  },
+  "title_nodes": 2
+ },
+ {
+  "file": "corpus/poi/test-data_document_chartex.docx",
+  "chart_parts": [
+   "word/charts/chart6.xml",
+   "word/charts/chart5.xml",
+   "word/charts/chart2.xml",
+   "word/charts/chart1.xml",
+   "word/charts/chart3.xml",
+   "word/charts/chart4.xml"
+  ],
+  "kinds": {
+   "lineChart": 1,
+   "barChart": 1,
+   "radarChart": 1
+  },
+  "cache": {
+   "numCache": 16,
+   "strCache": 17
+  },
+  "ref": {
+   "numRef": 16,
+   "strRef": 17
+  },
+  "title_nodes": 4
+ },
+ {
+  "file": "corpus/xopt/OpenXmlPowerToolsExamples_ChartUpdater01_Chart-Cached-Data-04.docx",
+  "chart_parts": [
+   "word/charts/chart1.xml"
+  ],
+  "kinds": {
+   "lineChart": 1
+  },
+  "cache": {
+   "numCache": 0,
+   "strCache": 0
+  },
+  "ref": {
+   "numRef": 0,
+   "strRef": 0
+  },
+  "title_nodes": 1
+ },
+ {
+  "file": "corpus/xopt/OpenXmlPowerToolsExamples_ChartUpdater01_Chart-Cached-Data-05.docx",
+  "chart_parts": [
+   "word/charts/chart1.xml"
+  ],
+  "kinds": {
+   "lineChart": 1
+  },
+  "cache": {
+   "numCache": 0,
+   "strCache": 0
+  },
+  "ref": {
+   "numRef": 0,
+   "strRef": 0
+  },
+  "title_nodes": 0
+ },
+ {
+  "file": "corpus/xopt/OpenXmlPowerToolsExamples_ChartUpdater01_Chart-Embedded-Xlsx-08.docx",
+  "chart_parts": [
+   "word/charts/chart1.xml"
+  ],
+  "kinds": {
+   "lineChart": 1
+  },
+  "cache": {
+   "numCache": 6,
+   "strCache": 3
+  },
+  "ref": {
+   "numRef": 6,
+   "strRef": 3
+  },
+  "title_nodes": 1
+ },
+ {
+  "file": "corpus/xopt/OpenXmlPowerToolsExamples_DocumentBuilder04_SolarOverview.docx",
+  "chart_parts": [
+   "word/charts/chart1.xml"
+  ],
+  "kinds": {
+   "lineChart": 1
+  },
+  "cache": {
+   "numCache": 3,
+   "strCache": 6
+  },
+  "ref": {
+   "numRef": 3,
+   "strRef": 6
+  },
+  "title_nodes": 0
+ }
+]

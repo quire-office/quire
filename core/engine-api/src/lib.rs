@@ -128,10 +128,57 @@ pub struct Engine {
     /// 表格映射層（`table_map::build_slots`）消費；純讀取派生——存檔路徑
     /// 完全不經本欄。
     line_ref_bands: u32,
+    /// F1（卡 t_f3acd271）：圖表掛載點＋已解析內容成對清單（文件序、去重）。
+    /// 純讀取派生——存檔路徑完全不經本欄（圖表屬「引擎未要求變更的 part」，
+    /// 存檔由 `ZipBundle` 原位元組搬運，無損鐵律不破）。
+    /// 空清單＝檔案無圖表＝發射層零擾動快路徑（無圖表檔的顯示列表逐位元組
+    /// 不變，f1_chart_emission 燈 4 鎖死）。`F1_CHART_BUGGY=1` 在開檔期就把
+    /// 本欄刷空＝回塞「圖表被整段跳過」的舊行為（燈 3 鑑別力鎖）。
+    charts: Vec<(quire_ooxml::ChartMount, quire_ooxml::ChartDoc)>,
 }
 
 /// K27：EMF 內嵌 DIB 直讀產物（PNG 位元組流＋EMF 檔頭 `rclFrame` 換算的 pt 尺寸 `[寬, 高]`）。
 type EmfRasterPayload = (Vec<u8>, [f32; 2]);
+
+/// F1（卡 t_f3acd271）：圖表繪圖區內縮律（對圖表外框歸一化）。
+///
+/// 數值出自 `docs/f1-survey/fit_insets.py` 對 10 檔 LO 真值的逐檔擬合（非單檔
+/// 調參）：左右內縮是**比例律**（右 7/7 檔皆 0.020；左實測 0.037–0.099 取
+/// 0.045）。上下兩帶則是**點值律**（LO 按內容保留固定高，與框高無關）：
+/// - 標題帶：宣告 `c:title` 且 `autoTitleDeleted=0` 者，LO 實測帶高
+///   chart-size 41.1／strict 45.4／Cached-Data-04 47.0／61745 50.0／chartex
+///   39.7pt（均值 44.6，實測域 40–50）→ 取 44pt，並鉗 ≤0.40×框高
+///   （chart-size 框高僅 102pt，鉗後 40.9pt 使單位高=11.72pt，與 LO 實繪
+///   11.75pt 對齊——此鉗由該檔反推，同時不破 strict 的 21.94pt/刻度）。
+/// - 類別軸帶（零線到底邊）：LO 實測 chart-size 13.9／strict 16.1／
+///   61745 38.3／Cached-Data-04 50.0pt——底帶高隨類別標籤字級與換行變化，
+///   本切片取 `標籤字級×1.6` 下限 12pt（前兩檔命中 14.4 vs 13.9／16.1；
+///   後兩檔因長字串換行偏小，屬殘留，記帳解剖報告 §6）。
+const CHART_INSET_L: f32 = 0.045;
+const CHART_INSET_R: f32 = 0.020;
+const CHART_TITLE_BAND_PT: f32 = 44.0;
+const CHART_TITLE_BAND_MAX: f32 = 0.40;
+const CHART_CAT_BAND_PER_PT: f32 = 1.6;
+const CHART_CAT_BAND_MIN: f32 = 12.0;
+/// F1：數值軸刻度律（`docs/f1-chart-anatomy.md` §3，LO 10 檔實抓）。
+/// - 每刻度最低繪圖高 11pt（實據 chart-size 單位高 11.7pt）。
+/// - 刻度目標數 clamp(繪圖高/11, 2, 8)。
+/// - 上界留 15% 頭位（chart-size 3→4、strict 3→3.5、Embedded-Xlsx-08 5→6
+///   三檔反推皆為 1.15，無一檔例外）。
+/// - 步進取 `{1,2,5}×10^k` 中 ≥ (上界/目標數) 的最小者。
+const CHART_TICK_MIN_PITCH_PT: f32 = 11.0;
+const CHART_TICK_MAX_N: u32 = 8;
+const CHART_TICK_HEADROOM: f32 = 1.15;
+/// F1：軸刻度字色（LO 10/10 檔實測 0x595959＝tx1×lumMod65%＋lumOff35%，
+/// `docs/f1-survey/lo_chart_truth.json` 的 `c=5855577`）；軸宣告未帶實色時
+/// 退此值，非虛構（是量產實測值）。
+const CHART_TICK_COLOR: u32 = 0xFF59_5959;
+/// F1：格線色（chart-size／strict 宣告 `schemeClr tx1` lumMod15%/lumOff85%
+/// → 0xD9D9D9；LO 實繪灰 0.851 三通道）。
+const CHART_GRID_COLOR: u32 = 0xFFD9_D9D9;
+/// F1：圖表外框框線色（LO 實繪 0.851 灰，與格線同族）。
+const CHART_FRAME_COLOR: u32 = 0xFFD9_D9D9;
+const CHART_FRAME_LINE_PT: f32 = 0.75;
 
 /// K4c/K27：圖片像素來源解析結果（part 路徑, MIME 型別, 選擇性的 EMF 直讀產物）。
 type ResolvedPixelSource = (String, String, Option<EmfRasterPayload>);
@@ -712,6 +759,14 @@ impl Engine {
         for s in &sections {
             sec_geo_all.entry(s.id).or_insert(s.geo);
         }
+        // F1（卡 t_f3acd271）：圖表採集——純讀取 parts（見 Engine::charts 註解）。
+        // 開檔期一次解析、發射期零解析成本；無圖表檔＝空清單（零擾動）。
+        let mut charts = quire_ooxml::read_charts_from_parts(&doc.parts, &theme);
+        // 回塞鎖（燈 3 鑑別力）：`F1_CHART_BUGGY=1`＝刷回「圖表 part 從未被
+        // 解析、遑論發射」的舊行為——考卷燈 2 必回紅，證明它抓得到本缺口。
+        if std::env::var_os("F1_CHART_BUGGY").is_some() {
+            charts.clear();
+        }
         let engine = Self {
             doc,
             layout,
@@ -757,6 +812,7 @@ impl Engine {
                 .collect(),
             image_pixels,
             line_ref_bands,
+            charts,
         };
         Ok(engine.with_footnotes())
     }
@@ -2263,6 +2319,23 @@ impl Engine {
                 }
             }
         }
+        // F1（卡 t_f3acd271）：圖表發射——圖表外框＋軸線＋格線＋數值刻度文字
+        // ＋類別標籤文字＋標題文字（僅 `c:title/c:tx` 真有文字時）。零擾動
+        // 守門：`self.charts` 空（無圖表檔）＝本環完全不改 items（燈 4 鎖）。
+        // z 序：放在浮動框之後、正文行之前——圖表的非文字項（Rule）在宿主框
+        // 之後推入，故繪於宿主框線之上（LO 同序：圖表繪於框內）；文字項由
+        // 下方穩定排序依 y 落位。
+        if !self.charts.is_empty() && std::env::var_os("F1_CHART_BUGGY").is_none() {
+            for (mount, cdoc) in &self.charts {
+                // 宿主定位：框內圖表（chart-size 實據）吃宿主 `wp:anchor` 框
+                // 內緣＋框內段落序堆疊；框外 inline 退宿主段的佔位帶／行首。
+                // 宿主段不在本頁＝本頁不發（圖表屬該段所在頁，與框內文字同口徑）。
+                let Some((hx, hy)) = chart_host_anchor(p, mount, line_h, size * 1.22) else {
+                    continue;
+                };
+                push_chart_items(&mut items, hx, hy, mount, cdoc);
+            }
+        }
         for (i, l) in p.lines.iter().enumerate() {
             let band = p.line_bands.get(i).copied().unwrap_or(i as u32) as f32;
             let y = p.margin_top_pt + band * line_h;
@@ -2658,6 +2731,26 @@ pub(crate) fn face_line_factor(face: &str) -> f32 {
         "arial" | "liberation sans" | "liberationsans" | "helvetica" => 1.1499,
         // theme 斷鏈 fallback（LO 落到自身預設 Noto Serif）。
         "noto serif" | "notoserif" => 1.3620,
+        // E1（t_8573d294）：`Trebuchet MS` 在本基準環境**無本機 face**，LO 25.8
+        // 以自身附帶的 Noto 系頂替（真檔 cell-grid-span 的 Trebuchet 組 span font
+        // 實測 `NotoSans-Regular`；本卡合成探針無 fontTable 時頂到
+        // `NotoSerif-Regular`）。LO 附帶的 NotoSans-Regular 與 NotoSerif-Regular
+        // hhea **同值**（asc=1069 desc=-293 gap=0 upm=1000 ⇒ real-LH 1.3620，
+        // 本機 ttf 實測），故頂替後的 real-LH 與上方 Noto Serif 臂**同因子**——
+        // 這是實測對齊，不是借用他族值湊數。
+        // 定量覆核（本卡，LO 25.8＋pymupdf，K6 `pitch = size×declared/240×LH` 口徑）：
+        //   本檔 Trebuchet 組無 w:line 段（吃 docDefaults 276）行距眾數 15.65
+        //     ⇒ LH = 15.65/(10×276/240) = 1.3609
+        //   直接宣告 w:line=240 段行距眾數 13.65
+        //     ⇒ LH = 13.65/(10×240/240) = 1.3650
+        //   合成探針（零段距、宣告 line=240）sz10/11/14/20 → 1.3700/1.3636/
+        //     1.3571/1.3600（PDF y 0.05pt 量化內）
+        // 三者皆落在 1.3620，**非** e1-redlight.md §3.1(B) 宣稱的 1.56–1.57——
+        // 該數是把 pitch 除以 size 卻漏乘 `declared_line/240`（本檔 docDefaults
+        // 宣告 `w:line="276"`＝1.15；15.65/10/1.15＝1.3609，15.65/10＝1.565 即誤源）。
+        // 水平軸**不入表**：LO 頂替 face 的 advance 寬比本卡未實測，依 K7-cal
+        // 「表沒有實測值的族絕不猜數」守門走 `_ => 1.0` 零擾動（TODO(K7-cal)）。
+        "trebuchet ms" | "trebuchetms" => 1.3620,
         // CJK 宣告族在本基準環境替到 WenQuanYi Zen Hei。
         "pmingliu" | "新細明體" | "kaititc" | "標楷體" | "msyahei" | "microsoft yahei"
         | "微軟雅黑" | "wenquanyi zen hei" | "wenquanyizenhei" => 1.3496,
@@ -2711,6 +2804,15 @@ pub(crate) fn face_advance_scale(face: &str) -> f32 {
         "arial" | "liberation sans" | "liberationsans" | "helvetica" => 0.9627,
         // theme 斷鏈 fallback（LO 落到自身預設 Noto Serif，K6 同口徑）。
         "noto serif" | "notoserif" => 1.0328,
+        // TODO(E1 t_8573d294)：`Trebuchet MS` 的水平軸**暫不入表**（零擾動守門）。
+        // 本卡量過雙軌（LO 25.8 Linux＋pymupdf）：A 軌 mix 1.0359／lower 1.0288／
+        // upper 1.0562／digits 1.0058；真檔 B 軌自然寬行（剔除 justified 拉伸、
+        // 非拉丁標點、粗體污染後 n=4）中位 1.0170。兩軌差 1.8% ≤2.1% 按 K7 規則
+        // 該取 A 軌，但入表實跑把 `TestFiles_RA001-Tracked-Revisions-01`（檔內
+        // 唯一 Trebuchet 宣告在段標 rPr、被級聯當全段主族吃）頁數 6→7——Linux LO
+        // 實轉 PDF＝7 頁（末頁空頁）、K28 記帳的 Windows LO＝6 頁，兩環境因
+        // 「真 Trebuchet MS 有無裝機」分歧，**LO 真值本身未定錨**，依 K7
+        // 「表沒有實測值的族絕不猜數」維持 1.0 後備；待水平口徑定案後入表。
         // TODO(K7-cal)：Tahoma→LO 實際替代 face 未實測（VCL 替代表本機查無
         // 實據），**不虛構**——1.0 後備；補量後入表。
         _ => 1.0,
@@ -4609,6 +4711,309 @@ fn decode_gif_to_rgba8(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     None
 }
 
+/// F1（卡 t_f3acd271）：由圖表掛載點換算「圖表外框左上角」頁絕對座標。
+///
+/// 三式掛載（`docs/f1-chart-anatomy.md` §2b-1 普查實據）：
+/// 1. **框內 `wp:inline`**（chart-size／fdo78474 chart2）：宿主是 `wp:anchor`
+///    文字框，其頁絕對位置已由分頁層換算進 `floating_images`——圖表落在
+///    框內緣（`wps:bodyPr` 的 lIns/tIns，缺宣告退 Word 預設 7.2/3.6pt）
+///    ＋框內段落序堆疊（每段一行高；LO 把框內圖表當 102pt 高的行內物件
+///    推_down 後續段，該堆疊律屬框內段落流既有缺口族 D9b／E2b，本卡只取
+///    近似，偏差記帳解剖報告 §6）。
+/// 2. **框外 `wp:anchor`**（tdf82824／fdo78474 chart1 等）：同走
+///    `floating_images` 的鎖點（分頁層已按 relativeFrom 換算）。
+/// 3. **框外 `wp:inline`**（多數語料）：吃宿主段的正文流落點——本頁找到
+///    該段首行即以其 y 為基準，x＝版心左緣；找不到＝該段不在本頁＝不發。
+///
+/// 回 `None`＝本頁不發（宿主不在本頁／幾何非法），呼叫端跳過該掛載。
+fn chart_host_anchor(
+    p: &quire_layout::Page,
+    mount: &quire_ooxml::ChartMount,
+    line_h: f32,
+    stack_step: f32,
+) -> Option<(f32, f32)> {
+    if mount.w_pt < 4.0 || mount.h_pt < 4.0 {
+        return None;
+    }
+    if mount.floating || mount.in_txbx {
+        let fm = p
+            .floating_images
+            .iter()
+            .find(|fm| fm.para == mount.para_index)?;
+        if mount.in_txbx {
+            let li = mount.host_l_ins_pt.unwrap_or(7.2);
+            let ti = mount.host_t_ins_pt.unwrap_or(3.6);
+            Some((
+                fm.x_pt + li,
+                fm.y_pt + ti + mount.txbx_ordinal as f32 * stack_step,
+            ))
+        } else {
+            Some((fm.x_pt, fm.y_pt))
+        }
+    } else {
+        // 框外 inline：宿主段首行 y（本頁無此行＝不在本頁，不發）。
+        let (li, _) = p
+            .lines
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.para_index == mount.para_index)?;
+        let band = p.line_bands.get(li).copied().unwrap_or(0) as f32;
+        Some((p.margin_left_pt, p.margin_top_pt + band * line_h))
+    }
+}
+
+/// F1（卡 t_f3acd271）：圖表發射——外框＋軸線＋格線＋數值刻度文字＋類別
+/// 標籤文字＋標題文字＋（平面柱形臂）柱形。全部走既有 `DrawItem`
+/// （Rect／Rule／Text），**不新增變體**，故 `render_svg.rs` 零改動、無圖表
+/// 檔案的 SVG 輸出位元組零變動（解剖報告 §4-4 設計結論）。
+///
+/// 幾何口徑（禁單檔調參，全部律的實據出處見 `docs/f1-chart-anatomy.md`）：
+/// - `c:layout` 無 `c:manualLayout`（chart-size 實抓空 layout）→ 等分後備：
+///   內縮常數（`CHART_INSET_*`，10 檔 LO 擬合）＋刻度律（`CHART_TICK_*`）。
+/// - 數值刻度＝LO 律 L1–L4（步進 `{1,2,5}×10^k`、下界 0、上界含 15% 頭位、
+///   每刻度 ≥11pt 容量尺）——chart-size 擬合出 `0..4`、strict 擬合出
+///   `0..3.5`，與 LO 實繪逐支一致。
+/// - 類別標籤：`effective_cats()`（有 `c:cat` 用 cache 字串；無則 LO 同律
+///   自動編號 `1..n`，chart-size 實據）。
+/// - 標題：只在 `c:title/c:tx` 真有文字時發（LO 本地化佔位「圖表標題」
+///   不是檔內內容，不虛構——解剖報告 §1 要點 B）。
+fn push_chart_items(
+    items: &mut Vec<DrawItem>,
+    fx: f32,
+    fy: f32,
+    mount: &quire_ooxml::ChartMount,
+    cdoc: &quire_ooxml::ChartDoc,
+) {
+    let fw = mount.w_pt;
+    let fh = mount.h_pt;
+    // ---- 圖表外框：白底＋灰框（LO drawing#1 實繪 white fill＋0.851 灰）。
+    items.push(DrawItem::Rect {
+        x: fx,
+        y: fy,
+        w: fw,
+        h: fh,
+        fill_argb: 0xFFFF_FFFF,
+    });
+    let push_rule = |items: &mut Vec<DrawItem>, x1, y1, x2, y2, w, c| {
+        items.push(DrawItem::Rule {
+            x1,
+            y1,
+            x2,
+            y2,
+            width_pt: w,
+            color_argb: c,
+            dash: None,
+        });
+    };
+    push_rule(
+        items,
+        fx,
+        fy,
+        fx + fw,
+        fy,
+        CHART_FRAME_LINE_PT,
+        CHART_FRAME_COLOR,
+    );
+    push_rule(
+        items,
+        fx,
+        fy + fh,
+        fx + fw,
+        fy + fh,
+        CHART_FRAME_LINE_PT,
+        CHART_FRAME_COLOR,
+    );
+    push_rule(
+        items,
+        fx,
+        fy,
+        fx,
+        fy + fh,
+        CHART_FRAME_LINE_PT,
+        CHART_FRAME_COLOR,
+    );
+    push_rule(
+        items,
+        fx + fw,
+        fy,
+        fx + fw,
+        fy + fh,
+        CHART_FRAME_LINE_PT,
+        CHART_FRAME_COLOR,
+    );
+
+    // ---- 繪圖區（等分後備；標題帶與類別軸帶見常數註解的 LO 實測律）。
+    let cat_size = cdoc.cat_ax.tick_size_pt.unwrap_or(9.0).clamp(4.0, 32.0);
+    let title_band = if cdoc.title_declared && !cdoc.auto_title_deleted {
+        CHART_TITLE_BAND_PT.min(fh * CHART_TITLE_BAND_MAX)
+    } else {
+        2.0
+    };
+    let cat_band = (cat_size * CHART_CAT_BAND_PER_PT).max(CHART_CAT_BAND_MIN);
+    let plot_l = fx + fw * CHART_INSET_L;
+    let plot_r = fx + fw * (1.0 - CHART_INSET_R);
+    let plot_t = fy + title_band;
+    let zero_y = fy + fh - cat_band;
+    let plot_w = (plot_r - plot_l).max(1.0);
+    let plot_h = (zero_y - plot_t).max(1.0);
+
+    // ---- 數值軸刻度律（§3 L1–L4）。
+    let lower = cdoc.data_min().unwrap_or(0.0);
+    let upper = cdoc.data_max().unwrap_or(0.0).max(lower);
+    let ticks: Vec<f64> = if !cdoc.val_ax.present || cdoc.val_ax.deleted {
+        Vec::new()
+    } else {
+        let target_n = ((plot_h / CHART_TICK_MIN_PITCH_PT) as u32)
+            .clamp(2, CHART_TICK_MAX_N)
+            .max(2);
+        let raw_upper =
+            ((upper - lower) * f64::from(CHART_TICK_HEADROOM) + lower).max(lower + 1e-12);
+        let want = (raw_upper - lower) / f64::from(target_n);
+        // 步進取 {1,2,5}×10^k 中 ≥ want 的最小者（want≤0 退 1）。
+        let mut step = 1.0f64;
+        if want > 0.0 {
+            let exp = want.log10().floor();
+            'outer: for k in (exp as i32 - 1)..(exp as i32 + 2) {
+                for m in [1.0f64, 2.0, 5.0] {
+                    let cand = m * 10f64.powi(k);
+                    if cand >= want - 1e-12 {
+                        step = cand;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        let top = (raw_upper / step).ceil() * step;
+        let mut out = Vec::new();
+        let mut v = if lower >= 0.0 {
+            0.0
+        } else {
+            (lower / step).floor() * step
+        };
+        while v <= top + step * 1e-6 {
+            out.push(v);
+            v += step;
+            if out.len() > 64 {
+                break; // 畸形宣告熔斷（不發爆量文字）
+            }
+        }
+        out
+    };
+    let tick_top = ticks.last().copied().unwrap_or(1.0).max(lower + 1e-9);
+    let scale = |v: f64| -> f32 {
+        let t = (v - lower) / (tick_top - lower);
+        zero_y - (t as f32) * plot_h
+    };
+    let fmt_num = |v: f64| -> String {
+        if v == v.trunc() && v.abs() < 1e15 {
+            format!("{}", v as i64)
+        } else {
+            let s = format!("{v}");
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        }
+    };
+
+    // ---- 格線（valAx 帶 c:majorGridlines 才畫；catAx 不帶——chart-size 實據）。
+    if cdoc.val_ax.major_gridlines {
+        for t in &ticks {
+            let y = scale(*t);
+            push_rule(items, plot_l, y, plot_r, y, 0.75, CHART_GRID_COLOR);
+        }
+    }
+    // ---- 軸線（存在且未刪除＝畫；直線即可，卡面第二步驟 4）。
+    let axis_color = cdoc.axis_color.unwrap_or(CHART_FRAME_COLOR);
+    if cdoc.cat_ax.present && !cdoc.cat_ax.deleted {
+        push_rule(items, plot_l, zero_y, plot_r, zero_y, 0.75, axis_color);
+    }
+    if cdoc.val_ax.present && !cdoc.val_ax.deleted {
+        push_rule(items, plot_l, plot_t, plot_l, zero_y, 0.75, axis_color);
+    }
+
+    // ---- 柱形（clustered col 平面臂；gapWidth 缺＝等分後備。line/area 的
+    // 折線／填充路徑屬近似成本考量不做，刻度與文字不受影響）。
+    let cats = cdoc.effective_cats();
+    let n = cats.len().max(1);
+    if cdoc.plottable && cdoc.bar_dir_col && !cdoc.stacked {
+        let slot = plot_w / n as f32;
+        let m = cdoc.series.len().max(1) as f32;
+        let bar_w = (slot * 0.6 / m).max(1.0);
+        for (si, s) in cdoc.series.iter().enumerate() {
+            let fill = s
+                .fill_argb
+                .or(cdoc.accent1)
+                .unwrap_or(0xFF5B_9BD5) // accent1 退值（LO 實繪色，非臆造）
+                | 0xFF00_0000;
+            for (ci, v) in s.vals.iter().enumerate().take(64) {
+                let cx = plot_l + slot * (ci as f32 + 0.5);
+                let x = cx - (bar_w * m) / 2.0 + bar_w * (si as f32 + 0.5);
+                let y = scale(v.max(lower));
+                if y < zero_y {
+                    items.push(DrawItem::Rect {
+                        x,
+                        y,
+                        w: bar_w,
+                        h: (zero_y - y).max(0.5),
+                        fill_argb: fill,
+                    });
+                }
+            }
+        }
+    }
+
+    // ---- 數值刻度文字（字級吃 c:txPr/@sz，缺退 9pt——LO 10 檔實測 8.93–10.01）。
+    let tick_size = cdoc.val_ax.tick_size_pt.unwrap_or(9.0).clamp(4.0, 32.0);
+    let tick_color = cdoc.val_ax.tick_color.unwrap_or(CHART_TICK_COLOR);
+    if cdoc.val_ax.present && !cdoc.val_ax.deleted {
+        let meas = quire_layout::TextMeasurer::new(tick_size);
+        for t in &ticks {
+            let s = fmt_num(*t);
+            let tw = meas.text_width(&s);
+            items.push(DrawItem::Text {
+                x: (plot_l - 1.0 - tw).max(fx + 0.5),
+                y: scale(*t) - tick_size * 0.5,
+                size_pt: tick_size,
+                flags: 0,
+                color_argb: tick_color,
+                family: None,
+                text: s,
+            });
+        }
+    }
+    // ---- 類別標籤文字（等分類別槽中心；字級同軸宣告）。
+    let cat_color = cdoc.cat_ax.tick_color.unwrap_or(CHART_TICK_COLOR);
+    if cdoc.cat_ax.present && !cdoc.cat_ax.deleted {
+        let slot = plot_w / n as f32;
+        let meas = quire_layout::TextMeasurer::new(cat_size);
+        for (ci, c) in cats.iter().enumerate().take(256) {
+            let tw = meas.text_width(c);
+            items.push(DrawItem::Text {
+                x: (plot_l + slot * (ci as f32 + 0.5) - tw / 2.0).max(fx + 0.5),
+                y: zero_y + 1.0,
+                size_pt: cat_size,
+                flags: 0,
+                color_argb: cat_color,
+                family: None,
+                text: c.clone(),
+            });
+        }
+    }
+    // ---- 標題文字（真有 c:title/c:tx 才發；LO 本地化佔位不虛構）。
+    if let Some(title) = cdoc.title.as_ref().filter(|t| !t.trim().is_empty()) {
+        let size = cdoc.title_size_pt.unwrap_or(14.0).clamp(4.0, 72.0);
+        let meas = quire_layout::TextMeasurer::new(size);
+        let tw = meas.text_width(title);
+        items.push(DrawItem::Text {
+            x: (fx + (fw - tw) / 2.0).max(fx + 0.5),
+            y: fy + 2.0,
+            size_pt: size,
+            flags: 0,
+            color_argb: 0xFF00_0000,
+            family: None,
+            text: title.clone(),
+        });
+    }
+}
+
 /// 發射圖片佔位框（K4c 升級：真色版）。`shape`=None 或全欄未宣告＝舊行為
 /// （灰底 Rect＋四邊淺灰 Rule，零擾動守門）；有宣告時（卡片契約 2/3/4）：
 /// - 填充：`filled="f"` → 整個 Rect 不發（**別把無填充畫成灰底**）；否則
@@ -5743,6 +6148,127 @@ impl Engine {
                 None => emit_image_shape(items, img_x, y, im.w_pt, im.h_pt, Some(im)),
             }
         }
+        // ---- E2c：頁首／頁尾 part 的**直排浮動框**（fdo78957 頁首 TextBox 3
+        // 實據：`word/header1.xml` 的 `wps:bodyPr vert="vert270"`）。上方 inline
+        // 迴路只把候選當「版心左緣的圖佔位」發射，`wp:anchor` 浮動框連框帶字
+        // 完全不發 ⇒ render_lab 版面 0.0＋真缺字 `Quire`。本臂只吃三條件同中：
+        // `floating` ＋ `wps_annotation`（DrawingML 標註；VML `layout-flow:vertical`
+        // 屬鐵條禁區，由 e2c_lamp3 鎖死不得觸發）＋ `@vert` 宣告非 horz，且
+        // `wp14:sizeRel*`／`wp14:pctPos*` 可解出框矩形（解不出＝整臂零發射＝
+        // 既有顯示列表逐位元組不變）。----
+        self.push_hf_vert_frames(items, part, &paragraphs, hf_params, geo);
+    }
+
+    /// E2c：頁首／頁尾 part 直排浮動框的發射臂（呼叫端已守門，本函數只做
+    /// 幾何與文字解析）。幾何定律（`docs/e2-vert-anchor-law.md` E2c 節，全部
+    /// 由 `lo_frames.json`／合成網格 probe 反解，非單檔調參）：
+    /// - 框矩形＝`wp14:pctPos*`／`wp:align`（位置）＋ `wp14:sizeRel*/pct*`
+    ///   （尺寸，基準依 `@relativeFrom`：page＝頁寬高、margin＝版心寬）；宣告
+    ///   extent 被 pct 覆寫（LO 同款優先序）。
+    /// - vert270 的文字軸映射：advance→ −y（上），next-para→ +x（右）⇒
+    ///   段落軸對齊吃 `w:jc`（center＝行中點落在框進位軸中點）、文字軸對齊吃
+    ///   `bodyPr/@anchor`（`t`＝框左緣進 tIns）。
+    #[allow(clippy::too_many_arguments)]
+    fn push_hf_vert_frames(
+        &self,
+        items: &mut Vec<DrawItem>,
+        part: &HfPart,
+        paragraphs: &[quire_ooxml::Paragraph],
+        hf_params: &LayoutParams,
+        geo: &SectionGeometry,
+    ) {
+        let page_w = geo.page_w_pt;
+        let page_h = geo.page_h_pt;
+        let content_w = hf_params.content_w_pt();
+        let margin_l = hf_params.margin(MARGIN_LEFT);
+        for (idx, im) in part.images.iter().enumerate() {
+            // 守門（三條件同中＋有框內文字）；任一不合＝續下一候選（舊行為）。
+            if !im.floating || !im.wps_annotation {
+                continue;
+            }
+            let flow = quire_layout::LineFlow::from_vert_str(im.txbx_vert.as_deref(), false);
+            if flow != quire_layout::LineFlow::Vertical270 {
+                continue;
+            }
+            if !im.txbx_texts.iter().any(|t| !t.trim().is_empty()) {
+                continue;
+            }
+            // 框矩形（解不出＝老實不發，不虛構位置）。
+            let content_h =
+                (geo.page_h_pt - hf_params.margin(MARGIN_TOP) - hf_params.margin(MARGIN_BOTTOM))
+                    .max(1.0);
+            let Some([fx0, fy0, _fx1, fy1]) =
+                hf_anchor_rect(im, page_w, page_h, content_w, content_h, margin_l)
+            else {
+                continue;
+            };
+            // 進位軸（vert270＝畫面 y）可排區：lIns/rIns 內縮（ECMA 預設 7.2pt）。
+            let grow = im.textbox_grow.as_ref();
+            let l_ins = grow.and_then(|g| g.lins_pt).unwrap_or(7.2);
+            let r_ins = grow.and_then(|g| g.rins_pt).unwrap_or(7.2);
+            let t_ins = grow.and_then(|g| g.tins_pt).unwrap_or(3.6);
+            let adv0 = (fy0 + r_ins).min(fy1 - l_ins);
+            let adv1 = (fy1 - l_ins).max(adv0);
+            // 文字軸（畫面 x）起點：anchor=t ⇒ 框左緣進 tIns（ECMA 預設 3.6pt）。
+            let col_x = fx0 + t_ins;
+            // 框內段落跑（txbx_runs 起點＝本框自帶的第一組；LO 只繪有字段）。
+            let host = paragraphs.get(im.para_index);
+            let runs_all: &[Vec<quire_ooxml::Run>] =
+                host.map(|p| p.txbx_runs.as_slice()).unwrap_or(&[]);
+            let base_size = hf_params.font_size_pt;
+            let mut cur_x = col_x;
+            for (ti, t) in im.txbx_texts.iter().enumerate() {
+                // 空段先退（綁定只覆寫**有字**的內容控件段；fdo78957 框內第二
+                // 段是 sdt 外的空段，LO 不繪製，也絕不能被綁定值憑空覆寫成
+                // `Quire` 造成重發）。
+                if t.trim().is_empty() {
+                    continue;
+                }
+                let shown = hf_bound_text(&self.doc.parts, im, t);
+                if shown.trim().is_empty() {
+                    continue; // 空行不發射（同 inline 臂口徑）
+                }
+                let own = runs_all
+                    .get(im.txbx_start + ti)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let seg_size = own
+                    .iter()
+                    .find_map(|r| r.size_pt)
+                    .unwrap_or(base_size)
+                    .max(1.0);
+                let (flags, color_argb, _) =
+                    own.first()
+                        .map(run_style)
+                        .unwrap_or((0, DEFAULT_TEXT_COLOR_ARGB, None));
+                let fam = own
+                    .first()
+                    .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &shown));
+                let len = TextMeasurer::new(seg_size).text_width(&shown);
+                let col_w = seg_size * 1.22; // E2 定律（docs/e2-vert-anchor-law.md）
+                let jc_center = own
+                    .first()
+                    .and_then(|r| r.para_align)
+                    .is_some_and(|a| matches!(a, quire_ooxml::Align::Center));
+                // 段落軸對齊：center ⇒ 行中點落在可排區中點；否則 text-left＝畫面下緣。
+                let base_y = if jc_center {
+                    (adv0 + adv1) / 2.0 + len / 2.0
+                } else {
+                    adv1
+                };
+                items.push(DrawItem::Text {
+                    x: cur_x,
+                    y: base_y,
+                    size_pt: seg_size,
+                    flags: flags | FLAG_DIR_VERT270,
+                    color_argb,
+                    family: fam,
+                    text: shown,
+                });
+                cur_x += col_w;
+                let _ = idx;
+            }
+        }
     }
 
     /// 頁首表格：整張切片（不跨頁）＋既有 push_frag_items 渲染路徑。
@@ -5900,6 +6426,140 @@ fn pick_slot(slots: &SlotPaths, use_first: bool, use_even: bool) -> Option<&Stri
         }
     }
     slots.default.as_ref()
+}
+
+/// E2c：把頁首／頁尾候選的錨定事實換算成**頁絕對框矩形** `[x0, y0, x1, y1]`。
+///
+/// 優先序與 LO 相同（fdo78957 頁首直排框逐條命中，見
+/// `docs/e2-vert-anchor-law.md` E2c 節）：尺寸 `wp14:sizeRel*/pct*`（基準依
+/// `@relativeFrom`：`page`＝頁寬／頁高、`margin`＝版心寬／高）**覆寫**宣告
+/// extent；位置依 `wp14:pctPos*` → `wp:align` → `wp:posOffset` 三式輪替（基準
+/// 同上）。任一軸解不出位置＝回 None（老實不發射，不虛構位置——鐵律）。
+fn hf_anchor_rect(
+    im: &quire_ooxml::InlineImage,
+    page_w: f32,
+    page_h: f32,
+    content_w: f32,
+    content_h: f32,
+    margin_l: f32,
+) -> Option<[f32; 4]> {
+    // 基準長：page＝整頁、margin／其它＝版心（ECMA-376 `relativeFrom` 兩式）。
+    let base_w = |rel: &Option<String>| {
+        if rel.as_deref() == Some("page") {
+            page_w
+        } else {
+            content_w
+        }
+    };
+    let base_h = |rel: &Option<String>| {
+        if rel.as_deref() == Some("page") {
+            page_h
+        } else {
+            content_h
+        }
+    };
+    // 尺寸：pct 覆寫 extent（缺 pct＝沿用宣告 extent，LO 同款退化）。
+    let w = match im.size_rel_w_pct {
+        Some(p) => base_w(&im.size_rel_w_rel) * p / 100_000.0,
+        None => im.w_pt,
+    };
+    let h = match im.size_rel_h_pct {
+        Some(p) => base_h(&im.size_rel_h_rel) * p / 100_000.0,
+        None => im.h_pt,
+    };
+    if !(w.is_finite() && h.is_finite()) || w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    // 位置 H：pctPos → align → posOffset（三式互斥，文件序首中為準）。
+    let x0 = if let Some(p) = im.pos_x_pct {
+        base_w(&im.pos_x_rel) * p / 100_000.0
+    } else if let Some(off) = im.pos_x_pt {
+        (if im.pos_x_rel.as_deref() == Some("page") {
+            0.0
+        } else {
+            margin_l
+        }) + off
+    } else {
+        match im.pos_x_align.as_deref() {
+            Some("center") => (base_w(&im.pos_x_rel) - w) / 2.0,
+            Some("right") => base_w(&im.pos_x_rel) - w,
+            Some("left") => 0.0,
+            _ => return None,
+        }
+    };
+    // 位置 V：同三式。page 基準原點＝頁頂；`margin` 基準的 posOffset 本卡
+    // 無實據（fdo78957 頁首框實測 `relativeFrom="page"`）⇒ 不猜，判解不出。
+    let y0 = if let Some(p) = im.pos_y_pct {
+        base_h(&im.pos_y_rel) * p / 100_000.0
+    } else if let Some(off) = im.pos_y_pt {
+        if im.pos_y_rel.as_deref() == Some("page") {
+            off
+        } else {
+            return None;
+        }
+    } else {
+        match im.pos_y_align.as_deref() {
+            Some("center") => (page_h - h) / 2.0,
+            Some("bottom") => page_h - h,
+            Some("top") => 0.0,
+            _ => return None,
+        }
+    };
+    if !(x0.is_finite() && y0.is_finite()) {
+        return None;
+    }
+    Some([x0, y0, x0 + w, y0 + h])
+}
+
+/// E2c：框內段落的**顯示文字**——帶 `w:dataBinding` 的內容控件由 LO 覆寫成
+/// 綁定值再排版（fdo78957：字面 `Bull on the Run`、LO 實繪 `Quire`）。
+///
+/// 只吃 `w:xpath` 的最後一段元素名查 `docProps`（`prefixMappings` 決定 core /
+/// extended 哪一份；解析不出＝退回字面值，絕不虛構）。綁定值缺字／空字串
+/// ＝退回字面值（誠實退化）。
+fn hf_bound_text(
+    parts: &std::collections::BTreeMap<String, Vec<u8>>,
+    im: &quire_ooxml::InlineImage,
+    literal: &str,
+) -> String {
+    let Some(xpath) = im.txbx_databinding.as_deref() else {
+        return literal.to_string();
+    };
+    // `/ns0:Properties[1]/ns0:Company[1]` → 末段 `ns0:Company[1]` → 去索引
+    // 後綴 `[1]` → 去命名空間前綴 → local name `Company`（逐步剝，不靠單次
+    // rsplit：`[1]` 與 `:` 混在一式會切錯位）。
+    let seg = xpath.rsplit('/').next().unwrap_or("").trim();
+    let seg = seg.split_once('[').map_or(seg, |(s, _)| s);
+    let leaf = seg.rsplit(':').next().unwrap_or("").trim().to_string();
+    if leaf.is_empty() {
+        return literal.to_string();
+    }
+    // 命名空間宣告決定查哪份 docProps（OOXMLExport 實測兩式皆有）。
+    let prefer_core = xpath.contains("coreProperties") || xpath.contains("core-properties");
+    let order: [&str; 2] = if prefer_core {
+        ["docProps/core.xml", "docProps/app.xml"]
+    } else {
+        ["docProps/app.xml", "docProps/core.xml"]
+    };
+    for path in order {
+        let Some(bytes) = parts.get(path) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        let open = format!("<{leaf}>");
+        let Some(i) = text.find(&open) else {
+            continue;
+        };
+        let rest = &text[i + open.len()..];
+        let Some(j) = rest.find(&format!("</{leaf}>")) else {
+            continue;
+        };
+        let val = rest[..j].trim();
+        if !val.is_empty() {
+            return val.to_string();
+        }
+    }
+    literal.to_string()
 }
 
 /// 頁首頁尾發射層四元組：(section id → 發射資料, part 路徑 → 投影,
