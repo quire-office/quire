@@ -415,8 +415,8 @@ pub fn scan_chart_mounts(xml: &[u8]) -> Vec<ChartMount> {
                     b"wsp" => wsp_stack.push(WspFrame::default()),
                     b"bodyPr" if txbx_depth > 0 => {
                         if let Some(f) = wsp_stack.last_mut() {
-                            f.l_ins = emu_attr(&e, b"lIns");
-                            f.t_ins = emu_attr(&e, b"tIns");
+                            f.l_ins = emu_attr_opt(&e, b"lIns");
+                            f.t_ins = emu_attr_opt(&e, b"tIns");
                         }
                     }
                     _ => {}
@@ -443,8 +443,8 @@ pub fn scan_chart_mounts(xml: &[u8]) -> Vec<ChartMount> {
                         // chart-size 實據：`<wps:bodyPr … lIns="91440" tIns="45720" …/>`
                         // 是**自閉合**元素（Empty 事件），Start 臂收不到。
                         if let Some(f) = wsp_stack.last_mut() {
-                            f.l_ins = emu_attr(&e, b"lIns");
-                            f.t_ins = emu_attr(&e, b"tIns");
+                            f.l_ins = emu_attr_opt(&e, b"lIns");
+                            f.t_ins = emu_attr_opt(&e, b"tIns");
                         }
                     }
                     _ => {}
@@ -570,6 +570,16 @@ fn emu_attr(e: &BytesStart, key: &[u8]) -> f32 {
         .map(|v| (v / 12700.0) as f32)
         .filter(|v| v.is_finite() && *v > 0.0)
         .unwrap_or(0.0)
+}
+
+/// EMU 屬性 → pt 的 Option 版：供 `wps:bodyPr/@lIns` 這類「宣告 0 有意義
+/// （零內縮）」的屬性使用——缺屬性＝None（呼叫端退既有硬近），
+/// 宣告 0＝Some(0.0)（老實吃宣告值，不退硬近）。
+fn emu_attr_opt(e: &BytesStart, key: &[u8]) -> Option<f32> {
+    attr_str(e, key)
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .map(|v| (v / 12700.0) as f32)
+        .filter(|v| v.is_finite() && *v >= 0.0)
 }
 
 /// 取屬性字串（local-name 比對，前綴无关——strict／transitional 共用）。
@@ -1013,9 +1023,10 @@ pub fn parse_chart(xml: &[u8], theme: &ThemeColors) -> ChartDoc {
 
 /// 目前路徑落在哪一支軸（`c:valAx`／`c:catAx`）。
 fn ax_of(path: &[&'static [u8]]) -> AxisWhich {
-    if path.contains(&b"valAx") {
+    let has = |n: &[u8]| path.iter().any(|p| *p == n);
+    if has(b"valAx") {
         AxisWhich::Val
-    } else if path.contains(&b"catAx") {
+    } else if has(b"catAx") {
         AxisWhich::Cat
     } else {
         AxisWhich::None
@@ -1050,7 +1061,7 @@ impl ColorAcc {
             let rgb = self.token.as_deref().and_then(|t| u32::from_str_radix(t, 16).ok())?;
             0xFF00_0000 | rgb
         } else {
-            theme.resolve(self.token.as_deref()?)
+            theme.resolve(self.token.as_deref()?)?
         };
         let mut v = base;
         if let Some(m) = self.lum_mod {
