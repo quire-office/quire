@@ -50,17 +50,20 @@ fn images(dl: &quire_engine::PageDisplayList) -> Vec<(f32, f32, f32, f32)> {
 
 /// 找與給定矩形最接近的一項（±容差由呼叫端把關）。
 fn nearest(hay: &[(f32, f32, f32, f32)], want: (f32, f32, f32, f32)) -> (f32, usize) {
-    hay.iter().enumerate().fold(
-        (f32::MAX, usize::MAX),
-        |acc, (i, &(x, y, w, h))| {
+    hay.iter()
+        .enumerate()
+        .fold((f32::MAX, usize::MAX), |acc, (i, &(x, y, w, h))| {
             let d = (x - want.0)
                 .abs()
                 .max((y - want.1).abs())
                 .max((w - want.2).abs())
                 .max((h - want.3).abs());
-            if d < acc.0 { (d, i) } else { acc }
-        },
-    )
+            if d < acc.0 {
+                (d, i)
+            } else {
+                acc
+            }
+        })
 }
 
 /// 燈 1（主證，先紅後綠）：fdo76591 第二個框內圖框 `_x0000_s1039`
@@ -194,7 +197,10 @@ fn d9b_lamp3b_group_second_child_picture_emitted() {
     let lo = (178.45f32, 374.35f32, 131.15f32, 122.40f32);
     let (dev, idx) = nearest(&imgs, lo);
     assert!(idx != usize::MAX, "缺 LO 真值圖 {lo:?}；實得 {imgs:?}");
-    assert!(dev <= 4.0, "群組第二張圖偏 LO 真值達 {dev:.2}pt（容差 4.0pt）");
+    assert!(
+        dev <= 4.0,
+        "群組第二張圖偏 LO 真值達 {dev:.2}pt（容差 4.0pt）"
+    );
 }
 
 /// 燈 4（防調參第二檔）：tdf102466 頁首 `word/header1.xml` 的框**自訂宣告**
@@ -226,10 +232,8 @@ fn d9b_lamp5_inset_fact_survives_to_emission_layer() {
     let bytes = read_corpus("ooxmlexport/fdo76591.docx");
     let eng = Engine::from_docx_bytes(&bytes).expect("開啟 fdo76591 失敗");
     let pg = eng.page_floating_images(0).expect("p0 存在");
-    let pics: Vec<&quire_layout::PageFloatingImage> = pg
-        .iter()
-        .filter(|f| f.txbx_content_pic)
-        .collect();
+    let pics: Vec<&quire_layout::PageFloatingImage> =
+        pg.iter().filter(|f| f.txbx_content_pic).collect();
     assert_eq!(
         pics.len(),
         2,
@@ -263,5 +267,8 @@ fn d9b_lamp6_header_textbox_picture_emitted() {
     let lo = (61.90f32, 52.55f32, 18.75f32, 13.50f32);
     let (dev, idx) = nearest(&imgs, lo);
     assert!(idx != usize::MAX, "頁首框內圖未發射；實得 {imgs:?}");
-    assert!(dev <= 4.0, "頁首框內圖偏 LO 真值達 {dev:.2}pt（容差 4.0pt）");
+    assert!(
+        dev <= 4.0,
+        "頁首框內圖偏 LO 真值達 {dev:.2}pt（容差 4.0pt）"
+    );
 }
