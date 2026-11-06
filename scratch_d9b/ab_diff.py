@@ -10,8 +10,10 @@ import sys
 BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "base-bin", "quire-cli")
 NEW = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    "target", "debug", "quire-cli")
-CORPUS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)))), "corpus")
+CORPUS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))), "..", "corpus")
+CORPUS = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))), "corpus"))
 
 def items_of(cli, rel, page):
     p = subprocess.run([cli, "page", rel, str(page)], capture_output=True, text=True, timeout=240)
