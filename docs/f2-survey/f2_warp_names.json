@@ -1,0 +1,72 @@
+{
+ "body_parts_scanned": 1291,
+ "warp": {
+  "textNoShape": {
+   "count": 99,
+   "files": 52
+  },
+  "textTriangle": {
+   "count": 1,
+   "files": 1
+  }
+ },
+ "geom_top": {
+  "rect": {
+   "count": 395,
+   "files": 155
+  },
+  "roundRect": {
+   "count": 67,
+   "files": 5
+  },
+  "straightConnector1": {
+   "count": 54,
+   "files": 5
+  },
+  "line": {
+   "count": 39,
+   "files": 8
+  },
+  "ellipse": {
+   "count": 8,
+   "files": 8
+  },
+  "star5": {
+   "count": 8,
+   "files": 5
+  },
+  "leftRightArrow": {
+   "count": 6,
+   "files": 1
+  },
+  "triangle": {
+   "count": 4,
+   "files": 4
+  },
+  "rtTriangle": {
+   "count": 4,
+   "files": 4
+  },
+  "upArrow": {
+   "count": 3,
+   "files": 1
+  },
+  "rightArrow": {
+   "count": 1,
+   "files": 1
+  },
+  "star10": {
+   "count": 1,
+   "files": 1
+  }
+ },
+ "effect_body": {
+  "bevelT": 10,
+  "outerShdw": 41,
+  "glow": 6,
+  "reflection": 4
+ },
+ "warp_nontriv_files": [
+  "ooxmlexport/fdo80897.docx"
+ ]
+}
