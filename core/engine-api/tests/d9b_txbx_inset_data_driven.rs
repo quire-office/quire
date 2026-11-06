@@ -201,9 +201,8 @@ fn d9b_lamp4_header_declared_zero_inset() {
 fn d9b_lamp5_inset_fact_survives_to_emission_layer() {
     let bytes = read_corpus("ooxmlexport/fdo76591.docx");
     let eng = Engine::from_docx_bytes(&bytes).expect("開啟 fdo76591 失敗");
-    let pg = eng.layout().pages().first().expect("p0 存在");
+    let pg = eng.page_floating_images(0).expect("p0 存在");
     let pics: Vec<&quire_layout::PageFloatingImage> = pg
-        .floating_images
         .iter()
         .filter(|f| f.txbx_content_pic)
         .collect();

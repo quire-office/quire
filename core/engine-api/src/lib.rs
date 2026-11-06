@@ -2160,7 +2160,9 @@ impl Engine {
         let mut sorted_floating: Vec<&quire_layout::PageFloatingImage> =
             p.floating_images.iter().collect();
         sorted_floating.sort_by_key(|fm| {
-            let is_fullscreen = is_full_bleed_frame(fm.w_pt, fm.x_pt, fm.h_pt, p);
+            // D9b 逐步落地：本臂的字面量由第二個 commit 換成 pgMar 相對判定
+            // （先讓 inset 資料化單獨成-commit、可單獨回滾）。
+            let is_fullscreen = fm.w_pt >= 500.0 && (fm.x_pt - 22.05).abs() <= 1.5;
             if is_fullscreen {
                 0i32
             } else {
