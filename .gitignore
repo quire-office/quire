@@ -15,3 +15,6 @@ tmp/
 
 # LO UserInstallation 副產物（lo2pdf/render_lab 誤落 CWD，PM 0311 記帳）
 None/
+
+# D9b 本機探針組（診斷腳本，不入库）
+scratch_d9b/

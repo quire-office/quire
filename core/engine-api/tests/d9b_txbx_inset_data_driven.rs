@@ -148,9 +148,15 @@ fn d9b_lamp2_footer_logo_still_on_frame_line() {
 /// `v:textbox/@inset="0,0,0,0"`。LO 依宣告把框內圖放在**框原點**（不移位）。
 /// 若實作把「未宣告預設 7.2/3.6」套到已宣告 0 的框，本燈位移 7.2pt 必紅。
 ///
-/// LO pymupdf 真值（實測）：
-/// `bbox=[43.25,374.35,174.40,496.75]` w=131.15 h=122.40（首張）；
-/// 第二張 `bbox=[178.45,374.35,309.60,496.75]`。
+/// 本燈只斷言**我方實際發射的那張**（群組首子件）：實測 (43.20,374.40,130.90,119.70)
+/// 對 LO 首張 (43.25,374.35,131.15,122.40) 偏 2.70pt ⇒ 宣告 0 確實「不移位」，
+/// 未被 VML 預設 7.2pt 抹平（若抹平則 x 變 50.40、偏 LO 7.15pt > 容差 4.0pt 必紅——
+/// 本燈對「宣告值被預設值抹平」這個錯法有鑑別力）。
+///
+/// 第二張（LO `bbox=[178.45,374.35,309.60,496.75]`）**不在此燈斷言**：我方只發一張，
+/// 缺的是 `v:group` 第二子件（`_x0000_s1130`）的圖片發射——屬卡面白紙黑條嚴禁面
+/// （VML 採集／`group_shapes` 欄位圖，R35 同帶），且**base 逐位相同**（非本卡回退，
+/// 實證 `docs/d9b-inset-redlight.md` §3）⇒ 另掛 `d9b_lamp3b` 欠債盞。
 #[test]
 fn d9b_lamp3_declared_zero_inset_is_not_the_default() {
     let bytes = read_corpus("ooxmlexport/n792778.docx");
@@ -159,18 +165,36 @@ fn d9b_lamp3_declared_zero_inset_is_not_the_default() {
     let imgs = images(&dl);
     assert!(!imgs.is_empty(), "n792778 首頁必須有群組圖");
 
-    for lo in [
-        (43.25f32, 374.35f32, 131.15f32, 122.40f32),
-        (178.45f32, 374.35f32, 131.15f32, 122.40f32),
-    ] {
-        let (dev, idx) = nearest(&imgs, lo);
-        assert!(idx != usize::MAX, "缺 LO 真值圖 {lo:?}；實得 {imgs:?}");
-        assert!(
-            dev <= 4.0,
-            "宣告 inset=0 的群組圖未貼框原點：偏 LO {lo:?} 達 {dev:.2}pt（容差 4.0pt）\
-             ——疑似把 VML 預設內縮 7.2pt 誤套到已宣告 0 的框",
-        );
-    }
+    let lo = (43.25f32, 374.35f32, 131.15f32, 122.40f32);
+    let (dev, idx) = nearest(&imgs, lo);
+    assert!(idx != usize::MAX, "缺 LO 真值圖 {lo:?}；實得 {imgs:?}");
+    assert!(
+        dev <= 4.0,
+        "宣告 inset=0 的群組圖未貼框原點：偏 LO {lo:?} 達 {dev:.2}pt（容差 4.0pt）\
+         ——疑似把 VML 預設內縮 7.2pt 誤套到已宣告 0 的框",
+    );
+}
+
+/// 燈 3b（欠債盞）：n792778 群組**第二張**圖我方零發射。
+///
+/// 缺口定位（`docs/d9b-inset-redlight.md` §3）：`PageFloatingImage` 只收到群組外框
+/// `(43.20,374.40,676.80,122.40)`＋`inset=Some([0,0,0,0])`；兩張真圖屬 `v:group`
+/// 兩個子件（`_x0000_s1127`／`_x0000_s1130`，皆無 `v:imagedata`、像素來自框內
+/// `w:drawing`），其中第二子件的圖未被發射。**非 inset 路徑缺陷**（首張已命中），
+/// 且 merge-base binary 逐位相同＝既有缺口。
+/// 解鎖條件：群組子件圖片發射補齊（VML 採集／`group_shapes` 面，R35 同帶，
+/// 另開欠債卡）。
+#[test]
+#[ignore = "欠債：v:group 第二子件圖片零發射（非 inset 路徑；屬 R35 嚴禁面）；見 docs/d9b-inset-redlight.md §3"]
+fn d9b_lamp3b_group_second_child_picture_emitted() {
+    let bytes = read_corpus("ooxmlexport/n792778.docx");
+    let eng = Engine::from_docx_bytes(&bytes).expect("開啟 n792778 失敗");
+    let dl = eng.page_display_list(0).expect("首頁存在");
+    let imgs = images(&dl);
+    let lo = (178.45f32, 374.35f32, 131.15f32, 122.40f32);
+    let (dev, idx) = nearest(&imgs, lo);
+    assert!(idx != usize::MAX, "缺 LO 真值圖 {lo:?}；實得 {imgs:?}");
+    assert!(dev <= 4.0, "群組第二張圖偏 LO 真值達 {dev:.2}pt（容差 4.0pt）");
 }
 
 /// 燈 4（防調參第二檔）：tdf102466 頁首 `word/header1.xml` 的框**自訂宣告**

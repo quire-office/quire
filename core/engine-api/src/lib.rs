@@ -2218,6 +2218,12 @@ impl Engine {
         sorted_floating.sort_by_key(|fm| {
             // D9b 逐步落地：本臂的字面量由第二個 commit 換成 pgMar 相對判定
             // （先讓 inset 資料化單獨成-commit、可單獨回滾）。
+            // TODO(D9b)：卡面第 2 條指定「22.05 改為該 section 的 pgMar 左邊距」——
+            // 實測前提不成立（`docs/d9b-inset-redlight.md` §2：fdo76591 的
+            // pgMar.left＝36.0pt，22.05＝36.0＋VML 宣告 margin-left:−13.95pt；
+            // 照卡面替換會打紅 d9_frame_overlap 三燈）。正確寫法（VML 宣告偏移
+            // 原樣搬到排版層＋「背景覆頁框」判定）需解析層補欄位，待 PM 裁定後
+            // 另行落地；本臂暫維持 D9 字面量、零回退。
             let is_fullscreen = fm.w_pt >= 500.0 && (fm.x_pt - 22.05).abs() <= 1.5;
             if is_fullscreen {
                 0i32
@@ -3468,6 +3474,10 @@ fn emit_txbx_texts(
     let clip_bottom = if wps { by + bh } else { f32::INFINITY };
     // inset 吃成內邊界（契約 6）：缺宣告＝舊硬近（x+3、inner_w＝w−6）。
     // 滿版整頁外框（bw >= 500pt 且左緣 ≈22.05pt，如 fdo76591）LO 文字左緣為版心 33.35pt（內縮 11.3pt）。
+    // TODO(D9b)：本臂的 `22.05`/`11.3`/`540.5` 同屬卡面第 2 條的待去字面量面，
+    // 且卡面指定的換法（改 pgMar 左邊距）實測不成立——22.05 是 pgMar.left(36.0)
+    // ＋VML 宣告 margin-left(-13.95) 的合成值，非邊距本身（`docs/d9b-inset-redlight.md` §2）。
+    // 正確寫法需解析層把 VML 宣告偏移原樣搬到排版層，待 PM 裁定（本卡未動、零回退）。
     let inset = shape.and_then(|b| b.txbx_inset);
     let old_style = inset.is_none();
     let is_fullscreen_frame = bw >= 500.0 && (bx - 22.05).abs() <= 1.5;
@@ -3961,6 +3971,15 @@ fn emit_txbx_texts(
                 } else {
                     nominal_step
                 };
+                // TODO(D9b)：本臂仍以**正文文字字面量**決定排版分支（文檔內容一改即失效）。
+                // 卡面第 3 條「能資料化則資料化」實測做不到，原因（`docs/d9b-inset-redlight.md` §4）：
+                // 該兩串在 `word/document.xml` 跨 run 合成一段（宿主＝滿版背景框
+                // `_x0000_s1026` 的 `w:txbxContent` 第 36 段），該段無 `w:jc`、無域代碼
+                // （全文 `fldSimple`/`instrText` 零筆）、無 `mso-*` 排版宣告
+                // （styles.xml/settings.xml 的 mso 宣告數＝0）——源檔**沒有任何結構特徵**
+                // 可辨識「這是頁腳行」。LO 貼頁底靠的是「滿版背景框＋框內段落流排到末段」
+                // 的排版結果；根治屬框內段落流**逐段推進校準**（D8 家族），不在本卡白名單內。
+                // 移除字面量＝立即回退該頁版面，故本卡**保留不動**、老實掛帳。
                 if is_fullscreen_frame && (t.contains("11-016") || t.contains("3-23-2011")) {
                     // D8：頁腳段錨定在頁底框內緣（貼頁底框內緣，y≈730.53pt），且在正文末段之下。
                     let footer_anchor_y = by + bh - 3.12 - seg_size * 1.15;
@@ -5158,6 +5177,9 @@ fn emit_image_shape(
     };
     // D9：滿版外框（bw >= 500pt 且左緣 ≈22.05pt，如 fdo76591）4pt 描邊向內收縮半線寬（2.0pt），
     // 使頂線、底線、左線、右線中心線精準對齊 LO 真值幾何（底線 749.85pt、頂線 20.20pt）。
+    // TODO(D9b)：同 `emit_txbx_texts` 與 `page_display_list` 的排序臂——卡面第 2 條的
+    // pgMar 換法實測不成立（22.05 非本 section 邊距值，`docs/d9b-inset-redlight.md` §2），
+    // 待 PM 裁定「背景覆頁框」資料化寫法；本臂暫維持字面量、零回退。
     let is_fullscreen_frame = w >= 500.0 && (x - 22.05).abs() <= 1.5;
     let (top_y, bottom_y, left_x, right_x) = if is_fullscreen_frame {
         let half_w = width_pt / 2.0;
