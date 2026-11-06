@@ -143,14 +143,23 @@ type EmfRasterPayload = (Vec<u8>, [f32; 2]);
 /// F1（卡 t_f3acd271）：圖表繪圖區內縮律（對圖表外框歸一化）。
 ///
 /// 數值出自 `docs/f1-survey/fit_insets.py` 對 10 檔 LO 真值的逐檔擬合（非單檔
-/// 調參）：右內縮 7/7 檔皆 0.020（取多數律）；左內縮實測 0.037–0.099（取
-/// 0.045 中間值）；零線到底邊 0.118–0.235（取 0.150）；標題帶（宣告了
-/// `c:title` 者，即使無文字 LO 仍保留帶高）0.15–0.40（取 0.18）。
-/// 偏差屬本切片殘留，記帳於 `docs/f1-chart-anatomy.md` §6。
+/// 調參）：左右內縮是**比例律**（右 7/7 檔皆 0.020；左實測 0.037–0.099 取
+/// 0.045）。上下兩帶則是**點值律**（LO 按內容保留固定高，與框高無關）：
+/// - 標題帶：宣告 `c:title` 且 `autoTitleDeleted=0` 者，LO 實測帶高
+///   chart-size 41.1／strict 45.4／Cached-Data-04 47.0／61745 50.0／chartex
+///   39.7pt（均值 44.6，實測域 40–50）→ 取 44pt，並鉗 ≤0.40×框高
+///   （chart-size 框高僅 102pt，鉗後 40.9pt 使單位高=11.72pt，與 LO 實繪
+///   11.75pt 對齊——此鉗由該檔反推，同時不破 strict 的 21.94pt/刻度）。
+/// - 類別軸帶（零線到底邊）：LO 實測 chart-size 13.9／strict 16.1／
+///   61745 38.3／Cached-Data-04 50.0pt——底帶高隨類別標籤字級與換行變化，
+///   本切片取 `標籤字級×1.6` 下限 12pt（前兩檔命中 14.4 vs 13.9／16.1；
+///   後兩檔因長字串換行偏小，屬殘留，記帳解剖報告 §6）。
 const CHART_INSET_L: f32 = 0.045;
 const CHART_INSET_R: f32 = 0.020;
-const CHART_INSET_BOTTOM: f32 = 0.150;
-const CHART_TITLE_BAND: f32 = 0.18;
+const CHART_TITLE_BAND_PT: f32 = 44.0;
+const CHART_TITLE_BAND_MAX: f32 = 0.40;
+const CHART_CAT_BAND_PER_PT: f32 = 1.6;
+const CHART_CAT_BAND_MIN: f32 = 12.0;
 /// F1：數值軸刻度律（`docs/f1-chart-anatomy.md` §3，LO 10 檔實抓）。
 /// - 每刻度最低繪圖高 11pt（實據 chart-size 單位高 11.7pt）。
 /// - 刻度目標數 clamp(繪圖高/11, 2, 8)。
@@ -4779,7 +4788,15 @@ fn push_chart_items(
             dash: None,
         });
     };
-    push_rule(items, fx, fy, fx + fw, fy, CHART_FRAME_LINE_PT, CHART_FRAME_COLOR);
+    push_rule(
+        items,
+        fx,
+        fy,
+        fx + fw,
+        fy,
+        CHART_FRAME_LINE_PT,
+        CHART_FRAME_COLOR,
+    );
     push_rule(
         items,
         fx,
@@ -4789,7 +4806,15 @@ fn push_chart_items(
         CHART_FRAME_LINE_PT,
         CHART_FRAME_COLOR,
     );
-    push_rule(items, fx, fy, fx, fy + fh, CHART_FRAME_LINE_PT, CHART_FRAME_COLOR);
+    push_rule(
+        items,
+        fx,
+        fy,
+        fx,
+        fy + fh,
+        CHART_FRAME_LINE_PT,
+        CHART_FRAME_COLOR,
+    );
     push_rule(
         items,
         fx + fw,
@@ -4800,17 +4825,18 @@ fn push_chart_items(
         CHART_FRAME_COLOR,
     );
 
-    // ---- 繪圖區（等分後備；標題帶：宣告了 c:title 者 LO 保留帶高，即使
-    // 無文字——autoTitleDeleted=1 時不保留）。
+    // ---- 繪圖區（等分後備；標題帶與類別軸帶見常數註解的 LO 實測律）。
+    let cat_size = cdoc.cat_ax.tick_size_pt.unwrap_or(9.0).clamp(4.0, 32.0);
     let title_band = if cdoc.title_declared && !cdoc.auto_title_deleted {
-        CHART_TITLE_BAND
+        CHART_TITLE_BAND_PT.min(fh * CHART_TITLE_BAND_MAX)
     } else {
-        0.02
+        2.0
     };
+    let cat_band = (cat_size * CHART_CAT_BAND_PER_PT).max(CHART_CAT_BAND_MIN);
     let plot_l = fx + fw * CHART_INSET_L;
     let plot_r = fx + fw * (1.0 - CHART_INSET_R);
-    let plot_t = fy + fh * title_band;
-    let zero_y = fy + fh * (1.0 - CHART_INSET_BOTTOM);
+    let plot_t = fy + title_band;
+    let zero_y = fy + fh - cat_band;
     let plot_w = (plot_r - plot_l).max(1.0);
     let plot_h = (zero_y - plot_t).max(1.0);
 
@@ -4823,7 +4849,8 @@ fn push_chart_items(
         let target_n = ((plot_h / CHART_TICK_MIN_PITCH_PT) as u32)
             .clamp(2, CHART_TICK_MAX_N)
             .max(2);
-        let raw_upper = ((upper - lower) * f64::from(CHART_TICK_HEADROOM) + lower).max(lower + 1e-12);
+        let raw_upper =
+            ((upper - lower) * f64::from(CHART_TICK_HEADROOM) + lower).max(lower + 1e-12);
         let want = (raw_upper - lower) / f64::from(target_n);
         // 步進取 {1,2,5}×10^k 中 ≥ want 的最小者（want≤0 退 1）。
         let mut step = 1.0f64;
@@ -4841,7 +4868,11 @@ fn push_chart_items(
         }
         let top = (raw_upper / step).ceil() * step;
         let mut out = Vec::new();
-        let mut v = if lower >= 0.0 { 0.0 } else { (lower / step).floor() * step };
+        let mut v = if lower >= 0.0 {
+            0.0
+        } else {
+            (lower / step).floor() * step
+        };
         while v <= top + step * 1e-6 {
             out.push(v);
             v += step;
@@ -4932,7 +4963,6 @@ fn push_chart_items(
         }
     }
     // ---- 類別標籤文字（等分類別槽中心；字級同軸宣告）。
-    let cat_size = cdoc.cat_ax.tick_size_pt.unwrap_or(9.0).clamp(4.0, 32.0);
     let cat_color = cdoc.cat_ax.tick_color.unwrap_or(CHART_TICK_COLOR);
     if cdoc.cat_ax.present && !cdoc.cat_ax.deleted {
         let slot = plot_w / n as f32;

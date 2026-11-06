@@ -62,7 +62,10 @@ fn f1_lamp1a_chart_size_series_and_cache_values() {
     assert_eq!(doc.effective_cats(), vec!["1", "2", "3"]);
     // 空標題不虛構：c:title 宣告存在、但無 c:tx ⇒ title 必為 None。
     assert!(doc.title_declared, "c:title 元素存在");
-    assert_eq!(doc.title, None, "LO 本地化佔位「圖表標題」不是檔內內容，不得虛構");
+    assert_eq!(
+        doc.title, None,
+        "LO 本地化佔位「圖表標題」不是檔內內容，不得虛構"
+    );
     // 軸宣告：valAx 帶 majorGridlines、catAx 不帶；兩者皆未刪除。
     assert!(doc.val_ax.present && !doc.val_ax.deleted);
     assert!(doc.val_ax.major_gridlines, "valAx 有 c:majorGridlines");
@@ -87,7 +90,10 @@ fn f1_lamp1b_chart_part_parses_under_strict_namespace() {
     let theme = theme_of(&path);
     let bytes = std::fs::read(&path).unwrap();
     let charts = quire_ooxml::read_charts_from_docx(&bytes, &theme);
-    assert!(!charts.is_empty(), "strict 命名空間必須零命中之外的事實：要解析得到");
+    assert!(
+        !charts.is_empty(),
+        "strict 命名空間必須零命中之外的事實：要解析得到"
+    );
     let (_, doc) = charts
         .iter()
         .find(|(_, d)| d.plottable)
@@ -113,7 +119,9 @@ fn f1_lamp1c_title_text_parsed_when_present() {
         "fdo76098 的 c:title 真文字 Sales 必須解析出來，實測 {titles:?}"
     );
     // pieChart 不發平面幾何（解剖報告 §5-2），但標題與 cache 值照解析。
-    let pie = charts.iter().find(|(_, d)| d.kinds.iter().any(|k| k == "pieChart"));
+    let pie = charts
+        .iter()
+        .find(|(_, d)| d.kinds.iter().any(|k| k == "pieChart"));
     if let Some((_, d)) = pie {
         assert!(!d.plottable, "pieChart 屬明確不做臂，plottable 必 false");
         assert!(!d.series.is_empty());
@@ -133,6 +141,10 @@ fn f1_lamp1d_files_without_charts_return_empty() {
         let theme = theme_of(&path);
         let bytes = std::fs::read(&path).unwrap();
         let charts = quire_ooxml::read_charts_from_docx(&bytes, &theme);
-        assert!(charts.is_empty(), "{rel} 無圖表，實測 {} 個掛載", charts.len());
+        assert!(
+            charts.is_empty(),
+            "{rel} 無圖表，實測 {} 個掛載",
+            charts.len()
+        );
     }
 }

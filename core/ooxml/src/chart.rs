@@ -363,14 +363,16 @@ pub fn scan_chart_mounts(xml: &[u8]) -> Vec<ChartMount> {
                     }
                     b"drawing" => drawing_depth += 1,
                     b"inline" | b"anchor" if drawing_depth > 0 || txbx_depth > 0 => {
-                        let mut pend = PendingMount::default();
-                        pend.floating = n == b"anchor";
-                        pend.para = p_count.saturating_sub(1);
-                        pend.txbx_ordinal = txbx_para
-                            .last()
-                            .map(|c| c.saturating_sub(1))
-                            .unwrap_or(0);
-                        pend.in_txbx = txbx_depth > 0;
+                        let pend = PendingMount {
+                            floating: n == b"anchor",
+                            para: p_count.saturating_sub(1),
+                            txbx_ordinal: txbx_para
+                                .last()
+                                .map(|c| c.saturating_sub(1))
+                                .unwrap_or(0),
+                            in_txbx: txbx_depth > 0,
+                            ..Default::default()
+                        };
                         cur = Some(pend);
                     }
                     b"extent" if cur.is_some() => {
@@ -605,9 +607,15 @@ fn bool_attr(e: &BytesStart) -> bool {
 fn parse_percent(raw: String) -> Option<f64> {
     let t = raw.trim();
     if let Some(p) = t.strip_suffix('%') {
-        return p.trim().parse::<f64>().ok().map(|v| (v / 100.0).clamp(0.0, 1.0));
+        return p
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|v| (v / 100.0).clamp(0.0, 1.0));
     }
-    t.parse::<f64>().ok().map(|v| (v / 100_000.0).clamp(0.0, 1.0))
+    t.parse::<f64>()
+        .ok()
+        .map(|v| (v / 100_000.0).clamp(0.0, 1.0))
 }
 
 /// 文字收集目標（內部狀態機）。
@@ -677,21 +685,10 @@ pub fn parse_chart(xml: &[u8], theme: &ThemeColors) -> ChartDoc {
                     b"cat" => in_cat += 1,
                     b"val" => in_val += 1,
                     b"spPr" if ser >= 0 => in_ser_sp += 1,
-                    b"barChart"
-                    | b"lineChart"
-                    | b"areaChart"
-                    | b"pieChart"
-                    | b"scatterChart"
-                    | b"doughnutChart"
-                    | b"radarChart"
-                    | b"bubbleChart"
-                    | b"area3DChart"
-                    | b"bar3DChart"
-                    | b"line3DChart"
-                    | b"pie3DChart"
-                    | b"ofPieChart"
-                    | b"stockChart"
-                    | b"surfaceChart" => {
+                    b"barChart" | b"lineChart" | b"areaChart" | b"pieChart" | b"scatterChart"
+                    | b"doughnutChart" | b"radarChart" | b"bubbleChart" | b"area3DChart"
+                    | b"bar3DChart" | b"line3DChart" | b"pie3DChart" | b"ofPieChart"
+                    | b"stockChart" | b"surfaceChart" => {
                         let k = String::from_utf8_lossy(n).into_owned();
                         if !d.kinds.contains(&k) {
                             d.kinds.push(k);
@@ -709,12 +706,17 @@ pub fn parse_chart(xml: &[u8], theme: &ThemeColors) -> ChartDoc {
                     }
                     b"autoTitleDeleted" => d.auto_title_deleted = bool_attr(&e),
                     b"numFmt" => {
-                        if let (Some(a), Some(v)) = (axis_slot_mut(&mut d, ax_of(&path)), attr_str(&e, b"formatCode")) {
+                        if let (Some(a), Some(v)) = (
+                            axis_slot_mut(&mut d, ax_of(&path)),
+                            attr_str(&e, b"formatCode"),
+                        ) {
                             a.num_fmt = Some(v);
                         }
                     }
                     b"orientation" => {
-                        if let (Some(a), Some(v)) = (axis_slot_mut(&mut d, ax_of(&path)), attr_str(&e, b"val")) {
+                        if let (Some(a), Some(v)) =
+                            (axis_slot_mut(&mut d, ax_of(&path)), attr_str(&e, b"val"))
+                        {
                             a.orientation = Some(v);
                         }
                     }
@@ -841,9 +843,10 @@ pub fn parse_chart(xml: &[u8], theme: &ThemeColors) -> ChartDoc {
                         }
                     }
                     b"numFmt" => {
-                        if let (Some(a), Some(v)) =
-                            (axis_slot_mut(&mut d, ax_of(&path)), attr_str(&e, b"formatCode"))
-                        {
+                        if let (Some(a), Some(v)) = (
+                            axis_slot_mut(&mut d, ax_of(&path)),
+                            attr_str(&e, b"formatCode"),
+                        ) {
                             a.num_fmt = Some(v);
                         }
                     }
@@ -1013,17 +1016,14 @@ pub fn parse_chart(xml: &[u8], theme: &ThemeColors) -> ChartDoc {
             _ => {}
         }
     }
-    d.plottable = d
-        .kinds
-        .iter()
-        .any(|k| ChartDoc::plottable_kind(k.as_str()));
+    d.plottable = d.kinds.iter().any(|k| ChartDoc::plottable_kind(k.as_str()));
     d.accent1 = theme.resolve("accent1");
     d
 }
 
 /// 目前路徑落在哪一支軸（`c:valAx`／`c:catAx`）。
 fn ax_of(path: &[&'static [u8]]) -> AxisWhich {
-    let has = |n: &[u8]| path.iter().any(|p| *p == n);
+    let has = |n: &[u8]| path.contains(&n);
     if has(b"valAx") {
         AxisWhich::Val
     } else if has(b"catAx") {
@@ -1033,7 +1033,7 @@ fn ax_of(path: &[&'static [u8]]) -> AxisWhich {
     }
 }
 
-fn axis_slot_mut<'a>(d: &'a mut ChartDoc, w: AxisWhich) -> Option<&'a mut ChartAxis> {
+fn axis_slot_mut(d: &mut ChartDoc, w: AxisWhich) -> Option<&mut ChartAxis> {
     match w {
         AxisWhich::Val => Some(&mut d.val_ax),
         AxisWhich::Cat => Some(&mut d.cat_ax),
@@ -1058,7 +1058,10 @@ impl ColorAcc {
     /// tx1 × lumMod 65% ＋ lumOff 35% ＝ 0x595959（LO 刻度實測 5855577）。
     fn resolve(&self, theme: &ThemeColors) -> Option<u32> {
         let base = if self.srgb {
-            let rgb = self.token.as_deref().and_then(|t| u32::from_str_radix(t, 16).ok())?;
+            let rgb = self
+                .token
+                .as_deref()
+                .and_then(|t| u32::from_str_radix(t, 16).ok())?;
             0xFF00_0000 | rgb
         } else {
             theme.resolve(self.token.as_deref()?)?
