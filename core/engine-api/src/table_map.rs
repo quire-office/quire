@@ -1828,6 +1828,11 @@ mod tests {
             txbx_borders: Vec::new(),
             duotone: None,
             txbx_drawing_extent: None,
+            // F2 新增欄位（prst／warp／flip）——本測只吃幾何，老實缺省＝舊行為。
+            geom_prst: None,
+            warp_prst: None,
+            flip_h: false,
+            flip_v: false,
         }
     }
 
@@ -2044,6 +2049,10 @@ mod tests {
             stroke_width_pt: None,
             stroke_dash: Some("rIdX".into()),
             txbx_texts: Vec::new(),
+            // F2：挪用欄位＝非群組形状，無 prst 事實。
+            geom_prst: None,
+            flip_h: false,
+            flip_v: false,
         }];
         let f = floors(&[misused]);
         assert_eq!(

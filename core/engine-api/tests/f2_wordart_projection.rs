@@ -232,6 +232,31 @@ fn f2_projection_suite() {
     // ---- 燈4（正常態側取樣）：artistic_effects 顯示列表 JSON 先存一份。 ----
     let json_normal = all_pages_json(&engine("ooxmlexport/artistic_effects.docx"));
 
+    // ---- 燈5（零回退鐵條的考卷化）：卡面點名的零回退檔全部「無非 rect
+    // prst」（docs/f2-survey/f2v10_gategoms.py 實測），故新分支對它們必須
+    // 零位元組差異——以 normal 態與 buggy 態顯示列表 JSON 逐位元組相同鎖之
+    // （兩態差異只可能來自 F2 分支，等值＝新分支未觸碰這些檔案的發射）。----
+    {
+        for rel in [
+            "ooxmlexport/fdo76591.docx",
+            "xopt/TestFiles_WC_WC048-Text-Box-in-Cell.docx",
+            "ooxmlexport/btlr-textbox.docx",
+            "ooxmlexport/99_Fields.docx",
+            "ooxmlexport/cell-grid-span.docx",
+            "xopt/NewDocxDocuments_CoverPage.docx",
+            "ooxmlimport/n751077.docx",
+        ] {
+            let a = all_pages_json(&engine(rel));
+            std::env::set_var("F2_GEOM_BUGGY", "1");
+            let b = all_pages_json(&engine(rel));
+            std::env::remove_var("F2_GEOM_BUGGY");
+            assert_eq!(
+                a, b,
+                "{rel}：卡面零回退點名檔（無非 rect prst）顯示列表必須零位元組差異"
+            );
+        }
+    }
+
     // ---- 燈3（回塞態）：F2_GEOM_BUGGY=1 整段跳過几何節點＝舊行為。 ----
     std::env::set_var("F2_GEOM_BUGGY", "1");
     {

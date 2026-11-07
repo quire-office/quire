@@ -110,3 +110,39 @@ LO 的星形頂點已逐點入 `core/ooxml/src/preset.rs` 的星形點表校準�
 `docs/f2-redlight.md`＋`docs/f2-survey/`（報告與探針）。**發射路徑零改動**＝四組零回退閘門
 （roundtrip／fdo76591／WC048／btlr／99_Fields／cell-grid-span／CoverPage／n751077＋無效果檔
 SVG 零位元組差異）在紅燈 commit 天然零位移。
+
+## 7. 綠燈實測補記（實作 commit `56a4888` 後，2026-11-07）
+
+考卷現為**五燈**（燈5 為零回退鐵條的考卷化），`cargo test -p quire-engine --test
+f2_wordart_projection` 全綠。逐燈實測：
+
+- **燈1b（缺口正面鎖）**：`tdf113183` 斜筆畫修前 0 → 修後 ≥6（star5 十邊＋triangle
+  斜邊）、`tdf113258` ellipse 12 弦全斜（修前 0）、`shapes-with-text` connector
+  對角線修前 0 → 修後 ≥1。判別式（非軸對齊筆畫）由 `preset::outlines_are_observablely_not_axis_aligned`
+  單元測試鎖住幾何根因。
+- **燈2**：四代表檔 prst／warp 名稱與源檔 `ZipBundle` 實拆**雙向**一致（含群組子件
+  star5×4／rightArrow 走 `group_shapes` 承載——宿主 `wpg:wgp` 根不竊取子件名字，
+  探針 f2v16 實據）；`fdo80897` 的 `textTriangle`（全語料唯一真實翹曲）具名命中。
+- **燈3（鑑別力）**：`F2_GEOM_BUGGY=1` 回塞態事實整段清空＋斜筆畫歸零（採集層
+  `f2_buggy` 單一切換點，發射層同讀該 env）。
+- **燈4／燈5（零擾動）**：`artistic_effects` 與卡面七個零回退點名檔（fdo76591／WC048／
+  btlr／99_Fields／cell-grid-span／CoverPage／n751077，`f2v10_gategoms.py` 實測全部
+  無非 rect prst）正常態與回塞態顯示列表 JSON **逐位元組相同**。
+- **SVG 層第二把鎖**（`f2v18_svg_ab.py`）：上述十檔（含 fdo80897）兩態出貨 SVG
+  sha256 全部相同；`f2v17_noregress.py` 對修前基線 `f2_baseline_shapes.json`：
+  rect-only 檔（artistic_effects／fdo80897／tdf120551）SVG sha **零位元組差異**，
+  四個非 rect 檔（fdo74605／tdf113258／tdf113183／shapes-with-text）刻意改變（預期）。
+  `tdf120551`（roundRect＋line）零位移的原因實拆（f2v19）：該檔形状從不進
+  `shape_boxes` 發射路徑（p0 僅發 Text），新分支對其天然不可達＝誠實零擾動。
+- **render_lab 具名閘門全過**（本分支實跑）：fdo76591 內容 0.98／版面 1.000、
+  WC048 1.0/1.0、btlr-textbox 1.0/1.0（直排 rotate 零回退）、99_Fields 1.0/1.0、
+  cell-grid-span 2 頁、CoverPage 2 頁、n751077 p1 真空頁維持 None（未「修掉」）。
+- **render_lab 能力面 A/B**（同一引擎 env 切換＝忠實「修前」對照）：
+  `shapes-with-text` 色軸 0.627→0.633、`fdo74605` p0 色 0.758→0.773、
+  `tdf113258` 色 0.746→0.749；版面分全部不動（新發射只加斜筆畫不改文字框）。
+- **artistic_effects 圖軸分實測（卡面硬性要求）**：修後仍 **0.0**（LO 側 1 塊連通域、
+  我方唯一候選塊 287px < 400 門檻），根因＝OLE 圖示 EMF 向量記錄未光柵化
+  （`emf_dib.rs` K27 閘門，禁改面）——解剖報告 §3 的「本卡任何工作都不可能把本檔
+  圖軸從 0 抬起來」硬結論在綠燈後依然成立，據卡面鐵律記帳上報，不硬改、不虛構。
+- **八閘**：`ow-gate.sh` `GATE_SUMMARY fail=0`（fmt／clippy -D／workspace test／
+  layering／roundtrip fixtures／roundtrip corpus --check／wasm check／goldens）。
