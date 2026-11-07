@@ -99,6 +99,17 @@ pub struct InlineChildShape {
     pub stroke_dash: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub txbx_texts: Vec<String>,
+    /// F2：本子件自己的 `wps:spPr/a:prstGeom/@prst`（文档序首見為準）。
+    /// serde default＋None 不外露＝既有投影序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geom_prst: Option<String>,
+    /// F2：`a:xfrm/@flipH`（連接線／線的端點鏡射事實）。serde default＋false
+    /// 不外露＝既有投影序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip_h: bool,
+    /// F2：`a:xfrm/@flipV`（同上，V 軸）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip_v: bool,
 }
 
 /// K25-B：VML `v:group`（`coordorigin`/`coordsize` 系）內**一個子件**的框內
@@ -456,6 +467,23 @@ pub struct InlineImage {
     /// 不外露＝舊投影序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_anchor: Option<String>,
+    // ---- F2：`a:prstGeom/@prst` 與 `a:prstTxWarp/@prst`（預設形状／翹曲**名稱**
+    // 的純事實捕獲，文档序首見為準）。解析層不做幾何近似，只記名稱＋flip
+    // 鏡射事實；名稱→輪廓點集的映表在 `crate::preset`（LO 真值校準），映射
+    // 與發射在 engine 發射層。全部 serde default＋空值不外露＝既有投影
+    // 序列化位元組逐位不變（無 prstGeom 檔案零位移鐵條）。----
+    /// `wps:spPr/a:prstGeom/@prst`（"rect"/"ellipse"/"star5"/…；None＝無宣告）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geom_prst: Option<String>,
+    /// `wps:bodyPr/a:prstTxWarp/@prst`（"textNoShape"/"textTriangle"/…）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warp_prst: Option<String>,
+    /// `a:xfrm/@flipH`（"1"/"true"→true；缺省 false）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip_h: bool,
+    /// `a:xfrm/@flipV`。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flip_v: bool,
 }
 
 impl InlineImage {
@@ -1526,6 +1554,16 @@ struct Pending {
     txbx_databinding: Option<String>,
     /// `wps:bodyPr/@anchor`（文字軸對齊 t/ctr/b；Start／Empty 兩流首見為準）。
     body_anchor: Option<String>,
+    // ---- F2：預設形状／翹曲名稱捕獲（語意見 [`InlineImage::geom_prst`]）----
+    /// `wps:spPr/a:prstGeom/@prst` 首見（候選本體＝首個 wsp 的 spPr；群組
+    /// 候補取首見子件者由 `PendingChildShape.geom_prst` 各自承載）。
+    geom_prst: Option<String>,
+    /// `wps:bodyPr/a:prstTxWarp/@prst` 首見。
+    warp_prst: Option<String>,
+    /// `a:xfrm/@flipH`。
+    flip_h: bool,
+    /// `a:xfrm/@flipV`。
+    flip_v: bool,
 }
 
 /// R35：框內進行中 `w:drawing` 幀——**每張圖一個槽**（卡 1「同段多圖互相
@@ -1638,6 +1676,11 @@ struct PendingChildShape {
     txbx_para_depth: usize,
     // ---- K24：子形狀自己的 `wps:style` 樣式矩陣（口徑同 Pending）----
     style: StyleMatrix,
+    // ---- F2：子件自己的 `a:prstGeom/@prst` 名稱與 `a:xfrm/@flip*`（口徑同
+    // Pending；純事實捕獲，發射層消費與否由 `preset` 表決定）----
+    geom_prst: Option<String>,
+    flip_h: bool,
+    flip_v: bool,
 }
 
 impl PendingChildShape {
@@ -1661,6 +1704,9 @@ impl PendingChildShape {
             txbx_in_t: false,
             txbx_para_depth: 0,
             style: StyleMatrix::default(),
+            geom_prst: None,
+            flip_h: false,
+            flip_v: false,
         }
     }
 }
@@ -1800,6 +1846,10 @@ impl Pending {
             size_pct_axis: None,
             txbx_databinding: None,
             body_anchor: None,
+            geom_prst: None,
+            warp_prst: None,
+            flip_h: false,
+            flip_v: false,
         }
     }
 }
@@ -1859,6 +1909,10 @@ struct DrawingParser {
     r35_buggy: bool,
     /// F3 回塞鎖（`F3_TXBX_PIC_BUGGY=1`）：文字框內 DML 圖片整段跳過舊態（燈 3 鑑別力）。
     f3_buggy: bool,
+    /// F2 回塞鎖（`F2_GEOM_BUGGY=1`）：`a:prstGeom`／`a:prstTxWarp`／`a:xfrm/@flip*`
+    /// 事實永不落地（＝「几何節點從未被讀取」的舊態；燈3 鑑別力）。
+    /// 同款「只在 `with_theme()` 讀一次 env」先例。
+    f2_buggy: bool,
 }
 
 impl DrawingParser {
@@ -1891,6 +1945,7 @@ impl DrawingParser {
             style_buggy: std::env::var("K24_STYLE_BUGGY").is_ok(),
             r35_buggy: std::env::var("R35_TXBX_BUGGY").is_ok(),
             f3_buggy: std::env::var("F3_TXBX_PIC_BUGGY").is_ok(),
+            f2_buggy: std::env::var("F2_GEOM_BUGGY").is_ok(),
         }
     }
 
@@ -2018,6 +2073,20 @@ impl DrawingParser {
             size_rel_h_rel: p.size_rel_h_rel.clone(),
             txbx_databinding: p.txbx_databinding.clone(),
             body_anchor: p.body_anchor.clone(),
+            // F2：prst／warp／flip 純事實透傳（缺＝None／false＝serde 不外露
+            // ＝既有投影位元組逐位不變）；回塞態整段不落地＝舊行為唯一清空點。
+            geom_prst: if self.f2_buggy {
+                None
+            } else {
+                p.geom_prst.clone()
+            },
+            warp_prst: if self.f2_buggy {
+                None
+            } else {
+                p.warp_prst.clone()
+            },
+            flip_h: !self.f2_buggy && p.flip_h,
+            flip_v: !self.f2_buggy && p.flip_v,
             txbx_table: p.tbl_rows.clone(),
             embed_rid: p.rid.clone(),
             embed_rids: p.rids.clone(),
@@ -2790,6 +2859,55 @@ impl DrawingParser {
                     _ => {}
                 }
             }
+            // F2：預設形状／翹曲**名稱**捕獲（純事實，不做幾何判斷）。
+            // 掛點紀律同 E2/E2c：`sp_ctx > 0`（在 `wps:spPr` 內）才認
+            // `prstGeom`，避免把 `pic:spPr` 圖片裁切框的名字竄給文字框候補；
+            // 群組子件存在時名字歸子件自己（`cur_child` 臂），與填色／描邊
+            // 同議。`prstTxWarp` 是 `wps:bodyPr` 直下子節點，與 @vert/@anchor
+            // 同族事實、同一候補承載。`xfrm/@flip*` 只在 sp_ctx>0 時收。
+            if p.sp_ctx > 0 || p.cur_child.is_some() {
+                let flip_on = |v: Option<String>| matches!(v.as_deref(), Some("1") | Some("true"));
+                match name {
+                    b"prstGeom" => {
+                        let g = attr_local(e, b"prst")
+                            .map(|v| v.trim().to_string())
+                            .filter(|v| !v.is_empty());
+                        if let Some(child) = p.cur_child.as_mut() {
+                            // 群組子件：名字只歸子件。宿主（wpg:wgp 根）若無
+                            // 自己的 prstGeom 就留 None——竊取首見子件的名字會
+                            // 讓根框重畫一次子件形状（雙重墨跡）。
+                            if child.geom_prst.is_none() {
+                                child.geom_prst = g;
+                            }
+                        } else if p.geom_prst.is_none() {
+                            p.geom_prst = g;
+                        }
+                    }
+                    b"xfrm" => {
+                        let (fh, fv) = (
+                            flip_on(attr_local(e, b"flipH")),
+                            flip_on(attr_local(e, b"flipV")),
+                        );
+                        if let Some(child) = p.cur_child.as_mut() {
+                            child.flip_h |= fh;
+                            child.flip_v |= fv;
+                        } else {
+                            p.flip_h |= fh;
+                            p.flip_v |= fv;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // `prstTxWarp` 掛 `wps:bodyPr` 直下（**不在 spPr 內**，故不受
+            // sp_ctx 閂約束）；與 @vert／@anchor 同族事實、同一候補承載。
+            // 本切片只記名稱：`textNoShape`＝無變形（語料 99/100）、其餘＝
+            // 真路徑變形明確不做（發射層保持直線基線＝零擾動）。
+            if name == b"prstTxWarp" && p.warp_prst.is_none() {
+                p.warp_prst = attr_local(e, b"prst")
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty());
+            }
             // K12：套用繪圖幾何、顏色與邊框解析
             apply_graphic_elem(&self.theme, &mut p, name, e, self.style_buggy);
 
@@ -3187,6 +3305,49 @@ impl DrawingParser {
                     .map(|v| v.trim().to_string())
                     .filter(|v| !v.is_empty());
             }
+            // F2：預設形状／翹曲名稱——**自閉合同樣是常態**（`<a:prstGeom
+            // prst="rect"/>`、`<a:prstTxWarp prst="textNoShape"/>` 合法，E2c
+            // K17 同坑：只收 Start 會全漏）。掛點閂與 Start 分支同構：
+            // prstGeom 限 spPr 內（sp_ctx>0 或群組子件幀），xfrm flip 同。
+            if p.sp_ctx > 0 || p.cur_child.is_some() {
+                let flip_on = |v: Option<String>| matches!(v.as_deref(), Some("1") | Some("true"));
+                match name {
+                    b"prstGeom" => {
+                        let g = attr_local(e, b"prst")
+                            .map(|v| v.trim().to_string())
+                            .filter(|v| !v.is_empty());
+                        if let Some(child) = p.cur_child.as_mut() {
+                            // 群組子件：名字只歸子件（同 Start 分支紀律——
+                            // 宿主 wpg:wgp 根竊取子件名字會重畫一次子件形状）。
+                            if child.geom_prst.is_none() {
+                                child.geom_prst = g;
+                            }
+                        } else if p.geom_prst.is_none() {
+                            p.geom_prst = g;
+                        }
+                    }
+                    b"xfrm" => {
+                        let (fh, fv) = (
+                            flip_on(attr_local(e, b"flipH")),
+                            flip_on(attr_local(e, b"flipV")),
+                        );
+                        if let Some(child) = p.cur_child.as_mut() {
+                            child.flip_h |= fh;
+                            child.flip_v |= fv;
+                        } else {
+                            p.flip_h |= fh;
+                            p.flip_v |= fv;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // 自閉合 `a:prstTxWarp`（bodyPr 直下，同 Start 分支紀律）。
+            if name == b"prstTxWarp" && p.warp_prst.is_none() {
+                p.warp_prst = attr_local(e, b"prst")
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty());
+            }
             match name {
                 b"extent" => {
                     if self.txbx_depth > 0 {
@@ -3442,6 +3603,10 @@ impl DrawingParser {
                             stroke_width_pt: None,
                             stroke_dash: Some(rid),
                             txbx_texts: Vec::new(),
+                            // F2：R35 回塞態挪用欄位＝非群組形状，無 prst 事實。
+                            geom_prst: None,
+                            flip_h: false,
+                            flip_v: false,
                         });
                     }
                 } else {
@@ -3716,6 +3881,10 @@ impl DrawingParser {
                                 stroke_width_pt: child.stroke_w,
                                 stroke_dash: child.dash,
                                 txbx_texts: child.txbx,
+                                // F2：子件自己的 prst／flip 事實隨子件走。
+                                geom_prst: child.geom_prst.clone(),
+                                flip_h: child.flip_h,
+                                flip_v: child.flip_v,
                             });
                         }
                     }

@@ -2053,10 +2053,27 @@ impl Engine {
     /// 紅燈佔位實作（ODF-C3 先例）：**F2 實作期本函數恒回全 None**——燈2／
     /// 燈3a 因此拍紅（實作路徑從未讀 `@prst`，佔位態忠於現況），綠燈 commit
     /// 由 `InlineImage.geom_prst`／`warp_prst` 欄位落地後翻綠。
+    /// F2：本引擎全部形狀候補的**幾何事實**清單（文档序）：每項＝
+    /// `(prstGeom/@prst 名稱, prstTxWarp/@prst 名稱)`，未宣告＝`None`。
+    ///
+    /// 紅燈階段的佔位實作恒回全 `None`（忠於「`@prst` 從未被讀取」的舊現況）；
+    /// 綠燈實作＝原樣透傳採集層捕獲的 `InlineImage.geom_prst`／`warp_prst`
+    /// （考卷燈2 與源檔 `ZipBundle` 直接解壓結果逐字雙向比對；燈3 的
+    /// `F2_GEOM_BUGGY=1` 回塞態由採集層清空該欄，本函式零邏輯＝無第二個
+    /// 可錯的地方）。
     pub fn shape_geom_facts(&self) -> Vec<(Option<String>, Option<String>)> {
+        // 燈3（鑑別力）回塞鎖：`F2_GEOM_BUGGY=1` 時採集層（drawing.rs 的
+        // `f2_buggy`）整段不落地事實欄（忠於「几何節點從未被讀取」的舊行為），
+        // 發射層的 prst 分支同讀此 env——回塞態＝事實清空＋斜筆畫歸零，紅燈
+        // 由實作驅動而非環境偶然；本函式自身零邏輯＝無第二個可錯的地方。
         self.shape_boxes
             .iter()
-            .map(|_| (None, None))
+            .flat_map(|(_, b)| {
+                // 群組子件的 prst 事實隨子件走（宿主 wpg:wgp 根無 prstGeom＝
+                // None 也在列，考卷「不虛構」臂以 want_geom 白名單為準）。
+                let kids = b.group_shapes.iter().map(|c| (c.geom_prst.clone(), None));
+                std::iter::once((b.geom_prst.clone(), b.warp_prst.clone())).chain(kids)
+            })
             .collect()
     }
 
@@ -5064,6 +5081,43 @@ fn emit_image_shape(
         return; // 非法尺寸老實不發射（容錯鐵律）
     }
     let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
+    // F2 回塞鎖（照 K12/R34 先例，只在發射期讀一次）：`F2_GEOM_BUGGY=1` 時
+    // preset 分支整段關閉＝外接矩形退化舊態（燈3 鑑別力的發射側半部；
+    // 採集側半部由 drawing.rs 的 `f2_buggy` 清空事實欄）。
+    let f2_buggy = std::env::var_os("F2_GEOM_BUGGY").is_some();
+    // F2：`a:prstGeom/@prst` → 單位方格輪廓（表在 `quire_ooxml::preset`）。
+    // 判定紀律：
+    // - rect／textRect／缺宣告 → 零擾動（既有外接矩形四邊逐位不動——
+    //   「無 WordArt／無效果檔案零位元組差異」鐵條的結構性保證：新分支
+    //   只有非 rect 宣告才進得來）。
+    // - 表內有名字 → 折線輪廓取代四邊；表外名字（star10／custGeom／語料
+    //   外的 180 餘種）回 None → 退回外接矩形＝不虛構能力。
+    // - 純灰底佔位（fill 未宣告）時 preset 臂不發 bounding-box Rect：LO
+    //   依形状繪製，星形後面長灰方塊是虛構墨跡；宣告過 fill 的保留 Rect
+    //   （色是真值、矩形裁切是近似，誤差記帳解剖報告）。
+    let geom = if f2_buggy {
+        None
+    } else {
+        shape
+            .filter(|b| !quire_ooxml::preset::is_rect_like(b.geom_prst.as_deref().unwrap_or("")))
+            .and_then(|b| {
+                let prst = b.geom_prst.as_deref().unwrap_or("");
+                if prst == "roundRect" {
+                    // ECMA 預設 adj：r = adj × min(w,h)；退化過大者回 None。
+                    let r = quire_ooxml::preset::ROUND_RECT_ADJ * w.min(h);
+                    let k = r / w;
+                    let k2 = r / h;
+                    if r > 0.0 && k < 0.5 && k2 < 0.5 {
+                        Some(quire_ooxml::preset::round_rect_outline(k, k2))
+                    } else {
+                        None
+                    }
+                } else {
+                    quire_ooxml::preset::outline(prst, b.flip_h, b.flip_v)
+                }
+            })
+    };
+    let geom_placeholder_rect = geom.is_some() && shape.is_some_and(|b| b.fill_argb.is_none());
     // R34 回塞鎖（照 K12/K17 BUGGY 先例，只在發射期讀一次）：
     // `R34_PLACEHOLDER_GATE_BUGGY=1` 還原 R32 舊口徑（alpha-0 幽靈 Rect＋
     // 無條件四條佔位 Rule）——r32/r34 考卷的防假綠燈據此證明紅燈由本修復驅動。
@@ -5097,13 +5151,15 @@ fn emit_image_shape(
         )
     };
     if let Some(argb) = fill {
-        items.push(DrawItem::Rect {
-            x,
-            y,
-            w,
-            h,
-            fill_argb: argb,
-        });
+        if !geom_placeholder_rect {
+            items.push(DrawItem::Rect {
+                x,
+                y,
+                w,
+                h,
+                fill_argb: argb,
+            });
+        }
     }
     // K12：DrawingML 群組子形狀發射
     if let Some(sh) = shape {
@@ -5126,7 +5182,41 @@ fn emit_image_shape(
                         }
                     }
                     if !deco_off(child.stroked) {
-                        if let Some(stroke_argb) = child.stroke_argb {
+                        // F2：群組子件自己的 prst 非 rect → 折線取代四邊（口徑
+                        // 同根框臂；rect／缺宣告／表外名字＝既有四邊零擾動）。
+                        let child_geom = if f2_buggy {
+                            None
+                        } else {
+                            child
+                                .geom_prst
+                                .as_deref()
+                                .filter(|g| !quire_ooxml::preset::is_rect_like(g))
+                                .and_then(|g| {
+                                    quire_ooxml::preset::outline(g, child.flip_h, child.flip_v)
+                                })
+                        };
+                        if let Some(o) = child_geom.as_ref() {
+                            if let Some(stroke_argb) = child.stroke_argb {
+                                let width_pt =
+                                    child.stroke_width_pt.unwrap_or(IMAGE_PLACEHOLDER_RULE_PT);
+                                let dash = child.stroke_dash.clone();
+                                let n = o.pts.len();
+                                let segs = if o.closed { n } else { n - 1 };
+                                for i in 0..segs {
+                                    let (u1, v1) = o.pts[i];
+                                    let (u2, v2) = o.pts[(i + 1) % n];
+                                    items.push(DrawItem::Rule {
+                                        x1: cx + u1 * cw,
+                                        y1: cy + v1 * ch,
+                                        x2: cx + u2 * cw,
+                                        y2: cy + v2 * ch,
+                                        width_pt,
+                                        color_argb: stroke_argb,
+                                        dash: dash.clone(),
+                                    });
+                                }
+                            }
+                        } else if let Some(stroke_argb) = child.stroke_argb {
                             let width_pt =
                                 child.stroke_width_pt.unwrap_or(IMAGE_PLACEHOLDER_RULE_PT);
                             let dash = child.stroke_dash.clone();
@@ -5168,6 +5258,33 @@ fn emit_image_shape(
         return;
     }
     if shape.is_some_and(|b| deco_off(b.stroked)) {
+        return;
+    }
+    // F2：有 preset 輪廓 → 折線取代四邊（「可見輪廓」最低標）。色／線寬／
+    // dash 沿用既有 stroke 解析鏈；無宣告退佔位邊（同四邊路徑口徑）。
+    if let Some(o) = geom.as_ref() {
+        let color = shape
+            .and_then(|b| b.stroke_argb)
+            .unwrap_or(IMAGE_PLACEHOLDER_EDGE);
+        let width_pt = shape
+            .and_then(|b| b.stroke_width_pt)
+            .unwrap_or(IMAGE_PLACEHOLDER_RULE_PT);
+        let dash = shape.and_then(|b| b.stroke_dash.clone());
+        let n = o.pts.len();
+        let segs = if o.closed { n } else { n - 1 };
+        for i in 0..segs {
+            let (u1, v1) = o.pts[i];
+            let (u2, v2) = o.pts[(i + 1) % n];
+            items.push(DrawItem::Rule {
+                x1: x + u1 * w,
+                y1: y + v1 * h,
+                x2: x + u2 * w,
+                y2: y + v2 * h,
+                width_pt,
+                color_argb: color,
+                dash: dash.clone(),
+            });
+        }
         return;
     }
     let color = shape

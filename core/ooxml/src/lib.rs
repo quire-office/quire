@@ -16,6 +16,7 @@ mod emf_dib;
 mod notes;
 mod numbering;
 mod png_duotone;
+pub mod preset;
 mod qx;
 mod rels;
 mod sectpr;
