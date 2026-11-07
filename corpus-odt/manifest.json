@@ -1801,6 +1801,62 @@
    ],
    "sha256": "7e84573e45f6d530d04179f462e1e4f25c8497ddbff546f35b8ee8c11d1b93bf",
    "bytes": 7828
+  },
+  {
+   "file": "fixtures/encrypted_aes256.odt",
+   "kind": "synthetic",
+   "source": "本卡合成（scripts/gen_odf_encrypted_fixture.py，純 stdlib zipfile 產出，非衍生自上游檔案）",
+   "license": "MIT OR Apache-2.0（本專案自產合成檔，內容全為本腳本自撰文字）",
+   "acquisition": "由 scripts/gen_odf_encrypted_fixture.py 產生（固定 date_time／壓縮位元，重跑 byte 級冪等），用途僅限 ODF-E1 加密閘門考卷的鑑別力自證",
+   "violation": "content.xml／meta.xml 宣告 manifest:encryption-data（演算法 AES256.GCM＋PBKDF2／SHA1/1K）",
+   "expected_flags": [
+    "encrypted_content",
+    "algorithm_from_data"
+   ],
+   "sha256": "eb52db5715074db5bea7cc31962446d772e424f499b7642edd917af6a4f6d4fd",
+   "bytes": 1675
+  },
+  {
+   "file": "fixtures/encrypted_no_algorithm.odt",
+   "kind": "synthetic",
+   "source": "本卡合成（scripts/gen_odf_encrypted_fixture.py，純 stdlib zipfile 產出，非衍生自上游檔案）",
+   "license": "MIT OR Apache-2.0（本專案自產合成檔，內容全為本腳本自撰文字）",
+   "acquisition": "由 scripts/gen_odf_encrypted_fixture.py 產生（固定 date_time／壓縮位元，重跑 byte 級冪等），用途僅限 ODF-E1 加密閘門考卷的鑑別力自證",
+   "violation": "content.xml 宣告 encryption-data 但無 manifest:algorithm 子元素（演算法名缺位不得捏造，錯誤訊息須寫「未宣告」）",
+   "expected_flags": [
+    "encrypted_content",
+    "algorithm_unspecified"
+   ],
+   "sha256": "076cded22d64f5272e108bbf07b128befc9c8d89b71d058fd49c518bd6056cfa",
+   "bytes": 1544
+  },
+  {
+   "file": "fixtures/encrypted_meta_only.odt",
+   "kind": "synthetic",
+   "source": "本卡合成（scripts/gen_odf_encrypted_fixture.py，純 stdlib zipfile 產出，非衍生自上游檔案）",
+   "license": "MIT OR Apache-2.0（本專案自產合成檔，內容全為本腳本自撰文字）",
+   "acquisition": "由 scripts/gen_odf_encrypted_fixture.py 產生（固定 date_time／壓縮位元，重跑 byte 級冪等），用途僅限 ODF-E1 加密閘門考卷的鑑別力自證",
+   "violation": "僅 meta.xml 宣告加密（AES256.GCM），content.xml 明文——攔截必須按消費面，投影／內文抽取不得過度拒收",
+   "expected_flags": [
+    "encrypted_meta_only",
+    "projection_must_succeed"
+   ],
+   "sha256": "1990e671148734bf5f9593935ff5ec03755402260d346c5dc7d4b175d9f118a9",
+   "bytes": 1673
+  },
+  {
+   "file": "fixtures/encrypted_styles_only.odt",
+   "kind": "synthetic",
+   "source": "本卡合成（scripts/gen_odf_encrypted_fixture.py，純 stdlib zipfile 產出，非衍生自上游檔案）",
+   "license": "MIT OR Apache-2.0（本專案自產合成檔，內容全為本腳本自撰文字）",
+   "acquisition": "由 scripts/gen_odf_encrypted_fixture.py 產生（固定 date_time／壓縮位元，重跑 byte 級冪等），用途僅限 ODF-E1 加密閘門考卷的鑑別力自證",
+   "violation": "僅 styles.xml 宣告加密（AES256.GCM），content.xml 明文——投影（級聯依賴樣式）必紅、內文抽取（不吃樣式）照常",
+   "expected_flags": [
+    "encrypted_styles_only",
+    "project_must_fail_body_must_succeed"
+   ],
+   "sha256": "f1f3114fd158f8ecdca63d77310ebd93100e345ce137bcb45958fd2f857a0bf5",
+   "bytes": 1674
   }
  ],
  "fixtures_note": "fixtures/ 為普查腳本「先紅」用的合成違例檔，不計入 count，也不得當成真實語料使用"
