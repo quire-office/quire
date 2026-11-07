@@ -117,3 +117,14 @@ quarantine 機制（`corpus-odt/quarantine.json`，鏡像 `corpus/quarantine.jso
 ## 10. 後續（ODF-2 起）
 
 core/odf crate 從第 6 節 13 項考題出發；第一批要優先鎖死的是 mimetype 三違例檔的讀取端容錯、加密 entry 的「辨識跳過報明」、宣告不等於實際的 round-trip 保留，以及 `./Object 2` 目錄前綴解析（不做則 33 條外部引用誤報永遠在）。Wikimedia Commons 那批 CC/PD 語料改天補 UA 或走鏡像站實查授權後再議入庫。
+
+## 11. 口徑：LO 抽出字數非中性真值（ODF-E2 歸因落地，免重複調查）
+
+對照「我方 odt-render 投影字數 vs LO PDF `get_text()` 字數」時，LO 側含**源檔沒有的字**與**抽取端雜訊**，比值天然不對稱。六席 ±20% 偏移的解剖（`e2-flow-attribution.md`，t_72dc8bc8）實測出四類，計數對照前一律先扣：
+
+1. **版面合成**（LO 長出來的，源檔無逐字）：TOC 點引導符（源檔只宣告 `style:leader-text="."`，LO 按行寬生成數百個 `.`——實測單檔 628 字）、圖表軸小數刻度（LO 依 chart 資料自動 scale，源檔 part 只有整數資料）、SmartArt 類別標籤（`a` `b` `c` 由 LO 自繪，XML 無字）。我方不排 TOC leader、不算軸刻度，**不該由我方字數買帳**。
+2. **編號層發射**：`text:bullet-char`（Wingdings PUA `\uf094`/`\uf0a8`/`\uf0b7`、字面 `o`、`-`）與 `text:note-citation` 標記——我方未實作編號層前必然短少，屬既有缺口（K2 系列／`oc/*-footn-num` 在途），非各檔新缺陷。
+3. **PDF 文字層雜訊**：bidi/阿語檔 LO 寫入 U+0002/0005/0006 控制字元（實測單檔 106 個，源檔 0 個）。計數前必濾 `ord < 0x20` 與 PUA 區 `U+E000–U+F8FF`；濾後 `tdf87533_bidi` 我方與 LO **逐字元完全相等**。
+4. **空白不對稱**：我方把 `text:s`（含 `text:c` 重複展開）／`text:tab` 投成實字元，LO PDF 抽取把排版空白壓回單空白（實測單檔我方空白 1683 vs LO 665，直接把 ratio 從 ~1.0 推到 1.219）。**內容級對帳一律去空白**。
+
+推論鐵律：LO 側漏掉它自己沒渲染的內容（alt-text、隱藏段不發、chart 資料表欄位不發），我方偏多可能是我方老實讀了 LO 未顯示的 part——判定方向前必須以**字元多重集差逐字元命名＋閉合等式**（∑具名桶 == gap，殘差 0）解剖，禁止只看 ratio 大小定罪。六席判定矩陣與逐檔證據見 `e2-flow-attribution.md` §1/§3。
