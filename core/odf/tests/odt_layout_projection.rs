@@ -216,7 +216,22 @@ fn a_projection_over_corpus_50() {
             );
         }
 
-        // 投影必須 Ok（加密 content.xml 兩檔依 manifest 標記回零段，仍 Ok）。
+        // 投影口徑（ODF-E1 起）：加密 content.xml／styles.xml 者必須落在
+        // 明確 `Err(OdfError::Encrypted)`（老實報錯，不吞、不靜默零段）——
+        // 判據與 project 的雙閘口徑完全對齊（content.xml∥styles.xml 任一加密即走錯誤軌）；
+        // 其餘檔必須 Ok，且逐檔段落計數與 XML 原始計數一致。
+        if bundle.manifest().is_encrypted("content.xml")
+            || bundle.manifest().is_encrypted("styles.xml")
+        {
+            let err = project(&bundle)
+                .err()
+                .unwrap_or_else(|| panic!("{rel}：加密條目投影必須回 Err（ODF-E1）"));
+            assert!(
+                matches!(err, quire_odf::OdfError::Encrypted { .. }),
+                "{rel}：加密條目投影必須落在 OdfError::Encrypted 明確變體，實際: {err:?}"
+            );
+            continue;
+        }
         let proj = project(&bundle).unwrap_or_else(|e| panic!("{rel} 投影失敗: {e}"));
         assert_eq!(
             proj.text_p_count, exp_p,
