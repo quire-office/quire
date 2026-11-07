@@ -10,6 +10,7 @@
 //!    才重新壓縮，其餘逐位元組沿用。開啟→不動→存檔 = byte-identical。
 
 mod chart;
+mod databind;
 mod diff;
 mod drawing;
 mod emf_dib;
@@ -29,6 +30,7 @@ pub use chart::{
     parse_chart, read_charts_from_docx, read_charts_from_parts, scan_chart_mounts, ChartAxis,
     ChartDoc, ChartMount, ChartSeries,
 };
+pub use databind::{resolve_binding, SdtBinding};
 pub use diff::{diff_untouched, diff_zip_structure, EntryDiff, ZipDiff, ZipStructureError};
 pub use drawing::{
     count_paras, origin_of, read_images, read_images_with_theme, DuotoneEffect, InlineChildShape,

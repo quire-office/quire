@@ -460,6 +460,20 @@ pub struct InlineImage {
     /// 發射層判定，解析層不查 docProps、不改字面 txbx_texts。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub txbx_databinding: Option<String>,
+    /// E1-B：框內**逐段** `w:sdt/w:sdtPr/w:dataBinding` 綁定事實（與 `txbx`
+    /// 同序；None＝該段無綁定）。E2c 的 `txbx_databinding` 是整框首見單值——
+    /// CoverPage 的 Title／Subtitle 同框兩段各綁不同路徑（`title[1]`／
+    /// `subject[1]`），整框單值會把兩段覆寫成同一值 ⇒ 語意求值需要**段落級**
+    /// 事實。捕獲條件（純事實，不做語意判定）：該段與某個帶 `w:dataBinding`
+    /// 的 `w:sdt` 有「覆蓋關係」——sdt 在段閉合時仍開啟（sdt 包住整段），
+    /// 或 sdt 在段內閉合且其前後段內**無其他文字**（LO 實據兩式並存：
+    /// CoverPage Author 框 `<w:p><w:sdt>…</w:sdt></w:p>` → 覆寫；同檔 Abstract 框
+    /// `<w:p><w:sdt>…</w:sdt><w:r>.</w:r></w:p>` 混排 → LO 保留佔位原文，
+    /// 故「段內混排」不入列，見 `docs/e1b-databind-redlight.md`）。
+    /// serde default＋空值不外露＝舊投影序列化位元組逐位不變；解析層照樣
+    /// 不查 docProps、不改字面值（求值在 engine 發射層）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub txbx_sdt_bindings: Vec<Option<crate::SdtBinding>>,
     /// `wps:bodyPr/@anchor`（文字在**文字軸**上的對齊：`"t"`／`"ctr"`／`"b"`
     /// 原字串直存；None＝無宣告＝ECMA 預設 `"t"`）。vert270 框的文字軸是
     /// 畫面 y（段落堆疊軸是 x），發射層據此定行中點／起終點（fdo78957
@@ -1552,6 +1566,17 @@ struct Pending {
     size_pct_axis: Option<bool>,
     /// 框內 `w:txbxContent` 首見 `w:dataBinding/@w:xpath`（文件序首見為準）。
     txbx_databinding: Option<String>,
+    /// E1-B：框內逐段 `w:sdt` 綁定事實（與 `txbx` 同序；見
+    /// `InlineImage::txbx_sdt_bindings` 的文件說明了捕獲條件）。只在
+    /// DrawingML 候補（`graphic`）累積——VML 臂同 E2c 鐵條禁區不動。
+    txbx_sdt: Vec<Option<crate::SdtBinding>>,
+    /// 進行中段落的綁定統計（`<w:p>` Start 於框內歸零、段落完結時折算）：
+    /// 「段內有文字落在綁定 sdt 內」的計數／「段內有文字落在綁定 sdt 外」的
+    /// 計數／最後一個綁定事實。折出口徑＝**全覆蓋才入列**（bound>0 且 plain==0；
+    /// LO 實據段內混排不覆寫，見檔頭說明）。
+    txbx_sdt_bound: u32,
+    txbx_sdt_plain: u32,
+    txbx_sdt_last: Option<crate::SdtBinding>,
     /// `wps:bodyPr/@anchor`（文字軸對齊 t/ctr/b；Start／Empty 兩流首見為準）。
     body_anchor: Option<String>,
     // ---- F2：預設形状／翹曲名稱捕獲（語意見 [`InlineImage::geom_prst`]）----
@@ -1564,6 +1589,20 @@ struct Pending {
     flip_h: bool,
     /// `a:xfrm/@flipV`。
     flip_v: bool,
+}
+
+/// E1-B：進行中 `w:sdtPr` 的暫時捕獲（`</w:sdtPr>` 時折算成一條
+/// [`crate::SdtBinding`] 蓋到 `DrawingParser::sdt_stack` 頂）。
+///
+/// 只收三樣事實：`w:dataBinding/@w:xpath`、`w:prefixMappings`、`w:alias/@w:val`
+/// ＋ `w:showingPlcHdr` 存在旗標。`w:sdtPr` 的子元素順序不固定（corpus 實測
+/// `alias` 可在 `dataBinding` 前或後），故全部暫存到閉合才折算。
+#[derive(Default)]
+struct SdtPrAcc {
+    xpath: Option<String>,
+    mappings: Option<String>,
+    alias: Option<String>,
+    plc_hdr: bool,
 }
 
 /// R35：框內進行中 `w:drawing` 幀——**每張圖一個槽**（卡 1「同段多圖互相
@@ -1845,6 +1884,10 @@ impl Pending {
             size_rel_h_rel: None,
             size_pct_axis: None,
             txbx_databinding: None,
+            txbx_sdt: Vec::new(),
+            txbx_sdt_bound: 0,
+            txbx_sdt_plain: 0,
+            txbx_sdt_last: None,
             body_anchor: None,
             geom_prst: None,
             warp_prst: None,
@@ -1897,6 +1940,13 @@ struct DrawingParser {
     buggy: bool,
     /// K10 表內浮動錨點回塞鎖：`K10_CELL_ANCHOR_BUGGY=1` 時回退舊 in_cell 判定。
     cell_anchor_buggy: bool,
+    /// E1-B：進行中 `w:sdt` 開閉棧（僅框內）——每層存該 `w:sdt` 折算完成的
+    /// 綁定事實（None＝此 sdt 不構成可覆寫的綁定）。巢狀 sdt（sdtContent 內
+    /// 再掛 sdt）由棧自然表達；推入／弹出與 `w:sdt` 開閉一一配對，且**只在
+    /// 框內推入**（`</w:sdt>` 於框外照樣不弹出——框外棧恆空，零擾動）。
+    sdt_stack: Vec<Option<crate::SdtBinding>>,
+    /// E1-B：進行中 `w:sdtPr` 的暫時捕獲（`</w:sdtPr>` 時折算蓋到 `sdt_stack` 頂）。
+    sdt_pr: Option<SdtPrAcc>,
     /// K19 duotone 回塞鎖：`K19_DUOTONE_BUGGY=1` 時 duotone 解析結果永不落地
     /// （燈1/燈2 必紅；照 `K4D_BUGGY` 先例只在 `with_theme()` 讀一次 env）。
     duotone_buggy: bool,
@@ -1941,6 +1991,8 @@ impl DrawingParser {
             ac_stack: Vec::new(),
             buggy: std::env::var("K4D_BUGGY").is_ok(),
             cell_anchor_buggy: std::env::var("K10_CELL_ANCHOR_BUGGY").is_ok(),
+            sdt_stack: Vec::new(),
+            sdt_pr: None,
             duotone_buggy: std::env::var("K19_DUOTONE_BUGGY").is_ok(),
             style_buggy: std::env::var("K24_STYLE_BUGGY").is_ok(),
             r35_buggy: std::env::var("R35_TXBX_BUGGY").is_ok(),
@@ -2072,6 +2124,8 @@ impl DrawingParser {
             size_rel_h_pct: p.size_rel_h_pct,
             size_rel_h_rel: p.size_rel_h_rel.clone(),
             txbx_databinding: p.txbx_databinding.clone(),
+            // E1-B：逐段綁定事實與 txbx 同序（段落 flush 點一一配對推進）。
+            txbx_sdt_bindings: p.txbx_sdt.clone(),
             body_anchor: p.body_anchor.clone(),
             // F2：prst／warp／flip 純事實透傳（缺＝None／false＝serde 不外露
             // ＝既有投影位元組逐位不變）；回塞態整段不落地＝舊行為唯一清空點。
@@ -2573,6 +2627,40 @@ impl DrawingParser {
                         .filter(|v| !v.is_empty());
                 }
             }
+            // E1-B：進行中 sdtPr 的暫存（含自閉合形態——`sdt_pr` 已在 `w:sdtPr`
+            // Start 建立，缺 Start 的畸形態自然空轉）。
+            if let Some(acc) = self.sdt_pr.as_mut() {
+                if acc.xpath.is_none() {
+                    acc.xpath = attr_local(e, b"xpath")
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty());
+                }
+                if acc.mappings.is_none() {
+                    acc.mappings = attr_local(e, b"prefixMappings")
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty());
+                }
+            }
+        }
+        if self.txbx_depth > 0 && name == b"alias" {
+            if let Some(acc) = self.sdt_pr.as_mut() {
+                if acc.alias.is_none() {
+                    acc.alias = attr_local(e, b"val").map(|v| v.trim().to_string());
+                }
+            }
+        }
+        if self.txbx_depth > 0 && name == b"showingPlcHdr" {
+            if let Some(acc) = self.sdt_pr.as_mut() {
+                acc.plc_hdr = true;
+            }
+        }
+        // ---- E1-B：框內 `w:sdt` 開棧（純事實；語意判定在 engine 發射層）。
+        // 巢狀 sdt 由棧表達；框外 sdt 不推入（`</w:sdt>` 於框外也不弹出）。----
+        if self.txbx_depth > 0 && name == b"sdt" && !empty {
+            self.sdt_stack.push(None);
+        }
+        if self.txbx_depth > 0 && name == b"sdtPr" && !empty {
+            self.sdt_pr = Some(SdtPrAcc::default());
         }
 
         // ---- E2c：`wp14:sizeRelH/V`（尺寸相對宣告）捕獲——外框直下、必在
@@ -2620,6 +2708,11 @@ impl DrawingParser {
                     }
                     if let Some(g) = self.graphic.as_mut() {
                         g.txbx_para_depth += 1;
+                        // E1-B：新段起算——綁定覆蓋統計逐段重置（段落是
+                        // `txbx`／`txbx_sdt` 的共同序單位）。
+                        g.txbx_sdt_bound = 0;
+                        g.txbx_sdt_plain = 0;
+                        g.txbx_sdt_last = None;
                     }
                 }
             } else if !empty {
@@ -3194,6 +3287,33 @@ impl DrawingParser {
                         .filter(|v| !v.is_empty());
                 }
             }
+            // E1-B：自閉合 `w:dataBinding`＝常態（檔頭註明），sdtPr 暫存同款
+            // 補收——Start 分支只覆蓋罕見的非自閉合寫法。
+            if let Some(acc) = self.sdt_pr.as_mut() {
+                if acc.xpath.is_none() {
+                    acc.xpath = attr_local(e, b"xpath")
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty());
+                }
+                if acc.mappings.is_none() {
+                    acc.mappings = attr_local(e, b"prefixMappings")
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty());
+                }
+            }
+        }
+        // E1-B：`w:alias`／`w:showingPlcHdr` 都是自閉合常態（CoverPage 實測）。
+        if self.txbx_depth > 0 && name == b"alias" {
+            if let Some(acc) = self.sdt_pr.as_mut() {
+                if acc.alias.is_none() {
+                    acc.alias = attr_local(e, b"val").map(|v| v.trim().to_string());
+                }
+            }
+        }
+        if self.txbx_depth > 0 && name == b"showingPlcHdr" {
+            if let Some(acc) = self.sdt_pr.as_mut() {
+                acc.plc_hdr = true;
+            }
         }
 
         // K10：文字框內對齊（例如 <w:jc w:val="center"/>）。
@@ -3423,6 +3543,11 @@ impl DrawingParser {
         }
         // K4e2：框內文字採集（t 區間內；只進宿主候補的 txbx，不碰捕獲態）。
         if self.txbx_depth > 0 {
+            // E1-B：段內文字落在「綁定 sdt」內／外的歸屬統計（純事實）。先取
+            // 棧頂再借用的 `graphic`（雙重可變借入會 E0499）。只記**非空白**
+            // 文字——標籤間縮排／換行是 XML 排版噪聲，把它算成「sdt 外文字」
+            // 會讓全部綁定段落誤判成混排（實測 document.xml 帶 `\r\n`＋縮排）。
+            let sdt_top = self.sdt_stack.last().and_then(|slot| slot.clone());
             if let Some(v) = self.vml.as_mut() {
                 if v.txbx_in_t {
                     v.txbx_cur.push_str(text);
@@ -3435,6 +3560,15 @@ impl DrawingParser {
                 if let Some(child) = g.cur_child.as_mut() {
                     if child.txbx_in_t {
                         child.txbx_cur.push_str(text);
+                    }
+                }
+                if g.txbx_para_depth > 0 && !text.trim().is_empty() {
+                    match sdt_top {
+                        Some(b) => {
+                            g.txbx_sdt_bound += 1;
+                            g.txbx_sdt_last = Some(b);
+                        }
+                        None => g.txbx_sdt_plain += 1,
                     }
                 }
             }
@@ -3552,6 +3686,12 @@ impl DrawingParser {
                 }
             }
             self.txbx_depth = self.txbx_depth.saturating_sub(1);
+            // E1-B：框歸零即清棧——畸形閉合順序（`</w:sdt>` 缺位或晚於框閉合）
+            // 不得讓綁定事實跨框殘留（比照 R35 卡 5「框歸零即出幀」紀律）。
+            if self.txbx_depth == 0 {
+                self.sdt_stack.clear();
+                self.sdt_pr = None;
+            }
         }
         // R35：`</w:drawing>` 閉合＝槽的天然出幀點（與 Start 開槽一一對應）。
         // **不看 txbx_depth**：畸形閉合時深度此刻可能已歸零（上方卡 5 防線），
@@ -3619,6 +3759,30 @@ impl DrawingParser {
                 }
             }
         }
+        // ---- E1-B：`</w:sdtPr>`＝折算點（子元素順序不固定，全部暫存到此）。
+        // 折出「這條 sdt 是否構成可覆寫的綁定」：有 `w:dataBinding/@w:xpath`
+        // 才蓋綁定事實，否則留 None（不冒充）。巢狀 sdt 各自一層，互不污染。----
+        if self.txbx_depth > 0 && name == b"sdtPr" {
+            if let Some(acc) = self.sdt_pr.take() {
+                if let Some(xpath) = acc.xpath {
+                    if let Some(top) = self.sdt_stack.last_mut() {
+                        *top = Some(crate::SdtBinding {
+                            xpath,
+                            prefix_mappings: acc.mappings,
+                            alias: acc.alias,
+                            placeholder: acc.plc_hdr,
+                        });
+                    }
+                }
+            }
+            return;
+        }
+        // ---- E1-B：`</w:sdt>`＝出棧（與 Start 的推入一一配對；只吃框內推入的
+        // 那批——框外 sdt 從未推入，本處 pop 對齐同口徑）。----
+        if self.txbx_depth > 0 && name == b"sdt" {
+            self.sdt_stack.pop();
+            return;
+        }
         // ---- K4e2：框內 p／t 完結——文字 flush 進宿主候補的 txbx ----
         if self.txbx_depth > 0 && matches!(name, b"p" | b"t") {
             let td = self.txbx_depth;
@@ -3647,6 +3811,19 @@ impl DrawingParser {
                     g.txbx_para_depth = g.txbx_para_depth.saturating_sub(1);
                     if g.txbx_para_depth == 0 {
                         g.txbx.push(std::mem::take(&mut g.txbx_cur));
+                        // ---- E1-B：段落完結＝綁定事實折入點（與 `g.txbx` 一一
+                        // 配對，序必同步）。收口徑＝段內文字**全部**落在綁定
+                        // sdt 內（bound>0 且 plain==0）才記 Some；混排（段內另
+                        // 有 sdt 外文字）老實 None——實測 LO 對混排段**不覆寫**
+                        // （CoverPage 本文段 sdt＋`<w:r>.</w:r>` 維持佔位）。----
+                        let bound = if g.txbx_sdt_bound > 0 && g.txbx_sdt_plain == 0 {
+                            g.txbx_sdt_last.take()
+                        } else {
+                            None
+                        };
+                        g.txbx_sdt.push(bound);
+                        g.txbx_sdt_bound = 0;
+                        g.txbx_sdt_plain = 0;
                         // R5：本子框（頂層 txbxContent）每 flush 一段就累加；
                         // 巢狀框（depth>1）不計入外層子框統計。
                         if td == 1 {

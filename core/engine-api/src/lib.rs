@@ -674,8 +674,11 @@ impl Engine {
             .get("word/document.xml")
             .map(|xml| quire_ooxml::read_images_with_theme(xml, &theme))
             .unwrap_or_default();
-        table_map::suppress_cover_page_author_placeholder(
-            doc.parts.get("word/document.xml").map(|v| v.as_slice()),
+        // E1-B：框內 `w:dataBinding` 內容控件的顯示真值覆寫（佔位 run→資料源值，
+        // 極性由 LO 實測定案；取代 E1-2 的字面停損臂）。純發射投影——存檔路徑
+        // （parts passthrough）完全不經此處，roundtrip 位元組不受影響。
+        table_map::apply_txbx_databinding(
+            &doc.parts,
             &mut images,
             paras_eff.as_mut().map_or(&mut [], Vec::as_mut_slice),
         );
