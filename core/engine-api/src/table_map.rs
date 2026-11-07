@@ -1234,6 +1234,14 @@ pub fn build_images(
                 None
             };
             let anchor = resolved_anchor(im, page_w, page_h, avail_w, avail_h, None, cell_info);
+            if std::env::var_os("G1_DEBUG").is_some() {
+                eprintln!(
+                    "G1DBG para={} floating={} in_cell={} lic={} xrel={:?} yrel={:?} \
+                     xoff={:?} yoff={:?} xalign={:?} cell={:?} anchor={:?}",
+                    im.para_index, im.floating, im.in_cell, im.layout_in_cell, im.pos_x_rel,
+                    im.pos_y_rel, im.pos_x_pt, im.pos_y_pt, im.pos_x_align, cell_info, anchor
+                );
+            }
             let bands = if anchor.is_none() {
                 // 帶量化鉗上限（t_c1fb4c69 S1-4）：病態 extent（源頭值域
                 // 拒絕後仍可能漏進投影層）不得量化出天量帶數拖垮分頁。

@@ -412,6 +412,11 @@ struct CellGeom {
     pad_top_pt: f32,
     /// 下邊距精確 pt（Word／LO 口徑）：列高精確餘量的一部分。
     pad_bottom_pt: f32,
+    /// 右內距精確 pt（G1）：欄內容盒寬度 = 格寬 − 左內距 − 本值。只讀投影，
+    /// 供 `TableLayout::cell_content_geom` 換算「column 系錨點」的原點系
+    /// （LO 實測：`positionH relativeFrom="column"`＋宿主在格內時，原點＝
+    /// 格**內容盒**左緣，非格框左緣）。
+    pad_right_pt: f32,
     /// 格內 block 排版序列（文件序；vMerge continue 格渲染時內容被忽略→清空）。
     blocks: Vec<CellBlockGeom>,
     /// 內容總帶高＝pad_top ＋ Σ block 帶 ＋ pad_bottom（vMerge 後重算；
@@ -1039,6 +1044,7 @@ pub fn layout_table(
                 pad_bottom_bands,
                 pad_top_pt,
                 pad_bottom_pt,
+                pad_right_pt: clamp_margin_pt(margins.right, line_h),
                 blocks,
                 content_bands,
                 edges,
