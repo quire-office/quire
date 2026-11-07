@@ -1,0 +1,199 @@
+{
+ "corpus/ooxmlexport/fdo74605.docx": {
+  "src_geom": [
+   "leftRightArrow",
+   "rect",
+   "roundRect",
+   "straightConnector1",
+   "upArrow"
+  ],
+  "src_geom_n": 104,
+  "src_warp": [],
+  "src_warp_n": 0,
+  "pages": [
+   [
+    0,
+    {
+     "Rect": 70,
+     "Rule": 276,
+     "Text": 109
+    }
+   ],
+   [
+    1,
+    {
+     "Text": 6
+    }
+   ]
+  ],
+  "svg": [
+   [
+    "fdo74605-p0.svg",
+    "6ca3b11adbc6fe76"
+   ],
+   [
+    "fdo74605-p1.svg",
+    "8e71b96cbefd4250"
+   ]
+  ]
+ },
+ "corpus/ooxmlexport/tdf113258.docx": {
+  "src_geom": [
+   "ellipse"
+  ],
+  "src_geom_n": 1,
+  "src_warp": [
+   "textNoShape"
+  ],
+  "src_warp_n": 1,
+  "pages": [
+   [
+    0,
+    {
+     "Rect": 1,
+     "Rule": 4,
+     "Text": 2
+    }
+   ]
+  ],
+  "svg": [
+   [
+    "tdf113258-p0.svg",
+    "edf4ae23554ffa3d"
+   ]
+  ]
+ },
+ "corpus/ooxmlexport/tdf113183.docx": {
+  "src_geom": [
+   "star5",
+   "triangle"
+  ],
+  "src_geom_n": 2,
+  "src_warp": [
+   "textNoShape"
+  ],
+  "src_warp_n": 2,
+  "pages": [
+   [
+    0,
+    {
+     "Rect": 2,
+     "Rule": 8,
+     "Text": 1
+    }
+   ]
+  ],
+  "svg": [
+   [
+    "tdf113183-p0.svg",
+    "afb60b8c0359f68e"
+   ]
+  ]
+ },
+ "corpus/ooxmlimport/tdf120551.docx": {
+  "src_geom": [
+   "line",
+   "rect",
+   "roundRect"
+  ],
+  "src_geom_n": 5,
+  "src_warp": [
+   "textNoShape"
+  ],
+  "src_warp_n": 1,
+  "pages": [
+   [
+    0,
+    {
+     "Text": 1
+    }
+   ]
+  ],
+  "svg": [
+   [
+    "tdf120551-p0.svg",
+    "e87dbf4406ab084e"
+   ]
+  ]
+ },
+ "corpus/poi/test-data_document_shapes-with-text.docx": {
+  "src_geom": [
+   "ellipse",
+   "rect",
+   "rightArrow",
+   "star5",
+   "straightConnector1",
+   "triangle"
+  ],
+  "src_geom_n": 11,
+  "src_warp": [],
+  "src_warp_n": 0,
+  "pages": [
+   [
+    0,
+    {
+     "Rect": 11,
+     "Rule": 44,
+     "Text": 7
+    }
+   ]
+  ],
+  "svg": [
+   [
+    "test-data_document_shapes-with-text-p0.svg",
+    "aa97f846915f211b"
+   ]
+  ]
+ },
+ "corpus/ooxmlexport/artistic_effects.docx": {
+  "src_geom": [
+   "rect"
+  ],
+  "src_geom_n": 2,
+  "src_warp": [],
+  "src_warp_n": 0,
+  "pages": [
+   [
+    0,
+    {
+     "Image": 2,
+     "Rect": 1,
+     "Rule": 4,
+     "Text": 3
+    }
+   ]
+  ],
+  "svg": [
+   [
+    "artistic_effects-p0.svg",
+    "cfc0e0732462dae5"
+   ]
+  ]
+ },
+ "corpus/ooxmlexport/fdo80897.docx": {
+  "src_geom": [
+   "rect"
+  ],
+  "src_geom_n": 1,
+  "src_warp": [
+   "textTriangle"
+  ],
+  "src_warp_n": 1,
+  "pages": [
+   [
+    0,
+    {
+     "Rect": 1,
+     "Rule": 4,
+     "Text": 2
+    }
+   ]
+  ],
+  "svg": [
+   [
+    "fdo80897-p0.svg",
+    "30b2693450c4949b"
+   ]
+  ]
+ }
+}

@@ -2047,6 +2047,19 @@ impl Engine {
             })
     }
 
+    /// F2：幾何事實展平——每個圖形框候選的 `a:prstGeom/@prst` 與
+    /// `a:prstTxWarp/@prst` 名稱（根框層；None＝源檔未宣告）。
+    ///
+    /// 紅燈佔位實作（ODF-C3 先例）：**F2 實作期本函數恒回全 None**——燈2／
+    /// 燈3a 因此拍紅（實作路徑從未讀 `@prst`，佔位態忠於現況），綠燈 commit
+    /// 由 `InlineImage.geom_prst`／`warp_prst` 欄位落地後翻綠。
+    pub fn shape_geom_facts(&self) -> Vec<(Option<String>, Option<String>)> {
+        self.shape_boxes
+            .iter()
+            .map(|_| (None, None))
+            .collect()
+    }
+
     /// 第 `page` 頁的顯示列表。
     ///
     /// 頁碼域：**正文頁 0..body_page_count**（末頁含尾註接排）＋
