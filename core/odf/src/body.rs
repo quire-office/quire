@@ -101,6 +101,12 @@ pub fn extract_body_from_bytes(
                     }
                 }
             }
+            Ok(Event::GeneralRef(e)) => {
+                if let Some(cur) = p_stack.last_mut() {
+                    let resolved = resolve_general_ref(&e)?;
+                    cur.push_str(&resolved);
+                }
+            }
             Ok(Event::End(e)) => {
                 let qname = e.name();
                 if is_text_p(qname.as_ref()) {
@@ -136,6 +142,31 @@ fn is_text_p(qname: &[u8]) -> bool {
 #[inline]
 fn is_text_h(qname: &[u8]) -> bool {
     qname == b"text:h" || qname == b"h"
+}
+
+/// 解析一般實體參照（`&apos;`／`&quot;`／`&amp;`／`&#NN;`／`&#xNN;`）。
+///
+/// quick-xml 0.41 起一般實體不再併入 `Event::Text`，改發
+/// `Event::GeneralRef`；字元參照走 `resolve_char_ref`，具名實體優先查
+/// 預定義表，其餘組織回 `&name;` 交 `unescape` 解析。未知實體如實回
+/// `OdfError::Xml`，不捏造替代字元（口徑同 `core/ooxml/src/qx.rs`）。
+pub(crate) fn resolve_general_ref(r: &quick_xml::events::BytesRef<'_>) -> Result<String, OdfError> {
+    if r.is_char_ref() {
+        if let Some(ch) = r
+            .resolve_char_ref()
+            .map_err(|e| OdfError::Xml(e.to_string()))?
+        {
+            return Ok(ch.to_string());
+        }
+    }
+    let name = r.decode().map_err(|e| OdfError::Xml(e.to_string()))?;
+    if let Some(s) = quick_xml::escape::resolve_predefined_entity(&name) {
+        return Ok(s.to_string());
+    }
+    let formatted = format!("&{};", name);
+    quick_xml::escape::unescape(&formatted)
+        .map(|s| s.into_owned())
+        .map_err(|e| OdfError::Xml(e.to_string()))
 }
 
 fn parse_space_count(e: &quick_xml::events::BytesStart<'_>) -> usize {

@@ -660,6 +660,13 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     }
                 }
             }
+            Ok(Event::GeneralRef(e)) => {
+                if let Some(cur) = p_stack.last_mut() {
+                    let resolved = crate::body::resolve_general_ref(&e)?;
+                    let style = *style_stack.last().unwrap_or(&default_style);
+                    cur.push_str(&resolved, style);
+                }
+            }
             Ok(Event::End(e)) => {
                 let qname = e.name();
                 let name = qname.as_ref();
