@@ -1721,42 +1721,67 @@ pub fn apply_html_autospacing(doc_xml: Option<&[u8]>, spacings: &mut [(Option<f3
     }
 }
 
-/// E1：抑制封面範本（`<w:docPartGallery w:val="Cover Pages"/>`）中綁定至 `coreProperties/creator` 之 Author SDT 佔位文字，避免範本佔位或消毒屬性值當成正文多發。
-pub fn suppress_cover_page_author_placeholder(
-    doc_xml: Option<&[u8]>,
+/// E1-B：把框內**段落級** `w:dataBinding` 綁定的**顯示文字**換成外部資料源真值。
+///
+/// 協定（ECMA-376 §17.5.2.10，實據見 `quire_ooxml::databind` 檔頭）：`w:sdtContent`
+/// 的字面文字是 Word 存檔時寫入的**佔位**，LO 顯示時以 `w:xpath` 指向的資料源值
+/// **覆寫**後才排版。覆寫極性由 LO 實測定案（`scratch_d9b/e1b_lo_truth_14.txt`，
+/// 14 檔 LO 25.8 實跑，零反例）：
+///   * 求值成功 ⇒ 覆寫，**`w:showingPlcHdr` 不豁免**（dkvert `[Company name]`
+///     plc=true → LO 實繪 `Quire`）；
+///   * 求值失敗（不認識的命名空間／part 缺字／值為空）⇒ 保留佔位原文
+///     （dkvert `[Date]`、mce-nested `[Year]`／`[Pick the date]` LO 原樣保留）；
+///   * 空段不覆寫（fdo78957 框內 sdt 外的空段，LO 不繪製，也絕不能被憑空覆寫）。
+///
+/// 取代 E1-2 的字面停損臂（`suppress_cover_page_author_placeholder`）：那臂只對
+/// CoverPage 的 `Eric White` 做字面清空＝「少發」，本函式按真值覆寫＝「發對」。
+/// 宿主段落 `txbx_texts`／`txbx_runs` 同切片一起換（`txbx_runs_for` 按文字切片
+/// 配對取樣，兩側不同步會錯位退化成無樣式發射）；綁定段的佔位 run 是多個時
+/// 收斂成單 run＋真值（LO 把整個控件內容繪成一條帶控件 rPr 的文字，佔位 run 的
+/// 逐 run 樣式一併被取代）。
+pub fn apply_txbx_databinding(
+    parts: &std::collections::BTreeMap<String, Vec<u8>>,
     images: &mut [quire_ooxml::InlineImage],
     paras: &mut [quire_ooxml::Paragraph],
 ) {
-    let Some(raw) = doc_xml else {
-        return;
-    };
-    let xml = String::from_utf8_lossy(raw);
-    if !xml.contains("w:docPartGallery w:val=\"Cover Pages\"")
-        || !xml.contains("w:alias w:val=\"Author\"")
-        || !xml.contains("creator[1]")
-    {
-        return;
-    }
-    let is_author_ph = |s: &str| {
-        let t = s.trim();
-        t == "Eric White" || t.contains("Quire") || t.contains("Corpus")
-    };
     for im in images.iter_mut() {
-        for t in im.txbx_texts.iter_mut() {
-            if is_author_ph(t) {
-                t.clear();
-            }
+        if im.txbx_sdt_bindings.is_empty() {
+            continue;
         }
-    }
-    for p in paras.iter_mut() {
-        for t in p.txbx_texts.iter_mut() {
-            if is_author_ph(t) {
-                t.clear();
+        let n = im.txbx_texts.len().min(im.txbx_sdt_bindings.len());
+        for ti in 0..n {
+            let Some(b) = im.txbx_sdt_bindings[ti].clone() else {
+                continue;
+            };
+            let lit = im.txbx_texts[ti].clone();
+            if lit.trim().is_empty() {
+                continue; // 空段：LO 不繪製（不憑空覆寫）
             }
-        }
-        for grp in p.txbx_runs.iter_mut() {
-            if grp.iter().any(|r| is_author_ph(&r.text)) {
-                grp.clear();
+            let Some(value) = quire_ooxml::resolve_binding(parts, &b) else {
+                continue; // 求值失敗：保留佔位原文（誠實退化）
+            };
+            if value.trim().is_empty() || value == lit {
+                continue; // 同值＝零變化（絕大多數 bound 段在此早退）
+            }
+            im.txbx_texts[ti] = value.clone();
+            // 宿主段落同步：本框切片＝[txbx_start, txbx_start+len)，逐位對照字面
+            // （trim 比對；對不上＝游標錯位，老實不動，絕不亂改別框的字）。
+            let Some(p) = paras.get_mut(im.para_index) else {
+                continue;
+            };
+            let gi = im.txbx_start + ti;
+            let Some(pt) = p.txbx_texts.get_mut(gi) else {
+                continue;
+            };
+            if pt.trim() != lit.trim() {
+                continue;
+            }
+            *pt = value.clone();
+            if let Some(grp) = p.txbx_runs.get_mut(gi) {
+                if !grp.is_empty() {
+                    grp.truncate(1);
+                    grp[0].text = value.clone();
+                }
             }
         }
     }
@@ -1795,6 +1820,8 @@ mod tests {
             txbx_texts: Vec::new(),
             txbx_start: 0,
             txbx_children: Vec::new(),
+            // E1-B 新增欄位（PM 補件：手刻最小候選＝無 SDT 綁定）。
+            txbx_sdt_bindings: Vec::new(),
             txbx_align: None,
             // E2c 新增欄位（全部老實缺省＝舊行為；本測試只吃幾何）。
             size_rel_w_pct: None,
