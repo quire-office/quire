@@ -108,11 +108,13 @@ impl OdfProjection {
 }
 
 /// 從已開封的 ODF 封裝投影（含 styles.xml 級聯）。
-/// manifest 標記 content.xml 加密者依 C2 口徑回零段 `Ok`（不 try-parse 亂碼）。
+/// ODF-E1 加密閘門：manifest 宣告 content.xml／styles.xml 加密者回
+/// `Err(OdfError::Encrypted)`（老實報錯不吞）。兩條消費軌極性不同：
+/// - `project` 吃 content.xml＋styles.xml（字級級聯依賴樣式），兩者加密都擋。
+/// - `extract_body` 只吃 content.xml——meta.xml／styles.xml 加密不擋內文抽取。
 pub fn project(bundle: &OdfBundle) -> Result<OdfProjection, OdfError> {
-    if bundle.manifest().is_encrypted("content.xml") {
-        return Ok(OdfProjection::default());
-    }
+    bundle.ensure_not_encrypted("content.xml")?;
+    bundle.ensure_not_encrypted("styles.xml")?;
     let content = bundle.read_entry("content.xml")?;
     let styles = match bundle.read_entry("styles.xml") {
         Ok(b) => Some(b),
@@ -124,6 +126,11 @@ pub fn project(bundle: &OdfBundle) -> Result<OdfProjection, OdfError> {
 
 /// 直接從 content.xml／styles.xml 位元組投影（純函數入口；styles_xml 缺＝
 /// 無具名/default 層，級聯只剩 content.xml automatic-style 與 12.0pt fallback）。
+///
+/// **安全前置條件（ODF-E1 review）**：呼叫端必須保證傳入位元組為**明文** XML。
+/// 本入口不接收 `Manifest`、無加密校驗防線——密文直入會得到 `Xml` 錯誤或零段
+/// `Ok`（靜默）。凡手上持有 `OdfBundle` 的呼叫端嚴禁直呼本入口，必須經
+/// [`project`] 走加密檢驗閘門（content.xml／styles.xml 雙閘）。
 pub fn project_bytes(
     content_xml: &[u8],
     styles_xml: Option<&[u8]>,

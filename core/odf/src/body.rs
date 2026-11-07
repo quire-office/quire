@@ -28,14 +28,22 @@ pub struct BodyModel {
     pub text_h_count: usize,
 }
 
-/// 由 content.xml 位元組抽取最小內文模型
+/// 由 content.xml 位元組抽取最小內文模型。
+/// ODF-E1：manifest 若宣告 content.xml 加密 → `Err(OdfError::Encrypted)`。
+/// （`OdfBundle::extract_body` 已先行攔截；此處是直入純函數的第二道防線，
+/// 口徑必須一致——寧可報錯，不得把密文投成零段。）
 pub fn extract_body_from_bytes(
     content_bytes: &[u8],
     manifest: &Manifest,
 ) -> Result<BodyModel, OdfError> {
-    // 若 content.xml 在 manifest 中被標記為加密，無法解構出 XML 段落（同 survey 口徑回零）
     if manifest.is_encrypted("content.xml") {
-        return Ok(BodyModel::default());
+        return Err(OdfError::Encrypted {
+            full_path: "content.xml".to_string(),
+            algorithm: manifest
+                .algorithm_of("content.xml")
+                .unwrap_or(crate::ALGORITHM_UNSPECIFIED)
+                .to_string(),
+        });
     }
 
     let mut reader = Reader::from_reader(content_bytes);

@@ -162,6 +162,20 @@ fn test_paragraph_count_matches_survey_19687() {
 
         let bytes = read_file(rel);
         let bundle = OdfBundle::open(&bytes).unwrap_or_else(|e| panic!("{rel} 開啟失敗: {e}"));
+
+        // ODF-E1 口徑：manifest 宣告 content.xml 加密者，內文抽取必須明確報
+        // 加密不支援（Err），不得靜默回零段——計數貢獻 0，但走的是錯誤軌。
+        if bundle.manifest().is_encrypted("content.xml") {
+            let err = bundle.extract_body().err().unwrap_or_else(|| {
+                panic!("{rel}：加密 content.xml 必須回 Err（ODF-E1），不得靜默零段")
+            });
+            assert!(
+                matches!(err, OdfError::Encrypted { .. }),
+                "{rel}：加密條目必須落在 OdfError::Encrypted 明確變體，實際: {err:?}"
+            );
+            continue;
+        }
+
         let body = bundle
             .extract_body()
             .unwrap_or_else(|e| panic!("{rel} 抽取內文失敗: {e}"));

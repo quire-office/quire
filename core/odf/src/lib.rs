@@ -20,7 +20,7 @@ pub use layout_glue::{
     layout_projection, page_break_positions, project, project_bytes, LayoutParams,
     OdfLayoutParagraph, OdfProjection, DEFAULT_FONT_SIZE_PT, MAX_STYLE_HOPS,
 };
-pub use manifest::{Manifest, ManifestEntry};
+pub use manifest::{Manifest, ManifestEntry, ALGORITHM_UNSPECIFIED};
 pub use skeleton::OdfSkeleton;
 
 use std::collections::BTreeMap;
@@ -41,6 +41,18 @@ pub enum OdfError {
     MissingContentXml,
     #[error("條目加密: {full_path}")]
     EncryptedEntry { full_path: String },
+    /// ODF-E1：manifest 宣告 `<manifest:encryption-data>` 之條目，我方不支援
+    /// 解密——消費層（內文抽取／文字流投影）必須走這條明確變體老實報錯，
+    /// 禁止把密文投影成零段空文件（與 odt-render「不吞錯」紀律一致）。
+    ///
+    /// 與 `EncryptedEntry` 之別：後者是設計書 §5.1 的「容器層攔截」口徑
+    /// （`open` 直接拒收），本變體是 ODF-E1 定案的「消費層攔截」口徑——
+    /// 容器層照常開檔以保住無損 round-trip，攔截落在 extract_body／project。
+    #[error("加密不支援：條目 {full_path} 宣告加密（演算法 {algorithm}），本引擎不實作解密")]
+    Encrypted {
+        full_path: String,
+        algorithm: String,
+    },
     #[error("缺少條目: {path}")]
     MissingEntry { path: String },
     #[error("XML 解析失敗: {0}")]
@@ -192,9 +204,29 @@ impl OdfBundle {
         skeleton::scan_skeleton(&self.zip)
     }
 
-    /// 抽取內文最小模型
+    /// 抽取內文最小模型。
+    /// ODF-E1：content.xml 若經 manifest 宣告加密 → `Err(OdfError::Encrypted)`
+    /// （老實報錯，禁止投影成零段空文件）。
     pub fn extract_body(&self) -> Result<BodyModel, OdfError> {
+        self.ensure_not_encrypted("content.xml")?;
         let content_bytes = self.read_entry("content.xml")?;
         body::extract_body_from_bytes(&content_bytes, &self.manifest)
+    }
+
+    /// ODF-E1 加密閘門：manifest 宣告該條目加密者，一律回明確變體
+    /// `OdfError::Encrypted`（訊息含演算法名；algorithm-name 缺位寫
+    /// `ALGORITHM_UNSPECIFIED`，不捏造）。消費層（內文抽取／投影）入口必經此閘。
+    pub(crate) fn ensure_not_encrypted(&self, path: &str) -> Result<(), OdfError> {
+        if self.manifest.is_encrypted(path) {
+            return Err(OdfError::Encrypted {
+                full_path: path.to_string(),
+                algorithm: self
+                    .manifest
+                    .algorithm_of(path)
+                    .unwrap_or(ALGORITHM_UNSPECIFIED)
+                    .to_string(),
+            });
+        }
+        Ok(())
     }
 }
