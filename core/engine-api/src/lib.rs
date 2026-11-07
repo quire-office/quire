@@ -16,6 +16,7 @@ use quire_ooxml::{
     read_sections_per_paragraph, resolve_relationship, LineSpacing, OoxmlDoc, OoxmlError,
     ParaStyle, RunFonts, SlotRefs, StyleTable, ThemeColors, ThemeFonts, ZipDiff,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
 
@@ -59,6 +60,18 @@ pub enum EngineError {
     /// 不需要 import quire-xlsx 也能處理錯誤（分層鐵律）。
     #[error("XLSX 容器失敗: {0}")]
     Xlsx(String),
+}
+
+/// 自訂紙張規格（pt，PG-PAPER-1）。
+/// 邊距 Option::None 表示沿用該 section 自身邊距；Some(val) 則覆寫。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PaperSpec {
+    pub page_w_pt: f32,
+    pub page_h_pt: f32,
+    pub margin_top_pt: Option<f32>,
+    pub margin_bottom_pt: Option<f32>,
+    pub margin_left_pt: Option<f32>,
+    pub margin_right_pt: Option<f32>,
 }
 
 pub struct Engine {
@@ -135,6 +148,10 @@ pub struct Engine {
     /// 不變，f1_chart_emission 燈 4 鎖死）。`F1_CHART_BUGGY=1` 在開檔期就把
     /// 本欄刷空＝回塞「圖表被整段跳過」的舊行為（燈 3 鑑別力鎖）。
     charts: Vec<(quire_ooxml::ChartMount, quire_ooxml::ChartDoc)>,
+    /// PG-PAPER-1：是否已套用自訂紙張覆寫。
+    paper_override_applied: bool,
+    /// PG-PAPER-1：首節生效幾何（供 paper_json 透出）。
+    first_sec_geo: SectionGeometry,
 }
 
 /// K27：EMF 內嵌 DIB 直讀產物（PNG 位元組流＋EMF 檔頭 `rclFrame` 換算的 pt 尺寸 `[寬, 高]`）。
@@ -263,6 +280,18 @@ impl Engine {
     /// 頁面幾何不寫死：逐 section 解析 `sectPr/pgSz`／`pgMar` 餵進版面層
     /// （Phase0-2b）。檔案毫無 sectPr 時退回 `LayoutParams::default()`（後備）。
     pub fn from_docx_bytes(bytes: &[u8]) -> Result<Self, EngineError> {
+        Self::from_docx_bytes_with_paper(bytes, None)
+    }
+
+    /// PG-PAPER-1：構造期注入紙張覆寫（paper: Option<&PaperSpec>）。
+    ///
+    /// `Some(p)` 時在 sections 建立處把每個 section 的 page_w/h 覆寫為 p 值；
+    /// p 的邊距 Some 值覆寫對應邊距，None 邊距保留該 section 自身值。
+    /// landscape／continuous／cols 一律不動。
+    pub fn from_docx_bytes_with_paper(
+        bytes: &[u8],
+        paper: Option<&PaperSpec>,
+    ) -> Result<Self, EngineError> {
         let doc = parse(bytes)?;
         // ---- 樣式級聯層（t_5dfc8ac7）----
         // 開啟文件時一次性解析 styles.xml：逐段級聯合成的 (斷行字級, 段行高)
@@ -334,26 +363,46 @@ impl Engine {
             .map(|xml| {
                 read_sections_per_paragraph(xml, n_paras)
                     .into_iter()
-                    .map(|s| SectionSpec {
-                        id: s.id,
-                        geo: SectionGeometry {
-                            page_w_pt: s.geo.page_w_pt,
-                            page_h_pt: s.geo.page_h_pt,
-                            margin_top_pt: s.geo.margin_top_pt,
-                            margin_bottom_pt: s.geo.margin_bottom_pt,
-                            margin_left_pt: s.geo.margin_left_pt,
-                            margin_right_pt: s.geo.margin_right_pt,
-                            landscape: s.geo.landscape,
-                            continuous: s.geo.continuous,
-                            // L1-columns：ooxml→layout 逐欄對應（分層：兩側
-                            // SectionCols 同構雙定義，此處是唯一接線點）。
-                            cols: quire_layout::SectionCols {
-                                num: s.geo.cols.num,
-                                space_pt: s.geo.cols.space_pt,
-                                col_w_pt: s.geo.cols.col_w_pt,
-                                col_space_pt: s.geo.cols.col_space_pt,
+                    .map(|s| {
+                        let (w, h, top, bottom, left, right) = match paper {
+                            Some(p) => (
+                                p.page_w_pt,
+                                p.page_h_pt,
+                                p.margin_top_pt.unwrap_or(s.geo.margin_top_pt),
+                                p.margin_bottom_pt.unwrap_or(s.geo.margin_bottom_pt),
+                                p.margin_left_pt.unwrap_or(s.geo.margin_left_pt),
+                                p.margin_right_pt.unwrap_or(s.geo.margin_right_pt),
+                            ),
+                            None => (
+                                s.geo.page_w_pt,
+                                s.geo.page_h_pt,
+                                s.geo.margin_top_pt,
+                                s.geo.margin_bottom_pt,
+                                s.geo.margin_left_pt,
+                                s.geo.margin_right_pt,
+                            ),
+                        };
+                        SectionSpec {
+                            id: s.id,
+                            geo: SectionGeometry {
+                                page_w_pt: w,
+                                page_h_pt: h,
+                                margin_top_pt: top,
+                                margin_bottom_pt: bottom,
+                                margin_left_pt: left,
+                                margin_right_pt: right,
+                                landscape: s.geo.landscape,
+                                continuous: s.geo.continuous,
+                                // L1-columns：ooxml→layout 逐欄對應（分層：兩側
+                                // SectionCols 同構雙定義，此處是唯一接線點）。
+                                cols: quire_layout::SectionCols {
+                                    num: s.geo.cols.num,
+                                    space_pt: s.geo.cols.space_pt,
+                                    col_w_pt: s.geo.cols.col_w_pt,
+                                    col_space_pt: s.geo.cols.col_space_pt,
+                                },
                             },
-                        },
+                        }
                     })
                     .collect()
             })
@@ -372,8 +421,41 @@ impl Engine {
         };
         let params = match sections.first() {
             Some(s) => LayoutParams::from_section(&s.geo, params.font_size_pt, params.line_spacing),
-            None => params,
+            None => {
+                if let Some(p) = paper {
+                    let mut pm = params;
+                    pm.page_w_pt = p.page_w_pt;
+                    pm.page_h_pt = p.page_h_pt;
+                    if let Some(top) = p.margin_top_pt {
+                        pm.margins_pt[MARGIN_TOP] = top;
+                    }
+                    if let Some(bottom) = p.margin_bottom_pt {
+                        pm.margins_pt[quire_layout::MARGIN_BOTTOM] = bottom;
+                    }
+                    if let Some(left) = p.margin_left_pt {
+                        pm.margins_pt[MARGIN_LEFT] = left;
+                    }
+                    if let Some(right) = p.margin_right_pt {
+                        pm.margins_pt[quire_layout::MARGIN_RIGHT] = right;
+                    }
+                    pm
+                } else {
+                    params
+                }
+            }
         };
+        let first_sec_geo = sections.first().map(|s| s.geo).unwrap_or(SectionGeometry {
+            page_w_pt: params.page_w_pt,
+            page_h_pt: params.page_h_pt,
+            margin_top_pt: params.margin(MARGIN_TOP),
+            margin_bottom_pt: params.margin(quire_layout::MARGIN_BOTTOM),
+            margin_left_pt: params.margin(MARGIN_LEFT),
+            margin_right_pt: params.margin(quire_layout::MARGIN_RIGHT),
+            landscape: false,
+            continuous: false,
+            cols: Default::default(),
+        });
+        let paper_override_applied = paper.is_some();
         // 級聯烘焙（需 params 已定：製表位點引填補按該段可用寬計算）：
         // 逐段可用寬＝該段 section 的**斷行寬**（L1-columns：多欄 section＝
         // 首欄寬，與 layout 斷行同口徑；無 section 表＝基準 params）。
@@ -813,6 +895,8 @@ impl Engine {
             image_pixels,
             line_ref_bands,
             charts,
+            paper_override_applied,
+            first_sec_geo,
         };
         Ok(engine.with_footnotes())
     }
@@ -2429,6 +2513,25 @@ impl Engine {
     pub fn page_display_list_json(&self, page: usize) -> Option<String> {
         self.page_display_list(page)
             .and_then(|dl| serde_json::to_string(&dl).ok())
+    }
+
+    /// PG-PAPER-1：是否已套用自訂紙張覆寫。
+    pub fn paper_override_applied(&self) -> bool {
+        self.paper_override_applied
+    }
+
+    /// PG-PAPER-1：回傳目前生效的首 section 幾何 JSON（頁寬高、四邊距、是否覆寫中），供 UI 顯示。
+    pub fn paper_json(&self) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "page_w_pt": self.first_sec_geo.page_w_pt,
+            "page_h_pt": self.first_sec_geo.page_h_pt,
+            "margin_top_pt": self.first_sec_geo.margin_top_pt,
+            "margin_bottom_pt": self.first_sec_geo.margin_bottom_pt,
+            "margin_left_pt": self.first_sec_geo.margin_left_pt,
+            "margin_right_pt": self.first_sec_geo.margin_right_pt,
+            "paper_override_applied": self.paper_override_applied,
+        }))
+        .unwrap_or_else(|_| "{}".to_string())
     }
 
     /// 回傳失效事件（序列化），供 shells 做增量重繪。

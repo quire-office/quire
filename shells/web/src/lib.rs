@@ -18,6 +18,38 @@ impl WasmEngine {
         Ok(Self { inner })
     }
 
+    #[wasm_bindgen]
+    pub fn new_with_paper(
+        bytes: &[u8],
+        page_w_pt: f32,
+        page_h_pt: f32,
+        margin_top_pt: Option<f32>,
+        margin_bottom_pt: Option<f32>,
+        margin_left_pt: Option<f32>,
+        margin_right_pt: Option<f32>,
+    ) -> Result<WasmEngine, JsError> {
+        console_error_panic_hook::set_once();
+        let spec = quire_engine::PaperSpec {
+            page_w_pt,
+            page_h_pt,
+            margin_top_pt,
+            margin_bottom_pt,
+            margin_left_pt,
+            margin_right_pt,
+        };
+        let inner = Engine::from_docx_bytes_with_paper(bytes, Some(&spec))
+            .map_err(|e| JsError::new(&format!("{e}")))?;
+        Ok(Self { inner })
+    }
+
+    pub fn paper_json(&self) -> String {
+        self.inner.paper_json()
+    }
+
+    pub fn paper_override_applied(&self) -> bool {
+        self.inner.paper_override_applied()
+    }
+
     pub fn page_count(&self) -> usize {
         self.inner.page_count()
     }
