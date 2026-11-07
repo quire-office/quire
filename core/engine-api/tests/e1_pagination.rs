@@ -33,10 +33,12 @@
 //!
 //! ## 燈號狀態（PM 掛帳制；比照 `r34_placeholder_fill.rs` 燈 5 的 `#[ignore]` 慣例）
 //!
-//! 燈 1（兩盞）、燈 3（兩盞）、燈 4 共**五盞**標 `#[ignore]`：它們測的是**本卡準改面
-//! 之外**的缺陷（autospacing／族表在 `core/ooxml/`＋engine 行高表；dataBinding 覆寫在
-//! `core/ooxml/`），本卡若讓它們紅在 `cargo test --workspace`，等於把零回退鐵條
-//! 的閘門自己弄髒。解 ignore 的條件寫在各自燈的 `#[ignore = "..."]` 字串裡。
+//! 燈 1（兩盞）、燈 3（兩盞）共**三盞**標 `#[ignore]`：它們測的是**本卡準改面
+//! 之外**的缺陷（autospacing／族表在 `core/ooxml/`＋engine 行高表），本卡若讓它們
+//! 紅在 `cargo test --workspace`，等於把零回退鐵條的閘門自己弄髒。解 ignore 的
+//! 條件寫在各自燈的 ignore 屬性字串裡。
+//! （燈 4 已解 ignore：E1-B dataBinding 真值求值落地——`core/ooxml/src/databind.rs`
+//! xpath 求值 docProps/core.xml＋發射層覆寫臂，`Eric White` 被 `Quire Corpus` 覆寫。）
 //! 燈 2 是正向鎖（現行碼即綠、`E1_GRIDSPAN_EXPECT_BUGGY=1` 證鑑別力）；燈 3b
 //! （`..._second_page_is_physically_blank`）是形態鎖，但形態鎖在頁數還錯時無從驗證，
 //! 故與燈 3a 一同 ignore，待頁數燈可綠時一併解鎖。
@@ -313,7 +315,6 @@ fn lamp3_coverpage_second_page_is_physically_blank() {
 // （281.5, 526.7），`Quire`／`Corpus` **零出現** ⇒ 缺發；`Eric White` ⇒ 多發。
 
 #[test]
-#[ignore = "欠債：dataBinding 覆寫需讀 docProps/core.xml＋xpath 求值，解析面在 core/ooxml/（本卡嚴禁面）；見 docs/e1-redlight.md §3.3"]
 fn lamp4_coverpage_emits_data_bound_tokens_and_no_placeholder_run() {
     let eng = load(COVER);
     let dl = eng.page_display_list(0).expect("p0 存在");
