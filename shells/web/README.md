@@ -9,10 +9,21 @@ wasm 殼（首包）＋ 協作延遲分塊（`../web-collab`）。
     npm run build:collab  # 協作分塊 ../web-collab/pkg/（含 CRDT）
     npm run build:demo    # vite 打包 demo/dist（驗證 code-splitting）
     npm run size          # 包體積閘門（gzip 表＋假拆包符號檢查）
+    npm run test:odt      # ODF-D2 考卷：對 pkg/ 實際產物打 ODT 路徑（免瀏覽器）
     npm run demo          # dev server → http://localhost:5199
     npm run test:ime      # IME 注入測試（Playwright+CDP；需 python3+playwright）
 
-Node 端免瀏覽器驗證：`node ../../scripts/wasm-smoke.mjs`
+Node 端免瀏覽器驗證：`node ../../scripts/wasm-smoke.mjs`（DOCX＋協作）＋
+`npm run test:odt`（ODT；見 `tests/odf_d2_node_smoke.mjs`）。
+
+## ODT 入口（ODF-D2，卡 t_89c4a196）
+
+首包另導出 `WasmOdtView`（唯讀）：`new WasmOdtView(bytes)` → `page_count()` /
+`page_display_list_json(page)`——與 `WasmEngine` **同一個** `PageDisplayList`
+serde 契約，JS 繪圖碼零改。demo 的檔位分派：`.odt`→`WasmOdtView`、其餘→
+`WasmEngine`（`demo/main.js` 的 `isOdt`，繪圖碼共用；唯讀旗標只關 caret/編輯面）。
+紅燈/綠燈全記錄：`docs/odf-d2-redlight.md`；host 端考卷：`cargo test -p quire-web`。
+ODT 無編輯面（caret/replace 不存在＝契約正確形態），站端上傳分支屬 quire-www 網站卡。
 
 ## IME 編輯路徑（Web-1）
 

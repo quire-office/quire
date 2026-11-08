@@ -7,6 +7,7 @@
     "build:collab": "wasm-pack build ../web-collab --out-dir ../web-collab/pkg --target web --release",
     "build:demo": "vite build demo --config demo/vite.config.mjs",
     "size": "node ../../scripts/check-wasm-size.mjs",
+    "test:odt": "node tests/odf_d2_node_smoke.mjs",
     "size:json": "node ../../scripts/check-wasm-size.mjs --json ../../build/wasm-size.json",
     "test:ime": "python3 ../../scripts/ime-inject-test.py",
     "demo": "npm run build:wasm && npm run build:collab && vite demo --config demo/vite.config.mjs"

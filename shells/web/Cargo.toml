@@ -10,5 +10,26 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 quire-engine = { workspace = true }
+# ODF-D2：ODT 顯示列表入口（`WasmOdtView` 薄包 `quire_odf::OdtView`）。
+# 路線定案（PM 11-08，卡 t_89c4a196）：**不走 Engine 邊**——唯讀 ODT 塞進
+# docx 中心的 Engine ＝ 半契約兩極性，故 wasm 殼直接依賴 quire-odf。
+# 分層紀律：`scripts/check-layering.sh` 對 quire-web 的禁列是
+# `quire-(ooxml|xlsx|layout|render-trait|crdt)`，**不含 quire-odf**（本行合法）；
+# 型別（PageDisplayList/DrawItem）一律經 quire-odf 的再匯出入口取用，殼層
+# 不直接 import quire-render-trait（同 shells/native 的 odt-dump 子命令紀律）。
+# 拆包紀律：ODT 面是**首包**能力（playground 上傳即畫），不學 collab/xlsx 走
+# feature 分塊——但 CRDT／xlsx 仍由既有雙向符號閘門守死不得混進首包。
+quire-odf = { workspace = true }
 wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true }
+# `paper_json` 走 serde `json!` macro 出口（嚴禁字串拼接造 JSON，同 D1 紀律；
+# Engine::paper_json 同路線）。serde_json 本已由 quire-engine 鏈入產物，本行
+# 不引入新程式碼，只把依賴寫實（cargo tree 分層禁列不含 serde_json）。
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# 考卷（tests/odf_d2_wasm_view.rs）需要：直接吃 quire-odf 做「殼層透傳零改動」
+# 反查＋基準檔 JSON 對照。dev-deps 不進 wasm 產物、不進 `cargo tree -e normal`
+# ——分層/體積閘門不受影響（先例：core/engine-api 的 flate2 dev-dep）。
+quire-odf = { workspace = true }
+serde_json = { workspace = true }

@@ -9,7 +9,7 @@
 // 渲染器 = Canvas2D 顯示列表直繪；未來換 WebGPU。
 // Web-1：真實 IME 編輯路徑已落地——隱形 contenteditable 錨點（#ime）＋
 // caret 契約（caret_rect/caret_at 經引擎 shaping 度量），見下方「IME 錨點」段。
-import init, { WasmEngine } from "../pkg/quire_web.js";
+import init, { WasmEngine, WasmOdtView } from "../pkg/quire_web.js";
 
 // 顯示寬（px）。pt→px 縮放按「此頁實際寬」（dl.width_pt，Phase0-2b 起逐頁如實
 // 來自 sectPr）換算，不再假設全文件 A4 595。
@@ -23,6 +23,9 @@ const imeEl = document.getElementById("ime");
 const caretEl = document.getElementById("caret");
 const compEl = document.getElementById("composited");
 let engine = null;
+// ODF-D2：ODT 走 `WasmOdtView`（唯讀）。本旗標只決定「編輯面入口是否放行」，
+// 繪圖碼（render 的顯示列表直繪）一條線共用——同 schema 因此同程式碼。
+let readOnly = false;
 let page = 0;
 
 function fmtKB(n) {
@@ -108,13 +111,29 @@ window.__ime = {
   engine: () => engine,
 };
 
+// ---- ODF-D2：最小入口分派（卡 t_89c4a196）----
+// docx→`WasmEngine`（可編輯）、odt→`WasmOdtView`（唯讀顯示）。除此之外**零改動**：
+// `render()` 的顯示列表直繪、縮放、翻頁、狀態列對兩種檔型是同一段程式碼
+// （同 schema 的直接結果）。唯讀旗標只關掉「編輯面入口」（caret/鍵入/貼上）——
+// `WasmOdtView` 不暴露編輯契約（ODT 線無編輯面，D1 解剖報告 §5），不是藏功能。
+const isOdt = (name) => /\.odt$/i.test(name || "");
+
 document.getElementById("file").addEventListener("change", async (e) => {
-  const buf = new Uint8Array(await e.target.files[0].arrayBuffer());
-  engine = new WasmEngine(buf);
+  const file = e.target.files[0];
+  const buf = new Uint8Array(await file.arrayBuffer());
+  if (isOdt(file.name)) {
+    // 開檔失敗（加密／破損／非 ODT）由 wasm 邊 throw；訊息＝Rust 側 Err 原文。
+    engine = new WasmOdtView(buf);
+    readOnly = true;
+  } else {
+    engine = new WasmEngine(buf);
+    readOnly = false;
+  }
   page = 0;
   caret = { para: 0, cp: 0 };
+  resetAnchor();
   render();
-  imeEl.focus({ preventScroll: true }); // 開檔後焦點給隱形錨點，可直接打字
+  if (!readOnly) imeEl.focus({ preventScroll: true }); // 開檔後焦點給隱形錨點，可直接打字
 });
 document.getElementById("prev").onclick = () => { if (page > 0) { page--; render(); } };
 document.getElementById("next").onclick = () => { if (engine && page + 1 < engine.page_count()) { page++; render(); } };
@@ -160,6 +179,12 @@ const cps = (s) => Array.from(s).length;
 
 function placeAnchor() {
   if (!engine) return;
+  // ODF-D2：唯讀檔型（ODT）無 caret 契約——不畫插入點、不給隱形錨點定位。
+  if (readOnly) {
+    caretEl.style.display = "none";
+    imeEl.style.display = "none";
+    return;
+  }
   const raw = engine.caret_rect_json(caret.para, caret.cp);
   if (!raw) {
     caretEl.style.display = "none";
@@ -182,7 +207,7 @@ function placeAnchor() {
 
 // commit 一段文字進引擎（IME 確認、直接鍵入、貼上共用同一條路）。
 function commitText(text) {
-  if (!engine || !text) return;
+  if (!engine || !text || readOnly) return; // 唯讀：編輯面入口直接吞掉
   engine.insert_text_at_caret(caret.para, caret.cp, text);
   caret = { para: caret.para, cp: caret.cp + cps(text) };
   resetAnchor();
@@ -218,6 +243,7 @@ imeEl.addEventListener("compositionend", (e) => {
 // 非合成輸入（英数字直接鍵入、貼上、退格）：beforeinput 比 input 更早且帶 inputType。
 imeEl.addEventListener("beforeinput", (e) => {
   if (composing || e.isComposing) return; // 合成中由 compositionend 處理
+  if (readOnly) { e.preventDefault(); return; } // 唯讀檔型：一律不放行（ODF-D2）
   switch (e.inputType) {
     case "insertText":
     case "insertFromPaste":
@@ -266,6 +292,9 @@ function backspace() {
 // preventDefault：不放 browser 把選點移到 canvas（那會讓錨點失焦、IME 斷鏈）。
 canvas.addEventListener("mousedown", (e) => {
   if (!engine) return;
+  // ODF-D2：唯讀檔型無 caret 反查契約（`caret_at_json` 是 WasmEngine exclusive）——
+  // 直接不放行，否則呼叫不存在的方法會 TypeError。
+  if (readOnly) { e.preventDefault(); return; }
   e.preventDefault();
   const rect = canvas.getBoundingClientRect();
   const xPt = ((e.clientX - rect.left) * (canvas.width / rect.width)) / scale;

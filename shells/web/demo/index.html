@@ -27,7 +27,8 @@
 </head>
 <body>
   <div id="toolbar">
-    <input type="file" id="file" accept=".docx" />
+    <!-- ODF-D2：.odt 走 WasmOdtView 唯讀顯示（入口分派在 main.js，繪圖碼共用） -->
+    <input type="file" id="file" accept=".docx,.odt" />
     <button id="prev">◀ 上一頁</button>
     <button id="next">下一頁 ▶</button>
     <button id="collab">開啟協作（載入延遲分塊）</button>
