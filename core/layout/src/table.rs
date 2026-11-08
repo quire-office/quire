@@ -412,6 +412,11 @@ struct CellGeom {
     pad_top_pt: f32,
     /// 下邊距精確 pt（Word／LO 口徑）：列高精確餘量的一部分。
     pad_bottom_pt: f32,
+    /// 右內距精確 pt（G1）：欄內容盒寬度 = 格寬 − 左內距 − 本值。只讀投影，
+    /// 供 `TableLayout::cell_content_geom` 換算「column 系錨點」的原點系
+    /// （LO 實測：`positionH relativeFrom="column"`＋宿主在格內時，原點＝
+    /// 格**內容盒**左緣，非格框左緣）。
+    pad_right_pt: f32,
     /// 格內 block 排版序列（文件序；vMerge continue 格渲染時內容被忽略→清空）。
     blocks: Vec<CellBlockGeom>,
     /// 內容總帶高＝pad_top ＋ Σ block 帶 ＋ pad_bottom（vMerge 後重算；
@@ -452,6 +457,27 @@ struct RowGeom {
     /// `w:tblHeader`（R2：表頭連頭段＝跨頁切片逐頁重貼的列數基準）。
     header: bool,
     cells: Vec<CellGeom>,
+}
+
+/// G1：儲存格內容盒與框線內距幾何（供表格內 `wp:anchor` 換算 `column`／`paragraph` 原點系）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellContentGeom {
+    /// 儲存格左緣（已計入 `TableLayout::x_off`，相對版心左緣 pt）。
+    pub cell_x_pt: f32,
+    /// 儲存格靜態頂部偏移（自表頂起算的前置列高總和 pt）。
+    pub cell_y_pt: f32,
+    /// 儲存格總寬（pt）。
+    pub cell_w_pt: f32,
+    /// 儲存格左內距（pt）。
+    pub pad_left_pt: f32,
+    /// 儲存格右內距（pt）。
+    pub pad_right_pt: f32,
+    /// 儲存格上內距（pt）。
+    pub pad_top_pt: f32,
+    /// 儲存格上框線寬度（pt；無框線＝0）。
+    pub border_top_pt: f32,
+    /// 儲存格左框線寬度（pt；無框線＝0）。
+    pub border_left_pt: f32,
 }
 
 /// 表格完整排版（列帶分配完成；跨頁切片由 [`TableLayout::fragment`] 產出）。
@@ -498,6 +524,30 @@ impl TableLayout {
             .sum();
         let cell = self.rows[row].cells.get(col)?;
         Some((self.x_off + cell.x, y, cell.w))
+    }
+
+    /// G1：取得指定儲存格（row, col）之內容盒與框線內距幾何。
+    pub fn cell_content_geom(&self, row: usize, col: usize) -> Option<CellContentGeom> {
+        if row >= self.rows.len() {
+            return None;
+        }
+        let y: f32 = self.rows[..row]
+            .iter()
+            .map(|r| r.bands as f32 * self.line_h + r.extra_pt)
+            .sum();
+        let cell = self.rows[row].cells.get(col)?;
+        let border_top_pt = cell.edges[EDGE_TOP].as_ref().map_or(0.0, |p| p.width_pt);
+        let border_left_pt = cell.edges[EDGE_LEFT].as_ref().map_or(0.0, |p| p.width_pt);
+        Some(CellContentGeom {
+            cell_x_pt: self.x_off + cell.x,
+            cell_y_pt: y,
+            cell_w_pt: cell.w,
+            pad_left_pt: cell.text_x_off.max(0.0),
+            pad_right_pt: cell.pad_right_pt.max(0.0),
+            pad_top_pt: cell.pad_top_pt.max(0.0),
+            border_top_pt,
+            border_left_pt,
+        })
     }
 
     /// 全域帶序 → (row, band) 游標（跨列跳帶用；越界＝(rows.len(), 0)）。
@@ -1039,6 +1089,7 @@ pub fn layout_table(
                 pad_bottom_bands,
                 pad_top_pt,
                 pad_bottom_pt,
+                pad_right_pt: clamp_margin_pt(margins.right, line_h),
                 blocks,
                 content_bands,
                 edges,

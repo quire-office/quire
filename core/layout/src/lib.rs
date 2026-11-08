@@ -862,15 +862,33 @@ pub struct ImageBand {
     pub txbx_content_pic: bool,
 }
 
-/// 鎖點原點系（ECMA-376 `wp:positionX/@relativeFrom` 的三檔近似分類）。
+/// G1：表格儲存格內浮動錨點的宿主列追蹤資訊（承載於 [`OriginFrame::CellRow`]，
+/// 以 `u32` 位元組儲存靜態列頂使 [`OriginFrame`] 維持 `Copy + Eq` 並避免破壞外部 `ImageBand` 構造端）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CellHostAnchor {
+    /// 宿主表格槽下標（對應 [`TableSlot`] 與 [`TablePlacement::slot`]）。
+    pub slot: u32,
+    /// 宿主列下標（對應 [`crate::table::RowFrag::row_index`]）。
+    pub row: u32,
+    /// 靜態預估的宿主列頂頁座標 `f32::to_bits()`（`margin_top + geom.1`）。
+    pub static_top_bits: u32,
+    /// V 軸是否以宿主列為原點基準（`y_origin != "page" || layout_in_cell`）。
+    pub y_rel_to_row: bool,
+}
+
+/// 鎖點原點系（ECMA-376 `wp:positionX/@relativeFrom` 的原點分類）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OriginFrame {
     /// (x,y) 以頁左上為原點（page／pageMargin）。
     Page,
-    /// (x,y) 以版心左上為原點（column／margin；單欄近似）。
+    /// (x,y) 以版心左上為原點（margin 家族）。
     Margin,
+    /// (x,y) 以宿主段所屬欄內容盒左上為原點（`relativeFrom="column"`；單欄同 Margin，多欄加 `col_x[col]`）。
+    Column,
     /// (x,y) 以錨定段落帶左上為原點（paragraph／line／character／未知）。
     Paragraph,
+    /// G1：宿主段位於表格儲存格內時，追蹤宿主槽與列在渲染頁上的實際落點與列頂。
+    CellRow(CellHostAnchor),
 }
 
 /// `quire_ooxml::origin_of` 的穩定字串 → 本 crate 原點系（分層：字串是
@@ -879,6 +897,7 @@ pub fn origin_frame(kind: &str) -> OriginFrame {
     match kind {
         "page" => OriginFrame::Page,
         "margin" => OriginFrame::Margin,
+        "column" => OriginFrame::Column,
         _ => OriginFrame::Paragraph,
     }
 }
@@ -1688,7 +1707,16 @@ fn paginate_flow(
         });
         starts.push((0, 0, 0)); // 合成空頁＝流首（starts/pages 同步不變量）
     }
-    attach_floating_images(&mut pages, &starts, flow, tables, images, p.line_h_pt());
+    attach_floating_images(
+        &mut pages,
+        &starts,
+        flow,
+        tables,
+        images,
+        p,
+        sections,
+        p.line_h_pt(),
+    );
     (pages, starts)
 }
 
@@ -1721,12 +1749,15 @@ const R3_PINNED_SECTION_START: bool = true;
 /// R3：`page_pinned` 項（VML 頁面釘定）改掛「所屬 section 起始頁」——LO
 /// 對 `mso-position-*-relative:page|margin`＋center 的框固定在節首頁繪製，
 /// 不隨錨定段落（含 para-level sectPr 的段落）落到次頁（n751077 3→2 頁）。
+#[allow(clippy::too_many_arguments)]
 fn attach_floating_images(
     pages: &mut [Page],
     starts: &[FlowPos],
     flow: &[FlowItem],
     tables: &[TableSlot],
     images: &[ImageBand],
+    p: &LayoutParams,
+    sections: &[SectionSpec],
     line_h: f32,
 ) {
     // 無鎖點圖＝零可掛項（images 生命期內不變，浮掛只由 anchor 填充）：
@@ -1773,6 +1804,40 @@ fn attach_floating_images(
         let mut page = starts
             .partition_point(|s| *s <= (fi, 0, 0))
             .saturating_sub(1);
+        // G1（落點 B）：宿主段位於表格儲存格內時，附掛頁取宿主列（ch.row）
+        // 在分頁後實際落點的頁面（優先匹配列首 starts_row 切片所在頁，次取首見切片頁），
+        // 避免高墊列或跨頁將宿主列推至次頁時，圖片仍滯留在表格流起頭頁。
+        let cell_host = match a.y_frame {
+            OriginFrame::CellRow(ch) => Some(ch),
+            _ => None,
+        };
+        if let Some(ch) = cell_host {
+            let slot_idx = ch.slot as usize;
+            let row_idx = ch.row as usize;
+            let row_page = pages
+                .iter()
+                .position(|pg| {
+                    pg.tables.iter().any(|tp| {
+                        tp.slot == slot_idx
+                            && tp
+                                .frag
+                                .rows
+                                .iter()
+                                .any(|rf| rf.row_index == row_idx && rf.starts_row)
+                    })
+                })
+                .or_else(|| {
+                    pages.iter().position(|pg| {
+                        pg.tables.iter().any(|tp| {
+                            tp.slot == slot_idx
+                                && tp.frag.rows.iter().any(|rf| rf.row_index == row_idx)
+                        })
+                    })
+                });
+            if let Some(rp) = row_page {
+                page = rp;
+            }
+        }
         // R3：頁面釘定浮動圖 → 回退到所屬 section 的起始頁（頁的
         // `section_id` 是該頁起頭所屬節；同 id 的連續頁往前收）。
         if R3_PINNED_SECTION_START && im.page_pinned {
@@ -1782,28 +1847,61 @@ fn attach_floating_images(
                 }
             }
         }
+        let sec = effective_section(p, sections, im.para);
         let Some(pg) = pages.get_mut(page) else {
             continue;
         };
         // 各軸按 relativeFrom 原點系換算成頁絕對座標：
         //   Page      → (0,0)＋offset
         //   Margin    → 版心左上＋offset
+        //   Column    → 宿主段所屬欄內容盒左上＋offset
         //   Paragraph → 錨定段落首行帶左上＋offset（查無首行＝版心左上近似）
-        let para_band = pg
-            .lines
-            .iter()
-            .position(|l| l.para_index == im.para)
+        let host_line_idx = pg.lines.iter().position(|l| l.para_index == im.para);
+        let para_band = host_line_idx
             .and_then(|i| pg.line_bands.get(i))
             .map(|b| *b as f32);
+        let col_x_off = if a.x_frame == OriginFrame::Column {
+            let col_idx = host_line_idx
+                .and_then(|i| pg.lines.get(i))
+                .map_or(0usize, |l| l.col as usize);
+            col_layout(&sec.geo).map_or(0.0, |cl| cl.col_x[col_idx.min(cl.n.saturating_sub(1))])
+        } else {
+            0.0
+        };
+        // G1（落點 A）：宿主列在落點頁上的實際渲染頂部（tp.frag.y_pt + 切片內前置列高），
+        // 取代靜態預估的 `margin_top + geom.1`，消除前段續表或跨頁造成的垂直錯位。
+        let row_y_delta = cell_host
+            .filter(|ch| ch.y_rel_to_row)
+            .and_then(|ch| {
+                let slot_idx = ch.slot as usize;
+                let row_idx = ch.row as usize;
+                let tp = pg.tables.iter().find(|tp| {
+                    tp.slot == slot_idx && tp.frag.rows.iter().any(|rf| rf.row_index == row_idx)
+                })?;
+                let y_in_frag: f32 = tp
+                    .frag
+                    .rows
+                    .iter()
+                    .take_while(|rf| rf.row_index != row_idx)
+                    .map(|rf| rf.height_pt)
+                    .sum();
+                let actual_row_top = tp.frag.y_pt + y_in_frag;
+                let static_row_top = f32::from_bits(ch.static_top_bits);
+                let diff = actual_row_top - static_row_top;
+                Some(if diff.abs() < 1e-4 { 0.0 } else { diff })
+            })
+            .unwrap_or(0.0);
         let x = a.x_pt
             + match a.x_frame {
-                OriginFrame::Page => 0.0,
+                OriginFrame::Page | OriginFrame::CellRow(_) => 0.0,
                 OriginFrame::Margin | OriginFrame::Paragraph => pg.margin_left_pt,
+                OriginFrame::Column => pg.margin_left_pt + col_x_off,
             };
         let y = a.y_pt
+            + row_y_delta
             + match a.y_frame {
-                OriginFrame::Page => 0.0,
-                OriginFrame::Margin => pg.margin_top_pt,
+                OriginFrame::Page | OriginFrame::CellRow(_) => 0.0,
+                OriginFrame::Margin | OriginFrame::Column => pg.margin_top_pt,
                 OriginFrame::Paragraph => pg.margin_top_pt + para_band.unwrap_or(0.0) * line_h,
             };
         pg.floating_images.push(PageFloatingImage {
@@ -2417,6 +2515,8 @@ impl LayoutEngine {
             &self.flow,
             &self.tables,
             &self.images,
+            &self.params,
+            &self.sections,
             self.params.line_h_pt(),
         );
         evs
@@ -2484,6 +2584,8 @@ impl LayoutEngine {
             &self.flow,
             &self.tables,
             &self.images,
+            &self.params,
+            &self.sections,
             self.params.line_h_pt(),
         );
         (evs, self.pending.is_none())

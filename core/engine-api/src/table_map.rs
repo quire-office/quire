@@ -1021,17 +1021,35 @@ fn v_align_y(align: &str, frame_h: f32, h_pt: f32) -> Option<f32> {
     }
 }
 
-/// K10：查詢段落 `para_index` 在表格中的儲存格頁面原點與寬度：
-/// 回傳 `Some((cell_x_pt, cell_y_pt, cell_w_pt, table_left_pt))`。
-/// K15：第四元＝宿主表格左緣（頁座標；`layoutInCell` 的左夾底基準）。
+/// G1：錨點原點系（H/V 兩軸是否取欄／格**內容盒**）。實測證 H 軸內容盒律對
+/// `layoutInCell=1` 同樣成立、V 軸框線/內距補償則不成立（解剖報告 §6），
+/// 兩軸必須能分開閘控，故以枚舉而非單一布林承載。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AnchorContentBox {
+    /// 舊路徑（`G1_BUGGY=1` 回塞態）：H/V 皆格框原點。
+    Frame,
+    /// `lic=1`：僅 H 軸取欄內容盒左緣與內容盒寬；V 軸維持列頂。
+    XOnly,
+    /// `lic=0`：H 取欄內容盒、V 加框線＋上內距（K10/K15 合成考卷口徑）。
+    Xy,
+}
+
+/// K10／K15／G1：查詢段落 `para_index` 在表格儲存格內的頁面原點、寬度與宿主列追蹤資訊。
+/// `content_box` 依 [`AnchorContentBox`] 決定兩軸原點系：H 軸取欄內容盒左緣
+/// （`表左 + 格左 + ½左框線寬 + 左內距`）、寬取內容盒寬（`格寬 − 左內距 − 右內距`）；
+/// V 軸另加 `列頂 + 上框線寬 + 上內距`（僅 `Xy`）。
 pub fn find_cell_for_para(
     tables: &[BodyTable],
     slots: &[TableSlot],
     sections: &[SectionSpec],
     params: &LayoutParams,
     para_index: usize,
-) -> Option<(f32, f32, f32, f32)> {
-    for (bt, slot) in tables.iter().zip(slots.iter()) {
+    content_box: AnchorContentBox,
+    y_rel_to_row: bool,
+) -> Option<((f32, f32, f32, f32), quire_layout::CellHostAnchor)> {
+    let use_content_x = !matches!(content_box, AnchorContentBox::Frame);
+    let use_content_y = matches!(content_box, AnchorContentBox::Xy);
+    for (slot_idx, (bt, slot)) in tables.iter().zip(slots.iter()).enumerate() {
         if para_index < slot.para_start || para_index >= slot.para_end {
             continue;
         }
@@ -1042,7 +1060,7 @@ pub fn find_cell_for_para(
                     _ => false,
                 });
                 if found {
-                    let geom = slot.layout.cell_geom(r_idx, c_idx)?;
+                    let cgeom = slot.layout.cell_content_geom(r_idx, c_idx)?;
                     let (margin_l, margin_t) = match sections.get(slot.para_start) {
                         Some(s) => (s.geo.margin_left_pt, s.geo.margin_top_pt),
                         None => (
@@ -1051,10 +1069,33 @@ pub fn find_cell_for_para(
                         ),
                     };
                     let tblp_y = twip_pt(bt.table.props.tblp_y_raw.as_deref()).unwrap_or(0.0);
-                    let cell_x = margin_l + geom.0;
-                    let cell_y = margin_t + tblp_y + geom.1;
-                    let cell_w = geom.2;
-                    return Some((cell_x, cell_y, cell_w, margin_l + slot.layout.x_off));
+                    let static_row_top = margin_t + cgeom.cell_y_pt;
+                    let table_left = margin_l + slot.layout.x_off;
+                    let (cell_x, cell_w) = if use_content_x {
+                        (
+                            margin_l
+                                + cgeom.cell_x_pt
+                                + 0.5 * cgeom.border_left_pt
+                                + cgeom.pad_left_pt,
+                            (cgeom.cell_w_pt - cgeom.pad_left_pt - cgeom.pad_right_pt).max(1.0),
+                        )
+                    } else {
+                        (margin_l + cgeom.cell_x_pt, cgeom.cell_w_pt)
+                    };
+                    let cell_y = static_row_top
+                        + tblp_y
+                        + if use_content_y {
+                            cgeom.border_top_pt + cgeom.pad_top_pt
+                        } else {
+                            0.0
+                        };
+                    let host = quire_layout::CellHostAnchor {
+                        slot: slot_idx as u32,
+                        row: r_idx as u32,
+                        static_top_bits: static_row_top.to_bits(),
+                        y_rel_to_row,
+                    };
+                    return Some(((cell_x, cell_y, cell_w, table_left), host));
                 }
             }
         }
@@ -1096,8 +1137,10 @@ fn resolved_anchor(
         if let (Some((cx, _, cw, _)), true) = (cell_info, cell_rules(x_origin)) {
             (cw, cx, true)
         } else {
+            let is_col_rel = im.pos_x_rel.as_deref() == Some("column");
             let fw = match x_origin {
                 "page" => page_w,
+                "column" | "margin" if is_col_rel => anchor_para_w.unwrap_or(avail_w),
                 "column" | "margin" => avail_w,
                 _ => anchor_para_w.unwrap_or(avail_w),
             };
@@ -1162,6 +1205,8 @@ fn resolved_anchor(
         y_pt,
         x_frame: if x_is_page {
             quire_layout::OriginFrame::Page
+        } else if im.pos_x_rel.as_deref() == Some("column") && anchor_para_w.is_some() {
+            quire_layout::OriginFrame::Column
         } else {
             quire_layout::origin_frame(x_origin)
         },
@@ -1196,6 +1241,8 @@ pub fn build_images(
     let buggy = std::env::var_os("K10_CELL_ANCHOR_BUGGY").is_some();
     // K15 BUGGY 鎖：忽略 layoutInCell 旗標（回到 K10 純 relativeFrom 原點系）。
     let k15_buggy = std::env::var_os("K15_CELL_ANCHOR_BUGGY").is_some();
+    // G1 BUGGY 鎖：退回修前靜態表格列 y、表格流起頭頁附掛與無框線內距補償。
+    let g1_buggy = std::env::var_os("G1_BUGGY").is_some();
     let mut out: Vec<quire_layout::ImageBand> = images
         .iter()
         .filter(|im| !im.in_cell || (!buggy && im.floating))
@@ -1228,12 +1275,77 @@ pub fn build_images(
                     .max(1.0),
                 ),
             };
-            let cell_info = if !buggy {
-                find_cell_for_para(tables, slots, sections, params, im.para_index)
+            let y_origin = quire_ooxml::origin_of(im.pos_y_rel.as_deref());
+            // G1 返修（11-08 實測分流，見 docs/g1-anchor-relativity-anatomy.md §6）：
+            // 三條律各自獨立閘控，依據全部是 LO 實抓反解，不是推測——
+            // 1. **H 軸內容盒律對 `layoutInCell=1` 同樣成立**：用戶檔三枚 lic=1×column
+            //    錨點，main 原點系與 LO 真值恒差 +5.95pt（=½左框線＋格左內距），換內容盒
+            //    後 405.75/358.70/357.20 對 LO 406.0/359.0/357.5（誤差 ≤0.3pt）；
+            //    bnc891663 同向 431.10→425.95 對 LO 426.2（誤差 +4.9→−0.25pt）。
+            // 2. **V 軸框線＋上內距律對 `layoutInCell=1` 不成立**：用戶檔 LO 真值
+            //    234.5＝宿主列頂 222.55＋posOffset 11.82（**未**加框線/內距）；WC048
+            //    Textbox1 LO 86.9＝列頂 72.0＋posOffset 14.4（加即飛 127.2，錯 40pt）。
+            //    故 V 軸補償僅給 `!lic`（合成考卷口徑）。
+            // 3. **動態列頂 delta（落點 A）與附掛頁（落點 B）對 lic=1 必要**：用戶檔
+            //    delta 關掉＝宿主列頂回退靜態值 101.98（圖飛回頁頂，即本卡原始症狀），
+            //    打開＝183.7（踩我方自己那條列界，自洽）。fdo77887/bnc891663 絕對誤差
+            //    變大是我方**列頂本身**錯位（E1 列高欠債 t_8573d294）所致，圖與列同錯
+            //    ＝視覺自洽；列頂錯位歸 E1，不在本卡。
+            let y_rel_to_row = y_origin != "page" || im.layout_in_cell;
+            let content_box = if g1_buggy {
+                AnchorContentBox::Frame
+            } else if im.layout_in_cell {
+                AnchorContentBox::XOnly
+            } else {
+                AnchorContentBox::Xy
+            };
+            let cell_lookup = if !buggy {
+                find_cell_for_para(
+                    tables,
+                    slots,
+                    sections,
+                    params,
+                    im.para_index,
+                    content_box,
+                    y_rel_to_row,
+                )
             } else {
                 None
             };
-            let anchor = resolved_anchor(im, page_w, page_h, avail_w, avail_h, None, cell_info);
+            let cell_info = cell_lookup.map(|(info, _)| info);
+            // 宿主追蹤資訊**不因 `y_rel_to_row` 假而摘除**：落點 B（附掛頁取宿主列實際
+            // 落點頁）與落點 A（動態列頂 delta）是兩件事——delta 在 layout 層由
+            // `ch.y_rel_to_row` 自行過濾，這裡摘掉 host 會連附掛頁一起退回段落流起頭頁
+            // （K15 fdo68607 鐵證：page 系 V 錨點被推離封面頁）。
+            let cell_host = if !g1_buggy {
+                cell_lookup.map(|(_, host)| host)
+            } else {
+                None
+            };
+            let para_col_w = (!g1_buggy)
+                .then(|| quire_layout::section_break_w_pt(params, sections, im.para_index));
+            let mut anchor =
+                resolved_anchor(im, page_w, page_h, avail_w, avail_h, para_col_w, cell_info);
+            if let (Some(a), Some(ch)) = (anchor.as_mut(), cell_host) {
+                a.y_frame = quire_layout::OriginFrame::CellRow(ch);
+            }
+            if std::env::var_os("G1_DEBUG").is_some() {
+                eprintln!(
+                    "G1DBG para={} floating={} in_cell={} lic={} xrel={:?} yrel={:?} \
+                     xoff={:?} yoff={:?} xalign={:?} cell={:?} anchor={:?}",
+                    im.para_index,
+                    im.floating,
+                    im.in_cell,
+                    im.layout_in_cell,
+                    im.pos_x_rel,
+                    im.pos_y_rel,
+                    im.pos_x_pt,
+                    im.pos_y_pt,
+                    im.pos_x_align,
+                    cell_info,
+                    anchor
+                );
+            }
             let bands = if anchor.is_none() {
                 // 帶量化鉗上限（t_c1fb4c69 S1-4）：病態 extent（源頭值域
                 // 拒絕後仍可能漏進投影層）不得量化出天量帶數拖垮分頁。
