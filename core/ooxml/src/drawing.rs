@@ -150,6 +150,50 @@ pub struct VmlGroupChild {
     pub coord_top: Option<f64>,
 }
 
+/// D9b 欠債一（n792778）：`v:group` **容器群組**的直系子件、其框內
+/// `w:drawing` 圖片的獨立投影。
+///
+/// 存在的理由：既有兩條路徑都接不住這形態——
+///   * K25-B `vml_group_children` 只在「釘定群組（page_pinned）＋直系子件
+///     （coord 幀棧高＝1）」開栓；n792778 是 `margin-left/top` 定位（非釘定）
+///     ＋**巢狀子組**（幀棧高＝2），兩道閂都過不去 ⇒ 兩子件的框內 w:drawing
+///     事實零採集，第二張圖零發射（考卷 d9b_lamp3b 紅燈本體）。
+///   * 宿主候補的 `txbx_drawings`（R35）雖收得到兩張圖，但發射層的
+///     own_rids 去重（宿主 rid 與框內 blip 同源＝框已作為圖片發射）把它們
+///     全部跳過；宿主像素又只有 rId4 一顆 ⇒ 只剩一張圖發在框原點。
+///
+/// 本欄位逐子件記「像素 rid＋子件框矩形（pt，相對群組外框原點，經巢狀 coord
+/// 幀合成）」，發射層才能逐框逐圖發射。**不記框內 `wp:extent`**：LO 對這形態
+/// 把圖塞進**子件框**、無視 drawing 自身 extent（反事實實證：把本檔兩張
+/// `wp:extent` 改成 48×36pt，LO 25.8 仍繪 131.15×122.40＝子件框尺，見
+/// `docs/d9b-inset-redlight.md` §3b）⇒ 記了就是誤導性欄位。
+/// serde default＋空不外露＝既有投影序列化位元組逐位不變（全庫 400 檔掃描：
+/// 此形態只有 n792778 一檔，見 `docs/d9b-inset-redlight.md` §3b）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VmlGroupPicture {
+    /// 像素來源 `a:blip/@r:embed`（採集期即要求齊備——無 rid 不入列）。
+    pub rid: String,
+    /// 子件框矩形（pt，**相對群組外框原點**）＝[dx, dy, 寬, 高]。巢狀子組經
+    /// [`CoordFrame`] 逐層合成（deepest 幀的 map_* 已是相對最外層組頂點）。
+    /// n792778 實測兩子件＝[0,0,131.15,122.40]／[135.25,0,131.15,122.40]，
+    /// 加宿主框原點 (43.20,374.40) 即 LO 真值兩張 bbox，逐位對上。
+    pub rect: [f32; 4],
+    /// 子件自身 `<v:textbox/@inset>`（左,上,右,下 pt）；缺＝None（發射層退
+    /// VML 預設內縮 7.2/3.6，**不是**宿主框的 inset；K25-B 同款口徑）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inset: Option<[f32; 4]>,
+}
+
+/// D9b 欠債一：進行中的「群組子件框內圖」累積（子件 Start 開、子件 End 完結）。
+/// `rect` 由 [`map_child_shape`] 在同一 Start 寫入（coord 幀映射），不讀可變
+/// 全域——同 pict 內後續兄弟子件會覆寫映射結果，延後讀取必然串位。
+#[derive(Default)]
+struct PendingGroupPic {
+    rid: Option<String>,
+    rect: Option<[f32; 4]>,
+    inset: Option<[f32; 4]>,
+}
+
 /// K25-B：解析期進行中的子件累積（完結時轉 [`VmlGroupChild`]）。
 struct PendingVmlChild {
     rect: [f32; 4],
@@ -417,6 +461,11 @@ pub struct InlineImage {
     /// **原始**矩形，相對群組 coord 原點，未做 union 平移）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vml_group_children: Vec<VmlGroupChild>,
+    /// D9b 欠債一：`v:group` 容器群組的**子件框內 `w:drawing` 圖片**清單
+    /// （文档序）。採集條件與宿主退化閂見 [`VmlGroupPicture`]。serde default
+    /// ＋空不外露＝既有投影序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vml_group_pics: Vec<VmlGroupPicture>,
     /// K12：文字框段落邊框（`w:pBdr`）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub txbx_borders: Vec<ShapeBorder>,
@@ -1293,6 +1342,13 @@ fn apply_vml_deco(v: &mut Pending, name: &[u8], e: &quick_xml::events::BytesStar
                     ch.inset = parse_vml_inset(attr_local(e, b"inset").as_deref());
                 }
             }
+            // D9b 欠債一：進行中的「子件框內圖」同樣記子件自己的 inset（框內圖
+            // 是該子件文字區的內容，排版原點＝子件框原點＋子件宣告的 inset）。
+            if let Some(pic) = v.cur_group_pic.as_mut() {
+                if pic.inset.is_none() {
+                    pic.inset = parse_vml_inset(attr_local(e, b"inset").as_deref());
+                }
+            }
             if !v.txbx_vertical {
                 let (_, _, kv) = vml_style_map(attr_local(e, b"style").as_deref());
                 if let Some(flow) = style_lookup(&kv, "layout-flow") {
@@ -1463,10 +1519,16 @@ struct Pending {
     dash: Option<String>,
     /// 最近一個可映射 shape 的組內矩形（pt，相對外框原點）。
     mapped_rect: Option<[f32; 4]>,
-    /// K25-B：進行中的釘定群組子件（`v:group` Start 清空、子件 End 落表）。
+    /// K25-B：進行中的子件累積（`v:group` Start 清空、子件 End 落表）。
     vml_child: Option<PendingVmlChild>,
     /// K25-B：釘定群組已完結的子件清單（文档序）。
     vml_children: Vec<VmlGroupChild>,
+    // ---- D9b 欠債一：容器群組的「子件框內 w:drawing 圖片」累積。----
+    /// 進行中的子件框內圖（子件 Start 開、子件 End 落表；群組外／宿主自身
+    /// 有 imagedata 者不開栓／不落表，見 [`begin_group_pic`]／finalize 閂）。
+    cur_group_pic: Option<PendingGroupPic>,
+    /// 已完結的子件框內圖清單（文档序；刷進 InlineImage.vml_group_pics）。
+    group_pics: Vec<VmlGroupPicture>,
     txbx_rect: Option<[f32; 4]>,
     txbx_inset: Option<[f32; 4]>,
     txbx_vertical: bool,
@@ -1843,6 +1905,8 @@ impl Pending {
             mapped_rect: None,
             vml_child: None,
             vml_children: Vec::new(),
+            cur_group_pic: None,
+            group_pics: Vec::new(),
             txbx_rect: None,
             txbx_inset: None,
             txbx_vertical: false,
@@ -2036,6 +2100,13 @@ impl DrawingParser {
                 v.txbx_blip_rids.push(r.clone());
             }
         }
+        // D9b 欠債一：進行中的群組子件框內圖——像素 rid 首見為準（同 note_rid
+        // 口徑；r:link／svgBlip 等擴充形態老實不搶已捕的 r:embed）。
+        if let Some(pic) = v.cur_group_pic.as_mut() {
+            if pic.rid.is_none() {
+                pic.rid = rid.clone();
+            }
+        }
         v.txbx_frame
             .get_or_insert_with(TxbxFrame::default)
             .note_blip(rid);
@@ -2153,6 +2224,9 @@ impl DrawingParser {
             } else {
                 Vec::new()
             },
+            // D9b 欠債一：容器群組的子件框內圖清單（finalize 已做宿主退化閂：
+            // 群組自身有 imagedata／gfxdata 像素來源＝空＝舊行為零擾動）。
+            vml_group_pics: p.group_pics.clone(),
             txbx_borders: p.txbx_borders.clone(),
             // K19 回塞鎖：buggy 態永不落地 duotone（燈1/2 必紅）。
             duotone: if self.duotone_buggy { None } else { p.duo },
@@ -2222,6 +2296,13 @@ impl DrawingParser {
             }
         }
         if v.vml_image || v.vml_gfxdata || v.has_txbx {
+            // D9b 欠債一：宿主自身有像素來源（`v:imagedata`／OLE `o:gfxdata`）
+            // ＝LO 繪的是宿主那張圖（群組子件框內圖是同一張的重複宣告），
+            // 逐子件清單老實清空＝舊行為零擾動。純容器群組（n792778：兩子件
+            // 皆無 imagedata、像素來自框內 w:drawing）才保留清單。
+            if v.vml_image || v.vml_gfxdata {
+                v.group_pics.clear();
+            }
             self.push_pending(&v);
         }
     }
@@ -2323,6 +2404,13 @@ fn map_child_shape(v: &mut Pending, e: &quick_xml::events::BytesStart) {
     if v.mapped_rect.is_none() {
         v.mapped_rect = Some(rect);
     }
+    // D9b 欠債一：進行中的「子件框內圖」若已在同一 Start 開栓，補寫矩形
+    // （開栓點 [`begin_group_pic`] 先於本函數，見呼叫端順序）。
+    if let Some(pic) = v.cur_group_pic.as_mut() {
+        if pic.rect.is_none() {
+            pic.rect = Some(rect);
+        }
+    }
     // K25-B：進行中的子件累積（僅釘定群組，見 `begin_vml_child`）。首見為準
     // ——巢狀子組內的孫件不改寫本欄（其座標屬子組 coordinate frame）。
     // 注意：本欄＝VML 專用的 `vml_child`，與 K24 DrawingML 的 `cur_child`
@@ -2374,6 +2462,50 @@ fn finish_vml_child(v: &mut Pending) {
         inset: ch.inset,
         align: ch.align,
         coord_top: ch.coord_top,
+    });
+}
+
+/// D9b 欠債一：群組**子件** Start → 開一筆「子件框內 w:drawing 圖片」累積。
+///
+/// 兩道閂（都不動既有路徑）：
+///   * `coord_stack` 空＝無組包裝（pict 直下裸 shape）→ 不屬本路徑，舊行為
+///     零擾動（fdo76591 的 K27-B logo 正是這形態，由宿主框自身發射）。
+///   * `in_txbx`＝當前已在某個 `w:txbxContent` 內（框內再嵌 pict 的 shape）
+///     → 那是宿主文字流的內嵌圖（R35 `txbx_drawings` 路徑），不是群組子件。
+///
+/// 與 K25-B `begin_vml_child` 的差別：本路徑**不看 `page_pinned`、也接受巢狀
+/// 子組內的直系子件**（n792778 的圖片子件在巢狀子組內，coord 幀已逐層合成、
+/// 矩形天然是「相對最外層組原點」）。上一筆若未完結（shape 內再嵌 shape）
+/// 先完結再開新筆，不丟資料。
+fn begin_group_pic(v: &mut Pending, in_txbx: bool) {
+    if v.coord_stack.is_empty() || in_txbx {
+        return;
+    }
+    if v.cur_group_pic.is_some() {
+        finish_group_pic(v);
+    }
+    v.cur_group_pic = Some(PendingGroupPic::default());
+}
+
+/// D9b 欠債一：子件完結 → 像素 rid 與映射矩形齊備且合法才落表（老實退化：
+/// 缺任一項＝發射層無從排版，不虛構座標／不虛構像素來源）。異常膨脹守門
+/// 比照 K25-B（≤64 筆）。
+fn finish_group_pic(v: &mut Pending) {
+    let Some(pic) = v.cur_group_pic.take() else {
+        return;
+    };
+    let (Some(rid), Some(rect)) = (pic.rid, pic.rect) else {
+        return;
+    };
+    if !(rect.iter().all(|x| x.is_finite()) && rect[2] > 0.0 && rect[3] > 0.0)
+        || v.group_pics.len() >= 64
+    {
+        return;
+    }
+    v.group_pics.push(VmlGroupPicture {
+        rid,
+        rect,
+        inset: pic.inset,
     });
 }
 
@@ -2863,6 +2995,10 @@ impl DrawingParser {
                             // K25-B：釘定群組的**直系**子件開一筆框內文字累積
                             // （`coord_stack.len()==1`＝最外層組的直接子件）。
                             begin_vml_child(v, e, v.coord_stack.len());
+                            // D9b 欠債一：群組子件的「框內 w:drawing 圖片」累積
+                            // （先於 map_child_shape，讓 coord 映射結果直接落進
+                            // 本筆；閂＝座標幀棧非空，見函號）。
+                            begin_group_pic(v, self.txbx_depth > 0);
                             map_child_shape(v, e);
                             apply_shape_style(v, e);
                         }
@@ -3899,6 +4035,8 @@ impl DrawingParser {
                 if name != b"group" {
                     if let Some(v) = self.vml.as_mut() {
                         finish_vml_child(v);
+                        // D9b 欠債一：子件框內圖同點完結（rid／矩形齊備才落表）。
+                        finish_group_pic(v);
                     }
                 }
                 self.shape_depth = self.shape_depth.saturating_sub(1);

@@ -3581,16 +3581,68 @@ fn txbx_text_order(n: usize, children: &[usize]) -> Vec<usize> {
     order
 }
 
+/// D9b 欠債一（n792778）：`v:group` **純容器群組**的子件框內圖逐框發射。
+///
+/// 口徑（LO 25.8 pymupdf 實證，`docs/d9b-inset-redlight.md` §3b）：
+/// * 排版原點＝群組外框原點＋子件映射矩形＋**子件自己**的 `v:textbox/@inset`
+///   （缺宣告退 VML 預設內縮 7.2/3.6——K25-B 同款口徑，不是宿主框的值）；
+/// * 發射尺寸＝**子件框尺**（`rect[2]×rect[3]`），無視框內 drawing 自身
+///   `wp:extent`（反事實實證：兩張 `wp:extent` 改 48×36pt，LO 仍繪框尺）。
+/// * 像素缺位＝**不發灰底**：LO 對缺像素的子件不繪任何東西（逐子件發灰底
+///   ＝虛構墨跡），呼叫端據「至少發出一張」才接管宿主像素臂。
+///
+/// 回塞鎖（照 D9b/K25-B BUGGY 先例，熱路徑只在入口讀一次 env）：
+/// `D9B_GROUP_PIC_BUGGY=1` ⇒ 整臂關閉＝舊單發態（d9b_lamp3b 必紅，鑑別力）。
+/// 回 false＝資格不合（無清單／座標非法／零張可發），呼叫端舊路徑逐位不變。
+fn emit_vml_group_pics(
+    items: &mut Vec<DrawItem>,
+    // 群組外框（宿主浮動框）在頁上的原點（pt）；子件 rect 已相對該原點。
+    host: (f32, f32),
+    box_im: &quire_ooxml::InlineImage,
+    pool: PixelPool<'_>,
+) -> bool {
+    if std::env::var_os("D9B_GROUP_PIC_BUGGY").is_some() {
+        return false;
+    }
+    let pics = &box_im.vml_group_pics;
+    if pics.is_empty() {
+        return false;
+    }
+    let (host_x, host_y) = host;
+    let mut emitted = 0usize;
+    for p in pics {
+        let [dx, dy, w, h] = p.rect;
+        if !(w.is_finite() && h.is_finite()) || w <= 0.0 || h <= 0.0 {
+            continue; // 座標非法＝老實跳過本子件（同 K25-B 退化紀律）
+        }
+        let [inset_l, inset_t, _inset_r, _inset_b] = p.inset.unwrap_or(VML_TEXTBOX_DEFAULT_INSET);
+        let pix = take_image_pixel_at(
+            (pool.0, &mut *pool.1, pool.2),
+            |s| s.rid.as_deref() == Some(p.rid.as_str()),
+            host_x + dx + inset_l,
+            host_y + dy + inset_t,
+            w,
+            h,
+            true, // 框尺管轄（LO 實證，見函 docs）
+        );
+        if let Some(it) = pix {
+            items.push(it);
+            emitted += 1;
+        }
+    }
+    emitted > 0
+}
+
 /// K4e2：把宿主段落的 `txbx_texts` 發射進 shape 佔位框（LO 同款語義：
 /// 框內文字按框寬斷行、落在框內；框本身仍由 `emit_image_placeholder` 撐位）。
 /// 字級＝文件基準、x 內縮 3pt（內邊距近似）；**不做高度鉗**——寧可溢出框
 /// 也不丟字（比對指標要文字在，LO 對超高框同樣不裁字）。空框段（""）留
 /// 一行空白（段落分隔語義）。座標＝頁絕對（呼叫端已換算）。
-#[allow(clippy::too_many_arguments)] // 框座標/尺寸/文字/run/樣式基準皆必要輸入，不塞結構體轉運
 /// 框內幾何（K4c 契約 6/7）：`v:textbox/@inset` 四值（left,top,right,bottom
 /// pt）餵文字起點與可用寬高；`txbx_rect`（組映射後的框內矩形）優先於整框；
 /// `txbx_vertical`（layout-flow:vertical）→ 逐字堆疊；`txbx_table` → 框內
 /// 表格逐格填色 Rect（n780563 三色列）。全 None/false/空＝舊行為零擾動。
+#[allow(clippy::too_many_arguments)] // 框座標/尺寸/文字/run/樣式基準皆必要輸入，不塞結構體轉運
 fn emit_txbx_texts(
     items: &mut Vec<DrawItem>,
     x: f32,
@@ -4549,6 +4601,24 @@ fn take_image_pixel(
     w: f32,
     h: f32,
 ) -> Option<DrawItem> {
+    take_image_pixel_at(pool, pred, x, y, w, h, false)
+}
+
+/// D9b 欠債一：`frame_size_wins`＝true 時**無視**池項的 `txbx_drawing_extent`
+/// （K27-B 覆寫），一律以呼叫端給定的 (w,h) 發射。群組子件框內圖用 true：
+/// LO 對這形態把圖塞進**子件框**、無視 drawing 自身 `wp:extent`（反事實實證
+/// `docs/d9b-inset-redlight.md` §3b：把 n792778 兩張 `wp:extent` 改成
+/// 48×36pt，LO 仍繪子件框 131.15×122.40）。
+/// **false＝既有口徑逐位不變**（fdo76591 K27-B 等框內圖仍吃自身 extent）。
+fn take_image_pixel_at(
+    pool: PixelPool<'_>,
+    pred: impl Fn(&PixelSource) -> bool,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    frame_size_wins: bool,
+) -> Option<DrawItem> {
     if w <= 0.0 || h <= 0.0 {
         return None; // 非法尺寸老實不發射（容錯鐵律，同佔位框）
     }
@@ -4568,6 +4638,7 @@ fn take_image_pixel(
         None => {
             // K27-B：textbox 內 w:drawing 尺寸改採自身的 wp:extent，不再覆用外層 VML style 框。
             let (w, h) = match src.txbx_drawing_extent {
+                Some(_) if frame_size_wins => (w, h),
                 Some([ew, eh]) => (ew, eh),
                 None => (w, h),
             };
