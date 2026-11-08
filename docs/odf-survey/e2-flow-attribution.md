@@ -149,6 +149,13 @@ LO PDF 頁 rect vs 我方 `LayoutParams::default()`（假 A4 595×842pt）：
 | ODF-E2d | D4 頁首尾內容 | `strict` 投影段序含 `This is a header.`（styles.xml master-page，逐段文字）；等 C4 動 styles.xml 面 |
 | ODF-E2e | D5 嵌入物件 part | `strict` 含 `圖表標題`＋MathML `A=π`；`SolarOverview`（368 字最大席）含物件段文字 |
 
+### 6.1 E2e 綠燈實測補記（t_d0c2fa7b，2026-11-08）
+
+* **規模更正**：全語料含 `Object*/content.xml` 者實測 **6/50 檔**（`scan_objects.py` 口徑），非本報告 §2 的 5/50——漏計 `HC031-Complicated-Document`（Object 1 純 MathML，無 `office:document` 特徵字串致舊探針型別漏判）。全字面（去空白）合計 **645 字**（524 為舊探針少掃 MathML／spreadsheet 的粗估）；LO 發射子集（我方實發）合計 **239 字**。三口徑已分帳，後續以本節為準。
+* **LO 發射面子規則（六 part 全覆蓋實測，固化於 `core/odf/src/objects.rs` 檔頭＋考卷 `core/odf/tests/odf_e2e_object_parts.rs` 檔頭表）**：圖表發 `chart:title` 段＋categories 範圍內**字串值**格（float 格不發——LO 合成刻度／日期）＋序列名**僅在**有 `<chart:legend>` 且非 `chart:circle` 時發（`strict` 無 legend ⇒ `序列1` 不發＝卡面鐵律；`fdo76098` 圓餅圖例項就是類別 ⇒ 序列名不重複發）；MathML 只取 `mi/mn/mo` 字形（`annotation` StarMath 原始碼零發射）；巢裝試算表只取非空格（16383 個 repeated 空格不發）。`;`（label-separator）／數值欄／date serial 一律不發。
+* **宿主零污染口徑**：物件段獨立入帳 `OdfProjection::object_paragraphs`／`object_text_len`，**不進** `paragraphs`／`flatten()`——宿主 `total_text_len`／`paragraph_count`／斷頁口徑全語料 51 檔逐位零變動（`e2-probes/e2e_object_face.py` 對帳）；S4 strict 文字流軸 raw 口徑 65→77（LO 114）。去空白口徑 gap −45→**−33**＝D4 頁首 14＋LO 合成 19，閉合殘差 0：本席實發 12 字（標題 4＋類別 `1` `2` `3` 3＋MathML 5），較 §3.4 原桶「圖表 11 字」少 4 字——LO 另渲染的 `1`×2 `2`×1 `3`×1 是 **Y 軸自動刻度標籤字元**（刻度 0/0.5/…/3.5 的一部分，LO 依資料 auto-scale，README §11.1 合成類，非我方目標），該 4 字自 D5 桶改判合成桶（15→19）。E2d（頁首 14）修後本席剩 −19 全屬 LO 合成口徑。
+* **對照實測**：LO PDF 逐段命中（發射面 ⊆ 渲染面，六檔全過）＋`ODF_E2E_BUGGY=1` 回塞態（一股腦倒 part `text:p`）必炸 absence 鎖（`;`／`序列1` 混入）且連 MathML presence 都保不住（MathML part 內無 `text:p`）——反向超發事故形態可判別。
+
 ## 7. 複現
 
 解剖工具全部固化於本目錄 `e2-probes/`（report-only，不進 build）：`odtflow_main.rs`（我方逐段投影探針，依賴 `quire-odf` 公開 API）、`evdump_main.rs`（quick-xml 事件流探針，0.37/0.41 兩版共用）、`e2_matrix_final.py`（歸因矩陣＋多重集閉合）、`lo_pdf.py`（LO --convert-to pdf，自備 profile＋收場只殺自己）。LO 轉換一次成功（六檔 PDF 於 scratch `e2_odt/lo_pdf/`）。

@@ -13,6 +13,7 @@
 mod body;
 pub mod layout_glue;
 mod manifest;
+mod objects;
 mod skeleton;
 
 pub use body::{BodyModel, OdfParagraph};
@@ -21,6 +22,7 @@ pub use layout_glue::{
     OdfLayoutParagraph, OdfProjection, DEFAULT_FONT_SIZE_PT, MAX_STYLE_HOPS,
 };
 pub use manifest::{Manifest, ManifestEntry, ALGORITHM_UNSPECIFIED};
+pub use objects::{ObjectKind, OdfObjectText};
 pub use skeleton::OdfSkeleton;
 
 use std::collections::BTreeMap;

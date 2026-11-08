@@ -29,6 +29,7 @@ use quick_xml::events::BytesStart;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
+use crate::objects::{self, OdfObjectText};
 use crate::{OdfBundle, OdfError};
 
 /// layout 層型別再匯出：殼層（quire-cli）經本 crate 取用，不直接 import
@@ -78,13 +79,23 @@ impl OdfLayoutParagraph {
 pub struct OdfProjection {
     /// 段落流：`text:p`＋`text:h` 一律入列（閉合序，同 body.rs 口徑——
     /// 巢裝文字框內段落先於外層容器段落收段）。
+    ///
+    /// **本流永不含物件 part 文字**（ODF-E2e：宿主段不得被物件文字污染；
+    /// `flatten()`／layout／斷頁口徑因此零變動）。
     pub paragraphs: Vec<OdfLayoutParagraph>,
-    /// 段落文字總碼點數。
+    /// 段落文字總碼點數（宿主段落流；物件段計入 `object_text_len` 另立帳）。
     pub total_text_len: usize,
     /// `<text:p>` 原始計數（Start＋Empty 皆計，同 body.rs／survey 口徑）。
     pub text_p_count: usize,
     /// `<text:h>` 原始計數（同上）。
     pub text_h_count: usize,
+    /// ODF-E2e：嵌入物件 part（`Object*/content.xml`）的 LO 發射面文字，
+    /// 依引用 part 的文件序、part 內發射序排列。**獨立帳**：不進
+    /// `paragraphs`、不進 `flatten()`（渲染層要消費物件文字，讀本欄）。
+    pub object_paragraphs: Vec<OdfObjectText>,
+    /// 物件發射文字總碼點數（= 各 `object_paragraphs[].text` 碼點和）。
+    /// 與 `total_text_len` 分帳；對接 LO 的完整文字流總量＝兩者之和。
+    pub object_text_len: usize,
 }
 
 impl OdfProjection {
@@ -121,7 +132,47 @@ pub fn project(bundle: &OdfBundle) -> Result<OdfProjection, OdfError> {
         Err(OdfError::MissingEntry { .. }) => None,
         Err(e) => return Err(e),
     };
-    project_bytes(&content, styles.as_deref())
+    let mut projection = project_bytes(&content, styles.as_deref())?;
+    // ODF-E2e：嵌入物件 part 取字（獨立帳，不進 paragraphs／flatten）。
+    let (object_paragraphs, object_text_len) = object_face(bundle, &content)?;
+    projection.object_paragraphs = object_paragraphs;
+    projection.object_text_len = object_text_len;
+    Ok(projection)
+}
+
+/// ODF-E2e：依宿主 `content.xml` 的 `draw:object` 引用序，逐 part 取 LO 發射面
+/// 文字（規則見 [`crate::objects`]）。回傳（發射段清單, 碼點和）。
+///
+/// 口徑：
+/// * 未被引用的 `Object*/` 目錄不讀（LO 不渲染）；`ObjectReplacements/` 是
+///   `draw:image` 替代圖，非文字源——兩者天然不在引用清單內。
+/// * manifest 宣告加密的物件 part 一併**跳過**（不強讀密文、不吞錯成零段：
+///   宿主軌照常走 `ensure_not_encrypted` 閘門，本欄只是少一筆發射；語料 0 例）。
+/// * 引用了但 zip 內無 `content.xml`（`./Obj100` 這類 OLE 懸空引用，語料 7 例）
+///   → `MissingEntry` 就地跳過；其餘 zip／XML 錯誤照實上報。
+fn object_face(
+    bundle: &OdfBundle,
+    content: &[u8],
+) -> Result<(Vec<crate::objects::OdfObjectText>, usize), OdfError> {
+    let mut out: Vec<crate::objects::OdfObjectText> = Vec::new();
+    let mut chars = 0usize;
+    for dir in objects::object_refs(content)? {
+        let entry = format!("{dir}/content.xml");
+        if bundle.manifest().is_encrypted(&entry) {
+            continue;
+        }
+        let bytes = match bundle.read_entry(&entry) {
+            Ok(b) => b,
+            Err(OdfError::MissingEntry { .. }) => continue,
+            Err(e) => return Err(e),
+        };
+        let media = bundle.manifest().media_type_of(&entry);
+        for t in objects::object_texts(&dir, &bytes, media)? {
+            chars += t.text.chars().count();
+            out.push(t);
+        }
+    }
+    Ok((out, chars))
 }
 
 /// 直接從 content.xml／styles.xml 位元組投影（純函數入口；styles_xml 缺＝
@@ -693,6 +744,10 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
         total_text_len,
         text_p_count,
         text_h_count,
+        // 物件獨立帳由 `project` 另行填入（`project_bytes` 純函數入口無容器，
+        // 讀不到 part——恆為空，非缺陷）。
+        object_paragraphs: Vec::new(),
+        object_text_len: 0,
     })
 }
 
