@@ -625,13 +625,31 @@ mod user_fixture {
         }
         let eng = load_user_fixture().unwrap();
         // 宿主段與同格內聯圖片同 para：真值 y = 內聯圖片頂 + posOffset。
-        // (框線尺寸, 內聯圖尺寸, posOffset)
-        const CASES: [((f32, f32), (f32, f32), f32); 3] = [
-            (FRAME_SM, (141.73, 254.91), 11.82),
-            (FRAME_MD, (141.73, 254.91), 45.10),
-            (FRAME_LG, (141.73, 254.91), 85.00),
+        /// 單枚案例：框線尺寸 × 同格內聯圖尺寸 × posOffset（真值度量，非推測）。
+        struct VCase {
+            frame: (f32, f32),
+            inline: (f32, f32),
+            off: f32,
+        }
+        const CASES: [VCase; 3] = [
+            VCase {
+                frame: FRAME_SM,
+                inline: (141.73, 254.91),
+                off: 11.82,
+            },
+            VCase {
+                frame: FRAME_MD,
+                inline: (141.73, 254.91),
+                off: 45.10,
+            },
+            VCase {
+                frame: FRAME_LG,
+                inline: (141.73, 254.91),
+                off: 85.00,
+            },
         ];
-        for (frame, inline, off) in CASES {
+        for case in CASES {
+            let (frame, inline, off) = (case.frame, case.inline, case.off);
             let Some((fpage, _, fy)) = first_frame(&eng, frame) else {
                 panic!("缺錨點框線 {:?}", frame);
             };
