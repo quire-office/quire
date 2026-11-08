@@ -1,7 +1,19 @@
 //! quire-web —— wasm 殼：只做 wasm-bindgen 適配，零業務邏輯。
 //! 渲染在 JS 端依顯示列表 JSON 執行（Canvas2D → 未來 WebGPU）。
+//!
+//! 兩個入口、同一個顯示列表契約（ODF-D2）：
+//! - [`WasmEngine`]：DOCX 線（可編輯），經 `quire-engine`。
+//! - [`WasmOdtView`]：ODT 線（唯讀渲染），經 `quire-odf` 的 `OdtView`。
+//!   兩者 `page_display_list_json(page)` 吐出的 JSON **同 schema**（同一個
+//!   `PageDisplayList` serde 契約），JS 端繪圖碼零改即可畫 ODT。
+//!   路線定案（PM 11-08）：ODT 不走 `Engine` 邊——唯讀檔型塞 docx 中心的
+//!   Engine ＝ 半契約兩極性（見 `docs/odf-d1-anatomy.md` §5）。
 
 use quire_engine::Engine;
+// 紅燈佔位態：以下兩型別由真實作 commit 啟用（拍紅 commit 先備好 import 面，
+// 避免紅→綠 diff 混入無關行）。
+#[allow(unused_imports)]
+use quire_odf::{OdfBundle, OdtView};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -105,5 +117,63 @@ impl WasmEngine {
     /// 背景續排一步：{"settled":bool,"events":[...]} JSON（requestIdleCallback 迴圈）。
     pub fn reflow_step_json(&mut self) -> String {
         self.inner.reflow_step_json()
+    }
+}
+
+// ============================ ODF-D2：ODT 入口 ============================
+//
+// 紅燈佔位態（拍紅用，見 `docs/odf-d2-redlight.md`）：`WasmOdtView` 以下為
+// **佔位空殼**——`new` 一律 `Ok`、`page_count` 回 0、JSON 一律 `None`。考卷
+// `shells/web/tests/odf_d2_wasm_view.rs` 因此**斷言拍紅**（非編譯紅），證明
+// 七盞燈真的在檢查東西。真實作於下一個 commit 頂掉本節。
+
+/// ODT 顯示列表視圖（wasm 殼）——佔位態，尚未實作。
+#[wasm_bindgen]
+pub struct WasmOdtView {
+    _marker: (),
+}
+
+#[wasm_bindgen]
+impl WasmOdtView {
+    #[wasm_bindgen(constructor)]
+    pub fn new(_bytes: &[u8]) -> Result<WasmOdtView, String> {
+        Ok(Self { _marker: () })
+    }
+
+    pub fn page_count(&self) -> usize {
+        0
+    }
+
+    pub fn page_display_list_json(&self, _page: usize) -> Option<String> {
+        None
+    }
+
+    pub fn dump_json(&self) -> String {
+        "[]".to_string()
+    }
+
+    pub fn paragraph_count(&self) -> usize {
+        0
+    }
+
+    pub fn total_text_len(&self) -> usize {
+        0
+    }
+
+    pub fn paper_json(&self) -> String {
+        "{}".to_string()
+    }
+
+    pub fn paper_override_applied(&self) -> bool {
+        false
+    }
+
+    pub fn is_settled(&self) -> bool {
+        true
+    }
+
+    /// 讀取面：ODT 線無增量重排（開檔一次性分頁），恆回已定案。
+    pub fn reflow_step_json(&self) -> String {
+        "{\"settled\":true,\"events\":[]}".to_string()
     }
 }
