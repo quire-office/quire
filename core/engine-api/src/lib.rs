@@ -2363,24 +2363,43 @@ impl Engine {
             } else {
                 (fm.x_pt, fm.y_pt)
             };
-            // K4c 合併語意（浮動圖同口徑）：像素命中發真像素並跳過發框，
-            // 未命中發 emit_image_shape 實色框；框內文字照常配對。
-            let pix = take_image_pixel(
-                (self.image_pixels.as_slice(), &mut px_used, &self.doc.parts),
-                |s| s.para == fm.para && (s.w_pt - fm.w_pt).abs() < 0.01,
-                target_x,
-                target_y,
-                fm.w_pt,
-                fm.h_pt,
-            );
             // K4e2：浮動錨定文字框（DrawingML anchor）：框內文字落在換算後的鎖點。
+            // D9b 欠債一：本查找提前到像素臂之前——群組子件接管閂需要先看
+            // 候補帶不帶 `vml_group_pics`。查找本身只讀 `shape_boxes`／`box_used`
+            // 不改狀態，順序前移對舊路徑逐位無害。
             let hit = self.shape_boxes.iter().enumerate().find(|(i, (bp, b))| {
                 !box_used[*i] && *bp == fm.para && (b.w_pt - fm.w_pt).abs() < 0.01
             });
             let box_b = hit.map(|(_, (_, b))| b);
-            match pix {
-                Some(it) => items.push(it),
-                None => emit_image_shape(&mut items, fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt, box_b),
+            // D9b 欠債一：**純容器群組**（群組自身無 imagedata／gfxdata，像素
+            // 來自各子件框內 `w:drawing`）逐子件發射。接管條件是**全數命中**
+            // （`emitted == pics.len()`）：只要有一張池裡無像素就整臂退回 false
+            // ＝宿主單發舊態逐位不變（寧可少發也不虛構／不留半套新態）。
+            // 接管成功 ⇒ 宿主框自身不再作為圖片發射、也不發佔位框（LO 對純容器
+            // 群組不繪任何框線），並令框內文字臂不再重發同一批圖（去重）。
+            let group_pics_taken = box_b.is_some_and(|b| {
+                emit_vml_group_pics(
+                    &mut items,
+                    (fm.x_pt, fm.y_pt),
+                    b,
+                    (self.image_pixels.as_slice(), &mut px_used, &self.doc.parts),
+                )
+            });
+            if !group_pics_taken {
+                // K4c 合併語意（浮動圖同口徑）：像素命中發真像素並跳過發框，
+                // 未命中發 emit_image_shape 實色框。
+                let pix = take_image_pixel(
+                    (self.image_pixels.as_slice(), &mut px_used, &self.doc.parts),
+                    |s| s.para == fm.para && (s.w_pt - fm.w_pt).abs() < 0.01,
+                    target_x,
+                    target_y,
+                    fm.w_pt,
+                    fm.h_pt,
+                );
+                match pix {
+                    Some(it) => items.push(it),
+                    None => emit_image_shape(&mut items, fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt, box_b),
+                }
             }
             // K25-B：釘定 VML 群組的子件框內文字——逐框排版（LO 真值擬合；
             // 接管成功＝本框不再走 emit_txbx_texts，免得整組文字再塌框頂）。
@@ -3609,14 +3628,17 @@ fn emit_vml_group_pics(
         return false;
     }
     let (host_x, host_y) = host;
-    let mut emitted = 0usize;
+    // 全數命中才接管：先在暫存區排完，任一子件缺像素＝整臂放棄（老實退化，
+    // 呼叫端舊路徑逐位不變）——半套接管會同時留「少一張圖」與「灰底補位」
+    // 兩類虛構墨跡，比舊態更糟。
+    let mut buf: Vec<DrawItem> = Vec::with_capacity(pics.len());
     for p in pics {
         let [dx, dy, w, h] = p.rect;
         if !(w.is_finite() && h.is_finite()) || w <= 0.0 || h <= 0.0 {
-            continue; // 座標非法＝老實跳過本子件（同 K25-B 退化紀律）
+            return false; // 座標非法＝資格不合（同 K25-B 退化紀律）
         }
         let [inset_l, inset_t, _inset_r, _inset_b] = p.inset.unwrap_or(VML_TEXTBOX_DEFAULT_INSET);
-        let pix = take_image_pixel_at(
+        let Some(it) = take_image_pixel_at(
             (pool.0, &mut *pool.1, pool.2),
             |s| s.rid.as_deref() == Some(p.rid.as_str()),
             host_x + dx + inset_l,
@@ -3624,13 +3646,16 @@ fn emit_vml_group_pics(
             w,
             h,
             true, // 框尺管轄（LO 實證，見函 docs）
-        );
-        if let Some(it) = pix {
-            items.push(it);
-            emitted += 1;
-        }
+        ) else {
+            return false; // 像素缺位＝不接管（且不發灰底＝不虛構墨跡）
+        };
+        buf.push(it);
     }
-    emitted > 0
+    if buf.is_empty() {
+        return false;
+    }
+    items.extend(buf);
+    true
 }
 
 /// K4e2：把宿主段落的 `txbx_texts` 發射進 shape 佔位框（LO 同款語義：

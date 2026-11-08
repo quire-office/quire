@@ -1814,6 +1814,8 @@ mod tests {
             pos_y_pct: None,
             // K25-B：手刻最小候選＝非釘定群組，子件清單恆空（serde 不外露）。
             vml_group_children: Vec::new(),
+            // D9b 欠債一：手刻最小候選＝容器群組子件框內圖恆空（serde 不外露）。
+            vml_group_pics: Vec::new(),
             overlap: None,
             embed_rid: None,
             embed_rids: Vec::new(),

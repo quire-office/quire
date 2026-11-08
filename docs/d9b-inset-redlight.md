@@ -28,14 +28,15 @@
 | --- | --- | --- |
 | 1 | fdo76591 `_x0000_s1039` 框內圖 | 綠（偏 LO 0.75pt；`D9B_INSET_BUGGY=1` 回塞態偏 7.95pt ⇒ 鑑別力成立） |
 | 2 | fdo76591 頁腳 logo（D9 主證零回退） | 綠（頂緣 732.80pt ±2.0，且仍繪於 4pt 框底線之上；`D9B_INSET_BUGGY=1` 回塞態 729.20pt 必紅） |
-| 3 | n792778 群組框（宣告 `inset="0,0,0,0"`） | 綠（我方實際發射的那張偏 LO 2.70pt；原燈斷言的第二張屬**群組子件漏發**，另掛盞，見 §3） |
-| 3b | n792778 群組第二張圖 | `#[ignore]` 欠債（`v:group` 第二子件零發射，非 inset 路徑；見 §3） |
+| 3 | n792778 群組框（宣告 `inset="0,0,0,0"`） | 綠（欠債一收案後我方**兩張**皆發，首張偏 LO 0.05pt，見 §3b；收案前該燈吃的是宿主單發那張、偏 2.70pt） |
+| 3b | n792778 群組第二張圖 | **本卡收案轉綠**（原 `#[ignore]` 欠債盞；`v:group` 子件框內圖逐框發射，見 §3b） |
 | 4 | tdf102466 頁首框（宣告 `inset="0in,0in,0in,0in"`） | 綠 |
 | 5 | 契約鎖：`Some`／`None` 可區分 | 綠（fdo76591 兩框皆 `None`＋`content_pic=true`） |
 | 6 | tdf48658 頁首框內圖 | `#[ignore]` 欠債（頁首 `push_hf_slot` 無浮動框分支，見 §5） |
 
-`cargo test -p quire-engine --test d9b_txbx_inset_data_driven` 收工實測：
-`5 passed; 0 failed; 2 ignored`（欠債盞不髒零回退閘門）。
+`cargo test -p quire-engine --test d9b_txbx_inset_data_driven` 收工實測（欠債一
+`t_6aade0f3` 收案後）：`6 passed; 0 failed; 1 ignored`（欠債盞不髒零回退閘門；
+原為 `5 passed; 0 failed; 2 ignored`，燈 3b 已解 `#[ignore]`）。
 
 防調參護欄：`cargo test -p quire-engine --test d9_frame_overlap` 三燈全綠（merge main 後重跑實證）。
 
@@ -91,6 +92,72 @@
 * 該面屬卡面白紙黑條的**嚴禁面**（VML 採集狀態機／`group_shapes` 欄位圖，R35
   `t_c088956f` 剛收案的同一帶）。本卡不越界修，改開欠債卡。
 
+## 3b. 欠債一收案（t_6aade0f3）：純容器群組的子件框內圖逐框發射
+
+**形態**（`word/document.xml` 實測，探針 `group_pretty.xml`）：`v:group` `_x0000_s1125`
+（`margin-left:0;margin-top:331.2pt;width:676.8pt;height:122.4pt`，`coordorigin="864,4320"`
+`coordsize="13536,2448"`）下掛兩個**巢狀子組** `_x0000_s1126`／`_x0000_s1129`，各自
+`coordsize="2623,2448"`，子組內各一個 `v:shape`（`_x0000_s1127`／`_x0000_s1130`，
+`type="#_x0000_t202"`、`filled="f" stroked="f"`、無 `v:imagedata`），像素來自子件
+`v:textbox/@inset="0,0,0,0"` 框內的 `w:drawing`（兩張同 `a:blip r:embed="rId4"`）。
+
+**既有兩條路徑都接不住**（這是缺口成因，不是 inset 套用錯）：
+
+1. K25-B `vml_group_children` 雙閂都過不去——該臂只在「釘定群組（`page_pinned`）＋
+   直系子件（`coord_stack.len()==1`）」開栓；本檔是 `margin-left/top` 定位（非釘定）
+   ＋子件在**巢狀子組內**（幀棧高 2）。
+2. 宿主候補的 `txbx_drawings`（R35）收得到兩張圖，但發射層的 `own_rids` 去重（宿主
+   rid 與框內 blip 同源＝框已作為圖片發射）把它們**全部跳過**，宿主像素只有 rId4 一顆
+   ⇒ 只剩一張發在框原點。
+
+**架構決斷：新增 `VmlGroupPicture` 獨立投影，不改既有欄位圖。** `serde default`＋空
+清單不外露 ⇒ 全庫 400 檔掃描只有本檔有此形態（探針 `scan_group_pics2.py`：`命中 1 檔`），
+其餘檔案的投影序列化位元組逐位不變。
+
+**發射尺＝子件框尺，不記框內 `wp:extent`——反事實實證（本 run 重跑，非引用前 run 說詞）**：
+探針 `scratch_d9b/cf_extent_counterfactual.py` 把兩張框內 drawing 的 `wp:extent`
+（原 `cx=1662430 cy=1520190` EMU＝130.90×119.70pt）改成 **48×36pt**（實替換 2 處），
+Windows LO 25.8 重轉 PDF 後 pymupdf 實測：
+
+```
+p0 bbox=[43.25,374.35,174.40,496.75] w=131.15 h=122.40
+p0 bbox=[178.45,374.35,309.60,496.75] w=131.15 h=122.40
+```
+
+與未改extent的LO真值逐位相同 ⇒ **LO 對這形態把圖塞進子件框、無視 drawing 自身 extent**。
+故 `VmlGroupPicture` 若記框內 extent 就是誤導性欄位（發射層發的是框尺）。發射層
+`take_image_pixel_at(..., frame_size_wins=true)` 據此**無視**池項 `txbx_drawing_extent`
+（K27-B 覆寫），`false` 側既有口徑逐位不變（fdo76591 等框內圖仍吃自身 extent）。
+
+**座標口徑**：排版原點＝群組外框原點＋子件映射矩形（巢狀 coord 幀逐層合成，`CoordFrame`
+的 `map_*` 已是相對最外層組頂點）＋**子件自己**的 `v:textbox/@inset`（缺宣告退 VML 預設
+7.2/3.6，K25-B 同款口徑，**不是**宿主框的 inset）。n792778 兩子件映射框
+`[0,0,131.15,122.40]`／`[135.25,0,131.15,122.40]`＋宿主原點 `(43.20,374.40)`
+⇒ 我方實發 `(43.20,374.40,131.15,122.40)`／`(178.45,374.40,131.15,122.40)`，
+偏 LO 真值（`§3` 那兩張）分別為 **0.05pt（x/y 皆 ≤0.05）**／**0.05pt**。
+
+**接管閂＝全數命中才接管**：任一子件座標非法或池裡無像素 ⇒ 整臂回 `false`＝宿主單發舊態
+逐位不變（半套接管會同時留「少一張圖」與「灰底補位」兩類虛構墨跡，比舊態更糟）。接管
+成功時宿主框自身不再作為圖片發射、也不發佔位框（LO 對純容器群組不繪框線）。宿主自身
+有 `v:imagedata`／`o:gfxdata` 時採集層把清單清空＝舊行為零擾動。
+
+**燈號與零回退實測**（本 run 實跑）：
+
+| 項 | 實測 |
+| --- | --- |
+| `d9b_lamp3b`（解 `#[ignore]` 後） | 綠，偏 LO 0.05pt（另加「p0 恰好 2 張」守恆鎖） |
+| `D9B_GROUP_PIC_BUGGY=1` 回塞態 | 燈 3b **必紅**（實得偏 135.25pt＝舊單發態）⇒ 鑑別力成立 |
+| `d9b` 全考卷 | `6 passed; 0 failed; 1 ignored`（剩燈 6 屬 §5 另卡） |
+| `cargo test --workspace` | `failed_total=0`（95 支 test target 全 ok） |
+| `d9_frame_overlap` 三燈 | 全綠 |
+| FMT / CLIPPY | `cargo fmt --check` 乾淨／`cargo clippy --workspace --all-targets` 零警告 |
+| render_lab fdo76591 | 內容 0.98／版面 1.0／色 0.8／圖 0.797——改前改後**逐位相同** |
+| render_lab WC048 | 內容 1.0／版面 1.0／色 0.922——改前改後**逐位相同** |
+
+A/B 基準手法：**同一支 binary**，改前態用 `D9B_GROUP_PIC_BUGGY=1`（新臂入口第一行即
+`return false`，其後程式碼路徑與改前逐位相同），排除編譯器/環境漂移。全語料 400 檔
+顯示列表逐檔差分見 `scratch_d9b/ab_env_diff.py`（結果記於 §7）。
+
 ## 4. 第 3 條（正文文字字面量臂）：`t.contains("11-016") || t.contains("3-23-2011")`
 
 實測（探針 `scratch_d9b/find_11_016.py`／`find_2011.py`）：
@@ -120,6 +187,7 @@ tdf48658_transparentOLEheader 頁首框內 `w:drawing` 圖**零發射**：頁首
 1. 第 2 條：卡面數值前提被 §2 實測推翻——需裁定改用 §2 末「同源推導」寫法
    （解析層補 VML 絕對位移欄位）或另定「背景覆頁框」事實；**不得**照原卡面把
    `22.05` 換成 `pgMar.left`（會打紅三燈護欄）。
-2. 燈 3：群組子件圖片漏發（採集／發射面，R35 同帶）→ 另開欠債卡。
+2. ~~燈 3：群組子件圖片漏發（採集／發射面，R35 同帶）→ 另開欠債卡。~~
+   **已收案**：欠債一 `t_6aade0f3`（本檔 §3b），`d9b_lamp3b` 解 `#[ignore]` 轉 CI 常態綠。
 3. 燈 6：頁首框內圖零發射（`push_hf_slot`）→ 另開欠債卡。
 4. 第 3 條：字面量臂的根治屬框內段落流逐段推進（D8 家族）→ 另開欠債卡。

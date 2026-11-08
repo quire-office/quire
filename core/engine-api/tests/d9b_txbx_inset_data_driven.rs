@@ -178,17 +178,18 @@ fn d9b_lamp3_declared_zero_inset_is_not_the_default() {
     );
 }
 
-/// 燈 3b（欠債盞）：n792778 群組**第二張**圖我方零發射。
+/// 燈 3b（本卡收案盞，原欠債盞）：n792778 群組**第二張**圖。
 ///
-/// 缺口定位（`docs/d9b-inset-redlight.md` §3）：`PageFloatingImage` 只收到群組外框
+/// 原缺口（`docs/d9b-inset-redlight.md` §3）：`PageFloatingImage` 只收到群組外框
 /// `(43.20,374.40,676.80,122.40)`＋`inset=Some([0,0,0,0])`；兩張真圖屬 `v:group`
 /// 兩個子件（`_x0000_s1127`／`_x0000_s1130`，皆無 `v:imagedata`、像素來自框內
 /// `w:drawing`），其中第二子件的圖未被發射。**非 inset 路徑缺陷**（首張已命中），
 /// 且 merge-base binary 逐位相同＝既有缺口。
-/// 解鎖條件：群組子件圖片發射補齊（VML 採集／`group_shapes` 面，R35 同帶，
-/// 另開欠債卡）。
+/// 收案（t_6aade0f3）：採集層 `VmlGroupPicture`（`core/ooxml/src/drawing.rs`）＋
+/// 發射層 `emit_vml_group_pics`（`core/engine-api/src/lib.rs`）逐子件發射。
+/// 鑑別力回塞鎖：`D9B_GROUP_PIC_BUGGY=1` 整臂關閉＝舊單發態，本燈必紅
+/// （實跑記錄見 `docs/d9b-inset-redlight.md` §3b）。
 #[test]
-#[ignore = "欠債：v:group 第二子件圖片零發射（非 inset 路徑；屬 R35 嚴禁面）；見 docs/d9b-inset-redlight.md §3"]
 fn d9b_lamp3b_group_second_child_picture_emitted() {
     let bytes = read_corpus("ooxmlexport/n792778.docx");
     let eng = Engine::from_docx_bytes(&bytes).expect("開啟 n792778 失敗");
@@ -200,6 +201,13 @@ fn d9b_lamp3b_group_second_child_picture_emitted() {
     assert!(
         dev <= 4.0,
         "群組第二張圖偏 LO 真值達 {dev:.2}pt（容差 4.0pt）"
+    );
+    // 守恆鎖：LO p0 實測恰好兩張（探針 scratch_d9b/lamp3_diag.py），我方不得
+    // 多發第三張（接管臂若漏去重會在框原點重複宿主單發那張）。
+    assert_eq!(
+        imgs.len(),
+        2,
+        "n792778 p0 應恰好兩張圖（LO pymupdf 實測 2 張）；實得 {imgs:?}"
     );
 }
 
