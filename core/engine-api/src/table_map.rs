@@ -1022,16 +1022,19 @@ fn v_align_y(align: &str, frame_h: f32, h_pt: f32) -> Option<f32> {
 }
 
 /// K10／K15／G1：查詢段落 `para_index` 在表格儲存格內的頁面原點、寬度與宿主列追蹤資訊。
-/// `use_content_box` 為真（`!layout_in_cell && !G1_BUGGY`）時，H 軸原點取欄內容盒左緣
-/// （`表左 + 格左 + ½左框線寬 + 左內距`）、寬取內容盒寬（`格寬 - 左內距 - 右內距`），
-/// V 軸原點加上上框線寬與上內距（`列頂 + 上框線寬 + 上內距`）；為假時維持 K10/K15 格框原點。
+/// `use_content_x` 為真時 **H 軸**原點取欄內容盒左緣
+/// （`表左 + 格左 + ½左框線寬 + 左內距`）、寬取內容盒寬（`格寬 − 左內距 − 右內距`）；
+/// `use_content_y` 為真時 **V 軸**原點加上上框線寬與上內距（`列頂 + 上框線寬 + 上內距`）；
+/// 兩者為假時維持 K10/K15 格框原點。兩軸分開閘控：實測證 H 軸內容盒律對
+/// `layoutInCell=1` 同樣成立，V 軸框線/內距補償則不成立（見解剖報告 §6）。
 pub fn find_cell_for_para(
     tables: &[BodyTable],
     slots: &[TableSlot],
     sections: &[SectionSpec],
     params: &LayoutParams,
     para_index: usize,
-    use_content_box: bool,
+    use_content_x: bool,
+    use_content_y: bool,
     y_rel_to_row: bool,
 ) -> Option<((f32, f32, f32, f32), quire_layout::CellHostAnchor)> {
     for (slot_idx, (bt, slot)) in tables.iter().zip(slots.iter()).enumerate() {
@@ -1056,22 +1059,24 @@ pub fn find_cell_for_para(
                     let tblp_y = twip_pt(bt.table.props.tblp_y_raw.as_deref()).unwrap_or(0.0);
                     let static_row_top = margin_t + cgeom.cell_y_pt;
                     let table_left = margin_l + slot.layout.x_off;
-                    let (cell_x, cell_y, cell_w) = if use_content_box {
+                    let (cell_x, cell_w) = if use_content_x {
                         (
                             margin_l
                                 + cgeom.cell_x_pt
                                 + 0.5 * cgeom.border_left_pt
                                 + cgeom.pad_left_pt,
-                            static_row_top + tblp_y + cgeom.border_top_pt + cgeom.pad_top_pt,
                             (cgeom.cell_w_pt - cgeom.pad_left_pt - cgeom.pad_right_pt).max(1.0),
                         )
                     } else {
-                        (
-                            margin_l + cgeom.cell_x_pt,
-                            static_row_top + tblp_y,
-                            cgeom.cell_w_pt,
-                        )
+                        (margin_l + cgeom.cell_x_pt, cgeom.cell_w_pt)
                     };
+                    let cell_y = static_row_top
+                        + tblp_y
+                        + if use_content_y {
+                            cgeom.border_top_pt + cgeom.pad_top_pt
+                        } else {
+                            0.0
+                        };
                     let host = quire_layout::CellHostAnchor {
                         slot: slot_idx as u32,
                         row: r_idx as u32,
@@ -1259,8 +1264,24 @@ pub fn build_images(
                 ),
             };
             let y_origin = quire_ooxml::origin_of(im.pos_y_rel.as_deref());
+            // G1 返修（11-08 實測分流，見 docs/g1-anchor-relativity-anatomy.md §6）：
+            // 三條律各自獨立閘控，依據全部是 LO 實抓反解，不是推測——
+            // 1. **H 軸內容盒律對 `layoutInCell=1` 同樣成立**：用戶檔三枚 lic=1×column
+            //    錨點，main 原點系與 LO 真值恒差 +5.95pt（=½左框線＋格左內距），換內容盒
+            //    後 405.75/358.70/357.20 對 LO 406.0/359.0/357.5（誤差 ≤0.3pt）；
+            //    bnc891663 同向 431.10→425.95 對 LO 426.2（誤差 +4.9→−0.25pt）。
+            // 2. **V 軸框線＋上內距律對 `layoutInCell=1` 不成立**：用戶檔 LO 真值
+            //    234.5＝宿主列頂 222.55＋posOffset 11.82（**未**加框線/內距）；WC048
+            //    Textbox1 LO 86.9＝列頂 72.0＋posOffset 14.4（加即飛 127.2，錯 40pt）。
+            //    故 V 軸補償僅給 `!lic`（合成考卷口徑）。
+            // 3. **動態列頂 delta（落點 A）與附掛頁（落點 B）對 lic=1 必要**：用戶檔
+            //    delta 關掉＝宿主列頂回退靜態值 101.98（圖飛回頁頂，即本卡原始症狀），
+            //    打開＝183.7（踩我方自己那條列界，自洽）。fdo77887/bnc891663 絕對誤差
+            //    變大是我方**列頂本身**錯位（E1 列高欠債 t_8573d294）所致，圖與列同錯
+            //    ＝視覺自洽；列頂錯位歸 E1，不在本卡。
             let y_rel_to_row = y_origin != "page" || im.layout_in_cell;
-            let use_content_box = !g1_buggy && !im.layout_in_cell;
+            let use_content_x = !g1_buggy;
+            let use_content_y = !g1_buggy && !im.layout_in_cell;
             let cell_lookup = if !buggy {
                 find_cell_for_para(
                     tables,
@@ -1268,14 +1289,15 @@ pub fn build_images(
                     sections,
                     params,
                     im.para_index,
-                    use_content_box,
+                    use_content_x,
+                    use_content_y,
                     y_rel_to_row,
                 )
             } else {
                 None
             };
             let cell_info = cell_lookup.map(|(info, _)| info);
-            let cell_host = if !g1_buggy {
+            let cell_host = if !g1_buggy && y_rel_to_row {
                 cell_lookup.map(|(_, host)| host)
             } else {
                 None
