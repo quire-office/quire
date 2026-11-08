@@ -33,23 +33,24 @@
 //!
 //! ## 燈號狀態（PM 掛帳制；比照 `r34_placeholder_fill.rs` 燈 5 的 `#[ignore]` 慣例）
 //!
-//! **三盞**標 `#[ignore]`：燈 1 的 p1 首末行盞、燈 3 兩盞。它們測的是**本卡準改面
-//! 之外**的缺陷（packer 首行計帶／`w:br type="page"` 遇錨定圖形），本卡若讓它們
-//! 紅在 `cargo test --workspace`，等於把零回退鐵條的閘門自己弄髒。解 ignore 的
-//! 條件寫在各自燈的 ignore 屬性字串裡。
+//! **一盞**標 `#[ignore]`：燈 1 的 p1 首末行盞（packer 首行計帶＋卡 B／卡 D 連動）。
+//! 它測的是**本卡準改面之外**的缺陷，若讓它紅在 `cargo test --workspace`，等於把
+//! 零回退鐵條的閘門自己弄髒。解 ignore 的條件寫在該燈的 ignore 屬性字串裡。
+//! （燈 3 兩盞已解 ignore 轉 CI 常態綠：E1-B dataBinding 落地後 CoverPage 由 1 頁
+//! 轉 2 頁、p1 零墨跡形態同時成立——`-- --ignored` 實測 2 passed/0 failed，PM 於
+//! E1-C 收案後解鎖；`w:br type="page"` 遇錨定圖形的判頁缺口由該燈的落地證明已閉。）
 //! （燈 4 已解 ignore：E1-B dataBinding 真值求值落地——`core/ooxml/src/databind.rs`
 //! xpath 求值 docProps/core.xml＋發射層覆寫臂，`Eric White` 被 `Quire Corpus` 覆寫。）
 //! （燈 1 **頁數盞已解 ignore 轉 CI 常態綠**：E1-C t_ab6c5319 定錨跨環境 LO 真值——
 //! Linux LO 以 private fontconfig 注入真 `trebuc.ttf` 後與 Windows LO（render_lab 板）
 //! 收斂於 2 頁，我方 2 頁逐項匹配；見 `docs/e1c-advance-anatomy.md` §2。）
-//! （燈 1 p1 首末行盞與燈 3b（`..._second_page_is_physically_blank`）是形態鎖，
-//! 頁數對但切點未對時無從驗證，隨各自父燈解鎖。）
+//! （燈 1 p1 首末行盞是形態鎖，頁數對但切點未對時無從驗證，隨父燈（卡 B／卡 D）解鎖。）
 //!
 //! ```text
 //! $ cargo test -p quire-engine --test e1_pagination
-//! test result: ok. 3 passed; 0 failed; 3 ignored
+//! test result: ok. 5 passed; 0 failed; 1 ignored
 //! $ cargo test -p quire-engine --test e1_pagination -- --ignored
-//! test result: FAILED. 0 passed; 3 failed   ← 這三盞是欠債，修復卡須使其轉綠
+//! test result: FAILED. 0 passed; 1 failed   ← 這一盞是欠債（packer 首行計帶），修復卡須使其轉綠
 //! ```
 //!
 //! 欠債燈的真實成因（逐條定量見 `docs/e1-redlight.md` ＋ `docs/e1c-advance-anatomy.md`）
@@ -255,7 +256,6 @@ fn lamp2_gridspan_slice_geometry_is_locked() {
 // 湊分數）。
 
 #[test]
-#[ignore = "欠債：LO 第 2 頁是尾端 w:br type=\"page\" 遇錨定圖形的產物（消融實證，docs/e1-redlight.md §3.2），判頁邏輯屬 core/layout/ 但本卡無準改動可觸及該組合，留待專卡"]
 fn lamp3_coverpage_page_count_matches_lo() {
     let eng = load(COVER);
     assert_eq!(
@@ -269,7 +269,6 @@ fn lamp3_coverpage_page_count_matches_lo() {
 }
 
 #[test]
-#[ignore = "欠債：形態鎖，須先有 p1 才可驗證，隨 lamp3 頁數燈一併解鎖"]
 fn lamp3_coverpage_second_page_is_physically_blank() {
     let eng = load(COVER);
     if eng.page_count() < 2 {
