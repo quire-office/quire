@@ -183,6 +183,7 @@ fn wc048_textbox1_textbox2_position_locked() {
 /// 見 docs/g1-anchor-relativity-anatomy.md §6）：
 /// - 修態（內容盒律）框 x=128.00 → dx=**+1.05**；
 /// - `G1_BUGGY=1`（舊格框原點系）框 x=122.10 → dx=**−4.85**（打紅，鑑別力成立）。
+///
 /// 文字 y 鎖維持原值（21.64±0.5，未受 H 軸改動影響，逐位元組未回退）。
 #[test]
 fn fdo68607_cover_title_position_locked() {
