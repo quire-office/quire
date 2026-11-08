@@ -1021,22 +1021,34 @@ fn v_align_y(align: &str, frame_h: f32, h_pt: f32) -> Option<f32> {
     }
 }
 
+/// G1：錨點原點系（H/V 兩軸是否取欄／格**內容盒**）。實測證 H 軸內容盒律對
+/// `layoutInCell=1` 同樣成立、V 軸框線/內距補償則不成立（解剖報告 §6），
+/// 兩軸必須能分開閘控，故以枚舉而非單一布林承載。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AnchorContentBox {
+    /// 舊路徑（`G1_BUGGY=1` 回塞態）：H/V 皆格框原點。
+    Frame,
+    /// `lic=1`：僅 H 軸取欄內容盒左緣與內容盒寬；V 軸維持列頂。
+    XOnly,
+    /// `lic=0`：H 取欄內容盒、V 加框線＋上內距（K10/K15 合成考卷口徑）。
+    Xy,
+}
+
 /// K10／K15／G1：查詢段落 `para_index` 在表格儲存格內的頁面原點、寬度與宿主列追蹤資訊。
-/// `use_content_x` 為真時 **H 軸**原點取欄內容盒左緣
+/// `content_box` 依 [`AnchorContentBox`] 決定兩軸原點系：H 軸取欄內容盒左緣
 /// （`表左 + 格左 + ½左框線寬 + 左內距`）、寬取內容盒寬（`格寬 − 左內距 − 右內距`）；
-/// `use_content_y` 為真時 **V 軸**原點加上上框線寬與上內距（`列頂 + 上框線寬 + 上內距`）；
-/// 兩者為假時維持 K10/K15 格框原點。兩軸分開閘控：實測證 H 軸內容盒律對
-/// `layoutInCell=1` 同樣成立，V 軸框線/內距補償則不成立（見解剖報告 §6）。
+/// V 軸另加 `列頂 + 上框線寬 + 上內距`（僅 `Xy`）。
 pub fn find_cell_for_para(
     tables: &[BodyTable],
     slots: &[TableSlot],
     sections: &[SectionSpec],
     params: &LayoutParams,
     para_index: usize,
-    use_content_x: bool,
-    use_content_y: bool,
+    content_box: AnchorContentBox,
     y_rel_to_row: bool,
 ) -> Option<((f32, f32, f32, f32), quire_layout::CellHostAnchor)> {
+    let use_content_x = !matches!(content_box, AnchorContentBox::Frame);
+    let use_content_y = matches!(content_box, AnchorContentBox::Xy);
     for (slot_idx, (bt, slot)) in tables.iter().zip(slots.iter()).enumerate() {
         if para_index < slot.para_start || para_index >= slot.para_end {
             continue;
@@ -1280,8 +1292,13 @@ pub fn build_images(
             //    變大是我方**列頂本身**錯位（E1 列高欠債 t_8573d294）所致，圖與列同錯
             //    ＝視覺自洽；列頂錯位歸 E1，不在本卡。
             let y_rel_to_row = y_origin != "page" || im.layout_in_cell;
-            let use_content_x = !g1_buggy;
-            let use_content_y = !g1_buggy && !im.layout_in_cell;
+            let content_box = if g1_buggy {
+                AnchorContentBox::Frame
+            } else if im.layout_in_cell {
+                AnchorContentBox::XOnly
+            } else {
+                AnchorContentBox::Xy
+            };
             let cell_lookup = if !buggy {
                 find_cell_for_para(
                     tables,
@@ -1289,15 +1306,18 @@ pub fn build_images(
                     sections,
                     params,
                     im.para_index,
-                    use_content_x,
-                    use_content_y,
+                    content_box,
                     y_rel_to_row,
                 )
             } else {
                 None
             };
             let cell_info = cell_lookup.map(|(info, _)| info);
-            let cell_host = if !g1_buggy && y_rel_to_row {
+            // 宿主追蹤資訊**不因 `y_rel_to_row` 假而摘除**：落點 B（附掛頁取宿主列實際
+            // 落點頁）與落點 A（動態列頂 delta）是兩件事——delta 在 layout 層由
+            // `ch.y_rel_to_row` 自行過濾，這裡摘掉 host 會連附掛頁一起退回段落流起頭頁
+            // （K15 fdo68607 鐵證：page 系 V 錨點被推離封面頁）。
+            let cell_host = if !g1_buggy {
                 cell_lookup.map(|(_, host)| host)
             } else {
                 None

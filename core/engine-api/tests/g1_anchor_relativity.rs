@@ -474,38 +474,189 @@ fn g1_buggy_env_regression_lock() {
     );
 }
 
-/// 用戶真實檔案考卷（`QUIRE_G1_FIXTURE`）：未設定環境變數時自動 skip；
-/// 設定時只讀驗證錨點照片不滯留版心頂 y=72.1pt，且水平落入雙欄內容盒。
-#[test]
-fn g1_user_fixture_env_gated() {
-    let Ok(path) = std::env::var("QUIRE_G1_FIXTURE") else {
-        eprintln!("未設定 QUIRE_G1_FIXTURE：略過外部真實檔案測試。");
-        return;
-    };
-    let path = path.trim();
-    if path.is_empty() {
-        return;
+/// 用戶真實檔案考卷（`QUIRE_G1_FIXTURE`）：未設定環境變數時自動 skip。
+///
+/// **本檔測的是用戶實測檔本身**（全六枚 `wp:anchor` 皆 `layoutInCell="1"`），
+/// 與上方合成 fixture（`lic=0`、圖寸 202.15×113.70）是**兩條不相交的路徑**。
+/// 圖寸篩選一律以真檔實測值為準（舊版誤用合成 fixture 的 202.15×113.70，
+/// 設定環境變數後必然找不到圖而假綠／假紅）。
+///
+/// 真值口徑：Windows `soffice` → PDF → PyMuDFP 實抓（僅度量值，見
+/// `docs/g1-anchor-relativity-anatomy.md` §6）。原版嚴禁入庫，此處只留座標。
+/// LO 共 6 頁、我方 5 頁（我方分頁偏松屬 E1 列高欠債 t_8573d294），故**頁碼不做
+/// 斷言**，只斷言「不滯留版心頂」＋「H 軸對 LO 真值收斂」。
+mod user_fixture {
+    use super::*;
+
+    /// 真檔三枚 `lic=1`×`xrel=column` 錨點**框線矩形**（`DrawItem::Rect`）實測尺寸。
+    const FRAME_SM: (f32, f32) = (38.15, 36.46);
+    const FRAME_MD: (f32, f32) = (128.70, 216.30);
+    const FRAME_LG: (f32, f32) = (133.50, 36.00);
+    /// LO 實抓框線左緣（x）——H 軸原點系判準。
+    const LO_FRAME_SM_X: f32 = 406.0;
+    const LO_FRAME_MD_X: f32 = 359.0;
+    const LO_FRAME_LG_X: f32 = 357.5;
+    /// 版心頂（section `margin_top`）；滯留症狀即所有錨點被釘在该線附近。
+    const BODY_TOP: f32 = 72.0;
+
+    /// 找指定頁面上尺寸匹配的真檔錨點框線矩形 (x, y, w, h)。
+    fn page_frames(eng: &Engine, page: usize, want: (f32, f32)) -> Vec<(f32, f32, f32, f32)> {
+        let Some(dl) = eng.page_display_list(page) else {
+            return Vec::new();
+        };
+        dl.items
+            .iter()
+            .filter_map(|it| match it {
+                DrawItem::Rect { x, y, w, h, .. }
+                    if (*w - want.0).abs() < 1.5 && (*h - want.1).abs() < 1.5 =>
+                {
+                    Some((*x, *y, *w, *h))
+                }
+                _ => None,
+            })
+            .collect()
     }
-    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("讀取 QUIRE_G1_FIXTURE 失敗: {e}"));
-    let eng = Engine::from_docx_bytes(&bytes).expect("解析 QUIRE_G1_FIXTURE 應成功");
-    let mut found_pair = None;
-    for p in 0..eng.page_count() {
-        let imgs = page_anchor_images(&eng, p);
-        if imgs.len() >= 2 {
-            found_pair = Some((p, imgs));
-            break;
+
+    fn load_user_fixture() -> Option<Engine> {
+        let path = std::env::var("QUIRE_G1_FIXTURE").ok()?;
+        let path = path.trim();
+        if path.is_empty() {
+            return None;
+        }
+        let bytes =
+            std::fs::read(path).unwrap_or_else(|e| panic!("讀取 QUIRE_G1_FIXTURE 失敗: {e}"));
+        Some(Engine::from_docx_bytes(&bytes).expect("解析 QUIRE_G1_FIXTURE 應成功"))
+    }
+
+    /// 環境變數是否指向可用的真實檔（未設定 → 整條考卷 skip，CI 不受影響）。
+    fn fixture_present() -> bool {
+        std::env::var("QUIRE_G1_FIXTURE")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    /// 找某尺寸錨點框線在我方發射面上的 (page, x, y)（取首見頁）。
+    fn first_frame(eng: &Engine, want: (f32, f32)) -> Option<(usize, f32, f32)> {
+        for p in 0..eng.page_count() {
+            if let Some(f) = page_frames(eng, p, want).into_iter().next() {
+                return Some((p, f.0, f.1));
+            }
+        }
+        None
+    }
+
+    /// 燈 U1：真檔三枚 `lic=1`×`column` 錨點 **H 軸**對 LO 真值收斂（±2pt）＋
+    /// 不滯留版心頂。這是本卡主軸（真檔全 `lic=1`）。
+    #[test]
+    fn g1_user_fixture_env_gated() {
+        if !fixture_present() {
+            eprintln!("未設定 QUIRE_G1_FIXTURE：略過外部真實檔案測試。");
+            return;
+        }
+        let eng = load_user_fixture().unwrap();
+        for (want, lo_x) in [
+            (FRAME_SM, LO_FRAME_SM_X),
+            (FRAME_MD, LO_FRAME_MD_X),
+            (FRAME_LG, LO_FRAME_LG_X),
+        ] {
+            let (page, x, y) = first_frame(&eng, want)
+                .unwrap_or_else(|| panic!("真檔應發射錨點框線 {}x{}", want.0, want.1));
+            assert!(
+                (x - lo_x).abs() <= TOL_PT,
+                "真檔錨點框線 {}x{} 於 p{page}：H 軸應收斂 LO {lo_x}±{TOL_PT}pt，實得 x={x}（差 {:+.2}pt）",
+                want.0, want.1, x - lo_x
+            );
+            assert!(
+                y > BODY_TOP + 40.0,
+                "真檔錨點框線 {}x{} 於 p{page} 不得釘死版心頂 y≈{BODY_TOP}：實得 y={y}",
+                want.0,
+                want.1
+            );
         }
     }
-    let (page, mut imgs) = found_pair.expect("應在某頁找到兩張並排錨點照片（202.15×113.70pt）");
-    imgs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-    let (ax, ay, _, _) = imgs[0];
-    let (bx, by, _, _) = imgs[1];
-    assert!(
-        ay > 265.0 && by > 265.0,
-        "p{page} 並排照片不得滯留版心頂 y=72.1pt 被前段續表壓住：實得 ay={ay}, by={by}"
-    );
-    assert!(
-        (ax - LO_IMG_A_X).abs() <= TOL_PT && (bx - LO_IMG_B_X).abs() <= TOL_PT,
-        "p{page} 並排照片 x 應落於 LO 真值 ({LO_IMG_A_X}, {LO_IMG_B_X})±{TOL_PT}pt，實得 ({ax}, {bx})"
-    );
+
+    /// 燈 U2（鑑別力，回塞鎖）：**由外部**設 `G1_BUGGY=1` 時生效（不進程序內
+    /// `set_var`——同進程平行測試會互相污染環境）。斷言 H 軸必退回舊原點系：
+    /// 三枚框線對 LO 真值誤差 >4pt（證明本卡 H 律確實被消費，非僥倖對齊）。
+    #[test]
+    fn g1_user_fixture_h_law_discrimination() {
+        if std::env::var_os("G1_BUGGY").is_none() {
+            eprintln!("未設 G1_BUGGY：略過回塞態斷言（以 G1_BUGGY=1 執行可驗證修前退化態）。");
+            return;
+        }
+        if !fixture_present() {
+            eprintln!("未設定 QUIRE_G1_FIXTURE：略過外部真實檔案測試。");
+            return;
+        }
+        let eng = load_user_fixture().unwrap();
+        for (want, lo_x) in [
+            (FRAME_SM, LO_FRAME_SM_X),
+            (FRAME_MD, LO_FRAME_MD_X),
+            (FRAME_LG, LO_FRAME_LG_X),
+        ] {
+            let Some((_, x, _)) = first_frame(&eng, want) else {
+                continue; // 舊路徑可能整枚不發：也算打紅
+            };
+            assert!(
+                (x - lo_x).abs() > 4.0,
+                "G1_BUGGY=1 應退回舊格框原點系（對 LO {lo_x} 誤差 >4pt），實得 x={x}（差 {:+.2}pt）——H 律未被消費",
+                x - lo_x
+            );
+        }
+    }
+
+    /// 燈 U3（紅燈帳，環境閘控 `QUIRE_G1_VLAMP=1`）：V 軸自洽——錨點框線頂部應落在
+    /// 宿主格**內容頂**（同格內聯圖片頂部）＋ posOffset ±4pt。
+    ///
+    /// 目前**打紅**（常數 −16.35pt，見 `docs/g1-redlight.md`）：我方 `relativeFrom=
+    /// "paragraph"` 的 V 原點取「宿主列頂」而非「宿主段落實際內容頂」，而 LO 真值取後者；
+    /// 絕對 Y 另受我方列高／分頁欠債（5 頁 vs LO 6 頁）疊加。不進 CI 預設路徑，
+    /// 避免以紅燈冒充綠燈，留待 V 軸原點邊界反解（合成網格探針）收斂後解閘。
+    #[test]
+    #[ignore = "紅燈帳：V 軸原點邊界待反解，見 docs/g1-redlight.md；跑法 QUIRE_G1_VLAMP=1 cargo test -- --ignored"]
+    fn g1_user_fixture_vertical_self_consistency_red_lamp() {
+        if std::env::var("QUIRE_G1_VLAMP")
+            .map(|v| v.trim().is_empty())
+            .unwrap_or(true)
+            || !fixture_present()
+        {
+            eprintln!("未設定 QUIRE_G1_VLAMP：略過 V 軸紅燈帳。");
+            return;
+        }
+        let eng = load_user_fixture().unwrap();
+        // 宿主段與同格內聯圖片同 para：真值 y = 內聯圖片頂 + posOffset。
+        // (框線尺寸, 內聯圖尺寸, posOffset)
+        const CASES: [((f32, f32), (f32, f32), f32); 3] = [
+            (FRAME_SM, (141.73, 254.91), 11.82),
+            (FRAME_MD, (141.73, 254.91), 45.10),
+            (FRAME_LG, (141.73, 254.91), 85.00),
+        ];
+        for (frame, inline, off) in CASES {
+            let Some((fpage, _, fy)) = first_frame(&eng, frame) else {
+                panic!("缺錨點框線 {:?}", frame);
+            };
+            let dl = eng.page_display_list(fpage).unwrap();
+            let host = dl
+                .items
+                .iter()
+                .filter_map(|it| match it {
+                    DrawItem::Image { x, y, w, h, .. }
+                        if (*w - inline.0).abs() < 2.0 && (*h - inline.1).abs() < 2.0 =>
+                    {
+                        Some((*x, *y))
+                    }
+                    _ => None,
+                })
+                .min_by(|a, b| (a.1 - fy).abs().partial_cmp(&(b.1 - fy).abs()).unwrap())
+                .unwrap_or_else(|| {
+                    panic!("p{fpage} 找不到 {:?} 的同格內聯圖片 {:?}", frame, inline)
+                });
+            let want = host.1 + off;
+            assert!(
+                (fy - want).abs() <= 4.0,
+                "V 軸自洽紅燈：框線 {:?} 於 p{fpage} y={fy:.2}，應為宿主內聯圖頂 {:.2}+posOffset {off}={want:.2}（差 {:+.2}pt）",
+                frame, host.1, fy - want
+            );
+        }
+    }
 }

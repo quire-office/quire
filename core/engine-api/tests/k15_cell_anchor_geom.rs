@@ -174,11 +174,41 @@ fn wc048_textbox1_textbox2_position_locked() {
 
 /// 燈 3：fdo68607 封面大標位置零回退（K10 成果；positionH column／V paragraph，
 /// layoutInCell=1 但原點系本來就不是 page）。LO：x=210.2 y=23.7（DRAW 框 126.95,19.65）。
+/// G1 返修（11-09）**探針改踩框、不踩字**：舊鎖斷言的是**派生的文字 x**
+/// （自報值 207.58±0.5），其誤差是「框原點誤差 ＋ 框內置中偏移誤差」兩者疊加，
+/// 因而對 H 軸原點律**不具鑑別力**（框錯 4.85pt 時文字反而恰好在容差內）。
+///
+/// 改踩 `DrawItem::Rect`（386.25×33.75，就是這枚錨點自己的框）對 LO 實抓框
+/// `x=126.95, y=19.65`（本次 Windows soffice→PDF→pymupdf `get_drawings()` fill 框，
+/// 見 docs/g1-anchor-relativity-anatomy.md §6）：
+/// - 修態（內容盒律）框 x=128.00 → dx=**+1.05**；
+/// - `G1_BUGGY=1`（舊格框原點系）框 x=122.10 → dx=**−4.85**（打紅，鑑別力成立）。
+/// 文字 y 鎖維持原值（21.64±0.5，未受 H 軸改動影響，逐位元組未回退）。
 #[test]
 fn fdo68607_cover_title_position_locked() {
     let eng = load_corpus("ooxmlexport/fdo68607.docx");
     let dl = eng.page_display_list(0).expect("p0 存在");
-    let (x, y) = dl
+    let (fx, fy) = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Rect { x, y, w, h, .. }
+                if (*w - 386.25).abs() < 1.5 && (*h - 33.75).abs() < 1.5 =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("p0 必須發射封面大標錨點框（386.25×33.75）");
+    assert!(
+        (fx - 126.95).abs() <= 2.0,
+        "封面大標錨點框 x 應收斂 LO 真值 126.95±2.0（G1_BUGGY=1 退 122.10＝dx −4.85），實得 {fx}"
+    );
+    assert!(
+        (fy - 19.65).abs() <= 3.0,
+        "封面大標錨點框 y 應收斂 LO 真值 19.65±3.0，實得 {fy}"
+    );
+    let (_tx, ty) = dl
         .items
         .iter()
         .find_map(|it| match it {
@@ -189,11 +219,7 @@ fn fdo68607_cover_title_position_locked() {
         })
         .expect("p0 必須含「IGCSE Drama Glossary」");
     assert!(
-        (x - 207.58).abs() <= 0.5,
-        "封面大標 x 零回退（207.58±0.5），實得 {x}"
-    );
-    assert!(
-        (y - 21.64).abs() <= 0.5,
-        "封面大標 y 零回退（21.64±0.5），實得 {y}"
+        (ty - 21.64).abs() <= 0.5,
+        "封面大標 y 零回退（21.64±0.5），實得 {ty}"
     );
 }
