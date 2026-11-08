@@ -1,0 +1,87 @@
+{
+  "source_samples": [
+    "fixtures/sample.docx",
+    "fixtures/table_mixed.docx",
+    "fixtures/hf_table_header.docx",
+    "fixtures/inline_image.docx"
+  ],
+  "top_level_keys": [
+    "height_pt",
+    "items",
+    "page",
+    "width_pt"
+  ],
+  "variant_keys": {
+    "Image": [
+      "alt",
+      "data_b64",
+      "h",
+      "mime",
+      "w",
+      "x",
+      "y"
+    ],
+    "Rect": [
+      "fill_argb",
+      "h",
+      "w",
+      "x",
+      "y"
+    ],
+    "Rule": [
+      "color_argb",
+      "dash",
+      "width_pt",
+      "x1",
+      "x2",
+      "y1",
+      "y2"
+    ],
+    "Text": [
+      "color_argb",
+      "family",
+      "flags",
+      "size_pt",
+      "text",
+      "x",
+      "y"
+    ]
+  },
+  "variant_required_keys": {
+    "Image": [
+      "alt",
+      "data_b64",
+      "h",
+      "mime",
+      "w",
+      "x",
+      "y"
+    ],
+    "Rect": [
+      "fill_argb",
+      "h",
+      "w",
+      "x",
+      "y"
+    ],
+    "Rule": [
+      "color_argb",
+      "dash",
+      "width_pt",
+      "x1",
+      "x2",
+      "y1",
+      "y2"
+    ],
+    "Text": [
+      "color_argb",
+      "flags",
+      "size_pt",
+      "text",
+      "x",
+      "y"
+    ]
+  },
+  "pages": 7,
+  "items": 229
+}

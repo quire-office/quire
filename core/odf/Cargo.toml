@@ -10,9 +10,15 @@ description = "ODF (ODT) 容器層無損往返與最小內文模型"
 quire-ooxml = { workspace = true }
 # ODF-C3：文字流投影對接 layout 斷行/分頁入口（layout_glue）。
 quire-layout = { workspace = true }
+# ODF-D1：顯示列表契約型別（PageDisplayList/DrawItem 的**定義處**，見 display.rs
+# 檔頭）。這是向下邊：render-trait 零 core 依賴、只吃 serde，engine-api 本身也是
+# re-export 它——不構成新層級邊，亦不碰 `layout_glue.rs` 的「禁借 quire_ooxml 模型」鐵律。
+quire-render-trait = { workspace = true }
 quick-xml = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
+# ODF-D1 發射層輸出 JSON（serde 序列化，嚴禁字串拼接）。
+serde_json = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

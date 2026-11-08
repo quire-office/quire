@@ -4,7 +4,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CORES="quire-ooxml quire-xlsx quire-layout quire-render-trait quire-crdt quire-engine"
+# ODF-D1 起把 quire-odf 納入清單：本卡為 quire-odf 新增了對 quire-render-trait 的
+# 依賴（顯示列表契約定義處），必須有閘門守它的依賴方向（render-trait 零 core 依賴，
+# 屬合法向下邊；萬一日後有人從 odf 伸手拿 ooxml 內容模型或 shell，這裡咬紅）。
+CORES="quire-ooxml quire-xlsx quire-layout quire-render-trait quire-crdt quire-engine quire-odf"
 for c in $CORES; do
   if cargo tree -p "$c" --depth 1 -e normal 2>/dev/null | grep -E "quire-(web|cli)"; then
     echo "✗ 分層違規：core crate $c 直接依賴了 shell"; exit 1

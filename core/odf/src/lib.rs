@@ -11,6 +11,7 @@
 //! - docs/odf-survey/survey.json
 
 mod body;
+pub mod display;
 pub mod layout_glue;
 mod manifest;
 mod objects;
@@ -18,6 +19,10 @@ pub mod page_geometry;
 mod skeleton;
 
 pub use body::{BodyModel, OdfParagraph};
+pub use display::{
+    display_list_json, dump_display_lists_json, emit_display_lists, OdtView,
+    DEFAULT_TEXT_COLOR_ARGB,
+};
 pub use layout_glue::{
     layout_projection, page_break_positions, project, project_bytes, LayoutParams,
     OdfLayoutParagraph, OdfProjection, DEFAULT_FONT_SIZE_PT, MAX_STYLE_HOPS,

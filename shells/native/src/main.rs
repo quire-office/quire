@@ -36,7 +36,13 @@ fn main() -> ExitCode {
                 styles.xml 的 style:page-layout 經 master-page 鏈換算；解不到
                 者回退 LO 預設頁 A4 portrait＋四邊 2.0cm——非
                 LayoutParams::default() 的假 A4＋1 吋）輸出固定 JSON 欄位：
-                paragraph_count／total_text_len／page_breaks／page／page_source。";
+                paragraph_count／total_text_len／page_breaks／page／page_source。
+      quire-cli odt-dump <file.odt> [頁面 n]
+                ODT 顯示列表發射層（ODF-D1）：讀 .odt → 發射與 DOCX 線 `page`/
+                `dump` **同一個** PageDisplayList JSON 契約（同欄位名、同座標系；
+                頁面幾何同樣走 C4 的 style:page-layout 鏈）。
+                給 n＝輸出該頁（單頁物件，同 `page` 子命令形）；不給 n＝輸出全部頁
+                pretty 陣列（同 `dump` 子命令形）。非零離開碼＝開檔／投影／頁碼錯。";
     if args.len() < 3 {
         eprintln!("{usage}");
         return ExitCode::from(2);
@@ -53,6 +59,9 @@ fn main() -> ExitCode {
     }
     if cmd == "odt-render" {
         return odt_render(&args[2]);
+    }
+    if cmd == "odt-dump" {
+        return odt_dump(&args[2..]);
     }
     if cmd == "render" {
         return render(&args[2..], usage);
@@ -616,6 +625,78 @@ fn odt_render(path: &str) -> ExitCode {
         Err(e) => {
             eprintln!("JSON 序列化失敗: {e}");
             ExitCode::from(1)
+        }
+    }
+}
+
+/// odt-dump 子命令（ODF-D1 發射層）：讀 .odt → `OdtView` 發射 → 輸出與 DOCX 線
+/// `page`／`dump` **同一個** `PageDisplayList` JSON 契約（同欄位名、同座標系；
+/// serde derive 序列化了契約型別，非字串拼接）。
+///
+/// 形制對照：`odt-dump f.odt`＝全部頁 pretty 陣列（同 `dump`）；
+/// `odt-dump f.odt 3`＝第 3 頁單頁物件（同 `page`）。QA 與後續 odt render_lab
+/// 據此與 DOCX 側產物逐欄比對。分層紀律：型別經 `quire-odf` 再匯出取用，
+/// 殼層不直接 import quire-render-trait（同 odt-render 不吃 quire-layout）。
+fn odt_dump(rest: &[String]) -> ExitCode {
+    let Some(path) = rest.first() else {
+        eprintln!("缺少檔案參數（odt-dump <file.odt> [頁面 n]）");
+        return ExitCode::from(2);
+    };
+    // 頁碼選填：給了就必須可解析（把「打錯頁碼」當成錯誤，不靜默退回全頁）。
+    let page: Option<usize> = match rest.get(1) {
+        Some(s) => match s.parse::<usize>() {
+            Ok(n) => Some(n),
+            Err(_) => {
+                eprintln!("頁碼不可解析為非負整數：{s:?}");
+                return ExitCode::from(2);
+            }
+        },
+        None => None,
+    };
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("讀檔失敗 {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let bundle = match quire_odf::OdfBundle::open(&bytes) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("開啟失敗 {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    // ODF-C4 同口徑：頁面幾何走 style:page-layout＋master-page 鏈（解不到者
+    // 回退 LO 預設頁），不假 A4＋1 吋。加密檔於此由 project 閘門老實報錯。
+    let params = match quire_odf::page_geometry(&bundle) {
+        Ok(g) => g.to_layout_params(),
+        Err(e) => {
+            eprintln!("頁面幾何解析失敗 {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let view = match quire_odf::OdtView::from_bundle(&bundle, &params) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("發射失敗 {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    match page {
+        Some(n) => match view.page_display_list_json(n) {
+            Some(json) => {
+                println!("{json}");
+                ExitCode::SUCCESS
+            }
+            None => {
+                eprintln!("頁碼 {n} 不存在（共 {} 頁）", view.page_count());
+                ExitCode::from(1)
+            }
+        },
+        None => {
+            println!("{}", view.dump_json());
+            ExitCode::SUCCESS
         }
     }
 }
