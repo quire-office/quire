@@ -124,7 +124,42 @@ test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 繪圖碼一行不用動。站端唯一需要的是**入口分支**（odt 檔名→`new WasmOdtView`
 取代 `new WasmEngine`）——那屬 quire-www 網站卡（卡面白名單已划走）。
 
-### 3.3 加密檔口徑（老實報錯，非靜默）
+### 3.3 真瀏覽器實測（vite dev server＋CDP `DOM.setFileInputFiles` 餵 file input）
+
+3.2 證的是 glue＋Node；這一條證**瀏覽器裡真的畫出東西**（用戶原始訴求：
+playground 上傳 ODT 能渲染）。灌 `corpus-odt/ext/lo_core_sw_qa_odfexport_WordTest_edit.odt`
+進 `shells/web/demo`（vite，port 5199）：
+
+```
+狀態列      ：首包就緒：1830.9 KB（wasm 流式編譯，36ms）
+pageinfo    ：第 1 / 1 頁（13 段）           ← 走的是 WasmOdtView
+canvas      ：850×1100，**墨點 7897 個**（非白頁）
+引擎實型別  ：WasmOdtView
+caret API   ：typeof caret_rect_json === 'undefined'（唯讀，編輯面不存在＝契約正確）
+replace API ：typeof replace_paragraph_text === 'undefined'
+paper_json  ：{"margin_bottom_pt":72.0,"margin_left_pt":72.0,"margin_right_pt":72.0,
+              "margin_top_pt":72.0,"page_h_pt":792.0,"page_w_pt":612.0,
+              "paper_override_applied":false}
+is_settled  ：true      reflow_step_json：{"settled":true,"events":[]}
+越界頁碼    ：page_display_list_json(99) → undefined（JS 端 falsy 分支接住，不 abort）
+```
+
+可見文字（畫面實際渲染）：`One / list firstline -1cm, textleft 2cm, no override /
+Two / para overrides firstline +1cm / Three … Six` 全 13 段逐行落地，縮放按
+612pt→850px 如實換算。
+
+**DOCX 零回退（同頁改灌 `fixtures/sample.docx`）**：
+
+```
+引擎實型別：WasmEngine       pageinfo：第 1 / 2 頁（14 段）
+canvas    ：墨點 81136 個    caret_rect_json：function（編輯面回來了）
+insert_text_at_caret：function
+```
+
+即：入口分派依檔名選對型別，繪圖碼共用同一段，DOCX 線功能面（含 IME caret 契約）
+完全不受影響。
+
+### 3.4 加密檔口徑（老實報錯，非靜默）
 
 `Err` 訊息原文（`OdfError::Encrypted` 顯示文案經殼層前綴轉出）：
 
