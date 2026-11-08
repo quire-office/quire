@@ -155,8 +155,9 @@ p0 bbox=[178.45,374.35,309.60,496.75] w=131.15 h=122.40
 | render_lab WC048 | 內容 1.0／版面 1.0／色 0.922——改前改後**逐位相同** |
 
 A/B 基準手法：**同一支 binary**，改前態用 `D9B_GROUP_PIC_BUGGY=1`（新臂入口第一行即
-`return false`，其後程式碼路徑與改前逐位相同），排除編譯器/環境漂移。全語料 400 檔
-顯示列表逐檔差分見 `scratch_d9b/ab_env_diff.py`（結果記於 §7）。
+`return false`，其後程式碼路徑與改前逐位相同），排除編譯器/環境漂移。**但該 env 版
+只作鑑別力用**——零回退鐵閘走**兩支 binary**（merge-base 真身）對照，結果與探針
+（`ab_bin_diff_par.py`／`list_skipped.py`）記於 §6。
 
 ## 4. 第 3 條（正文文字字面量臂）：`t.contains("11-016") || t.contains("3-23-2011")`
 
@@ -182,7 +183,79 @@ tdf48658_transparentOLEheader 頁首框內 `w:drawing` 圖**零發射**：頁首
 `push_hf_slot` 無浮動框分支（同 E2c run166 抓到的家族）。解鎖條件：該路徑補框內圖
 分支＋套宿主框 inset。
 
-## 6. 殘留待辦（供 PM 裁定／開卡）
+## 6. 零回退鐵閘實測（欠債一 `t_6aade0f3` 收案 run）
+
+**merge-base binary 逐位對照（最強那條，卡面白紙黑條）**：不是 env 模擬，是**兩支
+不同 binary**——base＝merge-base `b4e833d` 在**乾淨 worktree**（`base-wt`，獨立
+`base-target`）編出的 `quire-cli`；head＝本卡 worktree 編出的 `quire-cli`。探針
+`scratch_d9b/ab_bin_diff_par.py`（12 平行 worker，`dump` 全頁一次到位；比對時剝
+`data_b64`、浮點圓整 4 位、含 `page`／`width_pt`／`height_pt` 維度）。
+
+```
+scanned=400 skipped=1 files_with_diff=1
+  DIFF/ITEMS ooxmlexport/n792778.docx:
+    base=(0,0,('Image', (alt None, h 119.7,  mime image/png, w 130.9,  x 43.2, y 374.4)))
+    head=(0,0,('Image', (alt None, h 122.4,  mime image/png, w 131.15, x 43.2, y 374.4)))
+```
+
+逐條判讀：
+
+* `files_with_diff=1` ＝全庫 400 檔只有本卡標的檔 n792778 變動，**其餘 398 檔顯示
+  列表逐位不動、頁數不動、頁面尺寸不動**（`DIFF/ITEMS` 後綴＝圖元層差異，非 `GEOM`
+  頁面尺寸差異、非 `PAGES` 頁數差異）。
+* `skipped=1` 是老實記帳：`poi/test-data_document_clusterfuzz-testcase-minimized-POIXWPFFuzzer-6733884933668864.docx`
+  在 **base 與 head 兩側都**回 `zip 結構毀損: CRC-32 校驗不符`（探針
+  `list_skipped.py` 實測兩側同錯）＝該檔是刻意造的毀損 fuzz 樣本，與本改動無關，
+  不是回退。
+* 首張圖 `130.90×119.70 → 131.15×122.40` 是**預期内且更準**的變動：base 那張走
+  宿主單發臂、吃框內 drawing 自身 `wp:extent`（130.90×119.70，偏 LO 2.70/2.70pt）；
+  head 走群組子件接管臂、吃**子件框尺**（LO 真值恰為 131.15×122.40，偏 0.05pt）。
+  第二張圖由零發射轉為 `(178.45,374.40,131.15,122.40)`（偏 LO 0.05pt）——差分只在
+  首個差異處截斷，故清單只列 idx 0。
+
+**A/B 對照手法紀律**（本 run 踩過的坑，記給後續卡）：同一支 binary 用 `*_BUGGY=1`
+env 開關做基線**只能證明新臂自身閂得住**，證明不了「編譯期其它位移」；要宣稱
+「既有缺口、非本卡引入」需**兩支 binary**（merge-base 真身）。且 env 版基線在共享
+checkout 髒態下不可信（見 §7）。
+
+**render_lab 具名閘門**（Windows soffice.exe，同支 HEAD binary 兩跑：正常態 vs
+`D9B_GROUP_PIC_BUGGY=1`）：fdo76591 內容 0.98／版面 1.0／色 0.8／圖 0.797、
+WC048 內容 1.0／版面 1.0／色 0.922、n792778 色 1.0／圖 1.0——**三檔分數逐位相同**
+（`diff` 分數行回 `SCORE_IDENTICAL`），跌幅 0.00 ≤ 卡面容差 0.02。
+`render_lab.py --selftest` ALL-PASS。
+
+**CI 同規閘門**（全部 worktree 實跑）：`cargo fmt --all --check` 乾淨；
+`cargo clippy --workspace --all-targets -- -D warnings` RC=0；
+`cargo test --workspace` failed=0（95 支 test target）；
+`cargo check -p quire-crdt -p quire-engine -p quire-xlsx -p quire-odf
+--target wasm32-unknown-unknown` RC=0；`d9_frame_overlap` 三燈全綠。
+
+## 7. 工作區紀律事故與教訓（給 PM／後續卡）
+
+本卡工作區是 scratch（`workspaces/t_6aade0f3`），但 run 233 把引擎改動直接寫進
+**共享 checkout `~/projects/quire`**，造成兩項實質傷害（PM 11-09 00:57／03:20 兩則
+值守備註抓出，worker 已於 01:04 留言承認）：
+
+1. 污染以共享 checkout 為基線的閘門與 A/B（PM 的 `npm run build:wasm` 因此失敗）。
+2. 主倉 `cargo build` 變紅：run 233 那 151 行是**半套**落地——帶了
+   `Pending::new()` 的 `last_child_rect: None` 初始化，卻沒帶 `struct Pending` 的
+   欄位宣告 ⇒ `error[E0560]`（`drawing.rs:1910`）。
+
+**收案態與那段半套改動的關係**：`last_child_rect` 屬 run 233 的舊設計（「記上一個
+子件矩形再延後讀」），本卡收案態**整段淘汰**該欄——子件矩形改在
+`begin_group_pic`→`map_child_shape` 的**同一個 Start** 內直接寫進 `cur_group_pic.rect`
+（原因寫進欄位註解：同 pict 內後續兄弟子件會覆寫映射結果，延後讀取必然串位）。
+故本卡 worktree 裡 `grep -n last_child_rect core/ooxml/src/drawing.rs` ＝ 0 命中，
+**不存在「補欄位定義」這條路**，共享 checkout 的殘留態不可直接續做。
+
+**處置**：依還原鐵律，worker 一個位元組都没動共享 checkout（run 238 起 blob hash
+與 PM 保護的 `refs/wip/t_6aade0f3-run233-v2` 逐位相符），改動原樣保留、清算等用戶
+點頭。本卡全部實作與編譯驗證落 `workspaces/t_6aade0f3/wt`（branch `wt/t_6aade0f3`），
+merge-base 基線另用乾淨 worktree `base-wt`（獨立 target），全程零 push。
+**教訓**：scratch 卡的引擎碼一律 worktree；要測「改前態」用乾淨 worktree 編 base
+binary，別拿可能髒的共享 checkout 當中立基線。
+
+## 8. 殘留待辦（供 PM 裁定／開卡）
 
 1. 第 2 條：卡面數值前提被 §2 實測推翻——需裁定改用 §2 末「同源推導」寫法
    （解析層補 VML 絕對位移欄位）或另定「背景覆頁框」事實；**不得**照原卡面把
