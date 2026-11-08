@@ -459,6 +459,27 @@ struct RowGeom {
     cells: Vec<CellGeom>,
 }
 
+/// G1：儲存格內容盒與框線內距幾何（供表格內 `wp:anchor` 換算 `column`／`paragraph` 原點系）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellContentGeom {
+    /// 儲存格左緣（已計入 `TableLayout::x_off`，相對版心左緣 pt）。
+    pub cell_x_pt: f32,
+    /// 儲存格靜態頂部偏移（自表頂起算的前置列高總和 pt）。
+    pub cell_y_pt: f32,
+    /// 儲存格總寬（pt）。
+    pub cell_w_pt: f32,
+    /// 儲存格左內距（pt）。
+    pub pad_left_pt: f32,
+    /// 儲存格右內距（pt）。
+    pub pad_right_pt: f32,
+    /// 儲存格上內距（pt）。
+    pub pad_top_pt: f32,
+    /// 儲存格上框線寬度（pt；無框線＝0）。
+    pub border_top_pt: f32,
+    /// 儲存格左框線寬度（pt；無框線＝0）。
+    pub border_left_pt: f32,
+}
+
 /// 表格完整排版（列帶分配完成；跨頁切片由 [`TableLayout::fragment`] 產出）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TableLayout {
@@ -503,6 +524,30 @@ impl TableLayout {
             .sum();
         let cell = self.rows[row].cells.get(col)?;
         Some((self.x_off + cell.x, y, cell.w))
+    }
+
+    /// G1：取得指定儲存格（row, col）之內容盒與框線內距幾何。
+    pub fn cell_content_geom(&self, row: usize, col: usize) -> Option<CellContentGeom> {
+        if row >= self.rows.len() {
+            return None;
+        }
+        let y: f32 = self.rows[..row]
+            .iter()
+            .map(|r| r.bands as f32 * self.line_h + r.extra_pt)
+            .sum();
+        let cell = self.rows[row].cells.get(col)?;
+        let border_top_pt = cell.edges[EDGE_TOP].as_ref().map_or(0.0, |p| p.width_pt);
+        let border_left_pt = cell.edges[EDGE_LEFT].as_ref().map_or(0.0, |p| p.width_pt);
+        Some(CellContentGeom {
+            cell_x_pt: self.x_off + cell.x,
+            cell_y_pt: y,
+            cell_w_pt: cell.w,
+            pad_left_pt: cell.text_x_off.max(0.0),
+            pad_right_pt: cell.pad_right_pt.max(0.0),
+            pad_top_pt: cell.pad_top_pt.max(0.0),
+            border_top_pt,
+            border_left_pt,
+        })
     }
 
     /// 全域帶序 → (row, band) 游標（跨列跳帶用；越界＝(rows.len(), 0)）。
