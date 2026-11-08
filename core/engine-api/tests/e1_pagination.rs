@@ -33,34 +33,35 @@
 //!
 //! ## 燈號狀態（PM 掛帳制；比照 `r34_placeholder_fill.rs` 燈 5 的 `#[ignore]` 慣例）
 //!
-//! 燈 1（兩盞）、燈 3（兩盞）共**三盞**標 `#[ignore]`：它們測的是**本卡準改面
-//! 之外**的缺陷（autospacing／族表在 `core/ooxml/`＋engine 行高表），本卡若讓它們
+//! **三盞**標 `#[ignore]`：燈 1 的 p1 首末行盞、燈 3 兩盞。它們測的是**本卡準改面
+//! 之外**的缺陷（packer 首行計帶／`w:br type="page"` 遇錨定圖形），本卡若讓它們
 //! 紅在 `cargo test --workspace`，等於把零回退鐵條的閘門自己弄髒。解 ignore 的
 //! 條件寫在各自燈的 ignore 屬性字串裡。
 //! （燈 4 已解 ignore：E1-B dataBinding 真值求值落地——`core/ooxml/src/databind.rs`
 //! xpath 求值 docProps/core.xml＋發射層覆寫臂，`Eric White` 被 `Quire Corpus` 覆寫。）
-//! 燈 2 是正向鎖（現行碼即綠、`E1_GRIDSPAN_EXPECT_BUGGY=1` 證鑑別力）；燈 3b
-//! （`..._second_page_is_physically_blank`）是形態鎖，但形態鎖在頁數還錯時無從驗證，
-//! 故與燈 3a 一同 ignore，待頁數燈可綠時一併解鎖。
+//! （燈 1 **頁數盞已解 ignore 轉 CI 常態綠**：E1-C t_ab6c5319 定錨跨環境 LO 真值——
+//! Linux LO 以 private fontconfig 注入真 `trebuc.ttf` 後與 Windows LO（render_lab 板）
+//! 收斂於 2 頁，我方 2 頁逐項匹配；見 `docs/e1c-advance-anatomy.md` §2。）
+//! （燈 1 p1 首末行盞與燈 3b（`..._second_page_is_physically_blank`）是形態鎖，
+//! 頁數對但切點未對時無從驗證，隨各自父燈解鎖。）
 //!
 //! ```text
 //! $ cargo test -p quire-engine --test e1_pagination
-//! test result: ok. 1 passed; 0 failed; 5 ignored
+//! test result: ok. 3 passed; 0 failed; 3 ignored
 //! $ cargo test -p quire-engine --test e1_pagination -- --ignored
-//! test result: FAILED. 0 passed; 5 failed   ← 這五盞是欠債，修復卡須使其轉綠
+//! test result: FAILED. 0 passed; 3 failed   ← 這三盞是欠債，修復卡須使其轉綠
 //! ```
 //!
-//! 五盞欠債燈的真實成因（逐條定量見 `docs/e1-redlight.md`）皆**不在本卡準改面**：
-//! - cell-grid-span：`w:beforeAutospacing`/`w:afterAutospacing` 未實作（實測 LO 對
-//!   每個 autospacing 段落對加 14.0pt，本檔 8 段宣告）＋ `Trebuchet MS` 不在
-//!   `face_line_factor` 族表（我方吃後備 1.1499 ⇒ 該組行距 11.5pt，LO 實測
-//!   15.6／15.7pt ⇒ real-LH ≈1.56，既非 Noto Serif 1.3620 亦非任何現存表值）。
-//!   兩者合起來使我方總豎向流量比 LO 少排 113.1pt（LO 全篇 693.6pt／我方 580.5pt，
-//!   實測）——解析處在 `core/ooxml/src/lib.rs`，族表處在 engine 側 `face_line_factor`。
+//! 欠債燈的真實成因（逐條定量見 `docs/e1-redlight.md` ＋ `docs/e1c-advance-anatomy.md`）
+//! 皆**不在本卡準改面**：
+//! - cell-grid-span p1 首末行盞：我方 p0 **多吞** contact 段落（真值落 p1）。水平
+//!   advance 尺已由 E1-C 入表（`face_advance_scale("trebuchet ms")=0.9744`，該段斷點
+//!   0/9→6/9，鎖在 `e1c_advance_trebuchet.rs`），剩餘切點差須動 `pack_run` 首行計帶
+//!   （實測會把 RA001 由真值 6 頁改壞成 7 頁）＋垂直尺重定錨（現行 1.3620 是
+//!   Noto 頂替口徑，真 Trebuchet hhea＝1.1611）。
 //! - CoverPage：LO 第 2 頁是**物理性空白頁**（0 words／0 drawings／0 images），
 //!   消融實驗證明其存廢取決於「尾端 `w:br type="page"` ＋ 同檔存在錨定圖形」的
 //!   組合（抽掉圖形段 ⇒ LO 掉回 1 頁；br 後補一段 ⇒ LO 3 頁），非分頁容量誤判。
-//!   另一席（`Eric White` 覆寫）需讀 `docProps/core.xml`，落在 `core/ooxml/`。
 
 use quire_engine::{DrawItem, Engine};
 
@@ -115,21 +116,19 @@ fn norm(s: &str) -> String {
 //   LO 對其加 14.0pt 段前距後越過 720pt 下界（定量見 docs/e1-redlight.md §2.1）。
 
 #[test]
-#[ignore = "欠債：頁數差 1 頁的真因（autospacing 未實作＋Trebuchet 族表缺失）落在 core/ooxml/ 與 engine 行高表，本卡準改面（core/layout/、table_map.rs、發射組裝）動不到。見 docs/e1-redlight.md §3.1(A)(B)"]
 fn lamp1_cell_grid_span_page_count_matches_lo() {
     let eng = load(GRID_SPAN);
     assert_eq!(
         eng.page_count(),
         2,
-        "cell-grid-span：LO 2 頁（p0 末行 y1=693.0、p1 五行 y0=71.5–142.1），我方 \
-         {} 頁——真因是 autospacing＋Trebuchet 族表缺失導致總流量少排 ~90pt，\
-         不是表格跨頁切片",
+        "cell-grid-span：定錨 LO 真值 2 頁（Linux LO 頂替態／Linux LO＋真 face／Windows 板三者皆 \
+         2 頁），我方 {}",
         eng.page_count()
     );
 }
 
 #[test]
-#[ignore = "欠債：同 lamp1 頁數燈（我方無 p1 可查），待 autospacing＋族表修復卡解鎖"]
+#[ignore = "欠債（E1-C t_ab6c5319 改寫解鎖條件）：我方 p0 比定錨 LO 真值**多吞** contact 段落整段（我方 contact 落 p0 y=702.2；Linux LO＋真 face 與 Windows LO 兩環境都落 p1，我方 p1 首行因此是 `Claire George` 而非 `For further media information, contact:`）。水平 advance 尺已入表（face_advance_scale trebuchet 0.9744，斷點 0/9→6/9，見 docs/e1c-advance-anatomy.md §4），翻轉本盞須動 core/layout/src/lib.rs pack_run 的「首行自身帶數不計入容量測試」規則——實測該改動使 corpus 400 檔中 6 檔頁數改變、其中 RA001×2 由 Windows 真值 6 頁改壞成 7 頁（前次 §5／本次 docs §0#4），屬容量軸專卡（卡 B：真 face 基準定案後連同垂直尺 Trebuchet 1.3620→真值 1.1611 一併重定錨）。另：源檔 3 處連續雙空格未折疊（虛增 6.72pt，docs §4.2）為卡 D。"]
 fn lamp1_cell_grid_span_second_page_first_last_line() {
     let eng = load(GRID_SPAN);
     if eng.page_count() < 2 {

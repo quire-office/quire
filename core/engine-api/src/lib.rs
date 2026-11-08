@@ -2946,17 +2946,27 @@ pub(crate) fn face_advance_scale(face: &str) -> f32 {
         "arial" | "liberation sans" | "liberationsans" | "helvetica" => 0.9627,
         // theme 斷鏈 fallback（LO 落到自身預設 Noto Serif，K6 同口徑）。
         "noto serif" | "notoserif" => 1.0328,
-        // TODO(E1 t_8573d294)：`Trebuchet MS` 的水平軸**暫不入表**（零擾動守門）。
-        // 本卡量過雙軌（LO 25.8 Linux＋pymupdf）：A 軌 mix 1.0359／lower 1.0288／
-        // upper 1.0562／digits 1.0058；真檔 B 軌自然寬行（剔除 justified 拉伸、
-        // 非拉丁標點、粗體污染後 n=4）中位 1.0170。兩軌差 1.8% ≤2.1% 按 K7 規則
-        // 該取 A 軌，但入表實跑把 `TestFiles_RA001-Tracked-Revisions-01`（檔內
-        // 唯一 Trebuchet 宣告在段標 rPr、被級聯當全段主族吃）頁數 6→7——Linux LO
-        // 實轉 PDF＝7 頁（末頁空頁）、K28 記帳的 Windows LO＝6 頁，兩環境因
-        // 「真 Trebuchet MS 有無裝機」分歧，**LO 真值本身未定錨**，依 K7
-        // 「表沒有實測值的族絕不猜數」維持 1.0 後備；待水平口徑定案後入表。
-        // TODO(K7-cal)：Tahoma→LO 實際替代 face 未實測（VCL 替代表本機查無
-        // 實據），**不虛構**——1.0 後備；補量後入表。
+        // Trebuchet MS → **真 face**（本基準環境裝機，見下）：0.9744＝B 軌真實行
+        // median（n=9，cell-grid-span Team 段逐行「真 Trebuchet 自然寬／內嵌子集寬」
+        // 中位；min 0.9606／max 0.9863）。環境口徑定錨（E1-C t_ab6c5319，本臂入表
+        // 的唯一准入條件）：
+        //   · 本庫基準環境慣例是「真 MS face 裝機 ⇒ LO 渲真 face」（見本函數文件區
+        //     k6cal 記帳：Calibri／ArialMT 皆如此）。Trebuchet MS 同屬 MS face，
+        //     照同一慣例用 private fontconfig 目錄 per-process 注入 `trebuc.ttf`
+        //     （零全域副作用）後，**Linux LO 實測該段＝9 行 span font=TrebuchetMS
+        //     ＝Windows LO（render_lab 板）逐行全等** ⇒ 兩環境真值收斂，分歧消解。
+        //   · 未注入（真 face 缺席）時 Linux LO 頂替 NotoSans ⇒ 該段 10 行，是**裝機
+        //     假象**不是真值。前一版 A 軌 1.0359（t_8573d294 量得，>1）正是拿頂替
+        //     face 當基準的產物 ⇒ 方向相反，入表實跑該段斷點逐行全等 0/10，負結果。
+        //   · 斷行可行性帶（我方內嵌子集度量 × 貪婪 × 版心 468pt，目標＝基準斷點）
+        //     = [0.9617, 0.9801) 非空，0.9744 落帶內（下緣餘 0.0127／上緣餘 0.0057）。
+        //     同條件改用真 face 自身度量解帶 = [0.9922, 1.0069)（≈1.0，自證基準斷點
+        //     就是真 Trebuchet 的自然斷行，非湊數）。
+        // TODO(E1-C×卡C)：內嵌子集 `’`(U+2019)／`…`(U+2026) advance＝1.0 em 全形
+        // （真值 0.175／0.791 em）虛增了本帶下緣；卡 C（子集標點度量修正）落地後
+        // 可行帶遷移至 [0.9750, 0.9851)，本臂須重掃重定（`e1c_advance_trebuchet`
+        // 斷行鎖會先紅，不會靜默走樣）。
+        "trebuchet ms" | "trebuchetms" => 0.9744,
         _ => 1.0,
     }
 }
