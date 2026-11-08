@@ -31,10 +31,12 @@ fn main() -> ExitCode {
                 dir＝遞迴掃 *.xlsx 與 *.xlsm。非零離開碼＝有失真。
       quire-cli xlsx-info <file.xlsx>       workbook 最小模型 JSON（sheet 清單/
                 definedNames 計數/rels 對照/dimension+row 計數）。
-      quire-cli odt-render <file.odt>       ODT 文字流投影首切片：讀 .odt →
-                text:p/text:h＋字級級聯投影 → layout（LayoutParams::default()
-                A4；本切片不解析 ODF style:page-layout，記帳缺口）輸出固定 JSON
-                欄位：paragraph_count／total_text_len／page_breaks。";
+      quire-cli odt-render <file.odt>       ODT 文字流投影＋頁面幾何：讀 .odt →
+                text:p/text:h＋字級級聯投影 → layout（頁寬高與四邊邊距取自
+                styles.xml 的 style:page-layout 經 master-page 鏈換算；解不到
+                者回退 LO 預設頁 A4 portrait＋四邊 2.0cm——非
+                LayoutParams::default() 的假 A4＋1 吋）輸出固定 JSON 欄位：
+                paragraph_count／total_text_len／page_breaks／page／page_source。";
     if args.len() < 3 {
         eprintln!("{usage}");
         return ExitCode::from(2);
@@ -552,10 +554,15 @@ fn xlsx_info(path: &str) -> ExitCode {
     }
 }
 
-/// odt-render 子命令（ODF-C3 首切片）：讀 .odt → ODF 文字流投影 → layout
-/// 全域後備參數（A4；本切片不解析 ODF `style:page-layout`，記帳缺口）→
-/// 固定 JSON `{"paragraph_count":usize,"total_text_len":usize,"page_breaks":[usize]}`。
-/// 非零離開碼＝開檔／投影失敗（老實報錯，不吞）。
+/// odt-render 子命令（ODF-C3 首切片＋ODF-C4 頁面幾何）：讀 .odt → ODF 文字流
+/// 投影 → layout（頁寬高與四邊邊距取自 styles.xml `style:page-layout` 經
+/// `style:master-page` 鏈換算；解不到者回退 **LO 預設頁** A4 portrait＋四邊
+/// 2.0cm，數值以語料 LO PDF 真值實測覆核，見 `docs/odf-c4-anatomy.md` §5）→
+/// 固定 JSON `{"paragraph_count","total_text_len","page_breaks","page",
+/// "page_source"}`。`page` 為實際生效的頁寬高與 `[上,右,下,左]` 邊距（pt），
+/// `page_source` 為生效原因（`para_master_page_name`／`default_master_styles`
+/// ／`master_page_without_layout`／`no_master_page`）——鑑別力面：區分「真讀到
+/// page-layout」與「回退 LO 預設」。非零離開碼＝開檔／投影失敗（老實報錯，不吞）。
 fn odt_render(path: &str) -> ExitCode {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
@@ -578,13 +585,28 @@ fn odt_render(path: &str) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let params = quire_odf::LayoutParams::default();
+    // ODF-C4：頁面幾何鏈取代 LayoutParams::default()（假 A4＋1 吋邊距）。
+    // 加密等錯誤在 project 已被擋，這裡同口徑老實報錯。
+    let geom = match quire_odf::page_geometry(&bundle) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("頁面幾何解析失敗 {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let params = geom.to_layout_params();
     let (texts, _) = projection.flatten();
     let page_breaks = quire_odf::page_break_positions(&texts, &params);
     let out = serde_json::json!({
         "paragraph_count": projection.paragraph_count(),
         "total_text_len": projection.total_text_len,
         "page_breaks": page_breaks,
+        "page": {
+            "w_pt": geom.page_w_pt(),
+            "h_pt": geom.page_h_pt(),
+            "margins_pt": geom.margins_pt(),
+        },
+        "page_source": geom.source.as_str(),
     });
     match serde_json::to_string(&out) {
         Ok(s) => {
