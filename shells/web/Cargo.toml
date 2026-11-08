@@ -22,6 +22,10 @@ quire-engine = { workspace = true }
 quire-odf = { workspace = true }
 wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true }
+# `paper_json` 走 serde `json!` macro 出口（嚴禁字串拼接造 JSON，同 D1 紀律；
+# Engine::paper_json 同路線）。serde_json 本已由 quire-engine 鏈入產物，本行
+# 不引入新程式碼，只把依賴寫實（cargo tree 分層禁列不含 serde_json）。
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # 考卷（tests/odf_d2_wasm_view.rs）需要：直接吃 quire-odf 做「殼層透傳零改動」

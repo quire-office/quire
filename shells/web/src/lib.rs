@@ -10,9 +10,6 @@
 //!   Engine ＝ 半契約兩極性（見 `docs/odf-d1-anatomy.md` §5）。
 
 use quire_engine::Engine;
-// 紅燈佔位態：以下兩型別由真實作 commit 啟用（拍紅 commit 先備好 import 面，
-// 避免紅→綠 diff 混入無關行）。
-#[allow(unused_imports)]
 use quire_odf::{OdfBundle, OdtView};
 use wasm_bindgen::prelude::*;
 
@@ -122,57 +119,133 @@ impl WasmEngine {
 
 // ============================ ODF-D2：ODT 入口 ============================
 //
-// 紅燈佔位態（拍紅用，見 `docs/odf-d2-redlight.md`）：`WasmOdtView` 以下為
-// **佔位空殼**——`new` 一律 `Ok`、`page_count` 回 0、JSON 一律 `None`。考卷
-// `shells/web/tests/odf_d2_wasm_view.rs` 因此**斷言拍紅**（非編譯紅），證明
-// 七盞燈真的在檢查東西。真實作於下一個 commit 頂掉本節。
+// 薄包 `quire_odf::OdtView`（PM 定案路線 1，卡 t_89c4a196）：**零業務邏輯**——
+// 開檔、投影、分頁全在 core/odf（D1 發射層），本殼只做三件事：
+//   1. 把 `OdfError` 轉成 JS 可讀的 `String` 錯誤（throw 語義）；
+//   2. 補 JS 讀取面需要的 `paper_json`／`is_settled`／`reflow_step_json`
+//      （ODT 線開檔一次性分頁，無增量重排——形制與 DOCX 線同契約，
+//      playground.js 的 idle 迴圈與紙張狀態列對 ODT 直接可用，JS 端零改）；
+//   3. 守住 wasm 邊界紀律：**任何方法不得 panic**（panic＝瀏覽器 abort）。
+// 型別出口零新 schema：`page_display_list_json`／`dump_json` 直接轉出 `OdtView`
+// 的既有 JSON 字串（同一個 `PageDisplayList` serde 契約）。
+//
+// 錯誤口徑（ODF-E1 教訓：不得靜默回 0 頁）：
+// - 加密檔（manifest 宣告 encryption-data）→ `Err`，訊息照 `OdfError::Encrypted`
+//   的顯示文案（含條目路徑與演算法名，不捏造）。實測落地點在 `page_geometry()`
+//   那道閘（內部 `ensure_not_encrypted` 雙閘，先於發射）；就算它放過，
+//   `OdtView::from_bundle`→`project()` 還有同一變體同一措辭的第二道閘——兩道
+//   都是 core/odf 既有的，本殼不另開捷徑、不改寫訊息（紅燈報告 §3.3）。
+// - 容器層破損／非 zip／空位元組 → `Err`，訊息前綴「開啟失敗」。
+// - 零頁（分頁器給 0 頁）→ `Err`：正常 ODT 至少一頁（空投影也發 1 頁空行，
+//   實測坐實），0 頁只可能是上游退化，寧可報錯也不給 JS 一張白頁。
+//
+// 為何錯誤型別用 `String` 而非 `JsError`：`JsError::new` 是 wasm-bindgen
+// import（非 wasm target 呼叫即 panic），用 `String` 考卷才能在 host target
+// 跑錯誤路徑。JS 端語義不變——wasm-bindgen 把 `Err(String)` 抛成 `Error`
+// 物件（`err.message`＝該字串），playground.js 現行的
+// `err.message || String(err)` 兩條口徑都吃得下。
 
-/// ODT 顯示列表視圖（wasm 殼）——佔位態，尚未實作。
+/// ODT 顯示列表視圖（wasm 殼）：bytes 進、同 schema 顯示列表出。
+///
+/// 構造即完成開檔＋投影＋分頁（一次），後讀逐頁取 JSON 零重算。唯讀：
+/// 本型別**不暴露**任何編輯面（ODT 線目前無編輯契約，見 D1 解剖報告 §5）。
 #[wasm_bindgen]
 pub struct WasmOdtView {
-    _marker: (),
+    inner: OdtView,
 }
 
 #[wasm_bindgen]
 impl WasmOdtView {
+    /// 由 .odt 位元組建視圖（wasm 無 fs：JS 端 `File.arrayBuffer()` 後餵位元組）。
+    ///
+    /// 失敗一律 `Err(訊息)`：加密／開檔／頁面幾何／零頁四條口徑見節頭註。
     #[wasm_bindgen(constructor)]
-    pub fn new(_bytes: &[u8]) -> Result<WasmOdtView, String> {
-        Ok(Self { _marker: () })
+    pub fn new(bytes: &[u8]) -> Result<WasmOdtView, String> {
+        console_error_panic_hook::set_once();
+        // 先開封裝：容器層錯誤（非 zip／破損／空位元組）落「開啟失敗」口徑，
+        // 與 shells/native 的 odt-dump 同措辭（跨殼錯誤訊息一致性）。
+        let bundle = OdfBundle::open(bytes).map_err(|e| format!("開啟失敗: {e}"))?;
+        // 頁面幾何：走 style:page-layout＋master-page 鏈（ODF-C4），解不到者
+        // 由 quire-odf 回退 LO 預設頁——本殼不自烤 A4（假幾何是 D1 前的老帳）。
+        let params = quire_odf::page_geometry(&bundle)
+            .map_err(|e| format!("頁面幾何解析失敗: {e}"))?
+            .to_layout_params();
+        // from_bundle 內走 `project()` 的加密閘門：content.xml／styles.xml 任一
+        // 宣告加密即 `Err(OdfError::Encrypted)`，訊息原文轉出（不吞、不改寫）。
+        let inner = OdtView::from_bundle(&bundle, &params).map_err(|e| format!("發射失敗: {e}"))?;
+        if inner.page_count() == 0 {
+            return Err(
+                "發射失敗: 分頁器回傳 0 頁（正常 ODT 至少 1 頁，拒絕交回空白視圖）".to_string(),
+            );
+        }
+        Ok(Self { inner })
     }
 
+    /// 頁數（分頁器給的實際頁數，≥1——構造期已守）。
     pub fn page_count(&self) -> usize {
-        0
+        self.inner.page_count()
     }
 
-    pub fn page_display_list_json(&self, _page: usize) -> Option<String> {
-        None
+    /// 單頁顯示列表 JSON（**與 `WasmEngine::page_display_list_json` 同 schema**：
+    /// serde 序列化的 `PageDisplayList`，Text 項以變體名 `"Text"` 為鍵）。
+    ///
+    /// 越界頁碼回 `None`（`OdtView` 內部 `Vec::get`，不 index、不 panic）。
+    /// JS 端照 playground.js 現行寫法先判 `if (!jsonStr) return;` 即可。
+    pub fn page_display_list_json(&self, page: usize) -> Option<String> {
+        self.inner.page_display_list_json(page)
     }
 
+    /// 全頁顯示列表 JSON（pretty 陣列；`quire-cli odt-dump`／`dump` 同形，
+    /// 供 QA 與 render_lab 逐欄比對，JS 端渲染不走這條）。
     pub fn dump_json(&self) -> String {
-        "[]".to_string()
+        self.inner.dump_json()
     }
 
+    /// 段落數（`text:p`＋`text:h`；playground.js 狀態列 `metaParas` 讀取面）。
     pub fn paragraph_count(&self) -> usize {
-        0
+        self.inner.paragraph_count()
     }
 
+    /// 段落文字總碼點數（老實回報口徑，同 odt-render／D1 帳）。
     pub fn total_text_len(&self) -> usize {
-        0
+        self.inner.total_text_len()
     }
 
+    /// 生效紙張幾何 JSON。**欄位名與 `WasmEngine::paper_json` 逐欄同名**
+    /// （JS 端 `updatePaperStatus`／`updatePaperUrl` 對 ODT 直接可用）。
+    ///
+    /// `paper_override_applied` 恆 `false`：紙張覆寫是 DOCX 線（playground
+    /// 紙張面板）的概念，ODT 本殼不接受覆寫——發 `false` 是老實值，不是假裝支援。
     pub fn paper_json(&self) -> String {
-        "{}".to_string()
+        let p = self.inner.params();
+        let m = p.margins_pt; // [上, 右, 下, 左]
+        serde_json::to_string(&serde_json::json!({
+            "page_w_pt": p.page_w_pt,
+            "page_h_pt": p.page_h_pt,
+            "margin_top_pt": m[0],
+            "margin_bottom_pt": m[2],
+            "margin_left_pt": m[3],
+            "margin_right_pt": m[1],
+            "paper_override_applied": false,
+        }))
+        .unwrap_or_else(|_| "{}".to_string())
     }
 
+    /// 是否套用紙張覆寫（ODT 線恆 `false`，見 `paper_json` 檔注）。
     pub fn paper_override_applied(&self) -> bool {
         false
     }
 
+    /// 版面是否已定案：ODT 線開檔一次性分頁，恆 `true`。
+    ///
+    /// 為何要這條：playground.js `render()` 先問 `is_settled()` 才決定要不要排
+    /// `requestIdleCallback` 背景續排——缺這條 JS 直接 `TypeError`（函數不存在）。
     pub fn is_settled(&self) -> bool {
         true
     }
 
-    /// 讀取面：ODT 線無增量重排（開檔一次性分頁），恆回已定案。
+    /// 背景續排一步：ODT 線無增量重排（構造期已排完），恆回已定案＋零事件。
+    /// 形制與 DOCX 線同契約（`{"settled":bool,"events":[...]}`），JS 迴圈零改。
     pub fn reflow_step_json(&self) -> String {
         "{\"settled\":true,\"events\":[]}".to_string()
     }

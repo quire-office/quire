@@ -55,7 +55,9 @@ const TARGET_PARAGRAPHS: usize = 13;
 const TARGET_TEXT_LEN: usize = 402;
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .to_path_buf()
 }
 
 fn corpus(rel: &str) -> Vec<u8> {
@@ -83,12 +85,7 @@ fn str_list(v: &Value) -> Vec<String> {
 }
 
 fn sorted_keys(obj: &Value) -> Vec<String> {
-    let mut k: Vec<String> = obj
-        .as_object()
-        .expect("應為物件")
-        .keys()
-        .cloned()
-        .collect();
+    let mut k: Vec<String> = obj.as_object().expect("應為物件").keys().cloned().collect();
     k.sort();
     k
 }
@@ -157,10 +154,16 @@ fn lamp2_page0_text_items_match_docx_contract_field_names() {
     let required = str_list(&c["variant_required_keys"]["Text"]);
     let union = str_list(&c["variant_keys"]["Text"]);
     for k in &required {
-        assert!(text_keys.contains(k), "Text 必要欄位 {k} 缺失（與 DOCX 線脫節）");
+        assert!(
+            text_keys.contains(k),
+            "Text 必要欄位 {k} 缺失（與 DOCX 線脫節）"
+        );
     }
     for k in &text_keys {
-        assert!(union.contains(k), "Text 發了契約沒有的欄位 {k:?}（欄位名漂移）");
+        assert!(
+            union.contains(k),
+            "Text 發了契約沒有的欄位 {k:?}（欄位名漂移）"
+        );
     }
 }
 
@@ -179,8 +182,14 @@ fn lamp3_page_bounds_return_option_never_panic() {
     );
     // 越界三連發：n、n+999、usize::MAX——全部必須 None 且函數返回（不 panic＝
     // 本斷言能執行完就是證據；wasm 邊 panic＝瀏覽器 abort）。
-    assert!(view.page_display_list_json(n).is_none(), "頁數边界外必須 None");
-    assert!(view.page_display_list_json(n + 999).is_none(), "遠端越界必須 None");
+    assert!(
+        view.page_display_list_json(n).is_none(),
+        "頁數边界外必須 None"
+    );
+    assert!(
+        view.page_display_list_json(n + 999).is_none(),
+        "遠端越界必須 None"
+    );
     assert!(
         view.page_display_list_json(usize::MAX).is_none(),
         "usize::MAX 必須 None（不得運算溢位 panic）"
@@ -263,7 +272,10 @@ fn lamp5_encrypted_and_corrupt_fail_loudly_not_silently() {
             v.page_count()
         ),
         Err(e) => {
-            assert!(e.contains("加密"), "加密檔錯誤訊息必須含「加密」，實際 {e:?}");
+            assert!(
+                e.contains("加密"),
+                "加密檔錯誤訊息必須含「加密」，實際 {e:?}"
+            );
             assert!(!e.is_empty(), "錯誤訊息不得為空");
         }
     }
@@ -291,7 +303,10 @@ fn lamp6_playground_read_surface_is_complete() {
     //   is_settled / reflow_step_json。六項都在，且形制 JS 直接可用。
     assert!(view.page_count() >= 1);
     assert!(view.paragraph_count() >= 1);
-    assert!(view.is_settled(), "開檔一次性分頁：必須恆已定案（否則 JS 無限空轉 idle 迴圈）");
+    assert!(
+        view.is_settled(),
+        "開檔一次性分頁：必須恆已定案（否則 JS 無限空轉 idle 迴圈）"
+    );
     let reflow: Value =
         serde_json::from_str(&view.reflow_step_json()).expect("reflow_step_json 必須合法 JSON");
     assert_eq!(reflow["settled"].as_bool(), Some(true));
@@ -308,17 +323,24 @@ fn lamp6_playground_read_surface_is_complete() {
         "margin_right_pt",
         "paper_override_applied",
     ] {
-        assert!(!pj[k].is_null(), "paper_json 缺鍵 {k}（playground 狀態列會空白）");
+        assert!(
+            !pj[k].is_null(),
+            "paper_json 缺鍵 {k}（playground 狀態列會空白）"
+        );
     }
     assert_eq!(pj["paper_override_applied"].as_bool(), Some(false));
 
     // Canvas2D 消費欄位的**型別**形制（main.js/playground.js 直接算術與字串操作）。
-    let dl: Value = serde_json::from_str(
-        &view.page_display_list_json(0).expect("第 0 頁必須存在"),
-    )
-    .expect("頁 JSON 合法");
-    assert!(dl["width_pt"].as_f64().is_some_and(|w| w > 0.0), "width_pt 必須正數（JS 算 scale）");
-    assert!(dl["height_pt"].as_f64().is_some_and(|h| h > 0.0), "height_pt 必須正數");
+    let dl: Value = serde_json::from_str(&view.page_display_list_json(0).expect("第 0 頁必須存在"))
+        .expect("頁 JSON 合法");
+    assert!(
+        dl["width_pt"].as_f64().is_some_and(|w| w > 0.0),
+        "width_pt 必須正數（JS 算 scale）"
+    );
+    assert!(
+        dl["height_pt"].as_f64().is_some_and(|h| h > 0.0),
+        "height_pt 必須正數"
+    );
     for it in dl["items"].as_array().expect("items 陣列") {
         let t = it.get("Text").expect("D1 切片只准發 Text 變體");
         for k in ["x", "y", "size_pt"] {
@@ -328,7 +350,10 @@ fn lamp6_playground_read_surface_is_complete() {
             );
         }
         assert!(t["flags"].is_number(), "Text.flags 必須整數（JS 位元運算）");
-        assert!(t["color_argb"].is_number(), "Text.color_argb 必須整數（JS >>> 運算）");
+        assert!(
+            t["color_argb"].is_number(),
+            "Text.color_argb 必須整數（JS >>> 運算）"
+        );
         assert!(t["text"].is_string(), "Text.text 必須字串（JS fillText）");
     }
 }
