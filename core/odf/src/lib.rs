@@ -13,6 +13,7 @@
 mod body;
 pub mod layout_glue;
 mod manifest;
+pub mod page_geometry;
 mod skeleton;
 
 pub use body::{BodyModel, OdfParagraph};
@@ -21,6 +22,11 @@ pub use layout_glue::{
     OdfLayoutParagraph, OdfProjection, DEFAULT_FONT_SIZE_PT, MAX_STYLE_HOPS,
 };
 pub use manifest::{Manifest, ManifestEntry, ALGORITHM_UNSPECIFIED};
+pub use page_geometry::{
+    odf_length_to_pt, page_geometry, page_geometry_bytes, GeometrySource, MasterPage,
+    OdfPageGeometry, Orientation, PageLayout, StyleDomainPage, CM_TO_PT, LO_DEFAULT_MARGIN_CM,
+    LO_DEFAULT_MARGIN_PT, LO_DEFAULT_PAGE_H_PT, LO_DEFAULT_PAGE_W_PT,
+};
 pub use skeleton::OdfSkeleton;
 
 use std::collections::BTreeMap;
