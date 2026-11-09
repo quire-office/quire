@@ -76,6 +76,62 @@ pub struct TxbxDrawing {
     /// 自身 `wp:extent`（pt，[寬, 高]）。採集期即要求兩軸齊備且 >0——
     /// 缺 extent 不入列（R35 條 4：0×0 灰塊吞空段步進的根除點）。
     pub extent_pt: [f32; 2],
+    /// D9b 欠債二：本圖所在 `w:txbxContent` 內**表格列**（首見 `w:tr` 的
+    /// 0-based 序）；框內不在任何 `w:tbl` 內＝`None`（LO 對照實證見
+    /// `docs/d9b-inset-redlight.md` §4；tdf48658 頁首框圖＝row 0，該格
+    /// `vMerge="restart"` 跨列 0–1、LO 繪於跨列併格的中間＝圖 y 66.05 正中）。
+    /// serde default＋None 不外露＝既有投影序列化位元組逐位不變。
+    /// **純事實**：跨列併格的列尾（`row_to`）不在此判——由發射層沿宿主
+    /// `txbx_tbl_facts` 的 vMerge continue 實查算出（解析期看不到後續列）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tbl_row_ix: Option<usize>,
+    /// 列內欄序（首見 `w:tc` 的 0-based 序；同列各欄寬由宿主
+    /// `txbx_tbl_facts` 的 `w:tcW`/`w:gridCol` 宣告提供）。框內非表格態＝`None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tbl_cell_ix: Option<usize>,
+}
+
+/// D9b 欠債二：`w:txbxContent` 內**一個 `w:tc`** 的宣告事實（純事實捕獲，
+/// 不做排版判定）。存在的理由：既有 `txbx_table` 只有逐格**填色**，發射層
+/// 對框內表格「圖落在哪一格、該格跨幾列、格寬多少」完全無從得知
+/// （tdf48658 頁首框實證：LO 把圖繪在 `vMerge` 跨 2 列的併格中央，
+/// 我方零發射）。全部欄位缺宣告＝`None`（不虛構，呼叫端老實退化）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TxbxCell {
+    /// 所屬 `w:tr` 序（0-based，文件序；框內單表——巢狀表屬後續卡）。
+    pub row_ix: usize,
+    /// 列內 `w:tc` 序（0-based）。
+    pub cell_ix: usize,
+    /// `w:tcPr/w:tcW/@w:w`（dxa 原值）；缺＝`None`（呼叫端退 `w:tblGrid` 欄寬）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub w_dxa: Option<f32>,
+    /// `w:tcPr/w:vMerge`：`None`＝非合併格；`Some(true)`＝restart（併格首列）；
+    /// `Some(false)`＝continue（省略 `@w:val` 的寫法同 continue，口徑同
+    /// `table::CellProps::vmerge_restart`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vmerge_restart: Option<bool>,
+    /// `w:tcPr/w:vAlign/@w:val`（top／center／bottom；缺＝`None`，預設 top）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valign: Option<String>,
+}
+
+/// D9b 欠債二：`w:txbxContent` 內**一個 `w:tr`** 的宣告事實（純事實捕獲）。
+/// 發射層据此算「圖所在併格的上下緣」（LO 對 `vAlign="center"` 把圖放在
+/// 併格鉛直中央，tdf48658 頁首框實證：行高 `278`＋`277` dxa 跨列併格
+/// → 圖 y 落在 45.25＋(27.75−13.5)/2＝52.375，LO 真值 52.55，差 0.175pt）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TxbxRow {
+    /// `w:tr` 序（0-based，文件序）。
+    pub row_ix: usize,
+    /// `w:trPr/w:trHeight/@w:val`（dxa 原值）；缺＝`None`（呼叫端以 0 計，
+    /// 不虛構行高——老實退化為「該行不-contributed 鉛直位移」）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h_dxa: Option<f32>,
+    /// `w:trPr/w:trHeight/@w:hRule`（`atLeast`／`exact`／`auto`；缺＝`None`）。
+    /// 本卡發射層只讀宣告值不據此分支（`exact` 與否對 LO 的置中無差別，
+    /// 實測證據見紅燈報告 §4），留作後續卡事實。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h_rule: Option<String>,
 }
 
 /// K12：DrawingML 群組（`wpg:wgp`）內的子形狀投影。
