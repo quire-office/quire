@@ -1943,7 +1943,7 @@ fn dxa_raw(e: &quick_xml::events::BytesStart) -> Option<f32> {
 ///
 /// 閂序紀律（run 244 踩過的坑，寫死在此）：包圍計必須**先於**事實臂加一，
 /// 否則 `<w:tcW>`／`<w:gridCol>` 這類「開標即帶屬性」的元素永遠收不到——
-/// 它們的 `ctx > 0` 判定發生在同一条 Start 事件裡。
+/// 它們的 `ctx > 0` 判定發生在同一條 Start 事件裡。
 fn note_hf_tbl_fact(v: &mut Pending, name: &[u8], empty: bool, e: &quick_xml::events::BytesStart) {
     // 1) `w:tbl`：先入棧再判事實（首層＋首表才開事實表）。
     if name == b"tbl" && !empty {

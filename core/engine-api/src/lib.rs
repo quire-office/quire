@@ -6633,7 +6633,7 @@ impl Engine {
     ///   宣告非 `page`（margin/column/…無 LO 真值）＝老實不發，不猜。
     /// - 圖原點＝錨點＋宿主框 `v:textbox/@inset`（`Some`＝宣告值、`None`＝退
     ///   `VML_TEXTBOX_DEFAULT_INSET`，**兩者不得抹平**——宣告 `0,0,0,0` 與預設
-    ///   7.2/3.6 差 7.2pt，由 lamp6 ±4pt 容差天然鉴别）。
+    ///   7.2/3.6 差 7.2pt，由 lamp6 ±4pt 容差天然鑑別）。
     /// - 圖落在框內首層表格的標的格（`tbl_row_ix`/`tbl_cell_ix` 蓋章）：
     ///   x＝格左界＋`tblCellMar/@w:left`（tdf48658：58.35＋0＋3.55＝61.90 LO 命中）；
     ///   y＝併格鏈頂＋`vAlign` 定位（center＝格高減圖高置中；vMerge 鏈高＝宣告
