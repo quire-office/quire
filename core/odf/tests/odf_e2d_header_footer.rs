@@ -103,10 +103,10 @@ fn lamp1_strict_header_paragraph_verbatim_and_order() {
         .hf_masters
         .iter()
         .find(|m| m.name == "Standard")
-        .expect("strict 应有 master-page Standard");
+        .expect("strict 應有 master-page Standard");
     let h = std
         .slot(MasterHfSlotKind::Header)
-        .expect("Standard 应有 style:header 槽");
+        .expect("Standard 應有 style:header 槽");
     assert_eq!(
         texts(&h.paragraphs),
         vec!["This is a header."],
@@ -238,10 +238,10 @@ fn lamp3_literal_text_and_field_cached_values() {
         .hf_masters
         .iter()
         .find(|m| m.name == "Standard")
-        .expect("tdf123705 应有 Standard");
+        .expect("tdf123705 應有 Standard");
     let h = std
         .slot(MasterHfSlotKind::Header)
-        .expect("tdf123705 Standard 应有 header 槽");
+        .expect("tdf123705 Standard 應有 header 槽");
     assert_eq!(
         texts(&h.paragraphs).first().map(String::as_str),
         Some("Holland America Group Shorex Vendor Incident Form"),
@@ -255,16 +255,16 @@ fn lamp3_literal_text_and_field_cached_values() {
         .hf_masters
         .iter()
         .find(|m| m.name == "Standard")
-        .expect("FDO76312 应有 Standard");
+        .expect("FDO76312 應有 Standard");
     let f = std
         .slot(MasterHfSlotKind::Footer)
-        .expect("FDO76312 Standard 应有 footer 槽");
+        .expect("FDO76312 Standard 應有 footer 槽");
     assert_eq!(
         texts(&f.paragraphs).first().map(String::as_str),
         Some("Page 1 of 2"),
         "燈3c 欄位快取值＋tail 文字逐字"
     );
-    // 頁 0 用 -first（空）⇒ 不發 plain 頁尾；頁尾文字不得出现在頁 0。
+    // 頁 0 用 -first（空）⇒ 不發 plain 頁尾；頁尾文字不得出現在頁 0。
     assert!(
         hf.pages[0].footer.is_empty(),
         "燈3c 頁 0 有 header-first/footer-first 宣告 ⇒ 不得發 plain 頁尾"
@@ -284,17 +284,17 @@ fn lamp4_first_page_uses_first_slot_even_when_empty() {
         .hf_masters
         .iter()
         .find(|m| m.name == "Standard")
-        .expect("mce-nested 应有 Standard");
+        .expect("mce-nested 應有 Standard");
     let hf_first = std
         .slot(MasterHfSlotKind::HeaderFirst)
-        .expect("mce-nested Standard 应有 header-first 槽");
+        .expect("mce-nested Standard 應有 header-first 槽");
     assert!(
         hf_first.paragraphs.iter().all(|p| p.text.is_empty()),
         "燈4 header-first 應為空段宣告"
     );
     let plain = std
         .slot(MasterHfSlotKind::Header)
-        .expect("mce-nested Standard 应有 header 槽");
+        .expect("mce-nested Standard 應有 header 槽");
     assert_eq!(
         texts(&plain.paragraphs).first().map(String::as_str),
         Some("Sample Doc 002"),
@@ -391,7 +391,7 @@ const CORPUS_PARAGRAPH_BASELINE: usize = 19_935;
 ///
 /// 前 run 拍的 65_569 是**臆測值**——那正好是 strict.odt 附近量級的單檔數字，
 /// 不是全庫和。真值由兩條獨立線鎖死：(1) 我方 CLI 全語料實測 593_902；
-/// (2) `docs/odf-e2a-redlight.md` §「合計」表（E2a 修後基線 593_902，逐檔可对
+/// (2) `docs/odf-e2a-redlight.md` §「合計」表（E2a 修後基線 593_902，逐檔可對
 /// 帳）。本卡零污染鐵律正是「此值逐位不動」，故必須釘實測值而非想像值。
 const CORPUS_TOTAL_TEXT_BASELINE: usize = 593_902;
 

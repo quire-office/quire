@@ -387,12 +387,12 @@ pub fn page_geometry_bytes(
 }
 
 /// 頁面域樣式簿（ODF-E2d 出口：頁首尾發射要查「段落樣式宣告的主頁名」與
-/// 主頁→版面對應，但**不要**幾何結論——分域簿本身是可复用的事實面）。
+/// 主頁→版面對應，但**不要**幾何結論——分域簿本身是可複用的事實面）。
 ///
 /// 走查範圍與 [`page_geometry_bytes`] 逐字相同（分域鐵律：page-layout 只收
 /// `office:automatic-styles`、master-page 只收 `office:master-styles`、
 /// 兩域的 `@style:master-page-name` 各建一張表），故簿內容與幾何解析所見
-/// 一致——不另起爐灶（避免「幾何讀到的主頁」與「頁首尾讀到的主頁」兩張真相）。
+/// 一致——不另起爐竈（避免「幾何讀到的主頁」與「頁首尾讀到的主頁」兩張真相）。
 pub fn style_domain_page_bytes(
     content_xml: &[u8],
     styles_xml: Option<&[u8]>,

@@ -210,7 +210,7 @@ def paragraph_text(elem):
         for child in node:
             ctag = child.tag
             if ctag in PARA_TAGS:
-                # 巢裝段落：另筆入列（由槽層枚舉），此处整棵略過。
+                # 巢裝段落：另筆入列（由槽層枚舉），此處整棵略過。
                 emit_text(child.tail)
                 continue
             if ctag in ALT_TAGS:

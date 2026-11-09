@@ -9,7 +9,7 @@
 //!
 //! * **宣告面** [`OdfProjection::hf_masters`]：styles.xml `office:master-styles`
 //!   內每筆 master-page 的六種槽位（header／-first／-left × footer／-first／-left）
-//!   之 `text:p`／`text:h` 逐段投影。三條實測口徑（LO PDF 覆核，明细見考卷
+//!   之 `text:p`／`text:h` 逐段投影。三條實測口徑（LO PDF 覆核，明細見考卷
 //!   `tests/odf_e2d_header_footer.rs` 檔頭）：
 //!   1. **含巢裝表格／文字框內段落**，但每段只取**自身 inline 文字**（巢裝段落
 //!      另筆、文件序 container-before-inner）。tdf102466 頁首是
@@ -635,7 +635,7 @@ fn assign_from(
 ///   零文字，正頁首**不**補發）。
 /// * 其餘 ⇒ plain。
 ///
-/// 回傳（頁首段, 頁尾段, 本頁未消费的 `-left` 槽數）——最後項是記帳軸：宣告了
+/// 回傳（頁首段, 頁尾段, 本頁未消費的 `-left` 槽數）——最後項是記帳軸：宣告了
 /// `-left` 卻因該頁非左頁而未發的次數（語料鏡像頁數少，需可查）。
 fn pick_slots(
     m: &MasterHf,
@@ -657,7 +657,7 @@ fn pick_slots(
                 return (emit_nonempty(s), 0);
             }
         }
-        // 右頁（或未宣告 -left）⇒ 退 plain，並記帳一筆未消费的 -left。
+        // 右頁（或未宣告 -left）⇒ 退 plain，並記帳一筆未消費的 -left。
         let paras = m.slot(plain).map(emit_nonempty).unwrap_or_default();
         (paras, m.slot(left).is_some() as usize)
     };

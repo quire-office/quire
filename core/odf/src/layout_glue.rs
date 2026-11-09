@@ -278,7 +278,7 @@ pub(crate) struct StyleBook {
 
 impl StyleBook {
     /// 級聯解析（套用缺省後）：回傳 `(字級pt, 粗體)`——段落代表值用。
-    /// ODF-E2d 頁首尾段落字級同層复用（`header_footer`）。
+    /// ODF-E2d 頁首尾段落字級同層複用（`header_footer`）。
     pub(crate) fn resolve(&self, name: &str) -> (f32, bool) {
         let (size, bold) = self.resolve_opt(name);
         (size.unwrap_or(DEFAULT_FONT_SIZE_PT), bold.unwrap_or(false))
