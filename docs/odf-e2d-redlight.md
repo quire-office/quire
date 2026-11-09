@@ -194,6 +194,11 @@ A/B 殘留軸：行內換頁走後備字級/行距），非頁首尾投影缺陷
   本 run 親跑：燈 8 盞綠、CLI 3 盞綠、BUGGY 回塞紅（§5 實測輸出）。
 * 宿主零侵入實測：全庫 `paragraph_count`=19935、`total_text_len`=593902
   逐位不動（§六度量與燈 6 雙鎖）。
+  **合併態更正（PM 值守 11-09）**：收案 run 分支基線早於 `a0a2d82`（E2b／E2c
+  抑制隱藏 section／alt-text 正文發射，屬其語意的合法扣帳 −2128），合併後
+  燈 6 `total_text_len` 實測 **591774**；`paragraph_count` 19935 逐位未動。
+  PM 逐檔對帳：分支態 vs main 宿主計數**逐檔逐位相同**（57 檔差異 0）⇒
+  本卡貢獻嚴格為零，燈 6 基準已隨上游演進更新（出處見該常式註解）。
 * 探針固化：kanban workspace `t_b1c58929/probe/`（LO PDF 逐頁真值、
   mirror/`-left` 查證、leaf-census、口徑對帳四組＋本 run 四支）。
 * 署名 ADT109119；簡繁掃描（traditional-chinese-purity 無歧義簡體字集版）

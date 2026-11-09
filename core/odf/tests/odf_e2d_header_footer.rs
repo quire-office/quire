@@ -42,7 +42,8 @@
 //! * 燈 5 段序＋零污染全域鎖：全庫逐頁 hf 流中，頁首段恆先於該頁正文段、
 //!   頁尾段恆後於該頁正文段；宿主流逐字逐檔與 `paragraphs` 完全一致。
 //! * 燈 6 零回退：既有計數口徑逐位不動——全庫 `paragraph_count()` 總和
-//!   19935、`total_text_len` 語料和 65569（基準＝修復前實測，紅燈 commit 同入）；
+//!   19_935、`total_text_len` 語料和 591_774（＝合併態 main 實測，含上游 E2b／
+//!   E2c 抑制發射 −2_128；分支 vs main 逐檔逐位相同 ⇒ 本卡貢獻嚴格為零）；
 //!   hf 為獨立帳（`hf_masters`／`hf_switches`／`HfAssignment`）。
 //! * 燈 7 全語料逐檔逐槽對齊**獨立第二雙眼**基準 `fixtures/e2d_hf_truth.json`
 //!   （生成器 `odf_e2d_hf_truth.py`，ElementTree 實作，紅燈 commit 同入）。
@@ -390,14 +391,19 @@ fn lamp5_corpus_ordering_and_host_flow_untouched() {
 
 /// 全庫宿主段落總數基準（ODF-C3 口徑，odf_d1_display_list 同值釘）。
 const CORPUS_PARAGRAPH_BASELINE: usize = 19_935;
-/// 全庫宿主 `total_text_len` 基準＝**本卡動工前 worktree 實測**（48 明文檔，
-/// `probe/run_cli_corpus.py` 跑 `odt-render` 逐檔求和）。
+/// 全庫宿主 `total_text_len` 基準＝**合併態 main（含 E2b／E2c）實測**（48 明文
+/// 檔，`odt-render` 逐檔求和；PM 覆核 `probe/`＋逐檔對帳腳本）。
 ///
-/// 前 run 拍的 65_569 是**臆測值**——那正好是 strict.odt 附近量級的單檔數字，
-/// 不是全庫和。真值由兩條獨立線鎖死：(1) 我方 CLI 全語料實測 593_902；
-/// (2) `docs/odf-e2a-redlight.md` §「合計」表（E2a 修後基線 593_902，逐檔可對
-/// 帳）。本卡零污染鐵律正是「此值逐位不動」，故必須釘實測值而非想像值。
-const CORPUS_TOTAL_TEXT_BASELINE: usize = 593_902;
+/// 沿革（三值皆有出處，禁臆測）：
+/// * 65_569＝前 run 臆測值，實為 strict.odt 附近量級的**單檔**數，非全庫和。
+/// * 593_902＝本卡動工前基線（CLI 全語料實測＝`docs/odf-e2a-redlight.md` §合計
+///   表雙線鎖死），當時 main 尚未有 E2b／E2c。
+/// * **591_774＝現行值**：上游 `a0a2d82`（E2b 隱藏 section／E2c alt-text 抑制
+///   正文發射）合法扣掉 2_128 字。PM 零污染鐵證：分支態 vs main **逐檔逐位元組
+///   相同**（57 檔差異檔數＝0），故本卡對宿主計數的貢獻嚴格為零——此欄更新只
+///   反映上游合法演進，不稀釋「E2d 不動宿主計數」鐵律（段落數 19_935 逐位未動
+///   即 ODF-C3 契約面同證）。
+const CORPUS_TOTAL_TEXT_BASELINE: usize = 591_774;
 
 #[test]
 fn lamp6_host_counting_zero_regression() {
