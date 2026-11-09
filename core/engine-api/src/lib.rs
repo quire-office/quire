@@ -6612,7 +6612,7 @@ impl Engine {
         self.push_hf_vert_frames(items, part, &paragraphs, hf_params, geo);
         // ---- D9b 欠債二：頁首／頁尾 part 框候選的**框內 `w:drawing` 內容圖**
         // （tdf48658 頁首框實據：header2.xml 的 VML `v:shape` 框內 `w:txbxContent`
-        // 表格掛 `w:drawing`，LO 首页繪於 [61.90,52.55]＋18.75×13.50，我方零發射）。
+        // 表格掛 `w:drawing`，LO 首頁繪於 [61.90,52.55]＋18.75×13.50，我方零發射）。
         // 座標在 push_hf_slot 末尾補發（表格切片之後、直排框臂之後＝z 序在框墨
         // 之上，LO 同序）。----
         self.push_hf_txbx_pics(items, part);

@@ -121,7 +121,7 @@ pub struct TxbxCell {
 }
 
 /// D9b 欠債二：`w:txbxContent` 內**一個 `w:tr`** 的宣告事實（純事實捕獲）。
-/// 發射層据此算「圖所在併格的上下緣」（LO 對 `vAlign="center"` 把圖放在
+/// 發射層據此算「圖所在併格的上下緣」（LO 對 `vAlign="center"` 把圖放在
 /// 併格鉛直中央，tdf48658 頁首框實證：行高 `278`＋`277` dxa 跨列併格
 /// → 圖 y 落在 45.25＋(27.75−13.5)/2＝52.375，LO 真值 52.55，差 0.175pt）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -141,7 +141,7 @@ pub struct TxbxRow {
 
 /// D9b 欠債二：宿主框 `w:txbxContent` 內**首層 `w:tbl`** 的宣告事實全集
 /// （純事實捕獲，不做排版判定；巢狀表不併入——`tbl_ctx` 幀棧深度 >1 的層
-/// 一概不收，呼叫端只会看到外層表）。存在的理由：既有 `txbx_table` 只有
+/// 一概不收，呼叫端只會看到外層表）。存在的理由：既有 `txbx_table` 只有
 /// 逐格填色，發射層對框內表格「圖落在哪一格、該格跨幾列、格寬/行高/格內距
 /// 多少」完全無從得知（tdf48658 頁首框實證：LO 把圖繪在 `vMerge` 跨 2 列
 /// 的併格中央，我方零發射）。serde default＋None 不外露＝既有投影序列化
@@ -152,19 +152,19 @@ pub struct TxbxTableFacts {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub grid_dxa: Vec<f32>,
     /// `w:tblPr/w:tblInd/@w:w`（dxa）。LO 實測**不**位移框內表格邊界
-    /// （tdf48658：宣告 71 dxa，邊界實繪於框原點），留作事實不消费。
+    /// （tdf48658：宣告 71 dxa，邊界實繪於框原點），留作事實不消費。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indent_dxa: Option<f32>,
     /// `w:tblPr/w:tblCellMar/w:left/@w:w`（dxa）——tdf48658 實證 LO 把框內圖
-    /// 放在「表格左界＋本格內距」（61.90＝58.35＋3.55），本欄**被消费**。
+    /// 放在「表格左界＋本格內距」（61.90＝58.35＋3.55），本欄**被消費**。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cellmar_l_dxa: Option<f32>,
-    /// `w:tblPr/w:tblCellMar/w:right/@w:w`（dxa）。本卡不消费，留作事實。
+    /// `w:tblPr/w:tblCellMar/w:right/@w:w`（dxa）。本卡不消費，留作事實。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cellmar_r_dxa: Option<f32>,
-    /// 逐列事實（文档序；row_ix＝序）。
+    /// 逐列事實（文檔序；row_ix＝序）。
     pub rows: Vec<TxbxRow>,
-    /// 逐格事實（文档序扁平清單，(row_ix, cell_ix) 定位）。
+    /// 逐格事實（文檔序扁平清單，(row_ix, cell_ix) 定位）。
     pub cells: Vec<TxbxCell>,
 }
 
@@ -568,7 +568,7 @@ pub struct InlineImage {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vml_group_pics: Vec<VmlGroupPicture>,
     /// D9b 欠債二：宿主框 `w:txbxContent` 內**首層表格**的宣告事實（純事實，
-    /// 不做排版判定；巢狀表不收）。頁首／正文發射層据此把「框內 w:drawing
+    /// 不做排版判定；巢狀表不收）。頁首／正文發射層據此把「框內 w:drawing
     /// 內容圖」擺到該格的位置（tdf48658 頁首框實證：LO 把圖繪在 `vMerge`
     /// 跨 2 列、`vAlign="center"` 的併格中央）。serde default＋None 不外露
     /// ＝既有投影序列化位元組逐位不變。
@@ -1663,7 +1663,7 @@ struct Pending {
     /// D9b 欠債二：框內（`w:txbxContent`）**進行中表格**的列/欄序幀棧
     /// （`(row_ix, cell_ix)`，0-based，巢狀 `w:tbl` 逐層入棧）。`w:tbl` Start
     /// 開一層、End 收一層；`w:tc` End 推進欄序、`w:tr` End 推進列序並歸零欄序。
-    /// `drain_txbx_frame` 據此替框內圖蓋「圖落在第几列第几欄」的章（tdf48658
+    /// `drain_txbx_frame` 據此替框內圖蓋「圖落在第幾列第幾欄」的章（tdf48658
     /// 頁首框實證：圖在 row 0 / cell 0，該格 `vMerge="restart"` 跨列 0–1）。
     /// 空棧＝框內圖不在任何表格內＝`None`（呼叫端老實退化）。
     tbl_ctx: Vec<(usize, usize)>,
