@@ -1978,7 +1978,11 @@ fn note_hf_tbl_fact(v: &mut Pending, name: &[u8], empty: bool, e: &quick_xml::ev
         match name {
             b"tr" => {
                 let row_ix = v.tbl_ctx.last().map_or(0, |(r, _)| *r);
-                v.cur_row = Some(TxbxRow { row_ix, h_dxa: None, h_rule: None });
+                v.cur_row = Some(TxbxRow {
+                    row_ix,
+                    h_dxa: None,
+                    h_rule: None,
+                });
             }
             b"tc" => {
                 let (row_ix, cell_ix) = v.tbl_ctx.last().copied().unwrap_or((0, 0));

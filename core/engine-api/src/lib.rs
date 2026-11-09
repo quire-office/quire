@@ -4585,22 +4585,19 @@ fn txbx_cell_offset_pt(
     let mut chain_rows: Vec<usize> = vec![row_ix];
     if target.vmerge_restart == Some(true) {
         let mut r = row_ix + 1;
-        loop {
-            let Some(cont) = f
-                .cells
-                .iter()
-                .filter(|c| c.row_ix == r)
-                // 同列內先按欄序還原起始欄，找起始欄與 span 都同鏈的續格。
-                .scan(0usize, |col, c| {
-                    let s = *col;
-                    *col += span_of(c);
-                    Some((s, c))
-                })
-                .find(|(col, c)| *col == start_col && span_of(c) == span)
-                .map(|(_, c)| c)
-            else {
-                break;
-            };
+        // 同列內先按欄序還原起始欄，找起始欄與 span 都同鏈的續格。
+        while let Some(cont) = f
+            .cells
+            .iter()
+            .filter(|c| c.row_ix == r)
+            .scan(0usize, |col, c| {
+                let s = *col;
+                *col += span_of(c);
+                Some((s, c))
+            })
+            .find(|(col, c)| *col == start_col && span_of(c) == span)
+            .map(|(_, c)| c)
+        {
             if cont.vmerge_restart != Some(false) {
                 break; // 非 continue（新格/新鏈）＝鏈到此為止
             }
@@ -6666,7 +6663,7 @@ impl Engine {
             let own_rids: Vec<&str> = image_rid_candidates(im);
             let facts = im.txbx_tbl_facts.as_ref();
             for (di, td) in im.txbx_drawings.iter().enumerate() {
-                if own_rids.iter().any(|r| *r == td.rid.as_str()) {
+                if own_rids.contains(&td.rid.as_str()) {
                     continue; // 與宿主框同源的圖：框已作為圖片發射，不雙發
                 }
                 let [w, h] = td.extent_pt;
@@ -6682,10 +6679,7 @@ impl Engine {
                     continue; // 像素解不出＝老實不發（不虛構佔位墨跡：本臂語意）
                 };
                 // 格內定位（事實缺位／解不出＝None＝退框原點＋inset 舊口徑）。
-                let (off_x, off_y) = match txbx_cell_offset_pt(facts, td, h) {
-                    Some(o) => o,
-                    None => (0.0, 0.0),
-                };
+                let (off_x, off_y) = txbx_cell_offset_pt(facts, td, h).unwrap_or((0.0, 0.0));
                 let x = ax + inset_l + off_x;
                 let y = ay + inset_t + off_y;
                 let Some(bytes) = self.doc.parts.get(spart) else {
@@ -7441,13 +7435,7 @@ fn build_hf_layer(
                     .map(|im| {
                         im.txbx_drawings
                             .iter()
-                            .map(|d| {
-                                resolve_pixel_source(
-                                    &doc.parts,
-                                    &hf_rels,
-                                    &[d.rid.as_str()],
-                                )
-                            })
+                            .map(|d| resolve_pixel_source(&doc.parts, &hf_rels, &[d.rid.as_str()]))
                             .collect()
                     })
                     .collect();
