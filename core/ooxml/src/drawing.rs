@@ -76,6 +76,96 @@ pub struct TxbxDrawing {
     /// 自身 `wp:extent`（pt，[寬, 高]）。採集期即要求兩軸齊備且 >0——
     /// 缺 extent 不入列（R35 條 4：0×0 灰塊吞空段步進的根除點）。
     pub extent_pt: [f32; 2],
+    /// D9b 欠債二：本圖所在 `w:txbxContent` 內**表格列**（首見 `w:tr` 的
+    /// 0-based 序）；框內不在任何 `w:tbl` 內＝`None`（LO 對照實證見
+    /// `docs/d9b-inset-redlight.md` §4；tdf48658 頁首框圖＝row 0，該格
+    /// `vMerge="restart"` 跨列 0–1、LO 繪於跨列併格的中間＝圖 y 66.05 正中）。
+    /// serde default＋None 不外露＝既有投影序列化位元組逐位不變。
+    /// **純事實**：跨列併格的列尾（`row_to`）不在此判——由發射層沿宿主
+    /// `txbx_tbl_facts` 的 vMerge continue 實查算出（解析期看不到後續列）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tbl_row_ix: Option<usize>,
+    /// 列內欄序（首見 `w:tc` 的 0-based 序；同列各欄寬由宿主
+    /// `txbx_tbl_facts` 的 `w:tcW`/`w:gridCol` 宣告提供）。框內非表格態＝`None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tbl_cell_ix: Option<usize>,
+}
+
+/// D9b 欠債二：`w:txbxContent` 內**一個 `w:tc`** 的宣告事實（純事實捕獲，
+/// 不做排版判定）。存在的理由：既有 `txbx_table` 只有逐格**填色**，發射層
+/// 對框內表格「圖落在哪一格、該格跨幾列、格寬多少」完全無從得知
+/// （tdf48658 頁首框實證：LO 把圖繪在 `vMerge` 跨 2 列的併格中央，
+/// 我方零發射）。全部欄位缺宣告＝`None`（不虛構，呼叫端老實退化）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TxbxCell {
+    /// 所屬 `w:tr` 序（0-based，文件序；框內單表——巢狀表屬後續卡）。
+    pub row_ix: usize,
+    /// 列內 `w:tc` 序（0-based）。
+    pub cell_ix: usize,
+    /// `w:tcPr/w:tcW/@w:w`（dxa 原值）；缺＝`None`（呼叫端退 `w:tblGrid` 欄寬）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub w_dxa: Option<f32>,
+    /// `w:tcPr/w:vMerge`：`None`＝非合併格；`Some(true)`＝restart（併格首列）；
+    /// `Some(false)`＝continue（省略 `@w:val` 的寫法同 continue，口徑同
+    /// `table::CellProps::vmerge_restart`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vmerge_restart: Option<bool>,
+    /// `w:tcPr/w:gridSpan/@w:val`（欄數；缺＝`None`＝1）。發射層找 vMerge
+    /// continue 續格時要求**同欄序＋同 span**（欄數不同的續格＝不同併格鏈，
+    /// 老實停住不續算，不把兩條鏈拼成一格）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid_span: Option<usize>,
+    /// `w:tcPr/w:vAlign/@w:val`（top／center／bottom；缺＝`None`，預設 top）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valign: Option<String>,
+}
+
+/// D9b 欠債二：`w:txbxContent` 內**一個 `w:tr`** 的宣告事實（純事實捕獲）。
+/// 發射層據此算「圖所在併格的上下緣」（LO 對 `vAlign="center"` 把圖放在
+/// 併格鉛直中央，tdf48658 頁首框實證：行高 `278`＋`277` dxa 跨列併格
+/// → 圖 y 落在 45.25＋(27.75−13.5)/2＝52.375，LO 真值 52.55，差 0.175pt）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TxbxRow {
+    /// `w:tr` 序（0-based，文件序）。
+    pub row_ix: usize,
+    /// `w:trPr/w:trHeight/@w:val`（dxa 原值）；缺＝`None`（呼叫端以 0 計，
+    /// 不虛構行高——老實退化為「該行不-contributed 鉛直位移」）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h_dxa: Option<f32>,
+    /// `w:trPr/w:trHeight/@w:hRule`（`atLeast`／`exact`／`auto`；缺＝`None`）。
+    /// 本卡發射層只讀宣告值不據此分支（`exact` 與否對 LO 的置中無差別，
+    /// 實測證據見紅燈報告 §4），留作後續卡事實。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h_rule: Option<String>,
+}
+
+/// D9b 欠債二：宿主框 `w:txbxContent` 內**首層 `w:tbl`** 的宣告事實全集
+/// （純事實捕獲，不做排版判定；巢狀表不併入——`tbl_ctx` 幀棧深度 >1 的層
+/// 一概不收，呼叫端只會看到外層表）。存在的理由：既有 `txbx_table` 只有
+/// 逐格填色，發射層對框內表格「圖落在哪一格、該格跨幾列、格寬/行高/格內距
+/// 多少」完全無從得知（tdf48658 頁首框實證：LO 把圖繪在 `vMerge` 跨 2 列
+/// 的併格中央，我方零發射）。serde default＋None 不外露＝既有投影序列化
+/// 位元組逐位不變。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TxbxTableFacts {
+    /// `w:tblGrid/w:gridCol/@w:w`（dxa 原值，文件序）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grid_dxa: Vec<f32>,
+    /// `w:tblPr/w:tblInd/@w:w`（dxa）。LO 實測**不**位移框內表格邊界
+    /// （tdf48658：宣告 71 dxa，邊界實繪於框原點），留作事實不消費。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indent_dxa: Option<f32>,
+    /// `w:tblPr/w:tblCellMar/w:left/@w:w`（dxa）——tdf48658 實證 LO 把框內圖
+    /// 放在「表格左界＋本格內距」（61.90＝58.35＋3.55），本欄**被消費**。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cellmar_l_dxa: Option<f32>,
+    /// `w:tblPr/w:tblCellMar/w:right/@w:w`（dxa）。本卡不消費，留作事實。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cellmar_r_dxa: Option<f32>,
+    /// 逐列事實（文檔序；row_ix＝序）。
+    pub rows: Vec<TxbxRow>,
+    /// 逐格事實（文檔序扁平清單，(row_ix, cell_ix) 定位）。
+    pub cells: Vec<TxbxCell>,
 }
 
 /// K12：DrawingML 群組（`wpg:wgp`）內的子形狀投影。
@@ -328,6 +418,17 @@ pub struct InlineImage {
     /// `wp:positionV/@relativeFrom` 原字串。
     #[serde(default)]
     pub pos_y_rel: Option<String>,
+    /// D9b 欠債二：VML `style` 的 `mso-position-horizontal-relative` **原宣告**
+    /// （`page`／`margin`／…；缺＝None）。既有 `pos_x_rel` 在「margin 偏移」第
+    /// 2 式下一律寫 `"margin"`，把宣告的基準丟掉了——頁首框內圖發射層需要它才
+    /// 能判「偏移以頁面還是版心為原點」（tdf48658 頁首框宣告 `page`，LO 實繪
+    /// 框原點＝宣告值本身 58.35pt 自頁左；按版心算會偏 56.7pt）。serde
+    /// default＋None 不外露＝既有投影序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos_x_rel_decl: Option<String>,
+    /// 同 [`Self::pos_x_rel_decl`] 的 V 軸版（`mso-position-vertical-relative`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos_y_rel_decl: Option<String>,
     /// `wp:positionV` 內 `<wp:align>` 對齊枚舉（同上，V 軸）。
     #[serde(default)]
     pub pos_y_align: Option<String>,
@@ -466,6 +567,13 @@ pub struct InlineImage {
     /// ＋空不外露＝既有投影序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vml_group_pics: Vec<VmlGroupPicture>,
+    /// D9b 欠債二：宿主框 `w:txbxContent` 內**首層表格**的宣告事實（純事實，
+    /// 不做排版判定；巢狀表不收）。頁首／正文發射層據此把「框內 w:drawing
+    /// 內容圖」擺到該格的位置（tdf48658 頁首框實證：LO 把圖繪在 `vMerge`
+    /// 跨 2 列、`vAlign="center"` 的併格中央）。serde default＋None 不外露
+    /// ＝既有投影序列化位元組逐位不變。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub txbx_tbl_facts: Option<TxbxTableFacts>,
     /// K12：文字框段落邊框（`w:pBdr`）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub txbx_borders: Vec<ShapeBorder>,
@@ -741,6 +849,17 @@ fn apply_vml_position(v: &mut Pending, e: &quick_xml::events::BytesStart) {
         return;
     }
     let mut positioned = false;
+    // D9b 欠債二：第 2 式（margin 偏移）把 `mso-position-*-relative` 的原宣告
+    // 一起留下（純事實透傳；第 1 式的 `pos_*_rel` 已承載同一資訊，但第 2 式
+    // 只記 `pos_*_rel="margin"` 而丟掉了宣告——頁首框內圖的發射層需要知道
+    // 「偏移是以頁面還是版心為原點」：tdf48658 頁首框 `page` ⇒ LO 框原點
+    // ＝宣告值本身（58.35pt 自頁左），若按版心原點算會偏 56.7pt）。
+    if v.pos_x_rel_decl.is_none() {
+        v.pos_x_rel_decl = h_rel.clone();
+    }
+    if v.pos_y_rel_decl.is_none() {
+        v.pos_y_rel_decl = v_rel.clone();
+    }
     // 第 1 式：頁面釘定對齊（relative 限 page/margin）。
     if page_or_margin(h_rel.as_ref()) {
         if let Some(a) = h_align.as_deref().filter(|a| valid_h(a)) {
@@ -1425,10 +1544,15 @@ struct Pending {
     h: Option<f32>,
     pos_x_pt: Option<f32>,
     pos_x_rel: Option<String>,
+    /// D9b 欠債二：`mso-position-horizontal-relative` 原宣告（透傳用，見
+    /// [`InlineImage::pos_x_rel_decl`]）。
+    pos_x_rel_decl: Option<String>,
     pos_x_align: Option<String>,
     pos_x_pct: Option<f32>,
     pos_y_pt: Option<f32>,
     pos_y_rel: Option<String>,
+    /// D9b 欠債二：[`Self::pos_x_rel_decl`] 的 V 軸版。
+    pos_y_rel_decl: Option<String>,
     pos_y_align: Option<String>,
     pos_y_pct: Option<f32>,
     /// posOffset 文本捕獲旗標（Some(true)＝寫 pos_y、Some(false)＝寫 pos_x、
@@ -1536,6 +1660,36 @@ struct Pending {
     /// 進行中的一列填色（框內表格；None＝該格無填色宣告）。
     tbl_row: Vec<Option<u32>>,
     tbl_rows: Vec<Vec<Option<u32>>>,
+    /// D9b 欠債二：框內（`w:txbxContent`）**進行中表格**的列/欄序幀棧
+    /// （`(row_ix, cell_ix)`，0-based，巢狀 `w:tbl` 逐層入棧）。`w:tbl` Start
+    /// 開一層、End 收一層；`w:tc` End 推進欄序、`w:tr` End 推進列序並歸零欄序。
+    /// `drain_txbx_frame` 據此替框內圖蓋「圖落在第幾列第幾欄」的章（tdf48658
+    /// 頁首框實證：圖在 row 0 / cell 0，該格 `vMerge="restart"` 跨列 0–1）。
+    /// 空棧＝框內圖不在任何表格內＝`None`（呼叫端老實退化）。
+    tbl_ctx: Vec<(usize, usize)>,
+    /// D9b 欠債二：宿主框**首層** `w:tbl` 的宣告事實累積（只在首個首層
+    /// `w:tbl` Start 後才開，巢狀／兄弟表不混灌，見 [`TxbxTableFacts`]）。
+    /// 無表格態恆 None（serde 不外露＝既有投影序列化位元組逐位不變）。
+    tbl_facts: Option<TxbxTableFacts>,
+    /// D9b 欠債二：「事實表」在 `tbl_ctx` 棧中的層深（1＝首層表；0＝無事實表
+    /// 進行中）。收事實／蓋圖章都要求 `tbl_facts_depth == 1` 且
+    /// `tbl_ctx.len() == 1`——巢狀表與第二張兄弟表因此天然被擋。
+    tbl_facts_depth: usize,
+    /// D9b 欠債二：進行中 `w:tc` 的宣告事實緩衝（`w:tc` Start 開、End 落表）。
+    cur_cell: Option<TxbxCell>,
+    /// D9b 欠債二：進行中 `w:tr` 的行高宣告緩衝（`w:tr` Start 開、End 落表）。
+    cur_row: Option<TxbxRow>,
+    /// D9b 欠債二：進行中 `w:tcPr`／`w:trPr` 包圍計（>0 時 `w:tcW`／
+    /// `w:vMerge`／`w:gridSpan`／`w:vAlign`／`w:trHeight` 才認，避免把
+    /// 巢狀表或框內其他子樹的同名元素竄給本格／本列）。
+    tcpr_ctx: usize,
+    trpr_ctx: usize,
+    tblpr_ctx: usize,
+    /// D9b 欠債二：進行中 `w:tblCellMar` 包圍計（其直下 `w:left`／`w:right`
+    /// 才是格內距——`w:tcBorders` 也用同名元素，無此閂會竄名）。
+    cellmar_ctx: usize,
+    /// D9b 欠債二：進行中 `w:tblGrid` 包圍計（其直下 `w:gridCol/@w:w` 才收欄寬）。
+    tblgrid_ctx: usize,
     /// 進行中 `w:tc` 的填色（`w:shd/@w:fill` 首見為準；`w:tc` 完結時
     /// push 進 `tbl_row` 後歸零）。
     cell_fill: Option<u32>,
@@ -1742,6 +1896,14 @@ fn drain_txbx_frame(v: &mut Pending) {
         return;
     };
     let para_ix = v.txbx.len();
+    // D9b 欠債二：框內表格座標章——只有「事實表進行中（深度閂見
+    // `tbl_facts_depth`）且目前處在該表首層」時才蓋章；巢狀表／表外圖
+    // ＝None（serde 不外露＝舊投影逐位不變）。
+    let cell_pos = if v.tbl_facts_depth == 1 && v.tbl_ctx.len() == 1 {
+        v.tbl_ctx.last().copied()
+    } else {
+        None
+    };
     for s in f.slots {
         let (Some(rid), Some([w, h])) = (s.rid.filter(|_| s.seen_blip), s.extent) else {
             continue;
@@ -1749,11 +1911,227 @@ fn drain_txbx_frame(v: &mut Pending) {
         if !(w > 0.0 && h > 0.0 && w.is_finite() && h.is_finite()) {
             continue;
         }
+        let (tbl_row_ix, tbl_cell_ix) = match cell_pos {
+            Some((r, c)) => (Some(r), Some(c)),
+            None => (None, None),
+        };
         v.txbx_drawings.push(TxbxDrawing {
             para_ix,
             rid,
             extent_pt: [w, h],
+            tbl_row_ix,
+            tbl_cell_ix,
         });
+    }
+}
+
+/// dxa 原值解析（純事實：只取數值，不換算、不判 `type`；非法＝None）。
+fn dxa_raw(e: &quick_xml::events::BytesStart) -> Option<f32> {
+    attr_local(e, b"w")?
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|v| v.is_finite())
+}
+
+/// D9b 欠債二：`w:txbxContent` 內首層表格的宣告事實捕獲（Start 側，純事實，
+/// 不做排版判定；掛點見 `on_start`）。閉合側 [`close_hf_tbl_fact`] 同閂對稱
+/// （呼叫端守 `txbx_depth>0`＋非吞沒幀），深度必平衡。
+/// 事實只收**第一個首層表**：巢狀表（`tbl_ctx.len()>1`）與兄弟第二表
+/// （`tbl_facts_depth` 已歸零後再起）只推棧不收事實，圖章也隨之為 None——
+/// 寧缺勿錯灌（發射層據 None 走「圖塞框原點＋inset」舊口徑）。
+///
+/// 閂序紀律（run 244 踩過的坑，寫死在此）：包圍計必須**先於**事實臂加一，
+/// 否則 `<w:tcW>`／`<w:gridCol>` 這類「開標即帶屬性」的元素永遠收不到——
+/// 它們的 `ctx > 0` 判定發生在同一條 Start 事件裡。
+fn note_hf_tbl_fact(v: &mut Pending, name: &[u8], empty: bool, e: &quick_xml::events::BytesStart) {
+    // 1) `w:tbl`：先入棧再判事實（首層＋首表才開事實表）。
+    if name == b"tbl" && !empty {
+        let is_first_top = v.tbl_ctx.is_empty() && v.tbl_facts.is_none();
+        v.tbl_ctx.push((0usize, 0usize));
+        if is_first_top {
+            v.tbl_facts = Some(TxbxTableFacts {
+                grid_dxa: Vec::new(),
+                indent_dxa: None,
+                cellmar_l_dxa: None,
+                cellmar_r_dxa: None,
+                rows: Vec::new(),
+                cells: Vec::new(),
+            });
+            v.tbl_facts_depth = v.tbl_ctx.len();
+        }
+        return;
+    }
+    // 2) 事實層閂：只有「事實表進行中且正處其首層」才收（巢狀／兄弟表擋掉）。
+    let facts_on = v.tbl_facts_depth == 1 && v.tbl_ctx.len() == 1;
+    // 3) 包圍計先行（Start 側一律加一，閉合側減——事實層外也照計，兩側同構）。
+    match name {
+        b"tblPr" if !empty => v.tblpr_ctx += 1,
+        b"tblCellMar" if !empty => v.cellmar_ctx += 1,
+        b"tblGrid" if !empty => v.tblgrid_ctx += 1,
+        b"trPr" if !empty => v.trpr_ctx += 1,
+        b"tcPr" if !empty => v.tcpr_ctx += 1,
+        _ => {}
+    }
+    // 4) 進行中緩衝開栓（本列／本格）。
+    if facts_on && !empty {
+        match name {
+            b"tr" => {
+                let row_ix = v.tbl_ctx.last().map_or(0, |(r, _)| *r);
+                v.cur_row = Some(TxbxRow {
+                    row_ix,
+                    h_dxa: None,
+                    h_rule: None,
+                });
+            }
+            b"tc" => {
+                let (row_ix, cell_ix) = v.tbl_ctx.last().copied().unwrap_or((0, 0));
+                v.cur_cell = Some(TxbxCell {
+                    row_ix,
+                    cell_ix,
+                    w_dxa: None,
+                    grid_span: None,
+                    vmerge_restart: None,
+                    valign: None,
+                });
+            }
+            _ => {}
+        }
+    }
+    if !facts_on {
+        return;
+    }
+    // 5) 屬性事實（閂＝各包圍計 >0；自閉合標籤同樣收，不帶 `!empty` 條件）。
+    match name {
+        b"tblInd" if v.tblpr_ctx > 0 => {
+            if let Some(f) = v.tbl_facts.as_mut() {
+                if f.indent_dxa.is_none() {
+                    f.indent_dxa = dxa_raw(e);
+                }
+            }
+        }
+        b"left" if v.cellmar_ctx > 0 => {
+            if let Some(f) = v.tbl_facts.as_mut() {
+                if f.cellmar_l_dxa.is_none() {
+                    f.cellmar_l_dxa = dxa_raw(e);
+                }
+            }
+        }
+        b"right" if v.cellmar_ctx > 0 => {
+            if let Some(f) = v.tbl_facts.as_mut() {
+                if f.cellmar_r_dxa.is_none() {
+                    f.cellmar_r_dxa = dxa_raw(e);
+                }
+            }
+        }
+        b"gridCol" if v.tblgrid_ctx > 0 => {
+            if let (Some(f), Some(w)) = (v.tbl_facts.as_mut(), dxa_raw(e)) {
+                f.grid_dxa.push(w);
+            }
+        }
+        b"trHeight" if v.trpr_ctx > 0 => {
+            if let Some(r) = v.cur_row.as_mut() {
+                if r.h_dxa.is_none() {
+                    // `w:trHeight` 的行高屬性是 `@w:val`（不是 `@w:w`——tdf48658
+                    // 頁首框實測 `<w:trHeight w:hRule="exact" w:val="278"/>`）。
+                    r.h_dxa = attr_local(e, b"val")
+                        .and_then(|s| s.trim().parse::<f32>().ok())
+                        .filter(|x| x.is_finite());
+                }
+                if r.h_rule.is_none() {
+                    r.h_rule = attr_local(e, b"hRule")
+                        .map(|s| s.trim().to_ascii_lowercase())
+                        .filter(|s| !s.is_empty());
+                }
+            }
+        }
+        b"tcW" if v.tcpr_ctx > 0 => {
+            if let Some(c) = v.cur_cell.as_mut() {
+                if c.w_dxa.is_none() {
+                    c.w_dxa = dxa_raw(e);
+                }
+            }
+        }
+        b"gridSpan" if v.tcpr_ctx > 0 => {
+            if let Some(c) = v.cur_cell.as_mut() {
+                if c.grid_span.is_none() {
+                    c.grid_span = attr_local(e, b"val")
+                        .and_then(|s| s.trim().parse::<usize>().ok())
+                        .filter(|n| *n >= 1);
+                }
+            }
+        }
+        b"vMerge" if v.tcpr_ctx > 0 => {
+            if let Some(c) = v.cur_cell.as_mut() {
+                if c.vmerge_restart.is_none() {
+                    // 口徑同 `table::CellProps::vmerge_restart`：`@w:val`
+                    // 省略＝continue（Some(false)）。
+                    c.vmerge_restart = Some(match attr_local(e, b"val").as_deref() {
+                        Some(val) => matches!(val.trim(), "restart" | "1" | "true"),
+                        None => false,
+                    });
+                }
+            }
+        }
+        b"vAlign" if v.tcpr_ctx > 0 => {
+            if let Some(c) = v.cur_cell.as_mut() {
+                if c.valign.is_none() {
+                    c.valign = attr_local(e, b"val")
+                        .map(|s| s.trim().to_ascii_lowercase())
+                        .filter(|s| !s.is_empty());
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// D9b 欠債二：框內表格事實的閉合側（與 [`note_hf_tbl_fact`] 同閂、事件一一
+/// 對稱）。`w:tc` End＝本格落表＋欄序＋1；`w:tr` End＝本列落表＋列序＋1＋
+/// 欄序歸零；`w:tbl` End＝出幀，首層事實表到此封頂（後續兄弟表不再收）。
+fn close_hf_tbl_fact(v: &mut Pending, name: &[u8]) {
+    match name {
+        b"tblPr" => v.tblpr_ctx = v.tblpr_ctx.saturating_sub(1),
+        b"tblCellMar" => v.cellmar_ctx = v.cellmar_ctx.saturating_sub(1),
+        b"tblGrid" => v.tblgrid_ctx = v.tblgrid_ctx.saturating_sub(1),
+        b"trPr" => v.trpr_ctx = v.trpr_ctx.saturating_sub(1),
+        b"tcPr" => v.tcpr_ctx = v.tcpr_ctx.saturating_sub(1),
+        _ => {}
+    }
+    let facts_on = v.tbl_facts_depth == 1 && v.tbl_ctx.len() == 1;
+    match name {
+        b"tc" => {
+            if facts_on {
+                if let Some(c) = v.cur_cell.take() {
+                    if let Some(f) = v.tbl_facts.as_mut() {
+                        f.cells.push(c);
+                    }
+                }
+                if let Some(top) = v.tbl_ctx.last_mut() {
+                    top.1 += 1;
+                }
+            }
+        }
+        b"tr" => {
+            if facts_on {
+                if let Some(r) = v.cur_row.take() {
+                    if let Some(f) = v.tbl_facts.as_mut() {
+                        f.rows.push(r);
+                    }
+                }
+                if let Some(top) = v.tbl_ctx.last_mut() {
+                    top.0 += 1;
+                    top.1 = 0;
+                }
+            }
+        }
+        b"tbl" => {
+            v.tbl_ctx.pop();
+            if v.tbl_ctx.len() < v.tbl_facts_depth {
+                v.tbl_facts_depth = 0;
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1850,10 +2228,12 @@ impl Pending {
             h: None,
             pos_x_pt: None,
             pos_x_rel: None,
+            pos_x_rel_decl: None,
             pos_x_align: None,
             pos_x_pct: None,
             pos_y_pt: None,
             pos_y_rel: None,
+            pos_y_rel_decl: None,
             pos_y_align: None,
             pos_y_pct: None,
             capture: None,
@@ -1913,6 +2293,16 @@ impl Pending {
             txbx_vert: None,
             tbl_row: Vec::new(),
             tbl_rows: Vec::new(),
+            tbl_ctx: Vec::new(),
+            tbl_facts: None,
+            tbl_facts_depth: 0,
+            cur_cell: None,
+            cur_row: None,
+            tcpr_ctx: 0,
+            trpr_ctx: 0,
+            tblpr_ctx: 0,
+            cellmar_ctx: 0,
+            tblgrid_ctx: 0,
             cell_fill: None,
             tc_in: 0,
             w_from_group: None,
@@ -2156,10 +2546,12 @@ impl DrawingParser {
             in_cell: p.in_cell,
             pos_x_pt: p.pos_x_pt,
             pos_x_rel: p.pos_x_rel.clone(),
+            pos_x_rel_decl: p.pos_x_rel_decl.clone(),
             pos_x_align: p.pos_x_align.clone(),
             pos_x_pct: p.pos_x_pct,
             pos_y_pt: p.pos_y_pt,
             pos_y_rel: p.pos_y_rel.clone(),
+            pos_y_rel_decl: p.pos_y_rel_decl.clone(),
             pos_y_align: p.pos_y_align.clone(),
             pos_y_pct: p.pos_y_pct,
             overlap: p.overlap,
@@ -2213,6 +2605,9 @@ impl DrawingParser {
             flip_h: !self.f2_buggy && p.flip_h,
             flip_v: !self.f2_buggy && p.flip_v,
             txbx_table: p.tbl_rows.clone(),
+            // D9b 欠債二：框內首層表格宣告事實（純透傳；無表態＝None＝serde
+            // 不外露＝既有投影序列化位元組逐位不變）。
+            txbx_tbl_facts: p.tbl_facts.clone(),
             embed_rid: p.rid.clone(),
             embed_rids: p.rids.clone(),
             group_shapes: p.group_shapes.clone(),
@@ -2746,6 +3141,16 @@ impl DrawingParser {
                 }
             }
             self.txbx_depth += 1;
+        }
+
+        // ---- D9b 欠債二：框內表格**宣告事實**捕獲（純事實，不做排版判定）。
+        // 守門＝框內（txbx_depth>0）且 VML 候補進行中（本事實供框內 w:drawing
+        // 內容圖定位；DrawingML 候選的框內表屬後續卡）＋非吞沒幀。閉合側見
+        // on_end 的 close_hf_tbl_fact（兩側同閂，深度必平衡）。----
+        if self.txbx_depth > 0 && self.skip_tag.is_none() {
+            if let Some(v) = self.vml.as_mut() {
+                note_hf_tbl_fact(v, name, empty, e);
+            }
         }
 
         // ---- E2c：框內 `w:sdt/w:sdtPr/w:dataBinding/@w:xpath` 事實捕獲。
@@ -3409,6 +3814,17 @@ impl DrawingParser {
             return; // 自閉合 w:p 於主解析器同樣不計
         }
 
+        // ---- D9b 欠債二：框內表格宣告事實的**自閉合**側（常態路徑！）。
+        // `w:tblInd`／`w:gridCol`／`w:tcW`／`w:vMerge`／`w:vAlign`／`w:trHeight`
+        // 在真檔裡幾乎都是自閉合標籤（tdf48658 頁首框全檔實測），只收 Start
+        // 會整批漏收（E2c/K17 同坑的第三次踩：見 skill `quire-redlight-conventions`
+        // 「自閉合只收 Start」條）。閂與 on_start 同構：框內＋非吞沒幀。----
+        if self.txbx_depth > 0 {
+            if let Some(v) = self.vml.as_mut() {
+                note_hf_tbl_fact(v, name, true, e);
+            }
+        }
+
         // ---- E2c：框內 `w:sdt/w:sdtPr/w:dataBinding/@w:xpath`——**自閉合才是
         // 常態**（fdo78957 實測 `<w:dataBinding w:prefixMappings="..." w:xpath=
         // "/ns0:Properties[1]/ns0:Company[1]" .../>`），只在 Start 分支收會全數
@@ -3975,6 +4391,14 @@ impl DrawingParser {
                         }
                     }
                 }
+            }
+        }
+
+        // ---- D9b 欠債二：框內表格事實的閉合側（守門與 on_start 的
+        // note_hf_tbl_fact 同閂：框內＋非吞沒幀；兩側同構故深度必平衡）。----
+        if self.txbx_depth > 0 && self.skip_tag.is_none() {
+            if let Some(v) = self.vml.as_mut() {
+                close_hf_tbl_fact(v, name);
             }
         }
 

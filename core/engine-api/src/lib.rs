@@ -251,6 +251,11 @@ struct HfPart {
     /// rId 走本 part 自己的 `.rels`（HF part 有自家 rels，不是
     /// document.xml.rels——Bug51170 實測）。空表＝無圖（零變化守門）。
     pixels: Vec<Option<ResolvedPixelSource>>,
+    /// D9b 欠債二：與 `images` 逐位對齊、每候選再與其 `txbx_drawings` 逐位
+    /// 對齊的**框內圖**像素解析（rId 同樣走本 part 自家 `.rels`——
+    /// tdf48658 header2.xml.rels 的 rId1→media/image1.jpeg 實證）。
+    /// 空表＝無框內圖（serde 無關、純記憶體態，零擾動守門由發射臂把關）。
+    txbx_pixels: Vec<Vec<Option<ResolvedPixelSource>>>,
 }
 
 /// 一節的頁首頁尾發射資料：宣告（已繼承、rId 已換算為「確實在 parts 裡」
@@ -4533,6 +4538,87 @@ fn image_rid_candidates(im: &quire_ooxml::InlineImage) -> Vec<&str> {
     }
 }
 
+/// D9b 欠債二：框內首層表格「標的格」相對**表格原點**的圖偏移（pt）。
+/// 表格原點＝宿主框原點（tdf48658 實證 LO 不把 `w:tblInd` 套進框內表格邊界，
+/// 表格左界繪於框原點；宣告值只留作事實）。回 `None`＝事實缺位／幾何解不出
+/// ＝呼叫端退「框原點＋inset」舊口徑（不虛構位置）。
+///
+/// 定律（tdf48658 頁首框對 LO pymupdf 真值反解；`docs/d9b-inset-redlight.md` §5）：
+/// - x＝標的格**起始欄**之前的 `w:gridCol/@w:w` 累加＋`tblCellMar/@w:left`
+///   （0 欄＋71dxa＝3.55pt；58.35＋3.55＝61.90 命中 LO）。
+/// - vMerge 併格：`vmerge_restart=Some(true)` 起鏈，往下吃「同起始欄、同 span、
+///   `Some(false)`（continue）」的列；鏈高＝逐列宣告 `trHeight` 累加（缺宣告＝
+///   解不出，老實 None）。同欄序但 span 不同＝不同併格鏈，停住不續（欄數守門）。
+/// - y：`vAlign` 定位——`center`＝(鏈高−圖高)/2（tdf48658：(27.75−13.5)/2＝
+///   7.125pt，45.25＋7.125＝52.38 對 LO 52.55，差 0.18pt）；`bottom`＝鏈高−圖高；
+///   `top`／缺宣告＝0（格頂）。圖高於格＝0（頂對齊，不負偏移上浮）。
+fn txbx_cell_offset_pt(
+    facts: Option<&quire_ooxml::TxbxTableFacts>,
+    td: &quire_ooxml::TxbxDrawing,
+    pic_h_pt: f32,
+) -> Option<(f32, f32)> {
+    let f = facts?;
+    let (row_ix, cell_ix) = (td.tbl_row_ix?, td.tbl_cell_ix?);
+    let target = f
+        .cells
+        .iter()
+        .find(|c| c.row_ix == row_ix && c.cell_ix == cell_ix)?;
+    // 起始欄＝本列中排在本格之前的格的 span 累加（缺 span＝1）。
+    let span_of = |c: &quire_ooxml::TxbxCell| c.grid_span.unwrap_or(1).max(1);
+    let start_col: usize = f
+        .cells
+        .iter()
+        .filter(|c| c.row_ix == row_ix && c.cell_ix < cell_ix)
+        .map(span_of)
+        .sum();
+    let span = span_of(target);
+    if f.grid_dxa.len() <= start_col {
+        return None; // 欄寬宣告不足＝x 解不出
+    }
+    let cellmar_l = f.cellmar_l_dxa.unwrap_or(0.0) / 20.0;
+    let off_x = f.grid_dxa[..start_col.min(f.grid_dxa.len())]
+        .iter()
+        .sum::<f32>()
+        / 20.0
+        + cellmar_l;
+    // vMerge 併格鏈（restart 起、同起始欄同 span 的 continue 逐列續）。
+    let mut chain_rows: Vec<usize> = vec![row_ix];
+    if target.vmerge_restart == Some(true) {
+        let mut r = row_ix + 1;
+        // 同列內先按欄序還原起始欄，找起始欄與 span 都同鏈的續格。
+        while let Some(cont) = f
+            .cells
+            .iter()
+            .filter(|c| c.row_ix == r)
+            .scan(0usize, |col, c| {
+                let s = *col;
+                *col += span_of(c);
+                Some((s, c))
+            })
+            .find(|(col, c)| *col == start_col && span_of(c) == span)
+            .map(|(_, c)| c)
+        {
+            if cont.vmerge_restart != Some(false) {
+                break; // 非 continue（新格/新鏈）＝鏈到此為止
+            }
+            chain_rows.push(r);
+            r += 1;
+        }
+    }
+    // 鏈高＝逐列宣告 trHeight（dxa）累加；任一列缺宣告＝解不出。
+    let mut chain_h_pt = 0.0f32;
+    for ri in &chain_rows {
+        let h = f.rows.iter().find(|rw| rw.row_ix == *ri)?.h_dxa?;
+        chain_h_pt += h / 20.0;
+    }
+    let off_y = match target.valign.as_deref() {
+        Some("center") => (chain_h_pt - pic_h_pt) / 2.0,
+        Some("bottom") => chain_h_pt - pic_h_pt,
+        _ => 0.0,
+    };
+    Some((off_x, off_y.max(0.0)))
+}
+
 /// K4c-image 像素解析（PM 決策規則）：沿候選 rId 走**來源 part 自己的**
 /// `.rels`（呼叫端傳入）→ `word/media/*`，可渲染格式＞不可渲染格式、皆可
 /// 渲染取先見。查無 rId／rels 查無／懸空 part（不在 parts）／副檔名不認
@@ -6521,6 +6607,105 @@ impl Engine {
         // `wp14:sizeRel*`／`wp14:pctPos*` 可解出框矩形（解不出＝整臂零發射＝
         // 既有顯示列表逐位元組不變）。----
         self.push_hf_vert_frames(items, part, &paragraphs, hf_params, geo);
+        // ---- D9b 欠債二：頁首／頁尾 part 框候選的**框內 `w:drawing` 內容圖**
+        // （tdf48658 頁首框實據：header2.xml 的 VML `v:shape` 框內 `w:txbxContent`
+        // 表格掛 `w:drawing`，LO 首頁繪於 [61.90,52.55]＋18.75×13.50，我方零發射）。
+        // 座標在 push_hf_slot 末尾補發（表格切片之後、直排框臂之後＝z 序在框墨
+        // 之上，LO 同序）。----
+        self.push_hf_txbx_pics(items, part);
+    }
+
+    /// D9b 欠債二：頁首／頁尾框候補的框內 `w:drawing` 內容圖發射臂。
+    ///
+    /// 守門（全中才發；任一不合＝該候補零發射＝既有顯示列表逐位元組不變）：
+    /// `floating` ＋ **非** `wps_annotation`（VML 框；DrawingML 標註框內圖屬
+    /// 後續卡，且 wps 直排框由 [`Self::push_hf_vert_frames`] 管轄）＋
+    /// `txbx_drawings` 非空＋自家 `.rels` 解得出像素（開檔期預解析於
+    /// `HfPart::txbx_pixels`）。
+    ///
+    /// 幾何定律（tdf48658 header2.xml 對 LO pymupdf 真值反解，非單檔調參）：
+    /// - 框錨點＝VML style 第 2 式宣告偏移 `pos_*_pt`，基準原點吃**原宣告**
+    ///   `mso-position-*-relative`（`pos_*_rel_decl`；既有 `pos_*_rel` 在第 2 式
+    ///   一律寫 `"margin"` 會把宣告的 `page` 丟掉，按版心算偏 56.7pt）。
+    ///   宣告非 `page`（margin/column/…無 LO 真值）＝老實不發，不猜。
+    /// - 圖原點＝錨點＋宿主框 `v:textbox/@inset`（`Some`＝宣告值、`None`＝退
+    ///   `VML_TEXTBOX_DEFAULT_INSET`，**兩者不得抹平**——宣告 `0,0,0,0` 與預設
+    ///   7.2/3.6 差 7.2pt，由 lamp6 ±4pt 容差天然鑑別）。
+    /// - 圖落在框內首層表格的標的格（`tbl_row_ix`/`tbl_cell_ix` 蓋章）：
+    ///   x＝格左界＋`tblCellMar/@w:left`（tdf48658：58.35＋0＋3.55＝61.90 LO 命中）；
+    ///   y＝併格鏈頂＋`vAlign` 定位（center＝格高減圖高置中；vMerge 鏈高＝宣告
+    ///   `trHeight` 逐列累加；tdf48658：45.25＋(27.75−13.5)/2＝52.38 對 LO 52.55）。
+    /// - 事實缺位（無表格／解不出幾何）＝退回框原點＋inset（正文路徑 D9b 同口徑）。
+    /// - 去重（R35 同根圖口徑）：圖 rid ∈ 宿主框自身 rid/rids ⇒ 跳過（框已作為
+    ///   圖片發射，不雙發）。
+    #[allow(clippy::too_many_arguments)]
+    fn push_hf_txbx_pics(&self, items: &mut Vec<DrawItem>, part: &HfPart) {
+        // 回塞鎖（照 D9B_INSET_BUGGY 先例，發射期讀一次）：=1 ⇒ 整臂零發射
+        // ＝lamp6 的先紅回塞態（發射側鑑別力，採集側由事實欄自證）。
+        if std::env::var_os("D9B_HF_PIC_BUGGY").is_some() {
+            return;
+        }
+        for (idx, im) in part.images.iter().enumerate() {
+            if !im.floating || im.wps_annotation || im.txbx_drawings.is_empty() {
+                continue;
+            }
+            let (Some(ax), Some(ay)) = (im.pos_x_pt, im.pos_y_pt) else {
+                continue;
+            };
+            if im.pos_x_rel_decl.as_deref() != Some("page")
+                || im.pos_y_rel_decl.as_deref() != Some("page")
+            {
+                continue;
+            }
+            // 宿主框 inset：Some＝宣告值／None＝VML 預設（不得抹平，卡面鐵律）。
+            let [inset_l, inset_t, _r, _b] = im.txbx_inset.unwrap_or(VML_TEXTBOX_DEFAULT_INSET);
+            // R35 同根圖去重口徑（own_rids）。
+            let own_rids: Vec<&str> = image_rid_candidates(im);
+            let facts = im.txbx_tbl_facts.as_ref();
+            for (di, td) in im.txbx_drawings.iter().enumerate() {
+                if own_rids.contains(&td.rid.as_str()) {
+                    continue; // 與宿主框同源的圖：框已作為圖片發射，不雙發
+                }
+                let [w, h] = td.extent_pt;
+                if !(w.is_finite() && h.is_finite()) || w <= 0.0 || h <= 0.0 {
+                    continue;
+                }
+                let Some(Some((spart, mime, emf))) = part
+                    .txbx_pixels
+                    .get(idx)
+                    .and_then(|v| v.get(di))
+                    .map(Option::as_ref)
+                else {
+                    continue; // 像素解不出＝老實不發（不虛構佔位墨跡：本臂語意）
+                };
+                // 格內定位（事實缺位／解不出＝None＝退框原點＋inset 舊口徑）。
+                let (off_x, off_y) = txbx_cell_offset_pt(facts, td, h).unwrap_or((0.0, 0.0));
+                let x = ax + inset_l + off_x;
+                let y = ay + inset_t + off_y;
+                let Some(bytes) = self.doc.parts.get(spart) else {
+                    continue; // 懸空 part（開檔期已擋，雙保險）
+                };
+                let (bytes, mime, w, h) = match emf {
+                    // K27 同口徑：EMF 直讀 PNG 優先，尺寸採檔頭 rclFrame。
+                    Some((png, fp)) => {
+                        let (w, h) = emf_frame_size(*fp, w, h);
+                        (png.as_slice(), mime.clone(), w, h)
+                    }
+                    None => (bytes.as_slice(), mime.clone(), w, h),
+                };
+                let (data_b64, duotone) = k19_duotone_pixels(bytes, None);
+                items.push(DrawItem::Image {
+                    x,
+                    y,
+                    w,
+                    h,
+                    mime,
+                    data_b64,
+                    alt: None,
+                    duotone,
+                });
+            }
+        }
     }
 
     /// E2c：頁首／頁尾 part 直排浮動框的發射臂（呼叫端已守門，本函數只做
@@ -7242,6 +7427,18 @@ fn build_hf_layer(
                     .iter()
                     .map(|im| resolve_pixel_source(&doc.parts, &hf_rels, &image_rid_candidates(im)))
                     .collect();
+                // D9b 欠債二：框內 `w:drawing` 內容圖的像素同口徑預解析（rId 走
+                // 本 part 自家 .rels；逐候選→逐 txbx_drawing 對齊）。無圖候選＝
+                // 空內表，零擾動。
+                let txbx_pixels: Vec<Vec<Option<ResolvedPixelSource>>> = images
+                    .iter()
+                    .map(|im| {
+                        im.txbx_drawings
+                            .iter()
+                            .map(|d| resolve_pixel_source(&doc.parts, &hf_rels, &[d.rid.as_str()]))
+                            .collect()
+                    })
+                    .collect();
                 let (styles, metrics, _spacings, _marker_chars) = match style_table {
                     // 頁首尾不展開點引（widths 空＝不虛構；既有行為不變）。
                     // 頁首尾無表格樣式插層，故傳空表。
@@ -7274,6 +7471,7 @@ fn build_hf_layer(
                         tables,
                         images,
                         pixels,
+                        txbx_pixels,
                     },
                 );
             }
