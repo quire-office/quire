@@ -623,6 +623,15 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
     // 巢裝文字樣式堆疊：段落起點推入段落樣式；span/a 再推其樣式（頂部＝
     // 當前文字片段該用的字級/字重）。
     let mut style_stack: Vec<(f32, bool)> = Vec::new();
+    // 巢裝 text:section 隱藏狀態堆疊：進入每個 section 時依自身屬性獨立判定並推入，離開時彈出；棧頂為 true 時抑制該區段內的文字發射，但維持段落平鋪槽位與原始計數不變。
+    let mut section_hidden_stack: Vec<bool> = Vec::new();
+    // ODF-E2c：圖形替代文字（svg:desc／svg:title）抑制。draw_stack 只記目前開著的繪圖容器，
+    // 由最近者判定替代文字歸屬；alt_skip_depth 大於零表示正位於要跳過的替代文字子樹內（含自身）。
+    // 邊界：draw:text-box 直屬的替代文字屬正文（LO 會渲染），不跳過；text-box 內巢裝 frame 的仍跳過。
+    // 前提不變：ODF schema 不允許 text:section 出現在 svg:desc／svg:title 子樹內，故跳過期間
+    // 不推進 section 堆疊不會造成堆疊失衡（實測 50 檔無此形）。
+    let mut draw_stack: Vec<Vec<u8>> = Vec::new();
+    let mut alt_skip_depth = 0usize;
     let mut text_p_count = 0usize;
     let mut text_h_count = 0usize;
     let mut total_text_len = 0usize;
@@ -632,7 +641,22 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
             Ok(Event::Start(e)) => {
                 let qname = e.name();
                 let name = qname.as_ref();
-                if is_text_p(name) {
+                if alt_skip_depth > 0 {
+                    alt_skip_depth += 1;
+                    buf.clear();
+                    continue;
+                }
+                if is_alt_text(name) && alt_text_is_metadata(&draw_stack) {
+                    alt_skip_depth = 1;
+                    buf.clear();
+                    continue;
+                }
+                if is_draw_container(name) {
+                    draw_stack.push(name.to_vec());
+                }
+                if is_text_section(name) {
+                    section_hidden_stack.push(is_section_hidden(&e));
+                } else if is_text_p(name) {
                     text_p_count += 1;
                     let own = resolve_style_of(&e, book);
                     style_stack.push(own);
@@ -653,7 +677,7 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                 } else if is_span_like(name) {
                     let inherit = *style_stack.last().unwrap_or(&default_style);
                     style_stack.push(span_style_of(&e, book, inherit));
-                } else if !p_stack.is_empty() {
+                } else if !p_stack.is_empty() && !in_hidden_section(&section_hidden_stack) {
                     let style = *style_stack.last().unwrap_or(&default_style);
                     let cur = p_stack.last_mut().expect("段落堆疊非空");
                     match name {
@@ -670,6 +694,14 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
             Ok(Event::Empty(e)) => {
                 let qname = e.name();
                 let name = qname.as_ref();
+                if alt_skip_depth > 0 {
+                    buf.clear();
+                    continue;
+                }
+                if is_alt_text(name) && alt_text_is_metadata(&draw_stack) {
+                    buf.clear();
+                    continue;
+                }
                 if is_text_p(name) || is_text_h(name) {
                     if is_text_p(name) {
                         text_p_count += 1;
@@ -685,7 +717,7 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     let para = ctx.finish();
                     total_text_len += para.text.chars().count();
                     paragraphs.push(para);
-                } else if !p_stack.is_empty() {
+                } else if !p_stack.is_empty() && !in_hidden_section(&section_hidden_stack) {
                     let style = *style_stack.last().unwrap_or(&default_style);
                     let cur = p_stack.last_mut().expect("段落堆疊非空");
                     match name {
@@ -699,29 +731,43 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     }
                 }
             }
-            Ok(Event::Text(e)) => {
-                if let Some(cur) = p_stack.last_mut() {
-                    if let Ok(unescaped) = e.decode().map_err(|e| e.to_string()).and_then(|d| {
-                        quick_xml::escape::unescape(&d)
-                            .map(|u| u.into_owned())
-                            .map_err(|e| e.to_string())
-                    }) {
-                        let style = *style_stack.last().unwrap_or(&default_style);
-                        cur.push_str(&unescaped, style);
+            Ok(Event::Text(e)) if !in_hidden_section(&section_hidden_stack) => {
+                if alt_skip_depth == 0 {
+                    if let Some(cur) = p_stack.last_mut() {
+                        if let Ok(unescaped) = e.decode().map_err(|e| e.to_string()).and_then(|d| {
+                            quick_xml::escape::unescape(&d)
+                                .map(|u| u.into_owned())
+                                .map_err(|e| e.to_string())
+                        }) {
+                            let style = *style_stack.last().unwrap_or(&default_style);
+                            cur.push_str(&unescaped, style);
+                        }
                     }
                 }
             }
-            Ok(Event::GeneralRef(e)) => {
-                if let Some(cur) = p_stack.last_mut() {
-                    let resolved = crate::body::resolve_general_ref(&e)?;
-                    let style = *style_stack.last().unwrap_or(&default_style);
-                    cur.push_str(&resolved, style);
+            Ok(Event::GeneralRef(e)) if !in_hidden_section(&section_hidden_stack) => {
+                if alt_skip_depth == 0 {
+                    if let Some(cur) = p_stack.last_mut() {
+                        let resolved = crate::body::resolve_general_ref(&e)?;
+                        let style = *style_stack.last().unwrap_or(&default_style);
+                        cur.push_str(&resolved, style);
+                    }
                 }
             }
             Ok(Event::End(e)) => {
                 let qname = e.name();
                 let name = qname.as_ref();
-                if is_text_p(name) || is_text_h(name) {
+                if alt_skip_depth > 0 {
+                    alt_skip_depth -= 1;
+                    buf.clear();
+                    continue;
+                }
+                if is_draw_container(name) {
+                    draw_stack.pop();
+                }
+                if is_text_section(name) {
+                    section_hidden_stack.pop();
+                } else if is_text_p(name) || is_text_h(name) {
                     if let Some(ctx) = p_stack.pop() {
                         style_stack.pop();
                         let para = ctx.finish();
@@ -749,6 +795,89 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
         object_paragraphs: Vec::new(),
         object_text_len: 0,
     })
+}
+
+#[inline]
+fn is_text_section(qname: &[u8]) -> bool {
+    qname == b"text:section" || qname == b"section"
+}
+
+#[inline]
+fn in_hidden_section(section_hidden_stack: &[bool]) -> bool {
+    section_hidden_stack.last().copied().unwrap_or(false)
+}
+
+/// 判定單一 `text:section` 是否隱藏：`text:is-hidden="true"` 或 `text:display="none"` 一律隱藏；`text:display="condition"`／`condition(...)` 若無條件參數則視為不顯示，若帶有可求值的顯示條件且未標註 `is-hidden="true"`，因本引擎不實作條件變數求值器，採保守做法照發以避免誤砍正文。
+fn is_section_hidden(e: &BytesStart<'_>) -> bool {
+    let mut display: Option<String> = None;
+    let mut is_hidden: Option<String> = None;
+    let mut condition: Option<String> = None;
+
+    for attr in e.attributes().flatten() {
+        match attr.key.local_name().as_ref() {
+            b"display" => display = Some(attr_value_str(&attr.value)),
+            b"is-hidden" => is_hidden = Some(attr_value_str(&attr.value)),
+            b"condition" => condition = Some(attr_value_str(&attr.value)),
+            _ => {}
+        }
+    }
+
+    if is_hidden.as_deref().map(str::trim) == Some("true") {
+        return true;
+    }
+
+    let Some(disp) = display.as_deref().map(str::trim) else {
+        return false;
+    };
+
+    if disp == "none" {
+        return true;
+    }
+
+    let has_cond_attr = condition
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|c| !c.is_empty());
+
+    if disp == "condition" {
+        return !has_cond_attr;
+    }
+
+    if let Some(inner) = disp
+        .strip_prefix("condition(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        return inner.trim().is_empty() && !has_cond_attr;
+    }
+
+    false
+}
+
+/// ODF-E2c：是否為圖形替代文字元素（svg:desc／svg:title）。
+#[inline]
+fn is_alt_text(qname: &[u8]) -> bool {
+    matches!(qname, b"svg:desc" | b"desc" | b"svg:title" | b"title")
+}
+
+/// ODF-E2c：是否為繪圖容器（用於追蹤替代文字歸屬）。所有 draw:* 元素都算，
+/// 另接受無前綴的常見容器名（與本檔 p/h/span 的無前綴容忍口徑一致）。
+#[inline]
+fn is_draw_container(qname: &[u8]) -> bool {
+    qname.starts_with(b"draw:")
+        || matches!(
+            qname,
+            b"frame" | b"custom-shape" | b"text-box" | b"g" | b"group"
+        )
+}
+
+/// ODF-E2c：draw:text-box 直屬的替代文字屬正文（LO 會渲染），其餘繪圖容器的屬替代文字。
+/// 以最近一個繪圖容器判定：text-box 內巢裝 frame 的替代文字仍歸 frame，故照跳。
+#[inline]
+fn alt_text_is_metadata(draw_stack: &[Vec<u8>]) -> bool {
+    match draw_stack.last() {
+        Some(name) => !matches!(name.as_slice(), b"draw:text-box" | b"text-box"),
+        None => false,
+    }
 }
 
 #[inline]
