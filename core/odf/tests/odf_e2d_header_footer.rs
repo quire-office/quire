@@ -16,7 +16,11 @@
 //!   「段落樣式宣告 `@style:master-page-name` ⇒ 該段落處換頁」為主頁鏈分段；
 //!   頁序 0 有宣告 `-first` 槽即用 `-first`（**即使內容為空**，LO 實證：
 //!   FDO76312／mce-nested 首頁頁首不渲染正頁首文字），否則用 plain；
-//!   `-left` 鏡像頁語料 0 檔（宣告者計數記帳 `skipped_left_slots`，不發）。
+//!   `-left` 鏡像頁：0 起頁序的奇數頁（＝邏輯偶數頁）取 `-left`、未宣告退
+//!   plain（LO 真值 tdf123705：p0/p2 頁尾 plain `Rev…Page 1 of 3`、p1/p3 頁尾
+//!   `-left` `…Page 2 of 2`、p1/p3 頁首 `-left` 空宣告⇒零發射）。全語料
+//!   `style:mirror` 宣告 0 檔而 LO 仍按偶數頁吃 `-left`⇒不以 mirror 宣告為前提。
+//!   宣告了卻該頁未消费的槽計帳 `skipped_left_slots`（空 `-left` 壓 plain 之形）。
 //!   空文字段不發（LO 不渲染），槽位存在性由 `slot_count` 保留。
 //! * **段序鐵律**：頁首段在該頁正文段**前**、頁尾段在該頁正文段**後**；
 //!   宿主流 `paragraphs`／`flatten()`／`total_text_len` **零變動**（E2e 同款
