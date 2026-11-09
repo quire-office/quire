@@ -1928,6 +1928,10 @@ mod tests {
             vml_group_children: Vec::new(),
             // D9b 欠債一：手刻最小候選＝容器群組子件框內圖恆空（serde 不外露）。
             vml_group_pics: Vec::new(),
+            // D9b 欠債二：手刻最小候選＝無 mso 宣告偏移、框內無表格事實。
+            pos_x_rel_decl: None,
+            pos_y_rel_decl: None,
+            txbx_tbl_facts: None,
             overlap: None,
             embed_rid: None,
             embed_rids: Vec::new(),
@@ -2169,6 +2173,9 @@ mod tests {
             para_ix: 0,
             rid: "rIdX".into(),
             extent_pt: [40.0, 30.0],
+            // D9b 欠債二：最小候選＝框內非表格態（serde default，不外露）。
+            tbl_row_ix: None,
+            tbl_cell_ix: None,
         }];
         assert!(
             floors(&[fixed]).is_empty(),
