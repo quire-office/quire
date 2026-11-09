@@ -12,6 +12,7 @@
 
 mod body;
 pub mod display;
+pub mod header_footer;
 pub mod layout_glue;
 mod manifest;
 mod objects;
@@ -22,6 +23,10 @@ pub use body::{BodyModel, OdfParagraph};
 pub use display::{
     display_list_json, dump_display_lists_json, emit_display_lists, OdtView,
     DEFAULT_TEXT_COLOR_ARGB,
+};
+pub use header_footer::{
+    buggy_single_master, hf_assignment, hf_masters, master_page_switches, HfAssignment, HfPage,
+    HfRole, HfSlot, MasterHf, MasterHfSlotKind, ParaSwitch,
 };
 pub use layout_glue::{
     layout_projection, page_break_positions, project, project_bytes, LayoutParams,

@@ -327,10 +327,34 @@ impl OdfPageGeometry {
     /// 邊距），其餘欄位（字級 12pt／行距 1.4／註腳與頁首預留表）沿用既有
     /// `Default` 口徑——本卡不動那些軸（零回退鐵閘）。
     pub fn to_layout_params(&self) -> LayoutParams {
+        match self.layout.as_ref() {
+            Some(l) => l.to_layout_params(),
+            // 無可用 page-layout＝LO 預設頁（與 page_w_pt()/margins_pt() 的回退
+            // 值逐位相同，只是不必繞經 Option）。
+            None => LayoutParams {
+                page_w_pt: LO_DEFAULT_PAGE_W_PT,
+                page_h_pt: LO_DEFAULT_PAGE_H_PT,
+                margins_pt: [LO_DEFAULT_MARGIN_PT; 4],
+                ..Default::default()
+            },
+        }
+    }
+}
+
+impl PageLayout {
+    /// 版面 → `LayoutParams`：紙寬高直接換算；四邊邊距**齊備才用宣告值**，
+    /// 缺任一邊回退 LO 實測預設（與 [`OdfPageGeometry::margins_pt`] 同口徑——
+    /// ODF-E2d 逐主頁分頁要按各自 page-layout 排頁，故把這段換算從
+    /// `OdfPageGeometry` 抽到這裡共用，行為逐位不動）。
+    pub fn to_layout_params(&self) -> LayoutParams {
         LayoutParams {
-            page_w_pt: self.page_w_pt(),
-            page_h_pt: self.page_h_pt(),
-            margins_pt: self.margins_pt(),
+            page_w_pt: self.page_w_pt,
+            page_h_pt: self.page_h_pt,
+            margins_pt: if self.margins_complete {
+                self.margins_pt
+            } else {
+                [LO_DEFAULT_MARGIN_PT; 4]
+            },
             ..Default::default()
         }
     }
@@ -358,12 +382,82 @@ pub fn page_geometry_bytes(
     content_xml: &[u8],
     styles_xml: Option<&[u8]>,
 ) -> Result<OdfPageGeometry, OdfError> {
+    let dom = style_domain_page_bytes(content_xml, styles_xml)?;
+    Ok(resolve_geometry(&dom, content_xml))
+}
+
+/// 頁面域樣式簿（ODF-E2d 出口：頁首尾發射要查「段落樣式宣告的主頁名」與
+/// 主頁→版面對應，但**不要**幾何結論——分域簿本身是可复用的事實面）。
+///
+/// 走查範圍與 [`page_geometry_bytes`] 逐字相同（分域鐵律：page-layout 只收
+/// `office:automatic-styles`、master-page 只收 `office:master-styles`、
+/// 兩域的 `@style:master-page-name` 各建一張表），故簿內容與幾何解析所見
+/// 一致——不另起爐灶（避免「幾何讀到的主頁」與「頁首尾讀到的主頁」兩張真相）。
+pub fn style_domain_page_bytes(
+    content_xml: &[u8],
+    styles_xml: Option<&[u8]>,
+) -> Result<StyleDomainPage, OdfError> {
     let mut dom = StyleDomainPage::default();
     if let Some(sx) = styles_xml {
         parse_page_styles_file(sx, &mut dom)?;
     }
     parse_master_refs_file(content_xml, &mut dom)?;
-    Ok(resolve_geometry(&dom, content_xml))
+    Ok(dom)
+}
+
+/// 從已開封封裝取頁面域樣式簿（走 ODF-E1 加密閘門，同 [`page_geometry`]）。
+pub fn style_domain_page(bundle: &OdfBundle) -> Result<StyleDomainPage, OdfError> {
+    bundle.ensure_not_encrypted("styles.xml")?;
+    bundle.ensure_not_encrypted("content.xml")?;
+    let content = bundle.read_entry("content.xml")?;
+    let styles = match bundle.read_entry("styles.xml") {
+        Ok(b) => Some(b),
+        Err(OdfError::MissingEntry { .. }) => None,
+        Err(e) => return Err(e),
+    };
+    style_domain_page_bytes(&content, styles.as_deref())
+}
+
+/// 文件級預設主頁名（ODF-E2d 出口；與 [`page_geometry_bytes`] 的生效主頁
+/// 判定規則**同一份實作**——`resolve_geometry` 亦呼叫本函數）。
+///
+/// 規則（Part 3 §16.9）：首段／首表格樣式（含 parent 鏈）宣告非空
+/// `@style:master-page-name` → 該主頁；否則名為 `Standard` 的宣告主頁；否則
+/// `<office:master-styles>` 首個；主頁名宣告了但查無定義 → 退回首個宣告主頁；
+/// 完全無主頁 → `None`。
+pub fn default_master_page_name(dom: &StyleDomainPage, content_xml: &[u8]) -> Option<String> {
+    let (chosen, _) = choose_master_page(dom, content_xml);
+    // 宣告了但查無定義 → 退回首個宣告主頁（同 resolve_geometry 的第 3 步）。
+    match chosen {
+        Some(name) if dom.master_pages.iter().any(|m| m.name == name) => Some(name),
+        _ => dom.master_pages.first().map(|m| m.name.clone()),
+    }
+}
+
+/// 生效主頁名＋生效原因（ODF-C4 第 1–2 步；ODF-E2d 亦經 [`default_master_page_name`]
+/// 走這一份實作，杜絕「幾何讀到的主頁」與「頁首尾讀到的主頁」分岔）。
+///
+/// 回傳的 `Option<String>` 只到「選出哪個名字」為止——「名字查無定義」的退火在
+/// 呼叫端（`resolve_geometry` 要保留宣告意圖做記帳，E2d 只要能用就行）。
+fn choose_master_page(
+    dom: &StyleDomainPage,
+    content_xml: &[u8],
+) -> (Option<String>, GeometrySource) {
+    let first_style = first_flow_style_name(content_xml).unwrap_or_default();
+    if let Some(chosen) = dom
+        .master_page_of_style(&first_style)
+        .filter(|s| !s.is_empty())
+    {
+        return (Some(chosen), GeometrySource::ParaMasterPageName);
+    }
+    let chosen = dom
+        .master_pages
+        .iter()
+        .find(|m| m.name == "Standard")
+        .map(|m| m.name.clone())
+        .or_else(|| dom.master_styles_first.clone())
+        .or_else(|| dom.master_pages.first().map(|m| m.name.clone()));
+    (chosen, GeometrySource::DefaultMasterStyles)
 }
 
 /// 主頁鏈決策（Part 3 §16.9／設計書 §4.2 軸線 A）：
@@ -380,23 +474,7 @@ pub fn page_geometry_bytes(
 /// `unparsed_master_pages`。
 fn resolve_geometry(dom: &StyleDomainPage, content_xml: &[u8]) -> OdfPageGeometry {
     let unparsed = dom.master_pages.len().saturating_sub(1);
-    let first_style = first_flow_style_name(content_xml).unwrap_or_default();
-
-    let mut source = GeometrySource::DefaultMasterStyles;
-    let mut chosen: Option<String> = dom
-        .master_page_of_style(&first_style)
-        .filter(|s| !s.is_empty());
-    if chosen.is_some() {
-        source = GeometrySource::ParaMasterPageName;
-    } else {
-        chosen = dom
-            .master_pages
-            .iter()
-            .find(|m| m.name == "Standard")
-            .map(|m| m.name.clone())
-            .or_else(|| dom.master_styles_first.clone())
-            .or_else(|| dom.master_pages.first().map(|m| m.name.clone()));
-    }
+    let (chosen, mut source) = choose_master_page(dom, content_xml);
 
     let Some(name) = chosen else {
         return OdfPageGeometry {
