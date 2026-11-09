@@ -34,7 +34,7 @@ pub use databind::{resolve_binding, SdtBinding};
 pub use diff::{diff_untouched, diff_zip_structure, EntryDiff, ZipDiff, ZipStructureError};
 pub use drawing::{
     count_paras, origin_of, read_images, read_images_with_theme, DuotoneEffect, InlineChildShape,
-    InlineImage, ShapeBorder, TextboxGrow, TxbxDrawing,
+    InlineImage, ShapeBorder, TextboxGrow, TxbxCell, TxbxDrawing, TxbxRow, TxbxTableFacts,
 };
 pub use emf_dib::{emf_dib_png, emf_embedded_dib, emf_embedded_dib_checked, EmfDib, EmfReject};
 pub use png_duotone::duotone_png_bytes;
