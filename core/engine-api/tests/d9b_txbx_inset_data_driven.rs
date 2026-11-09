@@ -258,15 +258,15 @@ fn d9b_lamp5_inset_fact_survives_to_emission_layer() {
     }
 }
 
-/// 欠債燈（老實掛帳，不髒零回退閘門）：tdf48658_transparentOLEheader 的頁首框
+/// 燈 6（本卡收案盞，原欠債盞）：tdf48658_transparentOLEheader 的頁首框
 /// `word/header2.xml` 自訂宣告 `v:textbox/@inset="0,0,0,0"`、框內 `w:txbxContent`
 /// 的表格中掛 `w:drawing` 圖；LO pymupdf 實測首頁該圖
-/// `bbox=[61.90,52.55,80.65,66.05]`，我方首頁顯示列表**零 Image**（頁首發射路徑
-/// 不認框內 w:drawing 內容圖——同 E2c run166 抓到的 `push_hf_slot` 缺口家族）。
-/// 解鎖條件：頁首發射路徑補上框內圖分支（`core/engine-api/src/lib.rs`
-/// `push_hf_slot`）＋套用宿主框 inset；見 `docs/d9b-inset-redlight.md` §4。
+/// `bbox=[61.90,52.55,80.65,66.05]`。原缺口（頁首發射路徑不認框內 w:drawing
+/// 內容圖——同 E2c run166 抓到的 `push_hf_slot` 缺口家族）已由本卡收案：
+/// 採集層 `TxbxCell`/`tbl_row_ix`/`tbl_cell_ix`（框內表格圖的列/欄/vMerge/vAlign
+/// 宣告）＋發射層 `push_hf_slot` 框內圖分支。鑑別力回塞鎖：
+/// `D9B_HF_PIC_BUGGY=1` 整臂關閉＝舊零發射態，本燈必紅。
 #[test]
-#[ignore = "欠債：頁首框內 w:drawing 內容圖零發射（push_hf_slot 無浮動框分支）；見 docs/d9b-inset-redlight.md §4"]
 fn d9b_lamp6_header_textbox_picture_emitted() {
     let bytes = read_corpus("ooxmlimport/tdf48658_transparentOLEheader.docx");
     let eng = Engine::from_docx_bytes(&bytes).expect("開啟 tdf48658 失敗");
