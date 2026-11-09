@@ -645,6 +645,13 @@ fn parse_document_xml_with_fonts(
     let mut ppr_rpr_depth = 0usize;
     let mut hyperlink_depth = 0usize;
     let mut in_t = false;
+    // ---- xml:space（ECMA-376 §17.3.2.31；`w:t`／`w:delText`）----
+    // 文字節點未帶 `xml:space="preserve"` 時，節點自身的頭尾 XML 空白（空格、TAB、CR、LF）依規丟棄；節點內連續空白一律保留。
+    // 實測 LO（Linux 25.8 專屬 profile）與 Word 同口徑：`w:t` 內連續空白原樣計寬（雙空格＝兩個 advance）、無 preserve 的頭尾空白被剝除；口徑定案見 `docs/e1cd-whitespace-folding-policy.md`。
+    // 以「節點整段緩衝、End 時一次裁剪」實作：`Event::Text` 可能被 quick-xml 切碎，逐段 trim 會把跨段的頭尾空白誤判成節點內空白。
+    let mut t_buf = String::new();
+    let mut t_buf_active = false;
+    let mut t_buf_preserve = false;
     // >0＝正在吞 mc:Fallback 子樹（巢狀 Fallback 以開閉計數自行平衡）。
     let mut fb: usize = 0;
     // mc:AlternateContent 巢狀棧：開標時快照 fb，閉標時還原——錯置標籤
@@ -666,6 +673,10 @@ fn parse_document_xml_with_fonts(
     let mut txbx_para_depth: usize = 0;
     // 框內 `w:t` 文字區間旗標（獨立於正文 `in_t`：兩者永不重疊）。
     let mut txbx_in_t = false;
+    // 框內文字節點的 xml:space 緩衝（口徑與正文 `t_buf` 相同，見上）。
+    let mut txbx_t_buf = String::new();
+    let mut txbx_t_buf_active = false;
+    let mut txbx_t_buf_preserve = false;
     // 框內 run 採集（保留 rPr 直接格式供發射層；序與 txbx_done/cur 對齊）。
     let mut txbx_run: Option<Run> = None;
     let mut txbx_para_runs: Vec<Run> = Vec::new();
@@ -738,7 +749,13 @@ fn parse_document_xml_with_fonts(
                             txbx_run = None;
                             txbx_para_runs.clear();
                         }
-                        b"t" => txbx_in_t = true,
+                        b"t" => {
+                            txbx_in_t = true;
+                            txbx_t_buf.clear();
+                            txbx_t_buf_active = true;
+                            txbx_t_buf_preserve =
+                                attr_val(&e, "space").as_deref() == Some("preserve");
+                        }
                         // 框內 run：建採集緩衝（發射層的樣式來源）。
                         b"r" => {
                             txbx_run = Some(Run {
@@ -828,6 +845,9 @@ fn parse_document_xml_with_fonts(
                         // 不採——LO 亦不畫無容器的孤兒 delText）。
                         if rev_del_depth > 0 || rev_mfrom_depth > 0 {
                             in_del_t = true;
+                            t_buf.clear();
+                            t_buf_active = true;
+                            t_buf_preserve = attr_val(&e, "space").as_deref() == Some("preserve");
                         }
                     }
                     b"moveFrom" if ppr_depth == 0 => {
@@ -955,7 +975,12 @@ fn parse_document_xml_with_fonts(
                     b"instrText" => {
                         instr_active = true;
                     }
-                    b"t" => in_t = true,
+                    b"t" => {
+                        in_t = true;
+                        t_buf.clear();
+                        t_buf_active = true;
+                        t_buf_preserve = attr_val(&e, "space").as_deref() == Some("preserve");
+                    }
                     b"pStyle" => {
                         if let Some((_, p, _)) = stack.last_mut() {
                             if let Some(v) = attr_val(&e, "val") {
@@ -1249,7 +1274,24 @@ fn parse_document_xml_with_fonts(
                                 txbx_runs_done.push(std::mem::take(&mut txbx_para_runs));
                             }
                         }
-                        b"t" => txbx_in_t = false,
+                        b"t" => {
+                            txbx_in_t = false;
+                            if txbx_t_buf_active {
+                                let s = if txbx_t_buf_preserve {
+                                    txbx_t_buf.clone()
+                                } else {
+                                    txbx_t_buf.trim_matches(is_xml_space).to_string()
+                                };
+                                if !s.is_empty() {
+                                    txbx_cur.push_str(&s);
+                                    if let Some(r) = txbx_run.as_mut() {
+                                        r.text.push_str(&s);
+                                    }
+                                }
+                                txbx_t_buf.clear();
+                                txbx_t_buf_active = false;
+                            }
+                        }
                         // 框內 run 完結：連同 rPr 快照進段內 run 緩衝。
                         b"r" => {
                             if let Some(mut r) = txbx_run.take() {
@@ -1271,8 +1313,28 @@ fn parse_document_xml_with_fonts(
                     continue;
                 }
                 match name.as_slice() {
-                    b"t" => in_t = false,
-                    b"delText" => in_del_t = false,
+                    b"t" => {
+                        in_t = false;
+                        let cp = stack.last_mut().map(|(_, _, c)| c);
+                        flush_text_node(
+                            &mut t_buf_active,
+                            t_buf_preserve,
+                            &mut t_buf,
+                            &mut cur_run,
+                            cp,
+                        );
+                    }
+                    b"delText" => {
+                        in_del_t = false;
+                        let cp = stack.last_mut().map(|(_, _, c)| c);
+                        flush_text_node(
+                            &mut t_buf_active,
+                            t_buf_preserve,
+                            &mut t_buf,
+                            &mut cur_run,
+                            cp,
+                        );
+                    }
                     b"ins" if ppr_depth == 0 => {
                         // End 臂與 Start 臂同閘：pPr/rPr 內的成對段落標記宣告
                         // （罕見寫法）兩側都跳過，深計數不會單邊漂移。
@@ -1346,9 +1408,13 @@ fn parse_document_xml_with_fonts(
                     // 同步進採集 run（發射層按 run 分段取樣式，K4e2）。
                     if txbx_in_t {
                         let s = qx::unescape_text(&t).map_err(OoxmlError::Xml)?;
-                        txbx_cur.push_str(&s);
-                        if let Some(r) = txbx_run.as_mut() {
-                            r.text.push_str(&s);
+                        if txbx_t_buf_active {
+                            txbx_t_buf.push_str(&s);
+                        } else {
+                            txbx_cur.push_str(&s);
+                            if let Some(r) = txbx_run.as_mut() {
+                                r.text.push_str(&s);
+                            }
                         }
                     }
                     continue;
@@ -1364,13 +1430,17 @@ fn parse_document_xml_with_fonts(
                     }
                     continue;
                 }
-                if let Some(r) = cur_run.as_mut().filter(|_| in_t || in_del_t) {
+                if in_t || in_del_t {
                     let s = qx::unescape_text(&t).map_err(OoxmlError::Xml)?;
-                    // 已入文碼點計數隨文字增長——br-page 記錄偏移的標尺。
-                    if let Some((_, _, cp_done)) = stack.last_mut() {
-                        *cp_done += s.chars().count();
+                    if t_buf_active {
+                        t_buf.push_str(&s);
+                    } else if let Some(r) = cur_run.as_mut() {
+                        // 防禦：未見 Start 的孤立文字（畸形 XML）照舊直接入 run，不吞字。
+                        if let Some((_, _, cp_done)) = stack.last_mut() {
+                            *cp_done += s.chars().count();
+                        }
+                        r.text.push_str(&s);
                     }
-                    r.text.push_str(&s);
                 }
             }
             Event::GeneralRef(r) => {
@@ -1380,9 +1450,13 @@ fn parse_document_xml_with_fonts(
                 let s = qx::resolve_general_ref(&r).map_err(OoxmlError::Xml)?;
                 if txbx_depth > 0 {
                     if txbx_in_t {
-                        txbx_cur.push_str(&s);
-                        if let Some(r) = txbx_run.as_mut() {
-                            r.text.push_str(&s);
+                        if txbx_t_buf_active {
+                            txbx_t_buf.push_str(&s);
+                        } else {
+                            txbx_cur.push_str(&s);
+                            if let Some(r) = txbx_run.as_mut() {
+                                r.text.push_str(&s);
+                            }
                         }
                     }
                     continue;
@@ -1393,11 +1467,15 @@ fn parse_document_xml_with_fonts(
                     }
                     continue;
                 }
-                if let Some(r) = cur_run.as_mut().filter(|_| in_t || in_del_t) {
-                    if let Some((_, _, cp_done)) = stack.last_mut() {
-                        *cp_done += s.chars().count();
+                if in_t || in_del_t {
+                    if t_buf_active {
+                        t_buf.push_str(&s);
+                    } else if let Some(r) = cur_run.as_mut() {
+                        if let Some((_, _, cp_done)) = stack.last_mut() {
+                            *cp_done += s.chars().count();
+                        }
+                        r.text.push_str(&s);
                     }
-                    r.text.push_str(&s);
                 }
             }
             _ => {}
@@ -1437,6 +1515,41 @@ fn attach_txbx(p: &mut Paragraph, texts: Vec<String>, runs: Vec<Vec<Run>>) {
     let n = texts.len();
     p.txbx_texts.extend(texts);
     p.txbx_runs.extend(runs.into_iter().take(n));
+}
+
+/// XML 空白（XML 1.0 `S` production）：僅空格、TAB、CR、LF。
+/// 刻意不以 `char::is_whitespace` 判定——該判定含 NBSP（U+00A0）等正文字元，剝掉會吞字。
+fn is_xml_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\r' | '\n')
+}
+
+/// 收束一個 `w:t`／`w:delText` 文字節點：無 preserve 時剝除節點頭尾 XML 空白，節點內連續空白原樣保留。
+/// `cp_done` 只累計實際寫入的碼點（br-page 偏移標尺必須與入文文字一致）。
+fn flush_text_node(
+    buf_active: &mut bool,
+    preserve: bool,
+    buf: &mut String,
+    run: &mut Option<Run>,
+    cp_done: Option<&mut usize>,
+) {
+    if !*buf_active {
+        return;
+    }
+    let s: &str = if preserve {
+        buf.as_str()
+    } else {
+        buf.trim_matches(is_xml_space)
+    };
+    if !s.is_empty() {
+        if let Some(r) = run.as_mut() {
+            r.text.push_str(s);
+        }
+        if let Some(cp) = cp_done {
+            *cp += s.chars().count();
+        }
+    }
+    buf.clear();
+    *buf_active = false;
 }
 
 fn attr_val(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {

@@ -15,7 +15,7 @@
 //!
 //! # 本檔**不**斷言的事（老實記帳）
 //!
-//! - 不斷言 9/9：殘餘 3 行差異（行 0/1/2 位移一格）根因＝源檔 3 處**連續雙空格**我方未折疊（LO 折疊；每處虛增 2.24pt，共 6.72pt，恰吃掉可行帶餘量），屬卡 D 空白折疊口徑。燈 3 用「整段文字守恆」堵掉「靠丟字湊行數」的假綠。
+//! - 不斷言 9/9：殘餘 3 行差異（行 0/1/2 位移一格）。卡面舊歸因「源檔 3 處連續雙空格我方未折疊（LO 折疊；每處虛增 2.24pt）」已被 pymupdf rawdict 逐字真值推翻——LO 對節點內雙空格渲染**兩個空格字形**（受控 sp2 gap＝12pt 佐證），不折疊；舊誤判源自 get_text("words") 抽詞把空白折成單字的抽取器假象。空白口徑定案見 `docs/e1cd-xml-space-policy.md`，斷點差一格根因改查另立 E1-C 卡 E。燈 3 用「整段文字守恆」堵掉「靠丟字湊行數」的假綠。
 
 use quire_engine::Engine;
 use quire_render_trait::DrawItem;
@@ -36,7 +36,9 @@ const TRUTH_TEAM_LINES: [&str; 9] = [
     "world and is fast becoming a household name throughout the country.",
 ];
 
-/// 正規化：折疊任意空白（源檔有連續雙空格，LO 折疊）、全小寫、統一連結號。
+/// 正規化：比對用（折疊任意空白、全小寫、統一連結號）。注意這是**內容比對容錯**，
+/// 不代表 LO 折疊空白——LO 對節點內雙空格渲染兩個空格字形（rawdict 實測，
+/// 見 docs/e1cd-xml-space-policy.md）；此處折疊只為免除斷行位置差異對文字守恆燈的干擾。
 fn norm(s: &str) -> String {
     s.split_whitespace()
         .collect::<Vec<_>>()
