@@ -1,0 +1,997 @@
+{
+  "schema": "quire.e1cb.lo_truth_canon.v1",
+  "card": "t_ecb9aa10 (E1-C 卡 B)",
+  "oracle_policy": {
+    "primary_binary": "~/.local/lo-linux/opt/libreoffice25.8/program/soffice",
+    "primary_version": "LibreOffice 25.8.7.3 (30742500f2d3eb4366ac312fa33d3dcabdb3eba5)",
+    "cross_check_binary": "/mnt/c/Program Files/LibreOffice/program/soffice.exe",
+    "cross_check_version": "LibreOffice 24.8.0.3 (0bdf1299c94fe897b119f97f3c613e9dca6be583)",
+    "isolation_flags": [
+      "-env:UserInstallation=file:///tmp/loprof-e1cb-<unique>",
+      "--headless",
+      "--norestore",
+      "--nolockcheck",
+      "--nodefault",
+      "--convert-to pdf",
+      "--outdir ."
+    ],
+    "font_injection": {
+      "mechanism": "per-process env FONTCONFIG_FILE=/tmp/e1cb-fontcfg/fonts.conf",
+      "injected_files": [
+        "trebuc.ttf",
+        "trebucbd.ttf",
+        "trebucit.ttf",
+        "trebucbi.ttf"
+      ],
+      "global_side_effects": "none (never touch ~/.local/share/fonts or system font dirs)"
+    },
+    "convergence_criterion": {
+      "single_env_runs": 2,
+      "artifact_gates": [
+        "pdf_exists",
+        "size_bytes > 0",
+        "page_count > 0",
+        "total_words > 0"
+      ],
+      "signature_match": "sha256(sorted_page_lines_y0_font_text) must be identical across N=2 runs"
+    }
+  },
+  "trebuchet_vertical_calibration": {
+    "old_factor": 1.362,
+    "old_factor_origin": "NotoSans-Regular fallback hhea (1069+293+0)/1000 = 1.3620",
+    "new_factor": 1.1611,
+    "new_factor_origin": "trebuc.ttf hhea & OS/2 win (1923+455+0)/2048 = 1.161133",
+    "ttf_metrics": [
+      {
+        "file": "trebuc.ttf",
+        "upem": 2048,
+        "hhea": {
+          "asc": 1923,
+          "desc": -455,
+          "gap": 0,
+          "lh": 1.161133
+        },
+        "win": {
+          "asc": 1923,
+          "desc": 455,
+          "lh": 1.161133
+        },
+        "typo": {
+          "asc": 1510,
+          "desc": -420,
+          "gap": 0,
+          "lh": 0.942383
+        }
+      },
+      {
+        "file": "trebucbd.ttf",
+        "upem": 2048,
+        "hhea": {
+          "asc": 1923,
+          "desc": -455,
+          "gap": 0,
+          "lh": 1.161133
+        },
+        "win": {
+          "asc": 1923,
+          "desc": 455,
+          "lh": 1.161133
+        },
+        "typo": {
+          "asc": 1510,
+          "desc": -420,
+          "gap": 0,
+          "lh": 0.942383
+        }
+      },
+      {
+        "file": "trebucit.ttf",
+        "upem": 2048,
+        "hhea": {
+          "asc": 1923,
+          "desc": -455,
+          "gap": 0,
+          "lh": 1.161133
+        },
+        "win": {
+          "asc": 1923,
+          "desc": 455,
+          "lh": 1.161133
+        },
+        "typo": {
+          "asc": 1510,
+          "desc": -420,
+          "gap": 0,
+          "lh": 0.942383
+        }
+      },
+      {
+        "file": "trebucbi.ttf",
+        "upem": 2048,
+        "hhea": {
+          "asc": 1923,
+          "desc": -455,
+          "gap": 0,
+          "lh": 1.161133
+        },
+        "win": {
+          "asc": 1923,
+          "desc": 455,
+          "lh": 1.161133
+        },
+        "typo": {
+          "asc": 1510,
+          "desc": -420,
+          "gap": 0,
+          "lh": 0.942383
+        }
+      },
+      {
+        "file": "NotoSans-Regular.ttf",
+        "upem": 1000,
+        "hhea": {
+          "asc": 1069,
+          "desc": -293,
+          "gap": 0,
+          "lh": 1.362
+        },
+        "win": {
+          "asc": 1124,
+          "desc": 395,
+          "lh": 1.519
+        },
+        "typo": {
+          "asc": 1069,
+          "desc": -293,
+          "gap": 0,
+          "lh": 1.362
+        }
+      }
+    ],
+    "empirical_pitches": {
+      "cgs_team_w276_sz10": {
+        "lo_pitch_pt": 13.3,
+        "inferred_lh": 1.1565,
+        "formula_pred_pt": 13.35,
+        "quire_quantized_pt": 13.53
+      },
+      "cgs_avail_w240_sz10": {
+        "lo_pitch_pt": 11.6,
+        "inferred_lh": 1.16,
+        "formula_pred_pt": 11.61,
+        "quire_quantized_pt": 11.6
+      },
+      "synthetic_w240": {
+        "sz10": {
+          "lo_pitch_pt": 11.6,
+          "inferred_lh": 1.16,
+          "formula_pred_pt": 11.61
+        },
+        "sz11": {
+          "lo_pitch_pt": 12.75,
+          "inferred_lh": 1.1591,
+          "formula_pred_pt": 12.77
+        },
+        "sz14": {
+          "lo_pitch_pt": 16.25,
+          "inferred_lh": 1.1607,
+          "formula_pred_pt": 16.26
+        },
+        "sz20": {
+          "lo_pitch_pt": 23.25,
+          "inferred_lh": 1.1625,
+          "formula_pred_pt": 23.22
+        }
+      }
+    }
+  },
+  "files": [
+    {
+      "key": "cgs",
+      "file": "corpus/ooxmlexport/cell-grid-span.docx",
+      "declares_trebuchet_in_xml": true,
+      "renders_trebuchet_in_pdf": true,
+      "single_env_n2_converged": true,
+      "single_env_sig": "a3715ba502e4",
+      "linux_no_face": {
+        "pages": 2,
+        "lines_per_page": [
+          33,
+          5
+        ],
+        "total_words": 473,
+        "fonts": [
+          "Calibri",
+          "Calibri-Bold",
+          "NotoSans-Bold",
+          "NotoSans-Regular"
+        ],
+        "sig": "6f6c68b803ea"
+      },
+      "linux_real_face": {
+        "pages": 2,
+        "lines_per_page": [
+          36,
+          1
+        ],
+        "total_words": 473,
+        "fonts": [
+          "Calibri",
+          "Calibri-Bold",
+          "TrebuchetMS",
+          "TrebuchetMS-Bold"
+        ],
+        "sig": "a3715ba502e4"
+      },
+      "windows_lo": {
+        "pages": 2,
+        "lines_per_page": [
+          36,
+          1
+        ],
+        "total_words": 473,
+        "fonts": [
+          "Calibri",
+          "Calibri-Bold",
+          "TrebuchetMS",
+          "TrebuchetMS-Bold"
+        ],
+        "sig": "a3715ba502e4",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_1_CONVERGED_ANCHORED_LINUX",
+        "converged_pages": true,
+        "converged_lines": true,
+        "page_diff_lin_minus_win": 0,
+        "canonical_pages": 2,
+        "canonical_env": "linux_lo_25_8_with_fontconfig_real_face",
+        "attribution": "Linux LO 25.8 注入真 face 後與 Windows LO 頁數完全收斂，逐頁行數全等。"
+      }
+    },
+    {
+      "key": "RA001-01",
+      "file": "corpus/xopt/TestFiles_RA001-Tracked-Revisions-01.docx",
+      "declares_trebuchet_in_xml": true,
+      "renders_trebuchet_in_pdf": false,
+      "single_env_n2_converged": true,
+      "single_env_sig": "cce80eb3a1a7",
+      "linux_no_face": {
+        "pages": 7,
+        "lines_per_page": [
+          1,
+          33,
+          18,
+          23,
+          15,
+          5,
+          0
+        ],
+        "total_words": 358,
+        "fonts": [
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "cce80eb3a1a7"
+      },
+      "linux_real_face": {
+        "pages": 7,
+        "lines_per_page": [
+          1,
+          33,
+          18,
+          23,
+          15,
+          5,
+          0
+        ],
+        "total_words": 358,
+        "fonts": [
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "cce80eb3a1a7"
+      },
+      "windows_lo": {
+        "pages": 6,
+        "lines_per_page": [
+          1,
+          34,
+          21,
+          24,
+          16,
+          3
+        ],
+        "total_words": 358,
+        "fonts": [
+          "TimesNewRomanPS-BoldItal",
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPS-ItalicMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "0f7202e3c75f",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_3_HEADER_TRHEIGHT_VERSION_DRIFT",
+        "converged_pages": false,
+        "converged_lines": false,
+        "page_diff_lin_minus_win": 1,
+        "canonical_pages": 6,
+        "canonical_env": "windows_lo_or_linux_non_empty_pages",
+        "attribution": "LO 25.8.7.3(Linux) 兌現 word/header3.xml 空表列 trHeight=1088twip(54.40pt，頁首底界 75.40pt)，LO 24.8.0.3(Windows) 塌縮為單行高 19.35pt(頁首底界 40.35pt)，每頁正文起點恆定差 35.05pt；RA001 尾端刪除空段於 Linux 溢出至 p6(0 words 空頁，僅 3 條修訂邊線)。"
+      }
+    },
+    {
+      "key": "RA001-02",
+      "file": "corpus/xopt/TestFiles_RA001-Tracked-Revisions-02.docx",
+      "declares_trebuchet_in_xml": true,
+      "renders_trebuchet_in_pdf": false,
+      "single_env_n2_converged": true,
+      "single_env_sig": "cce80eb3a1a7",
+      "linux_no_face": {
+        "pages": 7,
+        "lines_per_page": [
+          1,
+          33,
+          18,
+          23,
+          15,
+          5,
+          0
+        ],
+        "total_words": 358,
+        "fonts": [
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "cce80eb3a1a7"
+      },
+      "linux_real_face": {
+        "pages": 7,
+        "lines_per_page": [
+          1,
+          33,
+          18,
+          23,
+          15,
+          5,
+          0
+        ],
+        "total_words": 358,
+        "fonts": [
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "cce80eb3a1a7"
+      },
+      "windows_lo": {
+        "pages": 6,
+        "lines_per_page": [
+          1,
+          34,
+          21,
+          24,
+          16,
+          3
+        ],
+        "total_words": 358,
+        "fonts": [
+          "TimesNewRomanPS-BoldItal",
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPS-ItalicMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "0f7202e3c75f",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_3_HEADER_TRHEIGHT_VERSION_DRIFT",
+        "converged_pages": false,
+        "converged_lines": false,
+        "page_diff_lin_minus_win": 1,
+        "canonical_pages": 6,
+        "canonical_env": "windows_lo_or_linux_non_empty_pages",
+        "attribution": "LO 25.8.7.3(Linux) 兌現 word/header3.xml 空表列 trHeight=1088twip(54.40pt，頁首底界 75.40pt)，LO 24.8.0.3(Windows) 塌縮為單行高 19.35pt(頁首底界 40.35pt)，每頁正文起點恆定差 35.05pt；RA001 尾端刪除空段於 Linux 溢出至 p6(0 words 空頁，僅 3 條修訂邊線)。"
+      }
+    },
+    {
+      "key": "RP001-01",
+      "file": "corpus/xopt/TestFiles_RP_RP001-Tracked-Revisions-01-Accepted.docx",
+      "declares_trebuchet_in_xml": true,
+      "renders_trebuchet_in_pdf": false,
+      "single_env_n2_converged": true,
+      "single_env_sig": "1115728508b0",
+      "linux_no_face": {
+        "pages": 5,
+        "lines_per_page": [
+          1,
+          18,
+          17,
+          26,
+          4
+        ],
+        "total_words": 302,
+        "fonts": [
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "1115728508b0"
+      },
+      "linux_real_face": {
+        "pages": 5,
+        "lines_per_page": [
+          1,
+          18,
+          17,
+          26,
+          4
+        ],
+        "total_words": 302,
+        "fonts": [
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "1115728508b0"
+      },
+      "windows_lo": {
+        "pages": 5,
+        "lines_per_page": [
+          1,
+          18,
+          19,
+          25,
+          2
+        ],
+        "total_words": 302,
+        "fonts": [
+          "TimesNewRomanPS-BoldItal",
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPS-ItalicMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "272dc7fbdaea",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_1_CONVERGED_ANCHORED_LINUX",
+        "converged_pages": true,
+        "converged_lines": false,
+        "page_diff_lin_minus_win": 0,
+        "canonical_pages": 5,
+        "canonical_env": "linux_lo_25_8_with_fontconfig_real_face",
+        "attribution": "Linux LO 25.8 注入真 face 後與 Windows LO 頁數完全收斂；框內無宣告字型 fallback 在 LO 25.8(NotoSerif-Bold) 與 24.8(LiberationSerif-Bold) 差 2 行，不影響頁數。"
+      }
+    },
+    {
+      "key": "RP001-02",
+      "file": "corpus/xopt/TestFiles_RP_RP001-Tracked-Revisions-02-Accepted.docx",
+      "declares_trebuchet_in_xml": true,
+      "renders_trebuchet_in_pdf": false,
+      "single_env_n2_converged": true,
+      "single_env_sig": "1115728508b0",
+      "linux_no_face": {
+        "pages": 5,
+        "lines_per_page": [
+          1,
+          18,
+          17,
+          26,
+          4
+        ],
+        "total_words": 302,
+        "fonts": [
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "1115728508b0"
+      },
+      "linux_real_face": {
+        "pages": 5,
+        "lines_per_page": [
+          1,
+          18,
+          17,
+          26,
+          4
+        ],
+        "total_words": 302,
+        "fonts": [
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "1115728508b0"
+      },
+      "windows_lo": {
+        "pages": 5,
+        "lines_per_page": [
+          1,
+          18,
+          19,
+          25,
+          2
+        ],
+        "total_words": 302,
+        "fonts": [
+          "TimesNewRomanPS-BoldItal",
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPS-ItalicMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "272dc7fbdaea",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_1_CONVERGED_ANCHORED_LINUX",
+        "converged_pages": true,
+        "converged_lines": false,
+        "page_diff_lin_minus_win": 0,
+        "canonical_pages": 5,
+        "canonical_env": "linux_lo_25_8_with_fontconfig_real_face",
+        "attribution": "Linux LO 25.8 注入真 face 後與 Windows LO 頁數完全收斂；框內無宣告字型 fallback 在 LO 25.8(NotoSerif-Bold) 與 24.8(LiberationSerif-Bold) 差 2 行，不影響頁數。"
+      }
+    },
+    {
+      "key": "HC061",
+      "file": "corpus/xopt/TestFiles_HC061-Hyperlink-in-Field.docx",
+      "declares_trebuchet_in_xml": true,
+      "renders_trebuchet_in_pdf": false,
+      "single_env_n2_converged": true,
+      "single_env_sig": "f5e427faf357",
+      "linux_no_face": {
+        "pages": 2,
+        "lines_per_page": [
+          34,
+          7
+        ],
+        "total_words": 457,
+        "fonts": [
+          "Arial-BoldMT",
+          "ArialMT",
+          "NotoSerif-Italic",
+          "NotoSerif-Regular"
+        ],
+        "sig": "f5e427faf357"
+      },
+      "linux_real_face": {
+        "pages": 2,
+        "lines_per_page": [
+          34,
+          7
+        ],
+        "total_words": 457,
+        "fonts": [
+          "Arial-BoldMT",
+          "ArialMT",
+          "NotoSerif-Italic",
+          "NotoSerif-Regular"
+        ],
+        "sig": "f5e427faf357"
+      },
+      "windows_lo": {
+        "pages": 1,
+        "lines_per_page": [
+          36
+        ],
+        "total_words": 453,
+        "fonts": [
+          "Arial-BoldMT",
+          "ArialMT",
+          "GenSenRounded2TW-B",
+          "Georgia",
+          "Georgia-Italic"
+        ],
+        "sig": "ccbec23e382f",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_2_UNINJECTED_MS_FACE_FALLBACK",
+        "converged_pages": false,
+        "converged_lines": false,
+        "page_diff_lin_minus_win": 1,
+        "canonical_pages": 1,
+        "canonical_env": "linux_lo_with_declared_ms_face_injected",
+        "missing_ms_faces_on_linux": [
+          "Georgia"
+        ],
+        "attribution": "源檔宣告 ['Georgia']，Linux 未注入時頂替為 Noto 系(LH=1.3620)；實測補注入 ['Georgia'] 真 TTF 後 Linux LO 與 Windows LO 頁數與行數 100% 全等(1p [36])。"
+      }
+    },
+    {
+      "key": "n820504",
+      "file": "corpus/ooxmlimport/n820504.docx",
+      "declares_trebuchet_in_xml": true,
+      "renders_trebuchet_in_pdf": true,
+      "single_env_n2_converged": true,
+      "single_env_sig": "bb7540acccfd",
+      "linux_no_face": {
+        "pages": 1,
+        "lines_per_page": [
+          6
+        ],
+        "total_words": 12,
+        "fonts": [
+          "NotoSerif-Bold",
+          "NotoSerif-Italic"
+        ],
+        "sig": "1ebd66c92d03"
+      },
+      "linux_real_face": {
+        "pages": 1,
+        "lines_per_page": [
+          6
+        ],
+        "total_words": 12,
+        "fonts": [
+          "NotoSerif-Italic",
+          "TrebuchetMS-Bold"
+        ],
+        "sig": "bb7540acccfd"
+      },
+      "windows_lo": {
+        "pages": 1,
+        "lines_per_page": [
+          6
+        ],
+        "total_words": 12,
+        "fonts": [
+          "Georgia-Italic",
+          "TrebuchetMS-Bold"
+        ],
+        "sig": "83f93b9f02e3",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_1_CONVERGED_ANCHORED_LINUX",
+        "converged_pages": true,
+        "converged_lines": true,
+        "page_diff_lin_minus_win": 0,
+        "canonical_pages": 1,
+        "canonical_env": "linux_lo_25_8_with_fontconfig_real_face",
+        "attribution": "Linux LO 25.8 注入真 face 後與 Windows LO 頁數完全收斂，逐頁行數全等。"
+      }
+    },
+    {
+      "key": "LinkedTextBoxes",
+      "file": "corpus/ooxmlexport/LinkedTextBoxes.docx",
+      "declares_trebuchet_in_xml": true,
+      "renders_trebuchet_in_pdf": false,
+      "single_env_n2_converged": true,
+      "single_env_sig": "c848577887b9",
+      "linux_no_face": {
+        "pages": 1,
+        "lines_per_page": [
+          72
+        ],
+        "total_words": 526,
+        "fonts": [
+          "NotoSans-Bold",
+          "NotoSans-Regular",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "c848577887b9"
+      },
+      "linux_real_face": {
+        "pages": 1,
+        "lines_per_page": [
+          72
+        ],
+        "total_words": 526,
+        "fonts": [
+          "NotoSans-Bold",
+          "NotoSans-Regular",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "c848577887b9"
+      },
+      "windows_lo": {
+        "pages": 1,
+        "lines_per_page": [
+          67
+        ],
+        "total_words": 541,
+        "fonts": [
+          "Candara",
+          "Candara-Bold",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "2b6a8a8e3f0d",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_2_UNINJECTED_MS_FACE_FALLBACK",
+        "converged_pages": true,
+        "converged_lines": false,
+        "page_diff_lin_minus_win": 0,
+        "canonical_pages": 1,
+        "canonical_env": "linux_lo_with_declared_ms_face_injected",
+        "missing_ms_faces_on_linux": [
+          "Candara"
+        ],
+        "attribution": "源檔宣告 ['Candara']，Linux 未注入時頂替為 Noto 系(LH=1.3620)；實測補注入 ['Candara'] 真 TTF 後 Linux LO 與 Windows LO 頁數與行數 100% 全等(1p [67])。"
+      }
+    },
+    {
+      "key": "5DayTour",
+      "file": "corpus/xopt/OpenXmlPowerToolsExamples_HtmlConverter01_5DayTourPlanTemplate.docx",
+      "declares_trebuchet_in_xml": true,
+      "renders_trebuchet_in_pdf": false,
+      "single_env_n2_converged": true,
+      "single_env_sig": "d53e2dd3a602",
+      "linux_no_face": {
+        "pages": 1,
+        "lines_per_page": [
+          31
+        ],
+        "total_words": 39,
+        "fonts": [
+          "NotoSans-Regular",
+          "WenQuanYiZenHei"
+        ],
+        "sig": "d53e2dd3a602"
+      },
+      "linux_real_face": {
+        "pages": 1,
+        "lines_per_page": [
+          31
+        ],
+        "total_words": 39,
+        "fonts": [
+          "NotoSans-Regular",
+          "WenQuanYiZenHei"
+        ],
+        "sig": "d53e2dd3a602"
+      },
+      "windows_lo": {
+        "pages": 1,
+        "lines_per_page": [
+          31
+        ],
+        "total_words": 39,
+        "fonts": [
+          "MicrosoftYaHeiUI",
+          "MicrosoftYaHeiUI-Bold"
+        ],
+        "sig": "f0670b9985cf",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_1_CONVERGED_ANCHORED_LINUX",
+        "converged_pages": true,
+        "converged_lines": true,
+        "page_diff_lin_minus_win": 0,
+        "canonical_pages": 1,
+        "canonical_env": "linux_lo_25_8_with_fontconfig_real_face",
+        "attribution": "Linux LO 25.8 注入真 face 後與 Windows LO 頁數完全收斂，逐頁行數全等。"
+      }
+    },
+    {
+      "key": "fdo76591",
+      "file": "corpus/ooxmlexport/fdo76591.docx",
+      "declares_trebuchet_in_xml": false,
+      "renders_trebuchet_in_pdf": false,
+      "single_env_n2_converged": true,
+      "single_env_sig": "5014d6eda31d",
+      "linux_no_face": {
+        "pages": 1,
+        "lines_per_page": [
+          28
+        ],
+        "total_words": 113,
+        "fonts": [
+          "Arial-BoldMT",
+          "ArialMT",
+          "NotoSerif-Bold",
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "5014d6eda31d"
+      },
+      "linux_real_face": {
+        "pages": 1,
+        "lines_per_page": [
+          28
+        ],
+        "total_words": 113,
+        "fonts": [
+          "Arial-BoldMT",
+          "ArialMT",
+          "NotoSerif-Bold",
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "5014d6eda31d"
+      },
+      "windows_lo": {
+        "pages": 1,
+        "lines_per_page": [
+          30
+        ],
+        "total_words": 115,
+        "fonts": [
+          "Arial-BoldMT",
+          "ArialMT",
+          "LiberationSerif-Bold",
+          "TimesNewRomanPS-BoldMT",
+          "TimesNewRomanPSMT"
+        ],
+        "sig": "66dc6335da5e",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_1_CONVERGED_ANCHORED_LINUX",
+        "converged_pages": true,
+        "converged_lines": false,
+        "page_diff_lin_minus_win": 0,
+        "canonical_pages": 1,
+        "canonical_env": "linux_lo_25_8_with_fontconfig_real_face",
+        "attribution": "Linux LO 25.8 注入真 face 後與 Windows LO 頁數完全收斂；框內無宣告字型 fallback 在 LO 25.8(NotoSerif-Bold) 與 24.8(LiberationSerif-Bold) 差 2 行，不影響頁數。"
+      }
+    },
+    {
+      "key": "CoverPage",
+      "file": "corpus/xopt/NewDocxDocuments_CoverPage.docx",
+      "declares_trebuchet_in_xml": false,
+      "renders_trebuchet_in_pdf": false,
+      "single_env_n2_converged": true,
+      "single_env_sig": "512bd47b654e",
+      "linux_no_face": {
+        "pages": 2,
+        "lines_per_page": [
+          5,
+          0
+        ],
+        "total_words": 14,
+        "fonts": [
+          "Calibri",
+          "NotoSerif-Regular"
+        ],
+        "sig": "512bd47b654e"
+      },
+      "linux_real_face": {
+        "pages": 2,
+        "lines_per_page": [
+          5,
+          0
+        ],
+        "total_words": 14,
+        "fonts": [
+          "Calibri",
+          "NotoSerif-Regular"
+        ],
+        "sig": "512bd47b654e"
+      },
+      "windows_lo": {
+        "pages": 2,
+        "lines_per_page": [
+          5,
+          0
+        ],
+        "total_words": 14,
+        "fonts": [
+          "Calibri",
+          "Calibri-Light"
+        ],
+        "sig": "e7f1edb38528",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_1_CONVERGED_ANCHORED_LINUX",
+        "converged_pages": true,
+        "converged_lines": true,
+        "page_diff_lin_minus_win": 0,
+        "canonical_pages": 2,
+        "canonical_env": "linux_lo_25_8_with_fontconfig_real_face",
+        "attribution": "Linux LO 25.8 注入真 face 後與 Windows LO 頁數完全收斂，逐頁行數全等。"
+      }
+    },
+    {
+      "key": "WC048",
+      "file": "corpus/xopt/TestFiles_WC_WC048-Text-Box-in-Cell.docx",
+      "declares_trebuchet_in_xml": false,
+      "renders_trebuchet_in_pdf": false,
+      "single_env_n2_converged": true,
+      "single_env_sig": "784d62a484cc",
+      "linux_no_face": {
+        "pages": 1,
+        "lines_per_page": [
+          12
+        ],
+        "total_words": 39,
+        "fonts": [
+          "Calibri",
+          "Calibri-Italic",
+          "NotoSans-Regular"
+        ],
+        "sig": "784d62a484cc"
+      },
+      "linux_real_face": {
+        "pages": 1,
+        "lines_per_page": [
+          12
+        ],
+        "total_words": 39,
+        "fonts": [
+          "Calibri",
+          "Calibri-Italic",
+          "NotoSans-Regular"
+        ],
+        "sig": "784d62a484cc"
+      },
+      "windows_lo": {
+        "pages": 1,
+        "lines_per_page": [
+          12
+        ],
+        "total_words": 39,
+        "fonts": [
+          "Calibri",
+          "Calibri-Italic",
+          "Calibri-Light"
+        ],
+        "sig": "5b075c9ef90c",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_1_CONVERGED_ANCHORED_LINUX",
+        "converged_pages": true,
+        "converged_lines": true,
+        "page_diff_lin_minus_win": 0,
+        "canonical_pages": 1,
+        "canonical_env": "linux_lo_25_8_with_fontconfig_real_face",
+        "attribution": "Linux LO 25.8 注入真 face 後與 Windows LO 頁數完全收斂，逐頁行數全等。"
+      }
+    },
+    {
+      "key": "btlr-textbox",
+      "file": "corpus/ooxmlexport/btlr-textbox.docx",
+      "declares_trebuchet_in_xml": false,
+      "renders_trebuchet_in_pdf": false,
+      "single_env_n2_converged": true,
+      "single_env_sig": "429bcebd55db",
+      "linux_no_face": {
+        "pages": 1,
+        "lines_per_page": [
+          2
+        ],
+        "total_words": 4,
+        "fonts": [
+          "Calibri"
+        ],
+        "sig": "429bcebd55db"
+      },
+      "linux_real_face": {
+        "pages": 1,
+        "lines_per_page": [
+          2
+        ],
+        "total_words": 4,
+        "fonts": [
+          "Calibri"
+        ],
+        "sig": "429bcebd55db"
+      },
+      "windows_lo": {
+        "pages": 1,
+        "lines_per_page": [
+          2
+        ],
+        "total_words": 4,
+        "fonts": [
+          "Calibri"
+        ],
+        "sig": "4acd49ae217a",
+        "producer": "LibreOffice 24.8.0.3 (X86_64) / LibreOffice Community"
+      },
+      "decision": {
+        "rule_id": "RULE_1_CONVERGED_ANCHORED_LINUX",
+        "converged_pages": true,
+        "converged_lines": true,
+        "page_diff_lin_minus_win": 0,
+        "canonical_pages": 1,
+        "canonical_env": "linux_lo_25_8_with_fontconfig_real_face",
+        "attribution": "Linux LO 25.8 注入真 face 後與 Windows LO 頁數完全收斂，逐頁行數全等。"
+      }
+    }
+  ]
+}

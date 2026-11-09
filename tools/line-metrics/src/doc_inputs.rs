@@ -81,6 +81,7 @@ fn face_line_factor(face: &str) -> f32 {
         "liberation serif" | "liberationserif" | "times new roman" | "times" => 1.1499,
         "arial" | "liberation sans" | "liberationsans" | "helvetica" => 1.1499,
         "noto serif" | "notoserif" => 1.3620,
+        "trebuchet ms" | "trebuchetms" => 1.1611,
         "pmingliu" | "新細明體" | "kaititc" | "標楷體" | "msyahei" | "microsoft yahei"
         | "微軟雅黑" | "wenquanyi zen hei" | "wenquanyizenhei" => 1.3496,
         _ => 1.1499,
