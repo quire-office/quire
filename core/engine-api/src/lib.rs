@@ -4268,6 +4268,51 @@ pub(crate) fn face_baseline_ratio(face: &str) -> f32 {
 /// LO 即按此值排版（框內文字左緣 63.70+7.20=70.90 實測命中）。
 const VML_TEXTBOX_DEFAULT_INSET: [f32; 4] = [7.2, 3.6, 7.2, 3.6];
 
+/// D9b 欠債三：LO 對 `v:textbox` 的**框內建**左內縮（格式預設，非任何單一檔案的
+/// 座標）。出處＝實測：fdo76591 背景框框內正文左緣 33.35 ＝ 框起點 22.05 ＋ 宣告
+/// `strokeweight` 4.0 ＋ 本值 7.30（探針 `cf_inset_experiment.py` 的反事實坐實
+/// 「線寬項 1:1」：`strokeweight` 4pt→8pt ⇒ 正文左緣與首行**同軸各 ＋4.00pt**）。
+/// 取代舊代碼的字面量 `11.3`（＝本值＋該檔宣告的 4.0 線寬，換一個 strokeweight
+/// 即失效）。比 ECMA 預設 7.2 多 0.1pt 是 LO 自身的取整，保留實測值。
+const LO_VML_TEXTBOX_BUILTIN_INSET_PT: f32 = 7.3;
+
+/// D9b 欠債三：**滿版覆頁框**判定（取代 `w >= 500.0 && (x - 22.05).abs() <= 1.5`
+/// 這組 fdo76591 專屬字面量）。PM 定案（卡面 comment 11-07 10:00）＝「框寬 ≥ 版心寬
+/// 且 |框起點 −（版心原點＋宣告偏移）| ≤ 容差」，容差沿用既有 1.5pt；本函數照定案
+/// 把**版心盒**與**宣告偏移**都當輸入吃，不自行發明白名單。
+///
+/// 逐條口徑：
+/// * **版心盒必須在場**（`content`：該頁 section 的原點與宽高，呼叫端自 `Page`
+///   的 `margin_left_pt`／`margin_top_pt` ＋ `sec_geo_all` 推導，零檔案常量）；
+/// * **宣告偏移必須存在**（VML `style` 的 `margin-left`／`margin-top`，且原點系
+///   ＝版心；`align`／`pct` 式與 `page` 系釘定一律 `None` ⇒ 不成立）。n751077
+///   （`pgMar.left`＝197.90pt）的群組就是靠這條不誤傷（卡面 §2 第 3 條點名場景）；
+/// * **框面積須蓋住版心（寬與高雙軸）**：PM 定案式字面只寫了寬軸，但全庫掃描
+///   （探針 `scan_predicate.py`，含頁首尾 part）顯示只比寬會讓 **29 個框**過關
+///   （最誇張的是 `height:6.05pt` 的細線框），把「描邊內收／文字左緣」套到一般
+///   文字框＝大面積回退。補高軸後**全庫唯 1 框命中＝fdo76591 `_x0000_s1026`**，
+///   命中集與舊字面量臂逐檔相同（零回退前提）。
+/// * 起點一致性（容差 1.5pt）照定案保留：現行合成律下它對 `Margin` 系恆成立，
+///   實際角色是護欄——擋未來任何在合成後又搬動 `x_pt`/`y_pt` 的新路徑。
+///
+/// 傳回 `false`＝舊路徑零擾動（無描邊內收、無退內縮）。
+fn is_page_covering_frame(
+    declared_offset: Option<(f32, f32)>,
+    frame: (f32, f32, f32, f32),
+    content: Option<ContentBox>,
+) -> bool {
+    // 容差沿用 D9 既有值（1.5pt），不新調。
+    const TOLERANCE_PT: f32 = 1.5;
+    let (Some((dx, dy)), Some(cb)) = (declared_offset, content) else {
+        return false;
+    };
+    let (x, y, w, h) = frame;
+    w >= cb.w_pt
+        && h >= cb.h_pt
+        && (x - (cb.x_pt + dx)).abs() <= TOLERANCE_PT
+        && (y - (cb.y_pt + dy)).abs() <= TOLERANCE_PT
+}
+
 /// K25-B：釘定 `v:group` 子件框內文字的**逐框堆疊**發射（取代整組塌框頂）。
 ///
 /// 回 `true`＝本框已由本函數接管（呼叫端**不得**再呼叫 `emit_txbx_texts`，
