@@ -1576,7 +1576,7 @@ const editorCdn = createWordEditor({
 
 Quire 組件層的工具列**明確拒絕 CKEditor / TinyMCE 式「預設塞滿數十顆全功能假按鈕」的黑盒設計**。現行引擎處於極小子集階段，組件層工具列採**可組合三插槽制（Composable 3-Slot Architecture：`start` / `center` / `end`）**，並受以下三條硬性契約約束：
 
-1. **紅燈考卷鐵律（Red-Light Gate Rule）**：**「只有 K29 切片已實裝並完成持久化寫回閉環的 Mutation，才准進入預設工具列。」** 任何尚未在 [`WasmEngine`](../shells/web/src/lib.rs#L8-L77) 導出或尚未通過 [`docs/edit-api-design.md`](../docs/edit-api-design.md#L677-L794) §6 切片驗收閘門的功能，一律禁止出現在預設工具列中，絕不放置點擊無效或存檔遺失的裝飾性按鈕。
+1. **紅燈考卷鐵律（Red-Light Gate Rule）**：**「只有 K29 切片已實裝並完成持久化寫回閉環的 Mutation，才準進入預設工具列。」** 任何尚未在 [`WasmEngine`](../shells/web/src/lib.rs#L8-L77) 導出或尚未通過 [`docs/edit-api-design.md`](../docs/edit-api-design.md#L677-L794) §6 切片驗收閘門的功能，一律禁止出現在預設工具列中，絕不放置點擊無效或存檔遺失的裝飾性按鈕。
 2. **三插槽職責劃分（`start` / `center` / `end`）**：
    - `start` 插槽：負責檔案匯出（`file:download`）與歷史復原（`history:undo`、`history:redo`，待 `K29a` 落地後啟用）；
    - `center` 插槽：負責綁定 `K29MutationCode`（`M1.1`～`M6.4`）的文件變更控制項；在當下 `a6dadee` 基準線上，因為 `K29a` 尚未合入，**預設 `center` 插槽為空陣列 `[]`**；

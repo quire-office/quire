@@ -90,7 +90,7 @@ E_run_with_text   : LO pages=1 dr=5 im=0 text='...HOSTRUNVML文字框內容' | O
 F_vshape_in_run   : LO pages=1 dr=0 im=0 text='...下方為VML文字框：VML文字框內容' | OW ...
 ```
 
-**判讀**：LO 的開關唯一是「pict 是否被 `w:r` 包住」，與 wrap/absolute/形狀型別無關（D 證 wrap 救不回錯置；C/G 證合法包 run 後任何 wrap 都照畫）。F 另證 `#_x0000_t3` 占位型 LO 不繪外框但文字照抽——不同維度，非本缺口。
+**判讀**：LO 的開關唯一是「pict 是否被 `w:r` 包住」，與 wrap/absolute/形狀型別無關（D 證 wrap 救不回錯置；C/G 證合法包 run 後任何 wrap 都照畫）。F 另證 `#_x0000_t3` 佔位型 LO 不繪外框但文字照抽——不同維度，非本缺口。
 
 ### 1.4 引擎側對照
 
@@ -99,7 +99,7 @@ F_vshape_in_run   : LO pages=1 dr=0 im=0 text='...下方為VML文字框：VML文
 ### 1.5 E2 抑制處方（下游卡可直接 implements）
 
 - **缺口 E2**：`w:pict` 非 `w:r` 子節點時我方發射、LO 整棵忽略 → 反向多發（一框＋一段框內文字）。
-- **判別條件**：`DrawingParser` 增 `run_depth: usize`；`w:r` Start（含 `w:ins`/`w:hyperlink` 等 run-level 容器內仍 >0，自閉合不計，比照 `p_count` 口徑）時 `+=1`，End 遞減。`b"pict" if !empty` 分支僅 `run_depth > 0` 才起 pict 累積；`run_depth == 0` 的 pict 整棵走 `skip_tag` 幀。裸 `v:shape`（`w:object` 下 OLE 常態，drawing.rs:618 區）不经 pict，不受影響。
+- **判別條件**：`DrawingParser` 增 `run_depth: usize`；`w:r` Start（含 `w:ins`/`w:hyperlink` 等 run-level 容器內仍 >0，自閉合不計，比照 `p_count` 口徑）時 `+=1`，End 遞減。`b"pict" if !empty` 分支僅 `run_depth > 0` 才起 pict 累積；`run_depth == 0` 的 pict 整棵走 `skip_tag` 幀。裸 `v:shape`（`w:object` 下 OLE 常態，drawing.rs:618 區）不經 pict，不受影響。
 - **紅燈**：錯置 pict → display list 無 Rect/Rule/框內 Text；同一 pict 包 `w:r` → 照發（A 變體為正向對照）。`k4e2_txbx_emit` 迴歸鎖須仍綠。
 - **風險**：低。只收緊「無 run 父節點」一類；正常 Word 產出零擾動。
 
@@ -152,7 +152,7 @@ LO 'Order of injection' ×4（表格切片後各頁都有），我方 ×2
 LO delText fragments 抽樣: 全部 YES（LO 默認視圖照畫刪除線文字）
 ```
 
-**判讀（修正两次后的最终版）**：RC「發 3 次」不是缺陷——源檔真有 3 處，LO 也 3 次（其中一次以刪除線 'Chromatpgrams' 面目出現）。真缺陷有兩個，且方向相反：
+**判讀（修正兩次后的最终版）**：RC「發 3 次」不是缺陷——源檔真有 3 處，LO 也 3 次（其中一次以刪除線 'Chromatpgrams' 面目出現）。真缺陷有兩個，且方向相反：
 (a) **delText 處理不一致**：LO 默認視圖（showChanges）照畫刪除線文字——我方在多數位置照發（21/22 片段命中），**唯一例外**恰是該拆 run 段：同段 del+ins 併發時我方採 ins 丟 del（'Chromatpgrams' ×0 而 LO ×1）。語義應統一為「默認視圖 del+ins 都發」（LO 口徑），紅燈：'Chromatpgrams' 我方 ×0→×1。
 (b) **表格切片少發**：'Order of injection'（表頭，跨頁表格）LO 每切片頁重發共 4 次、我方只在首切片發 2 次。紅燈：該串我方 ×2→×4。
 另 p8/p9 近空頁（幽靈段 'Consider stage IV' 落孤兒頁）屬簇 A 容量缺陷的下游症狀，非獨立發射 bug。
@@ -178,7 +178,7 @@ LO fdo74605 全文 'knowledge'=5 'policy and'=0 ；全文可抽 chars: LO 2135 v
 
 **判讀（修正版）**：p1 的 184 行**全部**來自 mc:AlternateContent 的 SmartArt 標註（無 AC 剩 1 行；F 路徑也照發）。整份文件總量我方與 LO 相當（2097 vs 2135 chars，'knowledge' 雙方各 ×5），**非整檔雙發**；分岔在 p1 的**頁級集合**——LO 對放不下/溢出 connector 路徑的標註做裁切（'policy and' LO 全文 ×0 我方 ×2、'Strengthened Women' LO ×0 我方 ×0——LO 連 Fallback 都不取），我方把全部標註照發 → p1 內容順序與 token 流全亂（cs 0.309）。
 
-處方建議（下游卡）：SmartArt 標註發射前先做「標註矩形∩宿主占位框」裁切——超出宿主框/未繪 connector 錨點的標註不發（LO 默認視圖口徑）；短期替代：對 `wps:wsp` 標註按宿主框 clip 發射。紅燈：fdo74605 p1 可抽行 ≤140、'policy and' 不出現、p1 content ≥0.6。
+處方建議（下游卡）：SmartArt 標註發射前先做「標註矩形∩宿主佔位框」裁切——超出宿主框/未繪 connector 錨點的標註不發（LO 默認視圖口徑）；短期替代：對 `wps:wsp` 標註按宿主框 clip 發射。紅燈：fdo74605 p1 可抽行 ≤140、'policy and' 不出現、p1 content ≥0.6。
 
 ### 2.5 tdf129888dml / tdf130120（0.5＝1.0/0.0；LO2/我方 2）
 

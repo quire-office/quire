@@ -192,7 +192,7 @@ LO 真值對照（chart-size，`probe_lo_draw.py` 實抓 15 個 drawing）：
 - **L1 步進是「整數友好步進」**：從 `{1,2,5}×10^k` 取最小者使刻度數 ≤ 約 8（9.02/10.01/8.99 三檔皆吻合）。
 - **L2 下界**：資料 min ≥ 0 時下界＝0（10/10 檔成立）；負值本切片不處理（見 §5）。
 - **L3 上界＝ceil(有效上界 / step)×step**，其中「有效上界」= clustered 取 max(cache val)、
-  stacked/standard 取逐類別加總后的 max（SolarOverview/04/05/tdf82824 四檔 stack 律成立）。
+  stacked/standard 取逐類別加總後的 max（SolarOverview/04/05/tdf82824 四檔 stack 律成立）。
 - **L4 刻度數不固定**（4～8 個），故 L3 必須搭配「繪圖區高 → 可容納刻度數」的容量尺：
   chart-size（框高 102.2pt）給到 4、strict（框高較小）只給到 3——**同一資料、不同框高，刻度上界不同**。
   本切片以「每刻度最低 11pt 高」作容量尺（實據：chart-size 單位高 11.7pt），並在考卷只鎖

@@ -31,12 +31,12 @@
 | `xopt/TestFiles_RA001-Tracked-Revisions-01` | 6×(3162,2112,3696)×2 | 3 | 8970＝直屬和≠併入和 17940 | **6 頁**；幽靈態 raw [158.1,105.6,184.8]pt 收斂（舊歸一 k=0.5 灌水 7 頁） |
 | `xopt/TestFiles_RA001-Tracked-Revisions-02` | 同型 | 3 | 同型 | **6 頁**（同上） |
 | `poi/bug65738`（無 GridChange） | 2 欄用 2／2 欄用 2 | ＝欄數 | — | **非幽靈態**，零擾動旁證 |
-| `ooxmlexport/tdf104061` tbl2（無 GridChange） | 7 欄用 6 | 6 | 8052＝全欄和 | 舊路徑歸一恒等 ⇒ 截斷前後列寬逐位相同（display-list A/B diff=0），**非判別檔** |
+| `ooxmlexport/tdf104061` tbl2（無 GridChange） | 7 欄用 6 | 6 | 8052＝全欄和 | 舊路徑歸一恆等 ⇒ 截斷前後列寬逐位相同（display-list A/B diff=0），**非判別檔** |
 
 判別軸：§七表（raw 78 vs 歸一 39，LO 取 raw）與 RA001 兩檔（raw 節距＋6 頁）
 是「截斷＋跳過歸一」vs「截斷後仍歸一」的真判別檔。前稿引用的 bug65738
 「4 欄用 3、LO raw 117.4pt」與 tdf104061「歸一口徑更遠」**實測不成立**（前者
-實為 2 欄用 2 非幽靈表；後者舊路徑歸一恒等無從判别），worker 11/02 覆核後
+實為 2 欄用 2 非幽靈表；後者舊路徑歸一恆等無從判别），worker 11/02 覆核後
 已從本檔與程式碼註解剔除，改列零擾動旁證。PM 可對 `/mnt/c/Users/Public/k28/`
 下 LO 實轉 PDF 覆核。
 

@@ -5,7 +5,7 @@
 `get_image_rects()` 與 `get_drawings()` 框線，單位 pt。本報告只出現座標／計數，
 不含任何用戶檔內文、內嵌圖片或 docProps 值。
 
-## 1. 落點在哪一层（第一步實抓結論）
+## 1. 落點在哪一層（第一步實抓結論）
 
 ### 1.1 採集層（`core/ooxml/src/drawing.rs`）——無缺陷
 `pos_x_rel/pos_y_rel/pos_x_pt/pos_y_pt/pos_x_align/layout_in_cell/rel_height`
@@ -18,9 +18,9 @@ para=87 floating=true in_cell=false lic=true  xrel=column   yrel=paragraph
         xoff=6.3   yoff=45.1     xalign=None  → anchor{353.05, 419.575, Page, Page}
 ```
 
-座標值本身正確（extent 換算正確），**缺陷在下一层的「原點系」與「附掛頁」**。
+座標值本身正確（extent 換算正確），**缺陷在下一層的「原點系」與「附掛頁」**。
 
-### 1.2 真正落點＝兩处，缺一不可
+### 1.2 真正落點＝兩處，缺一不可
 
 | # | 落點 | 代碼位置 | 症狀 |
 |---|---|---|---|
@@ -29,18 +29,18 @@ para=87 floating=true in_cell=false lic=true  xrel=column   yrel=paragraph
 | C | **V 軸原點漏了框線與上內距** | `resolved_anchor` K10/K15 分支只取「格頂」，未加 `top 框線寬＋pad_top_pt` | LO 真值差 3.7–4.75pt（見 §3 律） |
 | D | **H 軸原點取格框左，未取欄內容盒** | 同上：`cell_x = margin_l + geom.0` | LO 真值＝格框路徑＋左內距，差 `half_border`（實測 1.0pt） |
 
-`core/engine-api/src/lib.rs` 對 `pos_y_pt/pos_x_rel` 確無第二处消費點（PM 假設成立），
+`core/engine-api/src/lib.rs` 對 `pos_y_pt/pos_x_rel` 確無第二處消費點（PM 假設成立），
 但它們已在 `table_map::resolved_anchor` 被換算進 `FloatingAnchor`——所以「零消費點」
 的描述要修正為：**換算了偏移，沒換算原點（A/C/D）與附掛頁（B）**。
 
 ### 1.3 另有座標覆寫的層（PM 要的第 3 點）
-- `build_images`（table_map.rs:1185）之後无人覆寫浮動圖座標；
+- `build_images`（table_map.rs:1185）之後無人覆寫浮動圖座標；
   `attach_floating_images` 是**唯一**把 `FloatingAnchor` 折成頁絕對座標的地方
   （三個呼叫點：lib.rs:1669／2390／2457）。
 - 發射層 `page_display_list` 只做「同原點配對」（K4c 像素池／K4e2 框文字），
   不改寫 x/y；**唯一**的例外是頁腳 CHRYSLER logo 的 +7.25/+3.60 特例
-  （lib.rs:2220 附近，尺寸＋位置双重命中才生效）與 F1 圖表的框內內縮，
-  兩者都不吃本卡路徑。→ 落點就是 A/B/C/D，不在 CellBlock／浮圖排序层。
+  （lib.rs:2220 附近，尺寸＋位置雙重命中才生效）與 F1 圖表的框內內縮，
+  兩者都不吃本卡路徑。→ 落點就是 A/B/C/D，不在 CellBlock／浮圖排序層。
 
 ## 2. 語料普查（`grep`/zipfile 實跑，非粗估）
 
@@ -145,7 +145,7 @@ V 軸加**整條**框寬、H 軸加**半條**，是 LO 實測的非對稱（K15 
 
 （卡面 §現象 寫的 `lic=0`、extent 2567305×1443990 EMU＝202.15×113.70pt、2 頁
 是**舊版檔案**的度量；現行 `/tmp/g1-fix/AI.docx`（md5 d8ab82da…、568,922B、我方 5 頁／
-LO 6 頁）經 `probe_parts.py` 逐 part 掃描，**無任何**該尺寸 anchor。考卷据此改寫。）
+LO 6 頁）經 `probe_parts.py` 逐 part 掃描，**無任何**該尺寸 anchor。考卷據此改寫。）
 
 ### 6.2 H 軸內容盒律 **對 lic=1 成立**（群體 10 枚逐條對 LO）
 
@@ -163,7 +163,7 @@ LO 6 頁）經 `probe_parts.py` 逐 part 掃描，**無任何**該尺寸 anchor�
 | tdf128646 #1 | 102.0×70.5 | +0.75 | **+0.25** | 收斂 0.50pt |
 | tdf128646 #2 | 51.0×24.8 | +61.45 | +62.45 | 微幅變差 1.0pt（LO 側為負座標佔位框，非真繪製） |
 | fdo77887 | 110.2×45.2 | +19.70 | +31.30 | **變差 11.6pt**（見下） |
-| tdf115094 | 11.6×12.5 | 0.00 | 0.00 | 零扰動 |
+| tdf115094 | 11.6×12.5 | 0.00 | 0.00 | 零擾動 |
 | tdf104061 ×2 | — | −410 | −405 | 我方欄起點本身就錯（欄數未消費），非本律 |
 
 `fdo77887` 變差**不構成回退證據**：LO 框 x=90.35，我方 BUGGY 已錯 +19.70、FIXED 錯

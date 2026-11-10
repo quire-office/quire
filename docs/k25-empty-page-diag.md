@@ -148,11 +148,11 @@ x 軸：LO TEXT1 x=70.9、TEXT2 x=394.5；我方全部 93.0。
 ### 6.2 模型（LO 六組資料集擬合，最差殘差 0.202pt；scratch `model_final.py`）
 - **組框映射**：`CoordFrame` 線性映射 coord→extent（既有 `map`），宿主框按
   `mso-position-*-center/relative:page|margin` 釘頁心；子件 y ＝組頂＋top 映射。
-- **框內堆疊**：每子件独立起點＝框頂＋邊距；逐段 pitch＝`size × face_line_factor`
+- **框內堆疊**：每子件獨立起點＝框頂＋邊距；逐段 pitch＝`size × face_line_factor`
   （K6 auto-pitch 同口徑）、基線 ALP＝`face_baseline_ratio × line_factor × size`
   （hhea 實測 asc/(asc+|desc|)，缺 face 退 Liberation Serif 實測值，零虛構）。
 - **空段**：中段的空段吃 docDefaults 字級；**只有最後一段**空段繼承最後有字段
-  字級（LO quirk，V5 實測 4.6pt 漂移的元凶）。
+  字級（LO quirk，V5 實測 4.6pt 漂移的元兇）。
 - **右/居中對齊位移**：全大寫串的量寬走 K7 `A_upper` 軌（`face_advance_scale_caps`，
   **取代**混合樣本折中尺、不疊乘）。TEXT2 48pt：LO advance＝541.10−394.5＝146.60
   ＝Liberation Serif 實測 146.62；折中尺 133.98 會把整串推向邊界外側 12.6pt。

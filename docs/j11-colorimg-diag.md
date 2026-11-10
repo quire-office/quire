@@ -204,7 +204,7 @@ flowchart TD
 </wps:wsp>
 ```
 
-#### 2.3.3 根因判定與雙重病灶分析
+#### 2.3.3 根因判定與雙重病竈分析
 本檔是極其典型的「**真缺陷引發度量偽影**」複合案例：
 1. **色彩軸 0.0（我方真缺陷：樣式繼承鏈缺失）**：
    - `core/ooxml/src/drawing.rs` 完全不解析 `<wps:style>` 或 `<a:fontRef>`（全文搜尋 `fontRef` 為 0 處）。
@@ -311,7 +311,7 @@ flowchart TD
 
 ### 🥇 Top 1：形狀／文字框填色鏈路修復（含空文字框與表內文字框）
 - **影響範圍**：全 corpus 涉及 VML / WPS 形狀底色、儲存格內文字框、空形狀色塊的數十檔文件（如 `testfdo90720`、`WC048-Text-Box-in-Cell`、`fdo68607`）。
-- **缺陷病灶**：
+- **缺陷病竈**：
   1. `core/engine-api/src/lib.rs:628` 之 `shape_boxes` 過濾器以 `!im.txbx_texts.is_empty()` 粗暴排除空文字框，致使無字色塊形狀之 `fill_argb` 全數丟失、退化為 `0xFFF0F0F0` 佔位灰。
   2. 表內文字框因格寬鉗制或鎖點匹配失敗，回退佔位灰。
 - **修復規格**：
@@ -321,7 +321,7 @@ flowchart TD
 
 ### 🥈 Top 2：DrawingML / VML 文字框巢狀圖片與子圖元支援
 - **影響範圍**：現代 DOCX 文檔常見之封面框、卡片式設計、圖文混排卡（如 `dml-picture-in-textframe`、`fdo61343`）。
-- **缺陷病灶**：
+- **缺陷病竈**：
   1. `core/ooxml/src/drawing.rs:1513` 在形狀進行中遇到 `b"drawing"` / `b"pict"` 無條件啟用 `skip_tag` 吞沒。
   2. `Paragraph` 資料結構之 `txbx_texts: Vec<String>` 缺乏子圖元容器。
 - **修復規格**：
@@ -331,7 +331,7 @@ flowchart TD
 
 ### 🥉 Top 3：形狀樣式 `<wps:style><a:fontRef>` 字色級聯繼承
 - **影響範圍**：大量使用 Word 預設形狀樣式之圖文框（如 `tdf153791` 及各類標註文字框）。
-- **缺陷病灶**：`drawing.rs` 完全未解析 `<wps:style>`，致使形狀內部 run 缺乏 `<w:color>` 時無法取得樣式定義的字色（如紅色 `#FF0000`），錯誤回退至文檔預設黑字。
+- **缺陷病竈**：`drawing.rs` 完全未解析 `<wps:style>`，致使形狀內部 run 缺乏 `<w:color>` 時無法取得樣式定義的字色（如紅色 `#FF0000`），錯誤回退至文檔預設黑字。
 - **修復規格**：
   - `core/ooxml/src/drawing.rs`：新增 `wps:style` 之解析，記錄 `fontRef` 字色。
   - `core/ooxml/src/document.rs`：段落 run 級聯樣式時，將宿主形狀之預設字色作為備選回退層。

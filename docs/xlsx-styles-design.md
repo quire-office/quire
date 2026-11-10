@@ -396,7 +396,7 @@ pub struct EffectiveNumFmt {
   - 若 `days == 0`：純時間值（無有效公曆日期）。
   - 若 `1 <= days <= 59`：公曆日期為 `1900-01-01 + (days - 1) 天`。
   - 若 `days == 60`：**幻影閏日（1900-02-29）**。真實日曆庫（如 Rust `chrono::NaiveDate`）無法解析此日，必須誠實回報 `DateSerialError::PhantomLeapDay1900`。
-  - 若 `days >= 61`：因序號 60 占據了一天不存在的額外計數，公曆日期為 `1900-01-01 + (days - 2) 天`。
+  - 若 `days >= 61`：因序號 60 佔據了一天不存在的額外計數，公曆日期為 `1900-01-01 + (days - 2) 天`。
 
 ### 3.3 1904 系統（Mac Excel 傳統）與 windowing 切換
 當 `xl/workbook.xml` 的 `<workbookPr>` 標籤中宣告 `date1904="true"` 或 `date1904="1"` 時（ECMA-376 Part 1 §18.2.27），活頁簿切換為 **1904 日期系統（1904 Date System）**：

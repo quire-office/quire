@@ -1,10 +1,10 @@
-# F2 紅燈報告：`a:prstGeom/@prst` 未消費（非矩形形状全畫成外接矩形）
+# F2 紅燈報告：`a:prstGeom/@prst` 未消費（非矩形形狀全畫成外接矩形）
 
 工作樹：`wt/t_ab254070`（基線 main `f6f83bf`）
 考卷：`core/engine-api/tests/f2_wordart_projection.rs`（單一 suite，`F2_GEOM_BUGGY` 回塞鎖）
 報告日期：2026-11-07
 
-本報告每一條數字都由本卡實際跑過的指令支撑（指令見 §5），無一筆來自推測。
+本報告每一條數字都由本卡實際跑過的指令支撐（指令見 §5），無一筆來自推測。
 
 ---
 
@@ -31,7 +31,7 @@ run 的自報，探針 `docs/f2-survey/f2v1_verify.py` 口徑），實測：
 
 前次解剖（§5.4）＋本卡普查復證：全語料本體 part `prstGeom` 590 次、**非 rect 195 次／約 25 檔**，
 但 `@prst` 屬性在 `core/ooxml/src/*.rs` 實作路徑零消費（`b"prst"` 全庫 `grep` 於實作檔 0 命中），
-所有非矩形形状一律退化為外接矩形（1 `Rect` ＋ 4 條軸對齊 `Rule`）。這是真實、可見、可量測的缺陷
+所有非矩形形狀一律退化為外接矩形（1 `Rect` ＋ 4 條軸對齊 `Rule`）。這是真實、可見、可量測的缺陷
 （圓畫成方塊、星形畫成方塊、箭頭畫成方塊），比 WordArt 更貼近卡面原始意圖。
 
 拍紅實測（`cargo test -p quire-engine --test f2_wordart_projection`，基線 `f6f83bf`）：
@@ -49,7 +49,7 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
 燈1a（發射非空）在 suite 內先通過（未 panic 即綠），燈1b 第一條斷言即紅——本卡唯一硬性合格線
 （不準發射空白）由燈1a 守住，真實缺口紅燈由燈1b 拍板。
 
-判別式：**非軸對齊筆畫**。外接矩形退化態的四條邊恒 `x1==x2` 或 `y1==y2`；星形／三角形／橢圓／
+判別式：**非軸對齊筆畫**。外接矩形退化態的四條邊恆 `x1==x2` 或 `y1==y2`；星形／三角形／橢圓／
 連接線的邊是斜的（`x1≠x2 且 y1≠y2`）。修前三檔斜筆畫實測 **全 0**。
 
 ## 2. 我方退化態 vs LO 真值（逐檔實抓）
@@ -79,7 +79,7 @@ LO 的星形頂點已逐點入 `core/ooxml/src/preset.rs` 的星形點表校準�
 
 ## 3. 燈2（prst／warp 名稱逐字比對源檔）現況＝紅（佔位實作）
 
-`shape_geom_facts()` 紅燈佔位實作恒回全 `None`（忠於「`@prst` 從未被讀取」的現況），
+`shape_geom_facts()` 紅燈佔位實作恆回全 `None`（忠於「`@prst` 從未被讀取」的現況），
 燈2 與燈3a 因此在佔位態即紅。綠燈 commit 由 `InlineImage.geom_prst`／`warp_prst` 欄位落地翻綠。
 
 燈2 用 `ZipBundle::open(...).entry(...).decoded()` 在測試內**直接解源 zip** 抓 `@prst`，
@@ -132,7 +132,7 @@ f2_wordart_projection` 全綠。逐燈實測：
   sha256 全部相同；`f2v17_noregress.py` 對修前基線 `f2_baseline_shapes.json`：
   rect-only 檔（artistic_effects／fdo80897／tdf120551）SVG sha **零位元組差異**，
   四個非 rect 檔（fdo74605／tdf113258／tdf113183／shapes-with-text）刻意改變（預期）。
-  `tdf120551`（roundRect＋line）零位移的原因實拆（f2v19）：該檔形状從不進
+  `tdf120551`（roundRect＋line）零位移的原因實拆（f2v19）：該檔形狀從不進
   `shape_boxes` 發射路徑（p0 僅發 Text），新分支對其天然不可達＝誠實零擾動。
 - **render_lab 具名閘門全過**（本分支實跑）：fdo76591 內容 0.98／版面 1.000、
   WC048 1.0/1.0、btlr-textbox 1.0/1.0（直排 rotate 零回退）、99_Fields 1.0/1.0、

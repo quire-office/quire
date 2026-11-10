@@ -24,7 +24,7 @@ K8-shd 級聯（`core/engine-api/src/table_map.rs`）只提取 `w:tcPr/w:shd`
 `w:tblLook` 六旗標、排除特殊列的 1-based 帶序、欄序知識閘）、同一個
 ECMA-376 §17.4.75 優先序（`COND_PRIORITY`：firstRow < lastRow < firstCol
 < lastCol < band1Horz < band2Horz < band1Vert < band2Vert < 四角），
-逐條件獨立查（某條件未宣告字色＝續下一条，非整條件覆蓋——與 K8 底色
+逐條件獨立查（某條件未宣告字色＝續下一條，非整條件覆蓋——與 K8 底色
 逐屬性級聯同款）。優先序末端：
 
 ```
@@ -37,7 +37,7 @@ ECMA-376 §17.4.75 優先序（`COND_PRIORITY`：firstRow < lastRow < firstCol
 1. **解析**（`core/ooxml/src/styles.rs`）：`parse_tbl_style_pr_shd` 重構為
    `parse_tbl_style_pr`——同棵 `tblStylePr` 子樹共吃 `w:tcPr/w:shd` ＋
    **直系** `w:rPr`（只留色彩三態 color／color_set；`w:pPr/w:rPr` 是段落
-   標記語意，不混收）。新欄 `OwnStyle::cond_color` ＋公开查表
+   標記語意，不混收）。新欄 `OwnStyle::cond_color` ＋公開查表
    `table_style_cond_color(id, cond)`（basedOn 鏈）＋ `has_cond_color()`
    （開檔快路）。`w:color val="auto"` 維持三態（color_set 真、color
    None＝明確黑），由 engine 端落地 `0xFF000000`。
@@ -55,7 +55,7 @@ ECMA-376 §17.4.75 優先序（`COND_PRIORITY`：firstRow < lastRow < firstCol
    `r.color`→DrawItem::Text.color_argb；`cell_run_spans` 併段鍵含
    color_argb 自然吸收新色）。
 
-回塞鎖：`K22_COND_COLOR_BUGGY=1`＝查表层整滅（條件色回黑；直接色路徑
+回塞鎖：`K22_COND_COLOR_BUGGY=1`＝查表層整滅（條件色回黑；直接色路徑
 不動——機制分離）。`K8_SHD_BUGGY=1`（底色回塞）不受本卡影響。
 
 ## 3. 紅燈（`core/engine-api/tests/k22_conditional_color.rs`，6 test）
@@ -104,7 +104,7 @@ firstCol/lastCol FFFFFF 族、band 族 auto 等）。這 22 檔的格內文字�
 
 - `w:tcPr/w:rPr`（Word 2013+ 儲存格級 run 屬性）不存在於本層契約——
   直接 tcPr 字色走 run 直接格式既有路徑，本卡未新增 tcPr 級直接色
-  （corpus 無活例，不虚構）。
+  （corpus 無活例，不虛構）。
 - 條件粗體／底線（同 rPr 的 b/i/u 欄）本卡不收（卡面只要求字色軸；
   fdo68607 表頭的 `<w:b/>` 條件粗體未落地，留給後續卡——紅燈面零影響：
   LO 表頭字重與我方現狀一致由直接格式承擔）。

@@ -70,7 +70,7 @@ test result: FAILED. 1 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out
   （`OdtView::from_bundle` 走真實 D1 發射層，1 頁），右邊是殼（0 頁）。這條同時
   反證兩件事：核心發射層本來就是綠的（D1 已收案，本卡不動）、殼層確實漏了東西。
 - 燈 5（老實報錯鎖）：紅在「加密檔竟構造成功（頁數 0）」——這正是 ODF-E1 教訓點名的
-  禁止形態：加密檔被降格成**靜默空白視圖**，而不是明確報錯。佔位殼把这条假綠抓出來了。
+  禁止形態：加密檔被降格成**靜默空白視圖**，而不是明確報錯。佔位殼把這条假綠抓出來了。
 - 燈 7（DOCX 零回退鎖）：**仍綠——正確**。它守的是 `WasmEngine`（DOCX 線）在本卡
   動過 `lib.rs` 後的欄位契約，佔位殼與它無關，本該綠。若它在空殼下也紅，代表它混入
   了 ODT 斷言、失去獨立守門價值（同 D1 燈 4 的分工邏輯）。
@@ -114,11 +114,11 @@ test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
   （演算法 Blowfish CFB），本引擎不實作解密…
 ✓ 垃圾位元組落「開啟失敗」口徑
 ✓ DOCX 線零回退：2 頁 / 41 顯示項
-✓ ODF-D2 wasm 端考卷全綠（實際產物＋playground 取数序列）
+✓ ODF-D2 wasm 端考卷全綠（實際產物＋playground 取數序列）
 ```
 
 「JS 端零改」的證據就在這：腳本逐字重播 `quire-www/public/playground/playground.js`
-的取数序列（`page_count` → `page_display_list_json(page)` → `JSON.parse` →
+的取數序列（`page_count` → `page_display_list_json(page)` → `JSON.parse` →
 `width_pt`/`height_pt` 算縮放 → 逐項讀 `Text.{x,y,size_pt,flags,color_argb,text}`
 → `paper_json` 七鍵 → `is_settled`/`reflow_step_json`），對 ODT 直接跑得通，
 繪圖碼一行不用動。站端唯一需要的是**入口分支**（odt 檔名→`new WasmOdtView`
@@ -207,7 +207,7 @@ JS 端 `err.message` 直接可秀。
 1. **錯誤型別用 `String` 而非 `JsError`**：`JsError::new` 是 wasm-bindgen import，
    非 wasm target 呼叫即 panic（實測：`cannot call wasm-bindgen imported functions
    on non-wasm targets`）。用 `String` 後，加密／垃圾位元組的**錯誤路徑考卷**能在
-   host target 跑（燈 5），JS 端語義不變——wasm-bindgen 把 `Err(String)` 抛成
+   host target 跑（燈 5），JS 端語義不變——wasm-bindgen 把 `Err(String)` 拋成
    `Error`，`err.message`＝原字串，playground.js 現行的 `err.message || String(err)`
    兩條口徑都吃得下（實測於 3.2）。
 2. **零頁守門**：構造期若 `page_count()==0` 直接 `Err`。實測依據：空投影

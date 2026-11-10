@@ -40,7 +40,7 @@ PM 前情提及「同檔其他 WPS 文字框（頁首『Box set』等）有發�
 | **H2** | **是否在表內（該檔主體是一張大表）——表內 floating frame 支援缺口？** | **是<br>(主根因)** | **確認為本次缺陷的核心架構斷鏈。**<br>詳見第 4 節「完整故障鏈剖析」。表內浮動錨點（`wp:anchor`）因身處 `<w:tc>` 內，被解析層標記 `in_cell=true`，進而被正文流剔除、誤灌入表格單元格串列，並遭格寬強制裁剪至 115.0 pt，引發發射端尺寸精確比對失敗，文字發射函式從未被呼叫。 |
 | **H3** | 是否 anchor 錨定物件消失（如錨定到 first-page 專屬段落）？ | **否** | 宿主段落 Row 1 Cell 0（`p1` "Acting area"）在版面流與顯示列表中正常存在並完成渲染，錨定宿主未消失。 |
 | **H4** | WPS 框的 `distT/distB` 或 rot/flip 屬性炸掉解析？ | **否** | `drawing.rs` 對 `distT="0" distB="0"` 與 `rot="0"` 均能穩定略過或正確吸收，`read_images` 成功產生 `InlineImage` 幾何，未引發解析崩潰或早退。 |
-| **H5** | 與 R3（VML absolute placement）路徑的關係：WPS 與 VML 是兩條管線，封面框走 WPS 那條是否根本没掛進 p0 版面流？ | **是<br>(次要)** | Choice（WPS）與 Fallback（VML）在 `drawing.rs` 遵循「Choice 優先、Fallback 吞沒」策略。兩條管線在表內均受制於相同的 `in_cell=true` 機制，致使無論 WPS 還是 VML，皆無法掛入頁面浮動層。 |
+| **H5** | 與 R3（VML absolute placement）路徑的關係：WPS 與 VML 是兩條管線，封面框走 WPS 那條是否根本沒掛進 p0 版面流？ | **是<br>(次要)** | Choice（WPS）與 Fallback（VML）在 `drawing.rs` 遵循「Choice 優先、Fallback 吞沒」策略。兩條管線在表內均受制於相同的 `in_cell=true` 機制，致使無論 WPS 還是 VML，皆無法掛入頁面浮動層。 |
 
 ---
 
@@ -159,7 +159,7 @@ flowchart TD
   ```
   改為：
   ```rust
-  // 只有非浮動的 inline 圖形才視為占用格內流的 in_cell；
+  // 只有非浮動的 inline 圖形才視為佔用格內流的 in_cell；
   // 浮動 anchor 即令錨在儲存格段落，仍走頁面浮動層定位管線
   let in_cell_flow = self.tc_depth > 0 && !floating;
   let mut p = Pending::new(self.cur_para(), in_cell_flow);
