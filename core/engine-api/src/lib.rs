@@ -3820,21 +3820,20 @@ fn emit_txbx_texts(
     let old_style = inset.is_none();
     // 判定對**框內矩形**（txbx_rect 映射後）做，與舊字面量臂同尺。
     let is_fullscreen_frame = is_page_covering_frame(cover_facts, (bx, by, bw, bh));
-    let cover_content = if is_fullscreen_frame {
-        cover_facts.content
-    } else {
-        None
-    };
+    // D9b 欠債三（置中軸）：滿版框的**左右**內縮對稱＝`線寬＋LO 框內建內縮`。
+    // 反事實實測（scratch `probe_center_cf.py`，LO 25.8，逐變體各改一軸）：
+    // `mso-width:4pt→8pt` ⇒ 置中三件（`World Class…` span／495.75pt 寬圖／
+    // IMPORTANT NOTICE 色塊）中心位移 **+0.00**，而左緣文字照動 +4.00pt
+    // ⇒ 內文行盒恆關於**宣告框盒中心**對稱（LO 真值中心 305.55／305.575
+    // ＝ bx + bw/2＝22.05 + 567/2）；舊臂 `inset_r = 3.0`（fdo76591 抄來）把行盒
+    // 中心拉到 303.35，置中件整體偏 LO 2.20pt。左右同式 ⇒ 零檔案常量。
+    // 上下軸**不**對稱（底邊口徑另由 D8 頁腳錨定校準），照舊不動。
     let [inset_l, inset_t, inset_r, inset_b] = inset.unwrap_or(if is_fullscreen_frame {
         let stroke_w = shape
             .and_then(|b| b.stroke_width_pt)
             .unwrap_or(IMAGE_PLACEHOLDER_RULE_PT);
-        [
-            stroke_w + LO_VML_TEXTBOX_BUILTIN_INSET_PT,
-            stroke_w,
-            3.0,
-            0.0,
-        ]
+        let side = stroke_w + LO_VML_TEXTBOX_BUILTIN_INSET_PT;
+        [side, stroke_w, side, 0.0]
     } else {
         [3.0, 4.0, 3.0, 0.0]
     });
@@ -3844,19 +3843,20 @@ fn emit_txbx_texts(
         // R6：DrawingML 標註無 VML inset 宣告時，LO 以近整框寬排字
         // （fdo74605 實據）；不再套 3pt 硬內縮，斷行才與 LO 對齊。
         (bw - 2.0).max(10.0)
-    } else if old_style {
-        if let Some(cb) = cover_content {
-            // D8：正文可用寬度必須 ≤ 外框（VML 大框 567pt 內緣 587.05pt）與
-            // section 版心寬取小者，避免行寬算到框緣外導致「FOLLOWING」被裁切。
-            // D9b 欠債三：版心寬改由該頁 `page_content_box`（pgSz−pgMar）推導，
-            // 取代字面量 `540.5`（fdo76591 推導真值＝612−36−36＝540.0）。
-            let frame_inner_right = bx + bw - 2.0;
-            let frame_w = frame_inner_right - inner_x;
-            frame_w.min(cb.w_pt).max(10.0)
-        } else {
-            (bw - 6.0).max(10.0)
-        }
+    } else if old_style && !is_fullscreen_frame {
+        (bw - 6.0).max(10.0)
     } else {
+        // D9b 欠債三（行寬軸）：滿版框的行寬＝**框寬減左右內縮**（與有宣告
+        // `v:textbox/@inset` 時同式，零檔案常量）。取代兩件舊字面量：
+        //   * `540.5`（D8 殘留的 section 版心寬掐制）——反事實否決：
+        //     `mso-width:567→400pt` 變體下 LO 正文行寬由 540.58 縮到 **349.62**
+        //     （scratch `probe_wrap_cf.py`），行寬**跟框走**；且 base 最長正文行
+        //     實測 540.58pt **已越過**版心寬 540.0pt ⇒ LO 根本沒按版心掐。
+        //     舊掐制的動機（「FOLLOWING」穿框被裁）是**行寬算到框緣外**
+        //     （舊臂 553.7pt）造成的假症，對稱內縮後框內緣即上界，不需外來常數。
+        //   * `bw - 2.0`（右緣硬內收 2.0）——同理由由宣告線寬取代。
+        // 副作用（往 LO 收斂）：置中件的行盒中心由 303.35 回到 **305.55**
+        // ＝宣告框盒中心（LO 真值 305.552／305.575，Δ≤0.03）。
         (bw - inset_l - inset_r).max(10.0)
     };
     let inner_h = (bh - inset_t - inset_b).max(0.0);
