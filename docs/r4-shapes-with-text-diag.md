@@ -240,7 +240,7 @@ R4PROBE runs: t="An ellipse with text inside" nruns=1
 - 禁 commit/push/checkout/reset/stash（主 checkout）：全部構建走 scratch
   worktree（`git worktree add --detach`）＋獨立 CARGO_TARGET_DIR；主 checkout
   與 worker worktree 未動（未 push）。探測用 examples/eprintln 埋點只存在於
-  scratch 克隆，不入库。
+  scratch 克隆，不入庫。
 - 禁往 corpus/ 放新檔：未放（測試用檔直接引用既有 corpus 檔）。
 
 ## 7. 可重跑腳本路徑（scratch，24h 後可能被清）

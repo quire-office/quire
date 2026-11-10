@@ -39,7 +39,7 @@ apply_shading_transform` 的 corpus 校準式），不是 K19 duotone 的線性�
 `#030e13` 逐位零誤差）。
 
 **落點判定（三選一）**：ooxml 解析丟。全 repo grep `fillRef` 於改動前零命中
-＝樣式矩陣解析鏈從未存在；layout／渲染 emit 下游本来就会消费 fill_argb
+＝樣式矩陣解析鏈從未存在；layout／渲染 emit 下游本來就会消费 fill_argb
 （K12 鏈就在那），上游沒送貨。
 
 ## 2. 修法（`core/ooxml/src/drawing.rs`）
@@ -66,7 +66,7 @@ apply_shading_transform` 的 corpus 校準式），不是 K19 duotone 的線性�
   「`with_theme()` 讀一次 env」先例，熱路徑零 env 查詢）。
 
 `DrawItem` 無橢圓／星形圖元型別，且 render-trait／shells 不在本卡白名單——
-填色以 **Rect 發射**（色軸按 24-bin 色直方圖計分，形状差屬渲染基元缺口，
+填色以 **Rect 發射**（色軸按 24-bin 色直方圖計分，形狀差屬渲染基元缺口，
 另立新卡；LO 真值是橢圓／星形／箭頭輪廓）。
 
 ## 3. 紅燈全綠（先紅後綠實錄）
@@ -102,7 +102,7 @@ base vs 本支＝零差異（見 completion metadata）。
 
 ## 5. 已知殘差（留口徑，不掩蓋）
 
-1. **形状基元缺口**：橢圓/星形/三角形以 Rect 發射（render-trait 無 path 圖元；
+1. **形狀基元缺口**：橢圓/星形/三角形以 Rect 發射（render-trait 無 path 圖元；
    白名單外）。跟進卡：DrawItem 增 `Ellipse`/`Path` ＋ SVG 端發射 → 該檔色分
    0.632 還有上空間（LO 橢圓面積僅外切矩形的 ~78.5%）。
 2. **群組 z 序**：群組子形與宿主框內文字的重疊序（LO 箭頭壓過 star5 之間），

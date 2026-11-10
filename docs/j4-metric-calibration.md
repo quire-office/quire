@@ -156,7 +156,7 @@
 ### 4.1 缺陷現象與根本原因
 1. **現象**：
    `EquationWithAboveAndBelowCaption.docx` 與 `EquationAsScientificNumbering.docx` 在 J3/J4 度量中分別呈現 12 與 7 個真缺字（如 `x+a`, `n`, `k=0`, `k)x`, `n−k` 等），版面相似度低至 0.294。
-2. **病灶走查**：
+2. **病竈走查**：
    - 查 `core/ooxml/src/document.rs`：現行解析管線遇 `w:p` 時，若內部包含 `m:oMath` 節點，僅簡單抓取子標籤 `<m:t>` 的文字內容，忽略所有數學結構節點。
    - 包含分數 `<m:f>`（分母 `m:den` / 分子 `m:num`）、求和/極限 `<m:nary>`（下限 `m:sub` / 上限 `m:sup`）、上下標 `<m:sSup>` / `<m:sSub>`、括號定界符 `<m:d>` 皆未建立 AST。
    - 更致命的是：多個 `<m:t>` run 串接時連空白都未保留，直接在 AST 壓成單一無空格字串 `x+an=k=0nnkxkan-k`。排版引擎將其視為一般純文字，無法進行 2D 方塊堆疊。

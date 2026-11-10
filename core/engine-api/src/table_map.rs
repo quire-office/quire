@@ -1387,6 +1387,10 @@ pub fn build_images(
                 // 發射層據此定位框內圖，不再對單一檔案座標做字面量比對。
                 txbx_inset: im.txbx_inset,
                 txbx_content_pic: im.txbx_drawing_extent.is_some(),
+                // D9b 欠債三：VML 宣告偏移原值（`margin-left`／`margin-top`）原樣
+                // 搬到排版層，發射層的滿版判定式據此推導（`22.05` 不再是常量）。
+                pos_x_pt: im.pos_x_pt,
+                pos_y_pt: im.pos_y_pt,
             }
         })
         .collect();

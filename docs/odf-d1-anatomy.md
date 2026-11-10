@@ -62,7 +62,7 @@ z 序＝push 序（非文字組先、文字項後；`sort_display_items` 約定�
 ## 三、發射面覆蓋（本切片＝只發文字項，其余記帳 D1b）
 
 發：`Text`（逐 run 同質段）。
-不发（逐項寫死在 `display.rs` 檔頭＋考卷燈 1 的變體斷言，**不準偷偷擴張**）：
+不發（逐項寫死在 `display.rs` 檔頭＋考卷燈 1 的變體斷言，**不準偷偷擴張**）：
 `Rect`（含分頁框）、`Rule`（含段落框線）、`Image`、頁首尾、註腳、表格、嵌入物件
 （E2e 的 `object_paragraphs` 是**獨立帳**，本切片不消費——物件文字無宿主頁內座標，
 發它必須先有錨點幾何，屬 D1b）。
@@ -72,8 +72,8 @@ z 序＝push 序（非文字組先、文字項後；`sort_display_items` 約定�
 **從不**把紙邊發成 `Rect` 項（真實 dump 的 `Rect` 只來自表格底圖與圖片佔位）。
 跟著發一個滿頁 `Rect` 會（a）與 DOCX 線發射口徑不一致、（b）蓋掉渲染端自己的
 紙面樣式、（c）在 render_lab 內容軸憑空多出 1 項。故本卡「分頁框」的實作＝
-**頁層 `width_pt`／`height_pt` 欄位**（渲染端據此画框），非 `Rect` 項。此為對卡面的
-一处**主動收窄**，寫明在此供 PM 裁。
+**頁層 `width_pt`／`height_pt` 欄位**（渲染端據此畫框），非 `Rect` 項。此為對卡面的
+一處**主動收窄**，寫明在此供 PM 裁。
 
 ## 四、幾何同源性（發射器不得自烤座標）
 
@@ -97,11 +97,11 @@ z 序＝push 序（非文字組先、文字項後；`sort_display_items` 約定�
 |---|---|---|
 | **A（擇此）** odf → `quire-render-trait` | 新邊，但 render-trait 是契約**定義處**（`core/render-trait`：零 core 依賴、只吃 serde；CI 已把它與 quire-odf 並列入 wasm32 雙目標閘門） | 向下的「契約型別」依賴，非跨線借模型。`layout_glue` 鐵律禁的是 **`quire_ooxml::Paragraph`（DOCX 內容模型）**，本邊不碰 ooxml 半字。零複製、零同步成本，兩線 JSON 由同一 `serde` derive 決定，**結構性不可能各烤一套** |
 | B odf 內另定義同 schema 的 serde 結構 | 零新邊 | 兩套型別靠人工同步，正是卡面要防的「各烤一套欄位」；且 `DrawItem` 有 4 變體＋serde default 細節，複製即腐化。**拒** |
-| C `PageDisplayList` 下沉到更底 crate | 移動既有型別 | 無需——它已经在最底層（只依賴 serde）。**多餘動作，拒** |
+| C `PageDisplayList` 下沉到更底 crate | 移動既有型別 | 無需——它已經在最底層（只依賴 serde）。**多餘動作，拒** |
 | D odf → `quire-engine`（engine-api） | **向上**邊 | 違反 `check-layering.sh` 精神（core 不得依賴 shell/engine；engine 在 `CORES` 清單內），且會把 ooxml 模型拖進 odf。**拒** |
 
-`quire-odf` 新增 `serde_json`（normal 依賴）：只为序列化輸出（`display_list_json`／
-`dump_display_lists_json`）。卡面「不准用字串拼接造 JSON」照辦——輸出型別就是契約
+`quire-odf` 新增 `serde_json`（normal 依賴）：只爲序列化輸出（`display_list_json`／
+`dump_display_lists_json`）。卡面「不準用字串拼接造 JSON」照辦——輸出型別就是契約
 型別，`serde_json::to_string(&PageDisplayList)`，考卷附加鎖做 round-trip
 （`serde_json::from_str::<PageDisplayList>` 還原後與原結構 `assert_eq`），拼接無法過此鎖。
 
@@ -119,7 +119,7 @@ odf→render-trait 這條新邊，若閘門不-cover 它，日後有人從 odf �
 - `Engine` 的建構面是 docx 中心（`from_docx_bytes`／`from_docx_bytes_with_paper`），
   內部持有 `LayoutEngine`＋`paras_eff`（run 級可編輯投影）＋CRDT 失效事件流。ODT
   目前**唯讀投影**（無 run 級可編輯模型、無 rels、無 styles part 級回寫），硬塞進
-  `Engine` 会得到一個「只能讀的 Engine」——半個契約、兩條極性，比不加更壞。
+  `Engine` 會得到一個「只能讀的 Engine」——半個契約、兩條極性，比不加更壞。
 - 替代方案（已做）：`OdtView`（`core/odf/src/display.rs`）——開檔一次、投影一次、
   分頁一次，暴露 `page_count()`／`page_display_list_json(page)`／`dump_json()`／
   `paragraph_count()`／`total_text_len()`／`params()`。wasm 邊只需 `bytes`，零 fs。

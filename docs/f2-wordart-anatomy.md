@@ -4,16 +4,16 @@
 實作基線：`target/debug/quire-cli`（本分支編譯產物）
 報告日期：2026-11-06
 
-本報告每一條結論都由本卡實際跑過的指令支撑（指令與輸出附於各節），無一筆來自推測。
+本報告每一條結論都由本卡實際跑過的指令支撐（指令與輸出附於各節），無一筆來自推測。
 
 ---
 
 ## 0. 結論先行（三句話）
 
 1. **卡面前提不成立**：`corpus/ooxmlexport/artistic_effects.docx` 的 `word/document.xml` 內
-   `prstTxWarp`／`wordArt`／`prstGeom`（非 rect）／`bevelT`／`softEdge`／`glow`／`effectLst` **出現次數全為 0**——本檔根本沒有 WordArt、也沒有任何形状效果節點。卡面自附的普查指令在本檔回 0（實測見 §2）。
+   `prstTxWarp`／`wordArt`／`prstGeom`（非 rect）／`bevelT`／`softEdge`／`glow`／`effectLst` **出現次數全為 0**——本檔根本沒有 WordArt、也沒有任何形狀效果節點。卡面自附的普查指令在本檔回 0（實測見 §2）。
 2. **「我方整幅空白」不成立**：本檔我方出貨 SVG 實測 **19,819 個非白像素**（150dpi），LO 側只有 **899 個彩色像素**；頁面上兩張內嵌 PNG 我方已正確發射。**圖軸 0.0 的真正成因是 EMF 向量圖（OLE 圖示）未光柵化**，與 WordArt／preset 無關。
-3. **根因落在禁改面**：要让本檔圖軸脫 0，必須（a）實作 EMF 向量記錄直出（`core/ooxml/src/emf_dib.rs` 的 K27 閘門，**本卡白名單未列**）或（b）放寬 J3 圖片軸門檻（度量面，**本卡禁區，且違反「不靠放寬度量湊燈」鐵條**）。二者皆非「在既有函式內追加分支」的切片規模。據卡面鐵律「根因若落在禁改面，停在卡面 comment 回報，不硬改」，本卡以解剖＋記帳收工，實作待 PM 重切。
+3. **根因落在禁改面**：要讓本檔圖軸脫 0，必須（a）實作 EMF 向量記錄直出（`core/ooxml/src/emf_dib.rs` 的 K27 閘門，**本卡白名單未列**）或（b）放寬 J3 圖片軸門檻（度量面，**本卡禁區，且違反「不靠放寬度量湊燈」鐵條**）。二者皆非「在既有函式內追加分支」的切片規模。據卡面鐵律「根因若落在禁改面，停在卡面 comment 回報，不硬改」，本卡以解剖＋記帳收工，實作待 PM 重切。
 
 ---
 
@@ -26,10 +26,10 @@
 | `<w:drawing>` | 2 | — |
 | `<wp:inline>` | 2（皆 inline，無 anchor） | — |
 | `<pic:pic>`（DML 圖片） | 2 | — |
-| `<a:prstGeom prst="rect">` | 2（**僅 rect**，於 `pic:spPr`） | 假設有多形状 |
+| `<a:prstGeom prst="rect">` | 2（**僅 rect**，於 `pic:spPr`） | 假設有多形狀 |
 | `<a:prstTxWarp>` | **0** | 假設本檔有 WordArt |
 | `<a:wordArt>` | **0** | 同上 |
-| `<a:bevelT>`／`<a:softEdge>`／`<a:glow>`／`<a:reflection>`／`<a:effectLst>` | **0**（全部） | 假設本檔有形状效果 |
+| `<a:bevelT>`／`<a:softEdge>`／`<a:glow>`／`<a:reflection>`／`<a:effectLst>` | **0**（全部） | 假設本檔有形狀效果 |
 | `<a:gradFill>` | **0** | 卡面必做 3 假設本檔有漸層 |
 | `<a:solidFill>` | **0**（本檔 DML 填色只出自 VML/佔位路徑） | 卡面必做 3 |
 | `<w:object>`（OLE） | 1 | 卡面未提及 |
@@ -41,7 +41,7 @@
 
 媒體Inventory：`media/image1.png`(823B)、`media/image2.emf`(10,752B)、`media/image3.png`(1,560B)、`media/hdphoto1.wdp`(1,432B)、`media/hdphoto2.wdp`(376B)、`embeddings/Microsoft_Word_Document.docx`(11,851B)。
 
-即：本檔是「**兩張帶藝術效果篩選（a14:imgEffect）的內嵌 PNG ＋ 一個 Word 文件 OLE 圖示（EMF 影像）**」，檔名 `artistic_effects` 指的是 **Word 的「藝術效果」圖片篩選**（`a14:imgEffect`，屬圖片濾鏡，ECMA 擴充 `a14` 命名空間），**不是** DrawingML preset 形状／WordArt 效果。卡面把檔名讀成了能力面缺口。
+即：本檔是「**兩張帶藝術效果篩選（a14:imgEffect）的內嵌 PNG ＋ 一個 Word 文件 OLE 圖示（EMF 影像）**」，檔名 `artistic_effects` 指的是 **Word 的「藝術效果」圖片篩選**（`a14:imgEffect`，屬圖片濾鏡，ECMA 擴充 `a14` 命名空間），**不是** DrawingML preset 形狀／WordArt 效果。卡面把檔名讀成了能力面缺口。
 
 ---
 
@@ -97,7 +97,7 @@ J3 圖片軸門檻（`scripts/render_lab.py`）：`SAT_MIN=25`、`IMG_MIN_SIDE_P
 | OLE 圖示（EMF） | 105.55 | 111.93 | **+6.38pt** |
 | image3.png | 163.75 | 169.93 | **+6.18pt** |
 
-x 軸逐位對齊、寬高逐位對齊，唯 y 單向偏低，且與 E2b/E2c 直排無關（本檔無直排）。根因方向應在 `wp:inline` 的 baseline／行框互動（圖片基線对齐 vs 頂部對齊），屬 `core/engine-api` 發射層＋`core/ooxml` 的 extent/anchor 換算面。本卡未實作，僅記帳並附真值，供 PM 決定是否單開一張「inline 圖片 y 錨定」卡。
+x 軸逐位對齊、寬高逐位對齊，唯 y 單向偏低，且與 E2b/E2c 直排無關（本檔無直排）。根因方向應在 `wp:inline` 的 baseline／行框互動（圖片基線對齐 vs 頂部對齊），屬 `core/engine-api` 發射層＋`core/ooxml` 的 extent/anchor 換算面。本卡未實作，僅記帳並附真值，供 PM 決定是否單開一張「inline 圖片 y 錨定」卡。
 
 ---
 
@@ -107,7 +107,7 @@ x 軸逐位對齊、寬高逐位對齊，唯 y 單向偏低，且與 E2b/E2c 直
 
 卡面指令 `grep -rl 'prstTxWarp\|wordArt\|bevelT\|softEdge\|glow' corpus/ | wc -l` → **回傳 0**。
 
-原因：語料是 zip 容器，XML 在 binary 檔內，`grep -r` 對 `.docx` 二進位檔不产生文字命中（grep 視為 binary file 不列名）。**照抄該指令會得到「語料零影響」的錯判**。本卡改用 zipfile 逐 part 解壓正則統計（`f2_census_coherent.py`／`f2_warp_names.py`／`f2_geom_files.py`），並把口徑寫明：
+原因：語料是 zip 容器，XML 在 binary 檔內，`grep -r` 對 `.docx` 二進位檔不產生文字命中（grep 視為 binary file 不列名）。**照抄該指令會得到「語料零影響」的錯判**。本卡改用 zipfile 逐 part 解壓正則統計（`f2_census_coherent.py`／`f2_warp_names.py`／`f2_geom_files.py`），並把口徑寫明：
 
 掃描範圍＝400 個 docx/docm/dotx、1,291 個「文件本體 part」（`word/document.xml`、`header*`、`footer*`、`footnotes`、`endnotes`、`comments`）。**刻意排除 `theme1.xml`／`charts/*`／`diagrams/*`**：theme 的 `effectStyleLst`/`fillStyleLst` 每個 docx 都自帶 3–4 筆 `outerShdw`/`bevelT`/`gradFill`，計入會把「有無效果」的真實影響面灌水到全語料（舊 scratch `f2_corpus_scan.json` 即此口徑，其「每檔 bevelT=1、outerShdw=3」全是 theme 樣板，不可作為影響面依據——本節即為該錯判的矯正）。
 
@@ -147,7 +147,7 @@ x 軸逐位對齊、寬高逐位對齊，唯 y 單向偏低，且與 E2b/E2c 直
 
 註：`a:wordArt`（ECMA-376 第三版的 `wps:wordArt` 包裝節點）在**全語料本體出現 0 次**——所有 warp 都直接掛在 `wps:bodyPr` 內。卡面以 `wordArt` 為消費目標，打的是語料中不存在的節點。
 
-### 5.4 `prstGeom` 形状分佈（本體 part）——這裡才是真實缺口
+### 5.4 `prstGeom` 形狀分佈（本體 part）——這裡才是真實缺口
 
 | `@prst` | 次數 | 檔案數 |
 |---|---|---|
@@ -166,11 +166,11 @@ x 軸逐位對齊、寬高逐位對齊，唯 y 單向偏低，且與 E2b/E2c 直
 
 非 rect 共 **195 次／約 25 檔**。代表檔：`ooxmlexport/fdo74605.docx`（roundRect＋leftRightArrow＋upArrow＋straightConnector1）、`ooxmlimport/groupshape-fontname.docx`（line）、`ooxmlexport/tdf113258.docx`（ellipse）、`ooxmlexport/tdf113183.docx`（star5＋triangle）、`ooxmlimport/tdf120551.docx`（roundRect＋line）、`poi/test-data_document_shapes-with-text.docx`（rightArrow）。
 
-**實測我方現況**（`quire-cli dump`，`f2_shape_gap.py`）：上述檔案的 `DrawItem` 只有 `Rect`／`Rule`／`Text`／`Image`——即 **`prstGeom` 的 `@prst` 屬性從未被讀取**（全庫 `grep 'b"prst"'` 於 `core/ooxml/src/*.rs` 回 0 命中；`prstGeom` 只在 `drawing.rs` 的**測試字串**出現 3 次，實作路徑零消費），所有非矩形形状一律退化成外接矩形 `Rect`。這是真實、可見、可量測的缺陷（圓被畫成方塊、箭頭被畫成方塊），比 WordArt 更接近卡面的原始意圖。
+**實測我方現況**（`quire-cli dump`，`f2_shape_gap.py`）：上述檔案的 `DrawItem` 只有 `Rect`／`Rule`／`Text`／`Image`——即 **`prstGeom` 的 `@prst` 屬性從未被讀取**（全庫 `grep 'b"prst"'` 於 `core/ooxml/src/*.rs` 回 0 命中；`prstGeom` 只在 `drawing.rs` 的**測試字串**出現 3 次，實作路徑零消費），所有非矩形形狀一律退化成外接矩形 `Rect`。這是真實、可見、可量測的缺陷（圓被畫成方塊、箭頭被畫成方塊），比 WordArt 更接近卡面的原始意圖。
 
 ### 5.5 `gradFill`（卡面必做 3）
 
-本體 part `a:gradFill` 25 次／8 檔（任意前綴 35 次）。8 檔清單：`ooxmlexport/NoFillAttrInImagedata.docx`、`ooxmlexport/TextEffects_Groupshapes.docx`、`ooxmlexport/fdo73247.docx`、`ooxmlexport/fdo78658.docx`、`ooxmlimport/tdf120551.docx`、`poi/test-data_document_bib-chernigovka.netdo.ru_download_docs_17459.docx`、`xopt/NewDocxDocuments_CoverPage.docx`、`xopt/TestFiles_HC031-Complicated-Document.docx`。實作現況：`gradFill` 於 `core/ooxml/src/*.rs` 實作路徑零消費（僅 `theme.rs` 註解宣告「亮度變換本卡不做」）。`solidFill` 已完整消費（K12/K24 鏈），故卡面必做 3 的「solidFill 套到形状填充與輪廓」**已存在**，非缺口。
+本體 part `a:gradFill` 25 次／8 檔（任意前綴 35 次）。8 檔清單：`ooxmlexport/NoFillAttrInImagedata.docx`、`ooxmlexport/TextEffects_Groupshapes.docx`、`ooxmlexport/fdo73247.docx`、`ooxmlexport/fdo78658.docx`、`ooxmlimport/tdf120551.docx`、`poi/test-data_document_bib-chernigovka.netdo.ru_download_docs_17459.docx`、`xopt/NewDocxDocuments_CoverPage.docx`、`xopt/TestFiles_HC031-Complicated-Document.docx`。實作現況：`gradFill` 於 `core/ooxml/src/*.rs` 實作路徑零消費（僅 `theme.rs` 註解宣告「亮度變換本卡不做」）。`solidFill` 已完整消費（K12/K24 鏈），故卡面必做 3 的「solidFill 套到形狀填充與輪廓」**已存在**，非缺口。
 
 ### 5.6 OLE 圖示（`DrawAspect="Icon"`）
 
@@ -186,7 +186,7 @@ x 軸逐位對齊、寬高逐位對齊，唯 y 單向偏低，且與 E2b/E2c 直
 
 | 卡面必做 | 卡面假設 | 實測 | 判定 |
 |---|---|---|---|
-| 1 `prstGeom` 常見形状→SVG 輪廓 | 目標檔有 rect/ellipse/triangle 等 | 目標檔 `prstGeom` **只有 2 個 rect**，且它們在 `pic:spPr`（圖片裁切框，不該獨立發射） | **目標檔無法驗證本項**。缺口真實存在於**別檔**（§5.4，195 次／25 檔） |
+| 1 `prstGeom` 常見形狀→SVG 輪廓 | 目標檔有 rect/ellipse/triangle 等 | 目標檔 `prstGeom` **只有 2 個 rect**，且它們在 `pic:spPr`（圖片裁切框，不該獨立發射） | **目標檔無法驗證本項**。缺口真實存在於**別檔**（§5.4，195 次／25 檔） |
 | 2 `prstTxWarp` → 文字照 baseline 排 | 目標檔有 warp | 目標檔 `prstTxWarp` **0 次**；全語料 warp 99% 為 `textNoShape`（無變形），唯一真實變形檔是 fdo80897 且我方已有輸出 | **前提不存在**，本項在目標檔上無效 |
 | 3 `solidFill`／`gradFill` 套填充與輪廓 | 目標檔有漸層 | 目標檔 `gradFill`/`solidFill` **0 次**；`solidFill` 消費鏈已存在；`gradFill` 零消費（真缺口，25 次／8 檔，**不在本卡目標檔**） | 半項為既有能力、半項為別檔缺口 |
 | 4 文字必須發射 | 目標檔有 DML 文字 | 目標檔 `<a:t>` **0**、`<w:t>` **0**（**本檔無任何文字**）；LO 側同樣 `get_text()==''` | 「我方空白」不成立：雙側皆無文字，內容軸故判 `None`（度量語意 4/4b），非事故 |
@@ -195,13 +195,13 @@ x 軸逐位對齊、寬高逐位對齊，唯 y 單向偏低，且與 E2b/E2c 直
 ### 6.2 明確不做（寫進報告的「已實測不支援＋記帳」）
 
 - **EMF 向量記錄直出**（`EMR_COMMENT`/type 114、polybezier、pens/brushes 狀態機）：本檔與 tdf108545 圖軸 0.0 的共同根因。規模＝新子系統，且 `core/ooxml/src/emf_dib.rs` **未列入本卡白名單**；K27 閘門現行行為（退佔位框）經實測是誠實的，不得放寬。
-- **真路徑变形**（warp 逐字沿路徑变形）、`a:reflection`、`a:glow` 模糊濾鏡、`a:bevelT` 立體光照、3D scene、`a:softEdge` 濾鏡：卡面已列為不做，本卡亦未實作，語料影響面分別為 glow 10、reflection 10、bevelT 18、sp3d/scene3d 各 10、softEdge/blur **0**。
+- **真路徑變形**（warp 逐字沿路徑變形）、`a:reflection`、`a:glow` 模糊濾鏡、`a:bevelT` 立體光照、3D scene、`a:softEdge` 濾鏡：卡面已列為不做，本卡亦未實作，語料影響面分別為 glow 10、reflection 10、bevelT 18、sp3d/scene3d 各 10、softEdge/blur **0**。
 - **`a14:imgEffect` 圖片藝術篩選**（`artisticTexturizer`／`artisticPencilGrayscale`，本檔檔名由來）：語料僅 2 次／1 檔，屬 `a14` 擴充圖片濾鏡，非 DML preset，本卡未實作。
 - **J3 度量放寬**（`IMG_MIN_PIXELS`/`SAT_MIN`/`COLOR_FLOOR`）：禁區，且違反鐵條，不碰。
 
 ### 6.3 建議的重切（給 PM 的三張卡，本卡不硬改）
 
-1. **F2′：`a:prstGeom/@prst` 未消費——非矩形形状全畫成外接矩形**。目標檔 `fdo74605.docx`（roundRect＋2 箭頭＋connector，1 檔集齊 4 種形状，是最便宜的考卷）。影響面 195 次／25 檔（§5.4 清單）。白名單同本卡。這是本卡原始意圖裡**唯一真實且可驗證**的缺口。
+1. **F2′：`a:prstGeom/@prst` 未消費——非矩形形狀全畫成外接矩形**。目標檔 `fdo74605.docx`（roundRect＋2 箭頭＋connector，1 檔集齊 4 種形狀，是最便宜的考卷）。影響面 195 次／25 檔（§5.4 清單）。白名單同本卡。這是本卡原始意圖裡**唯一真實且可驗證**的缺口。
 2. **OLE 圖示 EMF 光柵化**（圖軸真缺口）：目標檔 `artistic_effects.docx` ＋ `tdf108545_embeddedDocxIcon.docx`，兩檔圖軸皆 0.0 且皆因此因。需要 EMF 向量直出，場域在 `emf_dib.rs`/EMF 採集面——**必須與 R35/F3 的圖片採集狀態機錯開**，並先決定「實作 EMF 直出」還是「改採集 LO/Word 預渲染點陣」路線。
 3. **`wp:inline` 圖片 y 錨定偏低 6–7pt**（§4，三項繪製物一致偏移，LO 真值已附）。
 
@@ -217,7 +217,7 @@ x 軸逐位對齊、寬高逐位對齊，唯 y 單向偏低，且與 E2b/E2c 直
 - LO 真值：`/usr/bin/python3 scripts/render_lab.py corpus/ooxmlexport/artistic_effects.docx --out <dir>` → `report.md`（色 1.0／圖 0.0／內容 None／版面 None／真缺字 0）＋ `f2_lo_truth_ae.py`（pymupdf：3 張點陣圖 rect、`get_drawings()==0`、`get_text()==''`）
 - 我方發射：`./target/debug/quire-cli render corpus/ooxmlexport/artistic_effects.docx --out <dir>` ＋ `quire-cli dump`；像素計數 `f2_our_px.py`
 - J3 逐項復算：`f2_img_axis_cause.py`（import `render_lab` 直呼 `_sat_hue`/`_label`/`image_blobs`/`score_image`/`score_color`）
-- 語料普查：`f2_census_coherent.py`（雙口徑）、`f2_warp_names.py`（warp/geom 名稱分佈）、`f2_geom_files.py`（非 rect 形状檔案清單）、`f2_shape_gap.py`（非 rect 檔我方發射實況）
+- 語料普查：`f2_census_coherent.py`（雙口徑）、`f2_warp_names.py`（warp/geom 名稱分佈）、`f2_geom_files.py`（非 rect 形狀檔案清單）、`f2_shape_gap.py`（非 rect 檔我方發射實況）
 - EMF 記錄流：`f2_emf_hex.py`（記錄型別清單 ＋ type 114 欄位實拆）
 - 所有探針在 `/home/jerry/.hermes/profiles/ow-render/cache/scratch/`（scratch 24h 回收，關鍵數據已固化進本報告）
 

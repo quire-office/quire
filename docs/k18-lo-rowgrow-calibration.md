@@ -25,7 +25,7 @@
    Textbox2（wrapTopAndBottom＋spAutoFit，cell(0,1)）撐 row0 到 65.9pt。
    實據：把群組 extent cy 185→100pt（m2），row1 底 344.25→259.25（Δ=−85=Δ宣告），
    row0 紋絲不動；把 Textbox2 的 spAutoFit 拿掉（m1），row0 65.9→161.7，
-   row1 整段被推下去但自身高不变（206.0）。
+   row1 整段被推下去但自身高不變（206.0）。
 
 ---
 
@@ -63,7 +63,7 @@
 | 假說 | 判決 | 實據 |
 |---|---|---|
 | (a) 框內文字排版高（行數×行高＋邊距）＋上下邊距 | **spAutoFit 框 wins**（row0=65.9 逐項分解見 §3）；noAutofit 框/群組不適用（用宣告高） | b0 復刻精確重現 65.9；b17（宣告 h 改成 40）spAutoFit 下撐列值**不動**（仍 65.9）——宣告值對 spAutoFit 完全無效 |
-| (b) anchor 有效高被夾到列可視區 | **loss** | b6_h160（noAutofit 160pt）列照撑 182.2 不夾；b3_h40 縮到 62.2 線性跟隨，無下限夾取 |
+| (b) anchor 有效高被夾到列可視區 | **loss** | b6_h160（noAutofit 160pt）列照撐 182.2 不夾；b3_h40 縮到 62.2 線性跟隨，無下限夾取 |
 | (c) 群組內真正佔位的是子形狀（AutoShape 14 高 395 vs Rectangle 214 高 9.35 各異）而非群組 extent | **loss（鐵證）** | m3：刪 Rectangle 214 → 列界序列 [72.25,138.15,344.25,358.15] **零變化**；m2：群組宣告 cy 185→100 → row1 底 344.25→**259.25**＝21.05+100+ε，逐 pt 線性跟隨**群組宣告** extent。子形狀只影響繪製，不參與撐列。 |
 
 ---
@@ -171,7 +171,7 @@ m9_grp_pct0       零變化（pct 失效時 LO 用 mc:Fallback posOffset 21pt）
 
 * **層**：`table_map`（列高地板計算處）。流程：列 natural（trHeight/text）算完後，
   對「錨在該列」的每個 anchor 取 `grow = posV + eff_h`，列高=max(natural, grow)。
-  不動 layout 層的框繪製（繪製仍按宣告/autofit 高，撑列只是列高地板）。
+  不動 layout 層的框繪製（繪製仍按宣告/autofit 高，撐列只是列高地板）。
 * **需新增解析欄位**（core 目前全缺）：
   1. `anchor.autofit` ∈ {spAutoFit, noAutofit, none→視同 noAutofit}（`wps:bodyPr` 子元素）；
   2. `anchor.posV_pt`（`wp:positionV/wp:posOffset`；pctPosVOffset 時＝頁高×pct/100000，

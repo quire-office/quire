@@ -117,13 +117,13 @@ EA:Calibri→13.4（=11×1.2207）；EA:PMingLiU／EA:KaitiTC／純 CJK→14.8�
    - `patho_b`：pitch **14.85**（11pt 零宣告×WQY 1.3496）——**不是 13.75**。
    - 零宣告拉丁檔（Calibri 11pt auto）：LO 13.5；quire 舊徑 15.4（×1.4）必紅。
    - buggy 回塞鎖（K6_AUTO_PITCH_BUGGY=1）依既有開關回舊徑，紅燈 1 必紅。
-5. 級聯實作補一條：styles.xml 未經 `document.xml.rels` 引用則整支不参与（§3(2)）。
+5. 級聯實作補一條：styles.xml 未經 `document.xml.rels` 引用則整支不參与（§3(2)）。
 
 ## 7. 可重跑路徑
 
 - 產生：`gen_matrix.py`（矩陣＋探針）→ 量測：`measure.py`／`step6d_real_linux.py`（眾數）→
   彙整：`analyze.py`；數據：`pitch_raw.csv`（185 列全量）＋ `pitch_real.csv`（真檔）。
-- 覆核腳本（PM 收尾用，awk 一行的那個口徑）：見本报告 §1 殘差數字，任何值守可照 §1 公式重算覆核。
+- 覆核腳本（PM 收尾用，awk 一行的那個口徑）：見本報告 §1 殘差數字，任何值守可照 §1 公式重算覆核。
 - 字型 LH 覆核：fontTools `hhea`（ascender+|descender|+lineGap)/unitsPerEm，face 對照見 §1 表。
 
 *（本卡 report-only，零引擎觸碰；矩陣數據檔 `docs/k6-lineheight-matrix.csv` 隨本報告同 commit 入庫。）*

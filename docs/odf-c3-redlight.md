@@ -69,7 +69,7 @@ manifest 宣告加密 → content.xml 解出的是亂碼（非健全 XML），�
 
 ## 三、(b) 樣式級聯硬斷言（單段寫死，非命中率）
 
-候選筛選：`grep -l 'fo:font-size="[^"]*pt"'` 對 .odt（zip 壓縮體）必然落空，
+候選篩選：`grep -l 'fo:font-size="[^"]*pt"'` 對 .odt（zip 壓縮體）必然落空，
 改用基準腳本對**解壓後** content.xml／styles.xml 掃 `fo:font-size="..pt"`，
 得 47 檔含顯式 pt 宣告；從中取**非 fdo 轉出**的真實世界檔兩檔。
 

@@ -874,6 +874,18 @@ pub struct ImageBand {
     /// 內嵌圖是框的**文字區內容**，LO 按「框原點＋inset」排版；
     /// `v:imagedata` 填色圖是框本身幾何，不吃 inset（fdo61343 實據）。
     pub txbx_content_pic: bool,
+    /// D9b 欠債三：**原樣承接**的宣告偏移原值（`InlineImage::pos_x_pt`／`pos_y_pt`
+    /// 同語義同欄位名，非平行新語義）——VML `style` 的 `margin-left`／`margin-top`，
+    /// 或 DrawingML `wp:posOffset`。`anchor` 帶的是已合成完原點系的**最終鎖點**
+    /// （`x_pt = 版心原點 + 偏移`），兩者在裡頭分不開；發射層要寫
+    /// 「|框起點 −（版心原點＋宣告偏移）| ≤ 容差」這條**同源推導**式就只能吃原值
+    /// （取代發射層的 `22.05`／`500.0`／`540.5` 三個 fdo76591 專屬字面量）。
+    /// None＝源檔未宣告偏移（`align`／`pct` 式錨點、inline，或 `page` 系釘定）。
+    /// 原點系不另設欄位：`anchor.x_frame`（`OriginFrame::Margin`）已是同一事實，
+    /// 本結構受 `Copy` 鐵律約束也不得帶 `String`。
+    pub pos_x_pt: Option<f32>,
+    /// 同 [`Self::pos_x_pt`]，V 軸。
+    pub pos_y_pt: Option<f32>,
 }
 
 /// G1：表格儲存格內浮動錨點的宿主列追蹤資訊（承載於 [`OriginFrame::CellRow`]，
@@ -939,6 +951,23 @@ fn usize_max() -> usize {
     usize::MAX
 }
 
+/// D9b 欠債三：**版心盒**（該頁起頭 section 的正文盒原點與寬高，pt，頁絕對）。
+/// 發射層的滿版判定式「框寬 ≥ 版心寬 且 |框起點 −（版心原點＋宣告偏移）| ≤ 容差」
+/// 的右側項——取代 `500.0`／`540.5` 這類從單一檔案抄下來的字面量。
+/// `Copy`：只帶 f32，不得帶任何非 Copy 欄位（本結構塞進 `Copy` 語境的轉運點）。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ContentBox {
+    /// 版心左緣（x 原點）＝頁 `margin_left_pt`。
+    pub x_pt: f32,
+    /// 版心上緣（y 原點）＝頁 `margin_top_pt`（含頁首推下，與浮動圖 y 合成律
+    /// 同基準——`attach_floating_images` 的 `Margin` 系加的就是這個值）。
+    pub y_pt: f32,
+    /// 版心寬＝頁寬 − 左 − 右（section `w:pgMar`，非任何檔案常量）。
+    pub w_pt: f32,
+    /// 版心高＝頁高 − 上 − 下（同上）。
+    pub h_pt: f32,
+}
+
 /// 頁面上的浮動圖片鎖點（不佔行網格；座標＝頁絕對 pt，發射前已按各軸
 /// `relativeFrom` 原點系換算完成）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -962,6 +991,22 @@ pub struct PageFloatingImage {
     /// LO 不吃 inset）。serde default＝false（舊快照舊行為）。
     #[serde(default)]
     pub txbx_content_pic: bool,
+    /// D9b 欠債三：承接 [`ImageBand::pos_x_pt`]——源檔宣告的**絕對偏移原值**
+    /// （VML `style` 的 `margin-left`，或 DrawingML `wp:positionH/wp:posOffset`）。
+    /// `x_pt` 是已合成完原點系的最終鎖點（版心原點＋偏移），兩者分不開；
+    /// 發射層要寫「|框起點 −（版心原點＋宣告偏移）| ≤ 容差」這條**同源推導**式
+    /// 就只能吃原值（取代 `22.05`／`500.0`／`540.5` 三個 fdo76591 專屬字面量）。
+    /// **Some 的語義已含原點系**：附掛時只在 `anchor.x_frame == Margin` 時搬運
+    /// （見 `attach_floating_images`），`page` 系釘定與 align/pct 式一律 None，
+    /// 故 `Some` 即「以版心為原點的宣告偏移」——n751077 的頁面釘定群組因此
+    /// 天然不成立（卡面 §2 第 3 條點名的誤傷例）。
+    /// serde default＝舊快照可解析（舊資料無此欄＝None＝推導式不成立＝舊行為）。
+    #[serde(default)]
+    pub pos_x_pt: Option<f32>,
+    /// 同 [`Self::pos_x_pt`]，V 軸（`margin-top`／`wp:positionV`，Some 同樣
+    /// 已含 `y_frame == Margin` 語義）。
+    #[serde(default)]
+    pub pos_y_pt: Option<f32>,
 }
 
 /// 頁面上的表格放置（pack_run flush 時蓋章）。
@@ -1926,6 +1971,22 @@ fn attach_floating_images(
             para: im.para,
             txbx_inset: im.txbx_inset,
             txbx_content_pic: im.txbx_content_pic,
+            // D9b 欠債三：宣告偏移原值只在**該軸原點系＝版心**時搬運——
+            // `anchor.x_pt` 已把 `x_base`（版心左緣）加進去，偏移與版心原點在
+            // 合成值裡分不開，故推導式必須吃原值。`Page`／`Paragraph`／
+            // `Column`／`CellRow` 四系不是「版心原點＋宣告偏移」的語義，
+            // 一律 None＝發射層推導式不成立（n751077 群組＝釘定 align 式，
+            // `pos_*_pt` 本身就是 None，雙重不成立）。
+            pos_x_pt: if a.x_frame == OriginFrame::Margin {
+                im.pos_x_pt
+            } else {
+                None
+            },
+            pos_y_pt: if a.y_frame == OriginFrame::Margin {
+                im.pos_y_pt
+            } else {
+                None
+            },
         });
     }
 }
@@ -3787,6 +3848,10 @@ mod tests {
             // D9b：合成帶構造器不宣告 inset、非框內圖（本組測試尺不動）。
             txbx_inset: None,
             txbx_content_pic: false,
+            // D9b 欠債三：合成帶無 VML／DrawingML 宣告偏移（K27 教訓：新增欄位
+            // 必須同步所有構造點，`cargo test --lib --no-run` 抓 E0063）。
+            pos_x_pt: None,
+            pos_y_pt: None,
         }
     }
 

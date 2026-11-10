@@ -77,7 +77,7 @@ BUGGY 態回塞 41/42 條無族）。燈 1a／1b／1c 鎖。
 - `tools/line-metrics`（行度量工具，白名單外 +3 行）：不載入 styles.xml ⇒
   傳 `style_cell_margins: None`＝樣式級不參與，逐位元組維持修前行為。
 
-## 4. 紅燈測試設計（燈2 的「回塞行數必變」如何实现）
+## 4. 紅燈測試設計（燈2 的「回塞行數必變」如何實现）
 
 卡面燈 2 要求「欄寬 200pt、tblCellMar 左右各 108twip：斷行行寬必＝
 200−5.4−5.4；回塞（用全寬）行數必變」。ECMA 預設 108twip 與直接宣告
@@ -86,7 +86,7 @@ BUGGY 態回塞 41/42 條無族）。燈 1a／1b／1c 鎖。
 ——同一 token 在 `break_lines(189.2)` 與 `break_lines(200.0)` 下行數必不同
 （6 vs 5 行），引擎端到端行數鎖死 6 行側；「未扣內距＝全寬斷行」態由
 斷行器現算反證，不設全域 env。樣式級 env 鎖不影響燈 2（本 fixture 樣式
-級無宣告＝零擾動，buggy/fixed 同值）＝燈 2 兼任「樣式級零擾動」反证。
+級無宣告＝零擾動，buggy/fixed 同值）＝燈 2 兼任「樣式級零擾動」反證。
 
 合成 fixture（`core/engine-api/tests/fixtures/`，產生器語義見檔頭註解）：
 

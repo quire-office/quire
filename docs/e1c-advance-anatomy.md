@@ -225,7 +225,7 @@ LO 兩環境抽出的行 **0 行含雙空格**（LO 折疊空白）。3 處共 6
     → `2 passed; 1 failed`（燈 2 `實得 0/9` 必紅 ⇒ 鑑別力成立，比照 `k7_advance_scale.rs` 口徑）。
   - `cargo test -p quire-engine --test e1_pagination` → `3 passed; 0 failed; 3 ignored`
     （燈 1 頁數盞解 ignore 轉 CI 常態綠）；`-- --ignored` → `2 passed; 1 failed`
-    （欠債清單剩 lamp1 p1 首末行盞 ＋ 燈 3 兩盞已綠但仍挂 ignore，隨父燈解鎖）。
+    （欠債清單剩 lamp1 p1 首末行盞 ＋ 燈 3 兩盞已綠但仍掛 ignore，隨父燈解鎖）。
 
 ## 8. 重現指令（全部本 run 實跑過）
 

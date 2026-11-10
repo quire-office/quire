@@ -185,7 +185,7 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
-/// 本卡支援的頁碼欄位型別（其余欄位名如 SECTIONPAGES／DATE 老實保留快取文字）。
+/// 本卡支援的頁碼欄位型別（其餘欄位名如 SECTIONPAGES／DATE 老實保留快取文字）。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FieldKind {
     /// `PAGE`：當前頁碼（1-based）。
@@ -198,7 +198,7 @@ pub enum FieldKind {
 /// 且只比對**首個指令 token**——ECMA-376 §17.5：指令第一個 token 就是欄位
 /// 名，其餘是參數與開關。全 token 掃描會讓 `{ IF PAGE > 1 ... }` 或
 /// `HYPERLINK ".../page/1"` 誤判成頁碼欄位並覆寫顯示文字（t_c1fb4c69 S2-6）。
-/// 指令可帶開關（如 ` PAGE  \* MERGEFORMAT `），以非英数字元切 token。
+/// 指令可帶開關（如 ` PAGE  \* MERGEFORMAT `），以非英數字元切 token。
 pub fn classify_field_instr(instr: &str) -> Option<FieldKind> {
     let upper = instr.to_ascii_uppercase();
     let first = upper
@@ -337,7 +337,7 @@ impl OoxmlDoc {
         self.parts.insert(name.to_string(), bytes);
     }
 
-    /// 標記刪除一個 part（凍結 entry 会在存檔時被忽略，見 zip_struct 凍結規則）。
+    /// 標記刪除一個 part（凍結 entry 會在存檔時被忽略，見 zip_struct 凍結規則）。
     pub fn remove_part(&mut self, name: &str) -> bool {
         self.parts.remove(name).is_some()
     }
@@ -393,7 +393,7 @@ pub fn parse(bytes: &[u8]) -> Result<OoxmlDoc, OoxmlError> {
     // 無 theme part → 四欄全 None＝保留直接值（既有行為不變）。
     let theme_fonts = ThemeFonts::from_parts(&parts);
     let paragraphs = parse_document_xml_with_fonts(xml, &theme, Some(&theme_fonts))?;
-    // 表格投影：純讀入（PM 補正 1——唯讀來源隔離；無損寫回路徑完全不經此处）。
+    // 表格投影：純讀入（PM 補正 1——唯讀來源隔離；無損寫回路徑完全不經此處）。
     let tables = table::read_body_tables(xml);
     // 註腳／尾註彙總（ECMA-376 §17.11）：純讀取；缺 part／壞 XML＝空彙總。
     let notes = Notes::from_parts(&parts);
@@ -713,7 +713,7 @@ fn parse_document_xml_with_fonts(
     let mut rev_del_depth: usize = 0;
     let mut rev_mfrom_depth: usize = 0;
     let mut rev_mto_depth: usize = 0;
-    // `w:delText` 文字區間（`w:t` 的刪除側鏡像；两者永不重疊）。
+    // `w:delText` 文字區間（`w:t` 的刪除側鏡像；兩者永不重疊）。
     let mut in_del_t = false;
     let mut instr_active = false;
 
@@ -815,7 +815,7 @@ fn parse_document_xml_with_fonts(
                 match name.as_slice() {
                     b"txbxContent" => {
                         // 進入文字框：快照宿主段落（正文棧頂；無宿主＝body 級
-                        // 游离框，老實不收，正文零污染）。
+                        // 游離框，老實不收，正文零污染）。
                         txbx_owner = stack.last().map(|(slot, _, _)| *slot).unwrap_or(usize::MAX);
                         txbx_depth = 1;
                     }
@@ -1063,7 +1063,7 @@ fn parse_document_xml_with_fonts(
                     // `w:lastRenderedPageBreak` 是另一元素，永不進此臂（渲染提示≠斷點）。
                     handle_br_tag(&mut stack, &mut cur_run, &e);
                 } else if name == b"fldChar" {
-                    // 複雜欄三態（Word 產出恒為自閉合標籤）：begin 開層、
+                    // 複雜欄三態（Word 產出恆為自閉合標籤）：begin 開層、
                     // separate 翻結果標記、end 出層。未配對（漏 begin）老實無效。
                     match attr_val(&e, "fldCharType").as_deref() {
                         Some("begin") => {
@@ -1510,7 +1510,7 @@ fn record_note_ref(name: &[u8], e: &quick_xml::events::BytesStart, cur_run: &mut
 
 /// K4e2：把框內段落批次掛到宿主段落（`txbx_texts`＋`txbx_runs` 同步附著，
 /// 兩者逐段對齊是發射層的取樣前提——段數不一致時多出的 run 老實丟棄、
-/// 缺 run 的段落退化为無樣式發射，絕不串段）。
+/// 缺 run 的段落退化為無樣式發射，絕不串段）。
 fn attach_txbx(p: &mut Paragraph, texts: Vec<String>, runs: Vec<Vec<Run>>) {
     let n = texts.len();
     p.txbx_texts.extend(texts);
@@ -2617,7 +2617,7 @@ mod tests {
     }
 
     /// 成對標籤 `<w:br></w:br>`（合法罕見寫法）同樣記錄且**不雙計**；
-    /// 無配對段落的游离 br（畸形）老實忽略、不炸。
+    /// 無配對段落的游離 br（畸形）老實忽略、不炸。
     #[test]
     fn paired_br_tag_recorded_once() {
         let xml = r#"<w:document xmlns:w="x">

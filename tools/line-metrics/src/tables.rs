@@ -542,6 +542,11 @@ pub fn build_images(
                 // D9b：與 engine 投影同口徑——宿主框 inset 宣告與框內圖事實隨帶搬運。
                 txbx_inset: im.txbx_inset,
                 txbx_content_pic: im.txbx_drawing_extent.is_some(),
+                // D9b 欠債三：與 engine 投影（table_map::build_images）同口徑——
+                // VML／DrawingML 宣告偏移原值隨帶搬運（K27 教訓：ImageBand 新增
+                // 欄位必同步**所有**構造點，含本工具）。
+                pos_x_pt: im.pos_x_pt,
+                pos_y_pt: im.pos_y_pt,
             }
         })
         .collect();
