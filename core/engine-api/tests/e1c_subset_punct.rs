@@ -4,11 +4,11 @@
 //! # 卡面前提逐條更正（先證再寫考卷，見 `docs/e1c-card-c-subset-punct.md`）
 //!
 //! 卡面：「我方內嵌子集 U+2019／U+2026 advance＝1.0 em，LO NotoSans 真值 0.175／0.791
-//! ⇒ 修子集產生器／子集本身使這三個碼点的 advance 落到真值」。**四條實測把手段與
-//! 真值口徑都翻掉**：
+//! ⇒ 修子集產生器／子集本身使這三個碼點的 advance 落到真值」（卡面原文逐字）。
+//! **四條實測把手段與真值口徑都翻掉**：
 //!
 //! 1. **不是子集產生器的缺陷**：原始 `NotoSansCJKtc-Regular.otf` 與我方子集逐字全等
-//!    （scratch `probe_src_advance.py`：’ … 皆 1.0000 em）。CJK 字型的標點本来就佔
+//!    （scratch `probe_src_advance.py`：’ … 皆 1.0000 em）。CJK 字型的標點本來就佔
 //!    em 方塊——改 otf 等於改字型設計。
 //! 2. **沒有單一的 LO 真值**：同一個 ’ 隨宣告族而變（scratch `probe_lo_face_punct.py`
 //!    定錨態 rawdict 逐 face 實渲：Calibri 0.249／Cambria 0.249／TNR 0.331／Arial 0.222／
@@ -18,7 +18,7 @@
 //!    （scratch `probe_punct_truth.py` 直接讀該 otf hmtx 復現該數），正是卡 B
 //!    （`docs/e1cb-lo-truth-canon.md`）明文否決的口徑 ⇒ 不得入表（燈 5 鎖死）。
 //! 4. **漢語上下文我方現態是對的**：LO 對漢語段的 “ ” 實渲 **1.0 em**（scratch
-//!    `probe_lo_rawdict.py`：5DayTour「插入”选项卡」Δ=11.0pt@11pt＝恰 1.0 em，渲
+//!    `probe_lo_rawdict.py`：5DayTour「插入”選項卡」Δ=11.0pt@11pt＝恰 1.0 em，渲
 //!    WenQuanYiZenHei）⇒ 覆寫**只能在非 CJK script run 生效**（燈 4 鎖死）。
 //!
 //! # 本檔鎖什麼
@@ -54,7 +54,7 @@ fn engine(rel: &str) -> Engine {
     Engine::from_docx_bytes(&bytes).expect("開啟 corpus docx 失敗")
 }
 
-/// 與斷行器同口徑的测量器（臂隨 family；回塞鎖同引擎）。
+/// 與斷行器同口徑的測量器（臂隨 family；回塞鎖同引擎）。
 fn meas(size_pt: f32, family: Option<&str>) -> TextMeasurer {
     let buggy = std::env::var_os("K7_ADVANCE_SCALE_BUGGY").is_some()
         || std::env::var_os("K7_WRAP_WIDTH_BUGGY").is_some();
@@ -101,7 +101,7 @@ fn items_with(eng: &Engine, ch: char) -> Vec<(String, f32, Option<String>)> {
 /// （U+2019）。我方**量測層**必須把該 ’ 按真 trebuc hmtx 0.3672 em 計寬——若仍是
 /// 1.0 em，含 ’ 的整行會被高估 6.33pt（@10pt），該行斷點隨之行寬走樣。
 ///
-/// 可觀測量：把該行原文交給「與斷行器同尺」的测量器，行寬必須 ≤ Team 段的排版
+/// 可觀測量：把該行原文交給「與斷行器同尺」的測量器，行寬必須 ≤ Team 段的排版
 /// 可用寬；且 ’ 的單字寬實得 0.3672×size（**取代**，不疊乘水平尺）。
 #[test]
 fn lamp1_apostrophe_in_latin_run_uses_face_hmtx() {
@@ -159,7 +159,8 @@ fn lamp2_punct_arm_grouping_matches_advance_scale_groups() {
         ("Helvetica", true, 4),
         ("Noto Serif", true, 5),
         ("Trebuchet MS", true, 6),
-        // 未宣告／CJK 族：兩軸一律零擾動。
+        // 未宣告／CJK 族：兩軸一律零擾動。（「宋体」＝真實語料 `w:rFonts`／theme1.xml
+        // 的簡體字面宣告，逐字引用＝資料，非註解用字；繁變體見 punct_advance 單元鎖。）
         ("宋体", false, 0),
         ("", false, 0),
         ("Unknown Font 42", false, 0),
@@ -210,7 +211,8 @@ fn lamp3_buggy_lock_reverts_both_axes_together() {
 /// 的 “ ” 實渲 1.0 em（scratch rawdict 實測），動它＝回歸。
 #[test]
 fn lamp4_cjk_context_keeps_em_square() {
-    // 「插入”选项卡」：” 落在 Han run 內（swash script 判定），覆寫不生效。
+    // 「插入”選項卡」（源檔原貌逐字，簡體字面＝資料非註解）：” 落在 Han run 內
+    // （swash script 判定），覆寫不生效。
     let s = "插入”选项卡";
     let w_arm = meas(11.0, Some("Calibri")).text_width(s);
     let w_square =

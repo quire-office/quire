@@ -12,7 +12,7 @@
 //! # 為什麼不能改字體二進位、也不能寫死一個數
 //!
 //! 1. **漢語上下文我方現態是對的**：LO 對漢語段的 “ ” 渲染 1.0 em（本 run
-//!    `probe_lo_rawdict.py` 實測 5DayTour「插入”选项卡」Δ=11.0pt@11pt＝恰 1.0 em，
+//!    `probe_lo_rawdict.py` 實測 5DayTour「插入”選項卡」Δ=11.0pt@11pt＝恰 1.0 em，
 //!    渲 WenQuanYiZenHei）。改 otf 會把漢語標點一起改窄 ⇒ 回歸。
 //!    ⇒ 覆寫**只對非 CJK script run 生效**（比照本庫既有「CJK cluster 不乘尺」鐵律）。
 //! 2. **沒有單一 LO 真值**：同一個 ’ 隨宣告族而變（本 run `probe_lo_face_punct.py`
@@ -45,7 +45,7 @@ const fn em(cp: u32, v: f32) -> (u32, f32) {
 }
 
 // 覆寫集＝本 run `probe_fullwidth_cov.py` 實測「我方子集 advance ≥0.999 em」的全部碼點。
-// 逐臂值＝該真 face hmtx（@1000 upm 歸一）。n/a（真 face 缺该 glyph）一律缺席＝不覆寫。
+// 逐臂值＝該真 face hmtx（@1000 upm 歸一）。n/a（真 face 缺該 glyph）一律缺席＝不覆寫。
 
 /// Calibri → 真 `calibri.ttf`（本基準環境 LO 渲真 MS face）。
 static CALIBRI: &[(u32, f32)] = &[
@@ -181,7 +181,10 @@ mod tests {
     fn no_arm_means_no_override() {
         assert_eq!(punct_arm_for_face("Calibri"), 1);
         assert_eq!(punct_arm_for_face("  TREBUCHET MS "), 6);
+        // 源檔原貌：中文字型的宣告族名在真實 DOCX 裡是簡體字面（`w:rFonts` 原字），
+        // 逐字引用＝資料，非註解簡體洩漏；繁體變體一併鎖（兩式都不得誤命中覆寫臂）。
         assert_eq!(punct_arm_for_face("宋体"), PUNCT_ARM_NONE);
+        assert_eq!(punct_arm_for_face("宋體"), PUNCT_ARM_NONE);
         assert_eq!(punct_arm_for_face(""), PUNCT_ARM_NONE);
         assert!(punct_em(PUNCT_ARM_NONE, 0x2019).is_none());
         // 臂 id 越界（表外）＝不覆寫，不得 panic。
