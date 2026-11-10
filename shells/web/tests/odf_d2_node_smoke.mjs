@@ -6,7 +6,7 @@
 // 真產物，逐字照 `quire-www/public/playground/playground.js` 的讀取面呼叫
 // （`page_count` / `page_display_list_json` / `paragraph_count` / `paper_json` /
 // `is_settled` / `reflow_step_json`），證「JS 端零改」不是口號：同一段繪圖碼
-// 的取数序列，對 ODT 直接跑得通。
+// 的取數序列，對 ODT 直接跑得通。
 //
 // CI 用：cd shells/web && npm run build:wasm && node tests/odf_d2_node_smoke.mjs
 import fs from "node:fs";
@@ -47,7 +47,7 @@ let view;
 try {
   view = new WasmOdtView(odt);
 } catch (err) {
-  // playground.js:690 讀 err.message || String(err)——wasm-bindgen 抛 Error 時
+  // playground.js:690 讀 err.message || String(err)——wasm-bindgen 拋 Error 時
   // message＝Rust 側 Err(String) 原文，這條口徑必須有內容。
   const m = err?.message || String(err);
   if (!m || m === "undefined") fail(`開檔錯誤訊息空白（JS 端只能秀 ${m}）`);
@@ -57,7 +57,7 @@ const pageCount = view.page_count();
 if (pageCount < 1) fail(`ODT page_count()=${pageCount} < 1（站端會秀「分頁異常」）`);
 ok(`ODT 開檔渲染：${pageCount} 頁 / ${view.paragraph_count()} 段`);
 
-// ---- 2) 顯示列表：playground.js render() 的取数序列逐字重播 ----
+// ---- 2) 顯示列表：playground.js render() 的取數序列逐字重播 ----
 for (let p = 0; p < pageCount; p++) {
   const jsonStr = view.page_display_list_json(p);
   if (!jsonStr) fail(`第 ${p} 頁回傳空（page_count 說有 ${pageCount} 頁）`);
@@ -159,4 +159,4 @@ const docDl = JSON.parse(engine.page_display_list_json(0));
 if (!docDl.items.some((i) => i.Text)) fail("DOCX 線顯示列表無 Text 項");
 ok(`DOCX 線零回退：${engine.page_count()} 頁 / ${docDl.items.length} 顯示項`);
 
-console.log("✓ ODF-D2 wasm 端考卷全綠（實際產物＋playground 取数序列）");
+console.log("✓ ODF-D2 wasm 端考卷全綠（實際產物＋playground 取數序列）");

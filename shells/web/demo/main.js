@@ -240,7 +240,7 @@ imeEl.addEventListener("compositionend", (e) => {
   composing = false;
   commitText(e.data || "");
 });
-// 非合成輸入（英数字直接鍵入、貼上、退格）：beforeinput 比 input 更早且帶 inputType。
+// 非合成輸入（英文數直接鍵入、貼上、退格）：beforeinput 比 input 更早且帶 inputType。
 imeEl.addEventListener("beforeinput", (e) => {
   if (composing || e.isComposing) return; // 合成中由 compositionend 處理
   if (readOnly) { e.preventDefault(); return; } // 唯讀檔型：一律不放行（ODF-D2）
