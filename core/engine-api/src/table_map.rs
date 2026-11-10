@@ -766,6 +766,8 @@ pub fn table_input(
     line_ref_bands: u32,
     run_spans: &HashMap<usize, Vec<CellRun>>,
     advs: &HashMap<usize, f32>,
+    // E1-C 卡 C：段落索引 → 標點覆寫臂（與 advs 同索引；呼叫端已濾空段與 0）。
+    arms: &HashMap<usize, u8>,
     // K8-shd：條件底紋上下文（None＝頁首尾表格／診斷鏡像零擾動路徑；Some
     // ＝正文表消费 tblStylePr 條件層）。`style_inherit`＝巢狀表未自帶
     // `w:tblStyle` 時繼承的外層樣式 id（ECMA §17.4.65：子表無宣告沿父表）。
@@ -847,6 +849,11 @@ pub fn table_input(
                         let mut cell_size: Option<f32> = None;
                         // K7-cal：格內水平尺（一格多段取最大＝保守少塞字）。
                         let mut cell_adv: Option<f32> = None;
+                        // E1-C 卡 C：格內標點覆寫臂。**合併口徑與 cell_adv 不同**：
+                        // 覆寫臂是「族的身分」不是尺，混排（同格兩段宣告不同臂）時
+                        // 任選一臂都會把別族的標點寬套進來 ⇒ 保守退回不覆寫（0），
+                        // 比照本庫「混排格保守走舊斷行，零誤窄」紀律但更嚴。
+                        let mut cell_arm: Option<u8> = None;
                         // R32：本格 anchors 的 wrap 推下量（同格多段取最大）。
                         let mut wrap_top: Option<f32> = None;
                         for b in &c.blocks {
@@ -869,6 +876,14 @@ pub fn table_input(
                                     // 混排格保守走舊斷行，零誤窄）。
                                     if let Some(a) = advs.get(index) {
                                         cell_adv = Some(cell_adv.map_or(*a, |v: f32| v.max(*a)));
+                                    }
+                                    // E1-C 卡 C：混排（同格兩段不同臂）→ 退回不覆寫。
+                                    if let Some(a) = arms.get(index) {
+                                        cell_arm = Some(match cell_arm {
+                                            None => *a,
+                                            Some(prev) if prev == *a => prev,
+                                            Some(_) => quire_layout::PUNCT_ARM_NONE,
+                                        });
                                     }
                                     // R32：wrapSquare 文字框推下量（LO 首行落框底）。
                                     if let Some(off) = wrap_tops.get(index) {
@@ -894,6 +909,7 @@ pub fn table_input(
                                         line_ref_bands,
                                         run_spans,
                                         advs,
+                                        arms,
                                         // K8-shd：巢狀表沿用同一 ctx；樣式未自帶
                                         // 時繼承本表（子表常不重複宣告 tblStyle）。
                                         cond,
@@ -957,6 +973,7 @@ pub fn table_input(
                             },
                             text_size_pt: cell_size,
                             text_advance_scale: cell_adv,
+                            text_punct_arm: cell_arm.filter(|a| *a != quire_layout::PUNCT_ARM_NONE),
                             text_line_h_pt: text_line_h,
                             run_spans: spans,
                         }
@@ -1394,6 +1411,9 @@ pub fn build_slots(
     line_hs: &[f32],
     line_ref_bands: u32,
     advance_scales: &[f32],
+    // E1-C 卡 C：逐段全形標點覆寫臂（與 `advance_scales` 同索引、同選族口徑；
+    // 空表／0＝舊行為逐位元組不變）。
+    punct_arms: &[u8],
     // K8-shd：條件底紋 ctx（`None`＝零擾動：頁首尾表格／診斷鏡像／回塞鎖）。
     cond_ctx: Option<&ShadingCtx<'_>>,
     // K17：樣式表（撐列 pitch 的框內字族／字級退檔來源，取 docDefaults；
@@ -1420,6 +1440,16 @@ pub fn build_slots(
         .iter()
         .enumerate()
         .filter(|(i, a)| a.is_finite() && texts.get(*i).is_some_and(|t| !t.trim().is_empty()))
+        .map(|(i, a)| (i, *a))
+        .collect();
+    // E1-C 卡 C：段落索引 → 標點覆寫臂（與 `advs` 同過濾口徑：空文字段不參與）。
+    let arms: HashMap<usize, u8> = punct_arms
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| {
+            **a != quire_layout::PUNCT_ARM_NONE
+                && texts.get(*i).is_some_and(|t| !t.trim().is_empty())
+        })
         .map(|(i, a)| (i, *a))
         .collect();
     // L2-cellruns：格內文字的 run 級樣式標注（只含確有多樣式的段落；
@@ -1466,6 +1496,7 @@ pub fn build_slots(
                 line_ref_bands,
                 &run_spans,
                 &advs,
+                &arms,
                 // 正文表：頂層無繼承樣式（每表自帶 `w:tblStyle`；巢狀繼承
                 // 在 table_input 內部遞迴處理）。
                 cond_ctx,
@@ -2237,6 +2268,8 @@ mod tests {
                 &doc.paragraphs,
                 &[],
                 1,
+                &[],
+                // E1-C 卡 C：本測只鎖槽錨點口徑——標點覆寫臂傳空表＝零擾動路徑。
                 &[],
                 // K8-shd：本測只鎖槽錨點口徑——條件底紋傳 None＝零擾動路徑。
                 None,

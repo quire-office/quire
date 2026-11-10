@@ -167,6 +167,24 @@ fn para_advance_scale(runs: &[quire_ooxml::Run]) -> f32 {
     }
 }
 
+/// E1-C 卡 C：段「主宣告族」全形標點覆寫臂（engine-api `para_punct_arm` 鏡像：
+/// 選族口徑逐行同構；查表實作共用到 `quire_layout::punct_arm_for_face`，故本
+/// 工具與引擎不會分叉）。回塞鎖同 `K7_WRAP_WIDTH_BUGGY`（兩軸同進退）。
+fn para_punct_arm(runs: &[quire_ooxml::Run]) -> u8 {
+    if std::env::var_os("K7_WRAP_WIDTH_BUGGY").is_some() {
+        return quire_layout::PUNCT_ARM_NONE;
+    }
+    let fam = runs
+        .iter()
+        .find(|r| !r.text.is_empty() && r.effective_fonts.is_some())
+        .or_else(|| runs.iter().find(|r| r.effective_fonts.is_some()))
+        .and_then(|r| select_family(r.effective_fonts.as_ref(), &r.text));
+    match fam {
+        Some(f) => quire_layout::punct_arm_for_face(&f),
+        None => quire_layout::PUNCT_ARM_NONE,
+    }
+}
+
 /// K6：一組目標行高 → 文件帶尺（同引擎 `choose_grid_line_h`）。
 fn choose_grid_line_h(targets: &[f32]) -> Option<(f32, u32)> {
     // 計次後只留「有意義」的行高：單一空段／裝飾段的 14.04pt 不該把整份
@@ -661,6 +679,8 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         .iter()
         .map(|p| para_advance_scale(&p.runs))
         .collect();
+    // E1-C 卡 C：逐段標點覆寫臂（engine 同徑，與 grid_adv_v 同選族口徑）。
+    let grid_punct_v: Vec<u8> = eff_all.iter().map(|p| para_punct_arm(&p.runs)).collect();
     let slots = tables::build_slots(
         &doc.tables,
         &texts,
@@ -672,6 +692,7 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         &para_line_h_v,
         line_ref_bands,
         &grid_adv_v,
+        &grid_punct_v,
     );
     let bands = tables::build_images(&images_xml, params.line_h_pt(), &params, &sections);
     // br-page 硬斷點（ECMA-376 §17.4.3）：canonical 段落偏移直傳版面層。
@@ -741,6 +762,7 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
         before_bands: grid_before_v,
         after_bands: grid_after_v,
         advance_scale: grid_adv_v,
+        punct_arm: grid_punct_v,
     };
     Ok(DocInputs {
         texts,

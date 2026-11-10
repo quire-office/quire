@@ -17,10 +17,12 @@
 //! （研究報告 §風險2：字型子集服務統一 metrics）。
 
 pub mod kp;
+pub mod punct_advance;
 pub mod shaping;
 pub mod table;
 pub mod uax14;
 
+pub use punct_advance::{punct_arm_for_face, punct_em, PUNCT_ARM_NONE};
 pub use shaping::{
     shape_advances, ClusterAdvance, FontMetrics, TextMeasurer, EMBEDDED_FONT, EMBEDDED_FONT_FAMILY,
 };
@@ -784,6 +786,10 @@ pub struct ParaGrid {
     /// engine 由級聯主宣告族查表餵入）。缺位/1.0＝舊行為逐位元組不變；
     /// 只在 KP 斷行的 cluster 寬上乘入（不動 pitch／字級／發射幾何）。
     pub advance_scale: Vec<f32>,
+    /// E1-C 卡 C：逐段「全形標點覆寫臂」（宣告族→LO 渲染 face 的 1.0 em
+    /// 標點真值臂，見 [`crate::punct_advance`]）。缺位／0＝舊行為逐位元組不變。
+    /// 只作用於非 CJK script run 的覆寫碼點（與 `advance_scale` 同臂同守門）。
+    pub punct_arm: Vec<u8>,
 }
 
 impl ParaGrid {
@@ -815,6 +821,14 @@ impl ParaGrid {
     /// 段落 i 的水平 advance 尺（K7-cal；缺位＝1.0＝舊行為）。
     pub fn advance_scale_of(&self, para: usize) -> f32 {
         self.advance_scale.get(para).copied().unwrap_or(1.0)
+    }
+
+    /// 段落 i 的全形標點覆寫臂（E1-C 卡 C；缺位＝0＝不覆寫＝舊行為）。
+    pub fn punct_arm_of(&self, para: usize) -> u8 {
+        self.punct_arm
+            .get(para)
+            .copied()
+            .unwrap_or(crate::PUNCT_ARM_NONE)
     }
 }
 
@@ -2312,7 +2326,12 @@ impl LayoutEngine {
         let content_w = section_break_w_pt(&self.params, &self.sections, i);
         let size = self.grid.size_of(i, self.params.font_size_pt);
         // K7-cal：逐段水平尺（缺位/1.0＝舊行為；KP 只在 cluster 寬上乘入）。
-        let m = TextMeasurer::with_advance_scale(size, self.grid.advance_scale_of(i));
+        // E1-C 卡 C：同段帶標點覆寫臂（缺位/0＝舊行為）。
+        let m = TextMeasurer::with_scale_and_punct(
+            size,
+            self.grid.advance_scale_of(i),
+            self.grid.punct_arm_of(i),
+        );
         let (lines, para_breaks) = break_para_lines(
             &self.texts[i],
             content_w,

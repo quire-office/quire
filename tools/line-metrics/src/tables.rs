@@ -241,6 +241,8 @@ pub fn table_input(
     line_hs: &HashMap<usize, f32>,
     line_ref_bands: u32,
     advs: &HashMap<usize, f32>,
+    // E1-C 卡 C：段落索引 → 標點覆寫臂（與 advs 同口徑；空表＝舊行為）。
+    arms: &HashMap<usize, u8>,
 ) -> TableInput {
     let p = &t.props;
     TableInput {
@@ -290,6 +292,9 @@ pub fn table_input(
                         let mut cell_size: Option<f32> = None;
                         // K7-cal：格內水平尺（一格多段取最大＝保守少塞字）。
                         let mut cell_adv: Option<f32> = None;
+                        // E1-C 卡 C：格內標點覆寫臂（合併口徑比照 engine
+                        // table_map：混排（同格兩段不同臂）→ 退回不覆寫）。
+                        let mut cell_arm: Option<u8> = None;
                         for b in &c.blocks {
                             match b {
                                 // 段落索引引用扁平序列：越界＝畸形檔，跳過（容錯）。
@@ -306,6 +311,14 @@ pub fn table_input(
                                     // engine table_map；呼叫端已濾空文字段）。
                                     if let Some(a) = advs.get(index) {
                                         cell_adv = Some(cell_adv.map_or(*a, |v: f32| v.max(*a)));
+                                    }
+                                    // E1-C 卡 C：混排（同格兩段不同臂）→ 退回不覆寫。
+                                    if let Some(a) = arms.get(index) {
+                                        cell_arm = Some(match cell_arm {
+                                            None => *a,
+                                            Some(prev) if prev == *a => prev,
+                                            Some(_) => quire_layout::PUNCT_ARM_NONE,
+                                        });
                                     }
                                     // 錨定在該段的格內圖：段落
                                     // 之後依序追加（文件序；查無尺寸＝老實跳過）。
@@ -325,6 +338,7 @@ pub fn table_input(
                                         line_hs,
                                         line_ref_bands,
                                         advs,
+                                        arms,
                                     ))));
                                 }
                             }
@@ -347,6 +361,8 @@ pub fn table_input(
                             margins: c.props.margins.as_ref().map(cell_margins),
                             text_size_pt: cell_size,
                             text_advance_scale: cell_adv,
+                            // E1-C 卡 C：混排退回（臂 0）＝不覆寫（鏡像 engine）。
+                            text_punct_arm: cell_arm.filter(|a| *a != quire_layout::PUNCT_ARM_NONE),
                             text_line_h_pt: text_line_h,
                         }
                     })
@@ -550,6 +566,8 @@ pub fn build_slots(
     line_hs: &[f32],
     line_ref_bands: u32,
     advance_scales: &[f32],
+    // E1-C 卡 C：逐段標點覆寫臂（與 advance_scales 同索引；空表／0＝舊行為）。
+    punct_arms: &[u8],
 ) -> Vec<TableSlot> {
     let styles = styles_xml.map(table_style_borders).unwrap_or_default();
     let cell_imgs = cell_image_map(images);
@@ -565,6 +583,16 @@ pub fn build_slots(
         .iter()
         .enumerate()
         .filter(|(i, a)| a.is_finite() && texts.get(*i).is_some_and(|t| !t.trim().is_empty()))
+        .map(|(i, a)| (i, *a))
+        .collect();
+    // E1-C 卡 C：段落索引 → 標點覆寫臂（與 advs 同過濾口徑，鏡像 engine build_slots）。
+    let arms: HashMap<usize, u8> = punct_arms
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| {
+            **a != quire_layout::PUNCT_ARM_NONE
+                && texts.get(*i).is_some_and(|t| !t.trim().is_empty())
+        })
         .map(|(i, a)| (i, *a))
         .collect();
     // K6：段落索引 → 級聯量化前行高（僅細化檔消費）。
@@ -594,6 +622,7 @@ pub fn build_slots(
                 &line_h_map,
                 line_ref_bands,
                 &advs,
+                &arms,
             );
             let avail_w = avail_w_for(sections, params, bt.para_start);
             let layout = quire_layout::table::layout_table(&input, avail_w, line_h, &m, 0);

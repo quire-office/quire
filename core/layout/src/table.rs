@@ -164,6 +164,11 @@ pub struct CellInput {
     /// 只在格內 KP 斷行的 cluster 寬上乘入；發射 x 累加不乘（發射幾何零擾動）。
     #[serde(default)]
     pub text_advance_scale: Option<f32>,
+    /// E1-C 卡 C：格內斷行的「全形標點覆寫臂」（宣告族→LO 渲染 face 的 1.0 em
+    /// 標點真值臂，見 `quire_layout::punct_advance`）。`None`/0＝舊行為逐位元組不變。
+    /// 與 `text_advance_scale` 同臂同守門（同段選族口徑），只作用非 CJK run。
+    #[serde(default)]
+    pub text_punct_arm: Option<u8>,
     /// K6：與 `blocks` 中**文字 block 出現序**逐位對齊的宣告行高（pt，
     /// 量化前；`cascade_paragraphs` 的 auto 基準字級×倍率）。格內一行
     /// 文字改佔 `round(本值／帶尺)` 帶，不再吃全域 `line_ref_bands`——否則
@@ -972,9 +977,13 @@ pub fn layout_table(
             // 全域 m，既有檔案逐位元組不變）。
             // K7-cal：格內水平尺（None/1.0＝沿用全域尺＝舊行為）。
             let cell_adv = cell.text_advance_scale.unwrap_or(1.0);
+            // E1-C 卡 C：格內標點覆寫臂（None/0＝舊行為；與 cell_adv 同段同族）。
+            let cell_arm = cell.text_punct_arm.unwrap_or(crate::PUNCT_ARM_NONE);
             let cell_m = match cell.text_size_pt {
-                Some(s) if s > 0.0 => TextMeasurer::with_advance_scale(s, cell_adv),
-                _ if cell_adv != 1.0 => TextMeasurer::with_advance_scale(m.size_pt(), cell_adv),
+                Some(s) if s > 0.0 => TextMeasurer::with_scale_and_punct(s, cell_adv, cell_arm),
+                _ if cell_adv != 1.0 || cell_arm != crate::PUNCT_ARM_NONE => {
+                    TextMeasurer::with_scale_and_punct(m.size_pt(), cell_adv, cell_arm)
+                }
                 _ => *m,
             };
 

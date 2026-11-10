@@ -25,6 +25,8 @@ use swash::shape::ShapeContext;
 use swash::text::{Codepoint, Script};
 use swash::FontRef;
 
+use crate::punct_advance::{punct_em, PUNCT_ARM_NONE};
+
 /// 內建字型子集（OFL；來源與重產方式見 assets/OFL.txt、scripts/build_font_subset.sh）。
 pub const EMBEDDED_FONT: &[u8] = include_bytes!("../assets/quire-notosanstc-subset.otf");
 
@@ -94,11 +96,20 @@ pub fn shape_advances(text: &str, size_pt: f32) -> Vec<ClusterAdvance> {
     shape_advances_scaled(text, size_pt, 1.0)
 }
 
-/// K7-cal：帶水平 advance 尺的 shaping。`scale` 只乘 **Latin/通用** cluster
-/// （宣告族→LO 渲染 face 的寬比校準）；Han/Hangul 等 CJK cluster 走 em
-/// 方塊、LO 替代 face 同為方塊，**不乘**（乘了會把方塊字縮出裂縫）。
-/// `scale==1.0` 時與 [`shape_advances`] 逐位元組全等（舊行為守門）。
-pub fn shape_advances_scaled(text: &str, size_pt: f32, scale: f32) -> Vec<ClusterAdvance> {
+/// E1-C 卡 C：帶「全形標點覆寫臂」的 shaping。`punct_arm`＝宣告族對應的
+/// LO 渲染 face 覆寫臂（見 [`crate::punct_advance`]）；`PUNCT_ARM_NONE` 時與
+/// [`shape_advances_scaled`] 逐位元組全等（舊行為守門）。
+///
+/// 覆寫只在 **Latin/通用 script run** 內生效（Han/Hangul/Kana run 原樣走 em 方塊）
+/// ——LO 對漢語段的 ‘ ’ “ ” 實渲 1.0 em（本卡 rawdict 實測），動它會把漢語標點
+/// 一起改窄。覆寫值是**取代**而非疊乘：LO 渲 ’ 用的就是該 face 自己的 hmtx，
+/// 與 `scale`（拉丁字母寬比校準）無涉。
+pub fn shape_advances_with_punct(
+    text: &str,
+    size_pt: f32,
+    scale: f32,
+    punct_arm: u8,
+) -> Vec<ClusterAdvance> {
     let mut out = Vec::new();
     if text.is_empty() {
         return out;
@@ -120,14 +131,13 @@ pub fn shape_advances_scaled(text: &str, size_pt: f32, scale: f32) -> Vec<Cluste
     for (rs, rl, script) in script_runs(text) {
         // K7-cal：CJK（Han／Hangul／Kana）cluster 不乘尺（em 方塊，LO 替代
         // face 同為方塊）；Latin/通用乘。
-        let run_scale = if matches!(
+        let cjk_run = matches!(
             script,
             Script::Han | Script::Hangul | Script::Hiragana | Script::Katakana
-        ) {
-            1.0
-        } else {
-            s
-        };
+        );
+        let run_scale = if cjk_run { 1.0 } else { s };
+        // E1-C 卡 C：只有非 CJK run 才查覆寫表（CJK 段維持 em 方塊＝LO 真值）。
+        let run_punct = if cjk_run { PUNCT_ARM_NONE } else { punct_arm };
         let run_start = out.len();
         SHAPE_CTX.with(|ctx| {
             let mut ctx = ctx.borrow_mut();
@@ -135,6 +145,8 @@ pub fn shape_advances_scaled(text: &str, size_pt: f32, scale: f32) -> Vec<Cluste
             shaper.add_str(&text[rs..rs + rl]);
             shaper.shape_with(|cluster| {
                 let g = cluster.glyphs;
+                let src =
+                    &text[rs + cluster.source.start as usize..rs + cluster.source.end as usize];
                 let w = if g.is_empty() {
                     // 控制字元（\n 等）：0 寬、不參與斷行寬度。
                     0.0
@@ -142,7 +154,18 @@ pub fn shape_advances_scaled(text: &str, size_pt: f32, scale: f32) -> Vec<Cluste
                     // .notdef＝子集缺字：平均字寬估值佔位（斷行仍收斂）。
                     avg
                 } else {
-                    g.iter().map(|x| x.advance).sum()
+                    let mut w: f32 = g.iter().map(|x| x.advance).sum();
+                    // 覆寫：單字元 cluster 且該碼點在臂表內（真 face 缺字時表內
+                    // 缺席＝不覆寫）。取代而非疊乘，比照 LO 取該 face hmtx 的事實。
+                    if run_punct != PUNCT_ARM_NONE {
+                        let mut it = src.chars();
+                        if let (Some(c), None) = (it.next(), it.next()) {
+                            if let Some(em) = punct_em(run_punct, c as u32) {
+                                w = em * size;
+                            }
+                        }
+                    }
+                    w
                 };
                 out.push(ClusterAdvance {
                     start: rs as u32 + cluster.source.start,
@@ -192,14 +215,28 @@ pub fn shape_advances_scaled(text: &str, size_pt: f32, scale: f32) -> Vec<Cluste
     cov
 }
 
-/// 文字測量器：字級＋水平 advance 尺（K7-cal），餵給 `break_lines`。
+/// K7-cal：帶水平 advance 尺的 shaping。`scale` 只乘 **Latin/通用** cluster
+/// （宣告族→LO 渲染 face 的寬比校準）；Han/Hangul 等 CJK cluster 走 em
+/// 方塊、LO 替代 face 同為方塊，**不乘**（乘了會把方塊字縮出裂縫）。
+/// `scale==1.0` 時與 [`shape_advances`] 逐位元組全等（舊行為守門）。
+///
+/// E1-C 卡 C：本函數是 [`shape_advances_with_punct`] 的無標點覆寫特例。
+pub fn shape_advances_scaled(text: &str, size_pt: f32, scale: f32) -> Vec<ClusterAdvance> {
+    shape_advances_with_punct(text, size_pt, scale, PUNCT_ARM_NONE)
+}
+
+/// 文字測量器：字級＋水平 advance 尺（K7-cal）＋全形標點覆寫臂（E1-C 卡 C），
+/// 餵給 `break_lines`。
 /// `advance_scale`＝宣告族→LO 渲染 face 的字形寬比（見 engine-api
 /// `face_advance_scale`；1.0＝舊行為）。水平尺只影響 `text_width`，
 /// 不動 `size_pt`（KP 取 clusters 一律經本器，caret/發射路徑各自另製）。
+/// `punct_arm`＝宣告族→LO 渲染 face 的「1.0 em 全形標點」覆寫臂（見
+/// [`crate::punct_advance`]）；`PUNCT_ARM_NONE`＝舊行為逐位元組不變。
 #[derive(Debug, Clone, Copy)]
 pub struct TextMeasurer {
     size_pt: f32,
     advance_scale: f32,
+    punct_arm: u8,
 }
 
 impl TextMeasurer {
@@ -207,6 +244,7 @@ impl TextMeasurer {
         Self {
             size_pt,
             advance_scale: 1.0,
+            punct_arm: PUNCT_ARM_NONE,
         }
     }
 
@@ -220,7 +258,21 @@ impl TextMeasurer {
         Self {
             size_pt,
             advance_scale: s,
+            punct_arm: PUNCT_ARM_NONE,
         }
+    }
+
+    /// E1-C 卡 C：在既有水平尺之上追加「全形標點覆寫臂」。
+    /// `PUNCT_ARM_NONE` 時與 [`Self::with_advance_scale`] 逐位元組全等（守門）。
+    pub fn with_punct_arm(mut self, punct_arm: u8) -> Self {
+        self.punct_arm = punct_arm;
+        self
+    }
+
+    /// E1-C 卡 C：一次性構造（水平尺＋標點覆寫臂）；`punct_arm＝PUNCT_ARM_NONE`
+    /// 時等價 [`Self::with_advance_scale`]。
+    pub fn with_scale_and_punct(size_pt: f32, advance_scale: f32, punct_arm: u8) -> Self {
+        Self::with_advance_scale(size_pt, advance_scale).with_punct_arm(punct_arm)
     }
 
     pub fn size_pt(&self) -> f32 {
@@ -232,9 +284,14 @@ impl TextMeasurer {
         self.advance_scale
     }
 
+    /// E1-C 卡 C：標點覆寫臂（0＝不覆寫）。
+    pub fn punct_arm(&self) -> u8 {
+        self.punct_arm
+    }
+
     /// shaped 總寬（pt；K7-cal 尺按 script 選擇性乘入，與 KP 斷行同徑）。
     pub fn text_width(&self, s: &str) -> f32 {
-        shape_advances_scaled(s, self.size_pt, self.advance_scale)
+        shape_advances_with_punct(s, self.size_pt, self.advance_scale, self.punct_arm)
             .iter()
             .map(|c| c.w)
             .sum()

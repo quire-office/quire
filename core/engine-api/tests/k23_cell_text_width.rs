@@ -88,13 +88,32 @@ fn advance_scale_of(family: Option<&str>) -> f32 {
     }
 }
 
+/// E1-C 卡 C：發射項宣告 face 的**全形標點覆寫臂**（與斷行器 `para_punct_arm`
+/// 同表同口徑）。本檔推估尺的宗旨是「斷行器實際用的那把尺」（見檔頭《量測
+/// 口徑》），卡 C 落地後斷行器多帶一條標點臂 ⇒ 估測器不同步吃臂就會把
+/// 「窄化後才塞得進去的行」用舊寬度量成越界（fdo68607 p1/p5 兩條含 ‘ 的行
+/// 實測即如此，屬估測器滯後，非引擎回退：渲染端拿 `font-family="Calibri"`
+/// 渲的 ’ 本來就是真 Calibri 的 0.2495 em）。
+/// 回塞鎖同引擎（`K7_ADVANCE_SCALE_BUGGY=1`／`K7_WRAP_WIDTH_BUGGY=1` ⇒ 臂退 0）。
+fn punct_arm_of(family: Option<&str>) -> u8 {
+    let buggy = std::env::var_os("K7_ADVANCE_SCALE_BUGGY").is_some()
+        || std::env::var_os("K7_WRAP_WIDTH_BUGGY").is_some();
+    if buggy {
+        return quire_layout::PUNCT_ARM_NONE;
+    }
+    family
+        .map(quire_layout::punct_arm_for_face)
+        .unwrap_or(quire_layout::PUNCT_ARM_NONE)
+}
+
 /// 一條文字項在「其宣告 face 尺」下的推估右緣。
 fn est_right(x: f32, text: &str, size_pt: f32, family: Option<&str>) -> f32 {
-    x + TextMeasurer::with_advance_scale(size_pt, advance_scale_of(family)).text_width(text)
+    x + TextMeasurer::with_scale_and_punct(size_pt, advance_scale_of(family), punct_arm_of(family))
+        .text_width(text)
 }
 
 fn meas(size_pt: f32, family: Option<&str>) -> TextMeasurer {
-    TextMeasurer::with_advance_scale(size_pt, advance_scale_of(family))
+    TextMeasurer::with_scale_and_punct(size_pt, advance_scale_of(family), punct_arm_of(family))
 }
 
 /// 一頁中 x>`x_min` 且非空的所有文字項，依 (y, x) 排序回傳

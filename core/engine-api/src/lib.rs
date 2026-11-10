@@ -702,6 +702,14 @@ impl Engine {
                 .map(|p| para_advance_scale(&p.runs))
                 .collect()
         };
+        // E1-C 卡 C：逐段全形標點覆寫臂（宣告族→LO 渲染 face 的 1.0 em 標點真值）。
+        // 與 `grid_adv_v` **同進退**：共用 `K7_*_BUGGY` 回塞鎖（同一量測模型的兩軸，
+        // 分開回塞會讓斷行尺與標點尺不同源）；未宣告族／未命中＝0＝舊行為。
+        let grid_punct_v: Vec<u8> = if adv_buggy {
+            vec![quire_layout::PUNCT_ARM_NONE; eff_refs.len()]
+        } else {
+            eff_refs.iter().map(|p| para_punct_arm(&p.runs)).collect()
+        };
         // K8-shd：正文表的底色級聯 ctx（樣式表＋主題色）。樣式表用已過
         // rels 閘的 `style_table`（K6 口徑：無關聯 styles.xml 的檔案條件帶
         // 不生效——LO 對未關聯樣式表整支忽略）。回塞鎖 `K8_SHD_BUGGY=1`
@@ -722,6 +730,7 @@ impl Engine {
             &para_line_h_v,
             line_ref_bands,
             &grid_adv_v,
+            &grid_punct_v,
             Some(&cond_ctx),
             // K17：撐列 pitch 退檔來源＝文件級樣式表（docDefaults 字族／字級）。
             Some(&style_table),
@@ -828,6 +837,7 @@ impl Engine {
             before_bands: grid_before_v,
             after_bands: grid_after_v,
             advance_scale: grid_adv_v,
+            punct_arm: grid_punct_v,
         };
         let layout = LayoutEngine::with_breaks_grid(
             &texts,
@@ -1104,6 +1114,9 @@ impl Engine {
             &part.styles,
             &hf_line_hs,
             self.line_ref_bands,
+            &[],
+            // E1-C 卡 C：頁首尾表老實不接標點覆寫臂（比照 K7-cal 水平尺在 hf 路徑
+            // 的零擾動口徑）——空表＝舊行為逐位元組不變。
             &[],
             // K8-shd：頁首尾表格走零擾動路徑（條件帶只作用正文表；
             // hf 表換算風險未量，比照 K7-cal 水平尺老實不接，屬後續卡）。
@@ -3029,6 +3042,28 @@ fn para_advance_scale(runs: &[quire_ooxml::Run]) -> f32 {
     match fam {
         Some(f) => face_advance_scale(&f),
         None => 1.0,
+    }
+}
+
+/// E1-C 卡 C：段「主宣告族」的**全形標點覆寫臂**——選族口徑與
+/// [`para_advance_scale`] **逐行同構**（首個有文字 run 的有效字型族；全無宣告＝
+/// 不覆寫），兩軸因此恆同族。查表實現在 `quire_layout::punct_advance`
+/// （臂分組與 `face_advance_scale` 逐臂對齊，見該檔記帳）。
+///
+/// 回塞鎖：共用 `K7_WRAP_WIDTH_BUGGY`／`K7_ADVANCE_SCALE_BUGGY`——水平尺與
+/// 標點尺屬同一量測模型，必須同進退（只退其一會讓斷行尺與標點尺不同源）。
+fn para_punct_arm(runs: &[quire_ooxml::Run]) -> u8 {
+    if !k7_advance_enabled() {
+        return quire_layout::PUNCT_ARM_NONE;
+    }
+    let fam = runs
+        .iter()
+        .find(|r| !r.text.is_empty() && r.effective_fonts.is_some())
+        .or_else(|| runs.iter().find(|r| r.effective_fonts.is_some()))
+        .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
+    match fam {
+        Some(f) => quire_layout::punct_arm_for_face(&f),
+        None => quire_layout::PUNCT_ARM_NONE,
     }
 }
 
@@ -5704,6 +5739,9 @@ fn emit_line_run_items(
     // K7-cal：段級水平尺（＝KP 斷行同尺——同由 para_advance_scale 出，行寬
     // 與 x 累加恆等；未宣告族/回塞鎖＝1.0＝舊尺逐位元組不變）。
     let adv = para.map_or(1.0, |p| para_advance_scale(&p.runs));
+    // E1-C 卡 C：段級標點覆寫臂（同由 para_punct_arm 出，與 KP 斷行同源；
+    // 未宣告族/回塞鎖＝0＝舊行為逐位元組不變）。
+    let punct = para.map_or(quire_layout::PUNCT_ARM_NONE, |p| para_punct_arm(&p.runs));
     let char_indices: Vec<(usize, char)> = line.text.char_indices().collect();
     let line_len_cp = char_indices.len();
     if line_len_cp == 0 {
@@ -5910,7 +5948,14 @@ fn emit_line_run_items(
             }
             scale
         };
-        let seg_w = TextMeasurer::with_advance_scale(seg_size, seg_adv).text_width(seg_text);
+        // E1-C 卡 C：run 級標點覆寫臂（與 `seg_adv` 的 base 同族選取口徑：
+        // 有宣告族按該族、退回段級臂 `punct`）。
+        let seg_punct = seg_fam
+            .as_ref()
+            .map(|f| quire_layout::punct_arm_for_face(f))
+            .unwrap_or(punct);
+        let seg_w =
+            TextMeasurer::with_scale_and_punct(seg_size, seg_adv, seg_punct).text_width(seg_text);
         if let Some(bg_argb) = highlight {
             items.push(DrawItem::Rect {
                 x: base_x + x_off,
@@ -6433,6 +6478,8 @@ impl Engine {
             &paragraphs,
             &hf_line_hs,
             self.line_ref_bands,
+            &[],
+            // E1-C 卡 C：頁首尾表不接標點覆寫臂（同上 8-3 注；空表＝舊行為）。
             &[],
             // K8-shd：頁首尾表格零擾動路徑（同上 8-3 注）。
             None,
