@@ -319,7 +319,7 @@ binary，別拿可能髒的共享 checkout 當中立基線。
   （實跑：`框底邊 y (751.85) 未依描邊向內收斂至 LO 真值 749.85`，2 passed/1 failed）
   ⇒ 本卡非空轉。
 * `d9_frame_overlap` 3 燈綠（零回退護欄）；`d8_bottom_flow` 4 燈綠（行寬軸改動不碰
-  坏 D8 底流）。
+  壞 D8 底流）。
 * `ow-gate.sh` 八閘 `GATE_SUMMARY fail=0`；corpus 樣式 A/B
   `scanned=399/400 regressed_files=0 regressed_items=0`。
 * render_lab（fdo76591／WC048／n751077）頁數 3/3 一致，fdo76591 圖相似度

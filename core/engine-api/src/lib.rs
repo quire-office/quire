@@ -2077,7 +2077,7 @@ impl Engine {
             .map(|p| p.floating_images.as_slice())
     }
 
-    /// D9b 欠債三：該頁的**版心盒**（原點＝頁實際邊距，宽高＝該頁起頭 section 的
+    /// D9b 欠債三：該頁的**版心盒**（原點＝頁實際邊距，寬高＝該頁起頭 section 的
     /// `pgSz`−左右／上下邊距）。發射層的滿版判定式與考卷共用的同一事實來源
     /// ——零檔案常量（取代 `500.0`／`540.5` 這類抄自單一檔案的字面量）。
     ///
@@ -2085,7 +2085,7 @@ impl Engine {
     /// * 原點取**頁**的 `margin_left_pt`／`margin_top_pt`（含頁首推下），與
     ///   `attach_floating_images` 把 `Margin` 系鎖點合成成頁絕對時加的是同一對值
     ///   ⇒ 判定式左右兩側同原點，不致因推下錯位（K7b 同議）；
-    /// * 宽高取**節**幾何（`sec_geo_all`，缺＝文件基準 params 合成，同 `end_geo`
+    /// * 寬高取**節**幾何（`sec_geo_all`，缺＝文件基準 params 合成，同 `end_geo`
     ///   後備口徑）；
     /// * `page` 越界／尾註續頁＝`None`（呼叫端據此退回舊路徑，不虛構幾何）。
     pub fn page_content_box(&self, page: usize) -> Option<ContentBox> {
@@ -4411,7 +4411,7 @@ struct CoverFrameFacts {
 ///
 /// 逐條口徑：
 /// * **版心盒必須在場**（`content`＝該頁 `page_content_box`：頁原點邊距 ＋
-///   section `pgSz`−邊距 推導的宽高，零檔案常量）；
+///   section `pgSz`−邊距 推導的寬高，零檔案常量）；
 /// * **宣告偏移必須存在**（VML `style` 的 `margin-left`／`margin-top`，且原點系
 ///   ＝版心；`align`／`pct` 式與 `page` 系釘定一律 `None` ⇒ 不成立）。n751077
 ///   （`pgMar.left`＝197.90pt）的群組就是靠這條不誤傷（卡面 §2 第 3 條點名場景）；
