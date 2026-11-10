@@ -296,7 +296,7 @@ fn lamp6_corpus_text_is_conserved() {
         "iBall’s",
     ] {
         assert!(
-            mine.replace('\u{2019}', "’").contains(needle),
+            mine.contains(needle),
             "卡 C 落地後 Team 段文字不再守恆，找不到 {needle:?}（全篇摺疊後：{}…）",
             &mine[..mine.len().min(160)]
         );
