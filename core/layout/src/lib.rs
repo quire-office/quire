@@ -937,6 +937,23 @@ fn usize_max() -> usize {
     usize::MAX
 }
 
+/// D9b 欠債三：**版心盒**（該頁起頭 section 的正文盒原點與宽高，pt，頁絕對）。
+/// 發射層的滿版判定式「框寬 ≥ 版心寬 且 |框起點 −（版心原點＋宣告偏移）| ≤ 容差」
+/// 的右側項——取代 `500.0`／`540.5` 這類從單一檔案抄下來的字面量。
+/// `Copy`：只帶 f32，不得帶任何非 Copy 欄位（本結構塞進 `Copy` 語境的轉運點）。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ContentBox {
+    /// 版心左緣（x 原點）＝頁 `margin_left_pt`。
+    pub x_pt: f32,
+    /// 版心上緣（y 原點）＝頁 `margin_top_pt`（含頁首推下，與浮動圖 y 合成律
+    /// 同基準——`attach_floating_images` 的 `Margin` 系加的就是這個值）。
+    pub y_pt: f32,
+    /// 版心寬＝頁寬 − 左 − 右（section `w:pgMar`，非任何檔案常量）。
+    pub w_pt: f32,
+    /// 版心高＝頁高 − 上 − 下（同上）。
+    pub h_pt: f32,
+}
+
 /// 頁面上的浮動圖片鎖點（不佔行網格；座標＝頁絕對 pt，發射前已按各軸
 /// `relativeFrom` 原點系換算完成）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3812,6 +3829,10 @@ mod tests {
             // D9b：合成帶構造器不宣告 inset、非框內圖（本組測試尺不動）。
             txbx_inset: None,
             txbx_content_pic: false,
+            // D9b 欠債三：合成帶無 VML／DrawingML 宣告偏移（K27 教訓：新增欄位
+            // 必須同步所有構造點，`cargo test --lib --no-run` 抓 E0063）。
+            pos_x_pt: None,
+            pos_y_pt: None,
         }
     }
 

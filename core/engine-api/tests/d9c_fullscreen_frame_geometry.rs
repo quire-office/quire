@@ -55,7 +55,8 @@ const LO_STROKE_W: f32 = 4.0;
 fn d9c_lamp1_declared_offset_and_content_box_reach_emission() {
     let bytes = read_corpus("ooxmlexport/fdo76591.docx");
     let eng = Engine::from_docx_bytes(&bytes).expect("開啟 fdo76591 失敗");
-    let (cx, _cy, cw, _ch) = eng.page_content_box(0).expect("首頁版心盒存在");
+    let cb = eng.page_content_box(0).expect("首頁版心盒存在");
+    let (cx, cw) = (cb.x_pt, cb.w_pt);
     assert!(
         (cx - 36.0).abs() < 0.01,
         "fdo76591 版心 x 原點應由 pgMar/@w:left(720twips) 推導為 36.0pt，實得 {cx}"
@@ -70,11 +71,13 @@ fn d9c_lamp1_declared_offset_and_content_box_reach_emission() {
         .iter()
         .find(|f| (f.w_pt - 567.0).abs() < 0.01 && (f.h_pt - 733.65).abs() < 0.01)
         .expect("必須存在 567×733.65 的滿版背景框（_x0000_s1026）");
+    // 欄位名照 PM 定案（11-07 10:00 第 1 條）：走 `InlineImage::pos_x_pt`／
+    // `pos_y_pt` 既有語義承接（VML margin 第 2 式的宣告偏移原值），不新增平行欄位。
     let dx = frame
-        .vml_margin_left_pt
+        .pos_x_pt
         .expect("VML style 的 margin-left 宣告必須原樣搬到排版層（否則只能寫 22.05 字面量）");
     let dy = frame
-        .vml_margin_top_pt
+        .pos_y_pt
         .expect("VML style 的 margin-top 宣告必須原樣搬到排版層");
     assert!(
         (dx + 13.95).abs() < 0.01,
@@ -146,9 +149,14 @@ fn d9c_lamp2_insets_derive_from_declared_stroke() {
         "正文左緣 ({text_x:.2}) 偏離 LO 真值 {LO_TEXT_X} 超過 0.05pt"
     );
 
-    // 自洽律（本燈的真正新鎖）：文字左緣 −（框線左緣 − 半線寬）＝ 線寬 ＋ 框內建內縮。
-    // 左式兩項都取自我方發射值 ⇒ 只要 stroke 改變而內縮仍掛字面量，本斷言即紅。
-    let frame_left = rule_x - stroke / 2.0;
+    // 自洽律（本燈的真正新鎖）：文字左緣 −（框外緣）＝ 線寬 ＋ 框內建內縮。
+    // 口徑勘誤（PM 11-10 發車令點名的「半線寬」待核對項）：底邊是**水平** Rule，
+    // 描邊內收臂只收它的 y（top/bottom），其 x1＝框宣告左緣原值（22.05）——
+    // 再減半線寬會二次內收（run1 考卷即犯此錯：13.30≠11.30 的 2.00 差值恰是
+    // 被多減的一次 half_w）。反事實坐實（probe_y_cf／cf_inset_experiment）：
+    // sw 4→8pt ⇒ 文字 +4.00pt＝**全線寬增量原值**（非半值）⇒ 線寬項係數 1。
+    // 兩項都取自我方發射值 ⇒ 只要 stroke 改變而內縮仍掛字面量，本斷言即紅。
+    let frame_left = rule_x;
     let gap = text_x - frame_left;
     let expected = stroke + 7.3;
     assert!(
@@ -170,7 +178,8 @@ fn d9c_lamp2_insets_derive_from_declared_stroke() {
 fn d9c_lamp3_wide_margin_section_not_hit() {
     let bytes = read_corpus("ooxmlimport/n751077.docx");
     let eng = Engine::from_docx_bytes(&bytes).expect("開啟 n751077 失敗");
-    let (cx, _cy, cw, _ch) = eng.page_content_box(0).expect("首頁版心盒存在");
+    let cb = eng.page_content_box(0).expect("首頁版心盒存在");
+    let (cx, cw) = (cb.x_pt, cb.w_pt);
     assert!(
         (cx - 197.90).abs() < 0.05,
         "本燈的前提是這檔邊距劇變：pgMar/@w:left 應為 197.90pt（3958twips），實得 {cx}"
@@ -181,11 +190,19 @@ fn d9c_lamp3_wide_margin_section_not_hit() {
     );
 
     let pics = eng.page_floating_images(0).expect("首頁浮動框存在");
-    assert!(!pics.is_empty(), "n751077 首頁应有浮動框（群組）");
+    assert!(!pics.is_empty(), "n751077 首頁應有浮動框（群組）");
+    let ch = cb.h_pt;
     for f in pics {
-        let derived_hit = f.vml_margin_left_pt.is_some_and(|dx| {
-            f.w_pt >= cw && (f.x_pt - (cx + dx)).abs() <= 1.5
-        });
+        // 推導式＝實作同源：寬與高雙軸 ≥ 版心 ＋ 兩軸起點一致（容差 1.5pt）。
+        let derived_hit = match (f.pos_x_pt, f.pos_y_pt) {
+            (Some(dx), Some(dy)) => {
+                f.w_pt >= cw
+                    && f.h_pt >= ch
+                    && (f.x_pt - (cx + dx)).abs() <= 1.5
+                    && (f.y_pt - (cb.y_pt + dy)).abs() <= 1.5
+            }
+            _ => false,
+        };
         let legacy_hit = f.w_pt >= 500.0 && (f.x_pt - 22.05).abs() <= 1.5;
         assert!(
             !legacy_hit,
@@ -196,10 +213,11 @@ fn d9c_lamp3_wide_margin_section_not_hit() {
         assert!(
             derived_hit == legacy_hit,
             "推導式對 n751077 必須與舊臂同判定（命中即誤傷回退）：\
-             框 x={:.2} w={:.2} 宣告偏移={:?} → derived={derived_hit} legacy={legacy_hit}",
+             框 x={:.2} w={:.2} 宣告偏移={:?}/{:?} → derived={derived_hit} legacy={legacy_hit}",
             f.x_pt,
             f.w_pt,
-            f.vml_margin_left_pt
+            f.pos_x_pt,
+            f.pos_y_pt
         );
     }
 }

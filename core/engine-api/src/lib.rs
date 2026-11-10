@@ -6,9 +6,9 @@
 //! - 型別全 serde 化，跨 wasm 邊界走 JSON 字串。
 
 use quire_layout::{
-    breaks_from_pages, section_capacity, CaretPos, LayoutEngine, LayoutParams, LineFlow, Page,
-    ParaGrid, SectionGeometry, SectionSpec, TableSlot, TextMeasurer, MARGIN_BOTTOM, MARGIN_LEFT,
-    MARGIN_TOP,
+    breaks_from_pages, section_capacity, CaretPos, ContentBox, LayoutEngine, LayoutParams,
+    LineFlow, Page, ParaGrid, SectionGeometry, SectionSpec, TableSlot, TextMeasurer, MARGIN_BOTTOM,
+    MARGIN_LEFT, MARGIN_TOP,
 };
 use quire_ooxml::{
     diff_untouched, diff_zip_structure, parse, parse_header_footer_part_with_fonts,
@@ -2077,6 +2077,40 @@ impl Engine {
             .map(|p| p.floating_images.as_slice())
     }
 
+    /// D9b 欠債三：該頁的**版心盒**（原點＝頁實際邊距，宽高＝該頁起頭 section 的
+    /// `pgSz`−左右／上下邊距）。發射層的滿版判定式與考卷共用的同一事實來源
+    /// ——零檔案常量（取代 `500.0`／`540.5` 這類抄自單一檔案的字面量）。
+    ///
+    /// 口徑逐條：
+    /// * 原點取**頁**的 `margin_left_pt`／`margin_top_pt`（含頁首推下），與
+    ///   `attach_floating_images` 把 `Margin` 系鎖點合成成頁絕對時加的是同一對值
+    ///   ⇒ 判定式左右兩側同原點，不致因推下錯位（K7b 同議）；
+    /// * 宽高取**節**幾何（`sec_geo_all`，缺＝文件基準 params 合成，同 `end_geo`
+    ///   後備口徑）；
+    /// * `page` 越界／尾註續頁＝`None`（呼叫端據此退回舊路徑，不虛構幾何）。
+    pub fn page_content_box(&self, page: usize) -> Option<ContentBox> {
+        let pg = self.layout.pages().get(page)?;
+        let geo = self.sec_geo_all.get(&pg.section_id).copied().or_else(|| {
+            Some(SectionGeometry {
+                page_w_pt: self.params.page_w_pt,
+                page_h_pt: self.params.page_h_pt,
+                margin_top_pt: self.params.margin(MARGIN_TOP),
+                margin_bottom_pt: self.params.margin(MARGIN_BOTTOM),
+                margin_left_pt: self.params.margin(MARGIN_LEFT),
+                margin_right_pt: self.params.margin(quire_layout::MARGIN_RIGHT),
+                landscape: false,
+                continuous: false,
+                cols: Default::default(),
+            })
+        })?;
+        Some(ContentBox {
+            x_pt: pg.margin_left_pt,
+            y_pt: pg.margin_top_pt,
+            w_pt: (geo.page_w_pt - geo.margin_left_pt - geo.margin_right_pt).max(1.0),
+            h_pt: (geo.page_h_pt - geo.margin_top_pt - geo.margin_bottom_pt).max(1.0),
+        })
+    }
+
     /// 段落純文字（Web-1 隱形錨點游標插入讀目前段落用）。
     pub fn paragraph_text(&self, para: usize) -> Option<String> {
         self.layout.paragraph_text(para).map(str::to_owned)
@@ -2299,7 +2333,17 @@ impl Engine {
             let box_im = hit.map(|(_, (_, b))| b);
             match pix {
                 Some(it) => items.push(it),
-                None => emit_image_shape(&mut items, img_x, y, im.w_pt, im.h_pt, box_im),
+                None => emit_image_shape(
+                    &mut items,
+                    img_x,
+                    y,
+                    im.w_pt,
+                    im.h_pt,
+                    box_im,
+                    // D9b 欠債三：正文流無錨點事實＝Default（舊臂本路徑從不
+                    // 發火，實掃佐證見同迴路 emit_txbx_texts 呼叫端註解）。
+                    CoverFrameFacts::default(),
+                ),
             }
             if let Some((bi, (_, box_im))) = hit {
                 box_used[bi] = true;
@@ -2317,6 +2361,12 @@ impl Engine {
                     Some(box_im),
                     !r6_buggy,
                     Some((self.image_pixels.as_slice(), &mut px_used, &self.doc.parts)),
+                    // D9b 欠債三：正文流（非浮動）路徑無錨點事實＝Default ⇒
+                    // 滿版臂恆不成立。舊字面量臂理論上可命中本路徑，但實掃全
+                    // 語料 `pgMar/@w:left` ∈ 22.05pt±1.5pt 的檔數＝0（本卡
+                    // scratch 探針 probe_predicate_edges.py），舊臂本路徑從不
+                    // 發火 ⇒ 零回退。
+                    CoverFrameFacts::default(),
                 );
                 push_txbx_keys(
                     &mut txbx_keys,
@@ -2335,18 +2385,34 @@ impl Engine {
         // D9b 回塞鎖（照 K12/R34 BUGGY 先例，熱路徑只在循環外讀一次 env）：
         // `D9B_INSET_BUGGY=1` ⇒ 框內圖退回框原點（＝不吃 inset），燈 1 必紅。
         let d9b_inset_buggy = std::env::var_os("D9B_INSET_BUGGY").is_some();
+        // D9b 欠債三：本頁版心盒（滿版判定的右側項）。取不到＝None ⇒ 推導式
+        // 不成立 ⇒ 全框退回舊排序（本頁 floating_images 為空時零影響）。
+        let cover_cb = self.page_content_box(page);
+        // 回塞鎖（照 K12/R34/D9B_INSET_BUGGY 先例，熱路徑循環外讀一次 env）：
+        // `D9C_FRAME_GEOM_BUGGY=1` ⇒ 發射層把「背景覆頁框」分支整個退回
+        // （不內收描邊、文字退回框原點、排序退回推入序）⇒ d9c 燈 2 必紅
+        // （考卷頭部宣稱的鑑別力證據；實跑記 docs/d9b-inset-redlight.md §9）。
+        let d9c_geom_buggy = std::env::var_os("D9C_FRAME_GEOM_BUGGY").is_some();
         let mut sorted_floating: Vec<&quire_layout::PageFloatingImage> =
             p.floating_images.iter().collect();
         sorted_floating.sort_by_key(|fm| {
-            // D9b 逐步落地：本臂的字面量由第二個 commit 換成 pgMar 相對判定
-            // （先讓 inset 資料化單獨成-commit、可單獨回滾）。
-            // TODO(D9b)：卡面第 2 條指定「22.05 改為該 section 的 pgMar 左邊距」——
-            // 實測前提不成立（`docs/d9b-inset-redlight.md` §2：fdo76591 的
-            // pgMar.left＝36.0pt，22.05＝36.0＋VML 宣告 margin-left:−13.95pt；
-            // 照卡面替換會打紅 d9_frame_overlap 三燈）。正確寫法（VML 宣告偏移
-            // 原樣搬到排版層＋「背景覆頁框」判定）需解析層補欄位，待 PM 裁定後
-            // 另行落地；本臂暫維持 D9 字面量、零回退。
-            let is_fullscreen = fm.w_pt >= 500.0 && (fm.x_pt - 22.05).abs() <= 1.5;
+            // D9b 欠債三（本卡落地）：舊臂 `w_pt >= 500.0 && (x_pt - 22.05).abs() <= 1.5`
+            // 是 fdo76591 抄下來的兩個數（22.05＝pgMar.left 36.0＋VML 宣告
+            // margin-left −13.95，`docs/d9b-inset-redlight.md` §2）。換成同源推導：
+            // 「框寬≥版心寬＋框高≥版心高＋|框起點−(版心原點＋宣告偏移)|≤1.5pt」，
+            // 宣告偏移由 `attach_floating_images` 只在 `Margin` 原點系時搬運
+            // ⇒ n751077 的頁面釘定群組天然不成立（卡面 §2 第 3 條誤傷例）。
+            let is_fullscreen = !d9c_geom_buggy
+                && is_page_covering_frame(
+                    CoverFrameFacts {
+                        declared: match (fm.pos_x_pt, fm.pos_y_pt) {
+                            (Some(dx), Some(dy)) => Some((dx, dy)),
+                            _ => None,
+                        },
+                        content: cover_cb,
+                    },
+                    (fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt),
+                );
             if is_fullscreen {
                 0i32
             } else {
@@ -2376,6 +2442,23 @@ impl Engine {
                 !box_used[*i] && *bp == fm.para && (b.w_pt - fm.w_pt).abs() < 0.01
             });
             let box_b = hit.map(|(_, (_, b))| b);
+            // D9b 欠債三：本框的滿版判定輸入事實——宣告偏移（僅 `Margin`
+            // 原點系在 `attach_floating_images` 搬運，Some 已含原點系語義）＋
+            // 本頁版心盒。排序臂（上方 `sorted_floating.sort_by_key`）已用同一
+            // 事實，這裡發射臂複用，兩者判定必同步（不得一個換算一個字面量）。
+            // `D9C_FRAME_GEOM_BUGGY=1` ⇒ 發射臂的退內縮／描邊內收整段退回舊態
+            // （文字退回框原點＋通用硬近、四邊不外收），d9c 燈 2 必紅。
+            let cover_facts = if d9c_geom_buggy {
+                CoverFrameFacts::default()
+            } else {
+                CoverFrameFacts {
+                    declared: match (fm.pos_x_pt, fm.pos_y_pt) {
+                        (Some(dx), Some(dy)) => Some((dx, dy)),
+                        _ => None,
+                    },
+                    content: cover_cb,
+                }
+            };
             // D9b 欠債一：**純容器群組**（群組自身無 imagedata／gfxdata，像素
             // 來自各子件框內 `w:drawing`）逐子件發射。接管條件是**全數命中**
             // （`emitted == pics.len()`）：只要有一張池裡無像素就整臂退回 false
@@ -2403,7 +2486,18 @@ impl Engine {
                 );
                 match pix {
                     Some(it) => items.push(it),
-                    None => emit_image_shape(&mut items, fm.x_pt, fm.y_pt, fm.w_pt, fm.h_pt, box_b),
+                    None => emit_image_shape(
+                        &mut items,
+                        fm.x_pt,
+                        fm.y_pt,
+                        fm.w_pt,
+                        fm.h_pt,
+                        box_b,
+                        // D9b 欠債三：4pt 描邊半線寬內收改由推導式命中驅動
+                        // （舊臂 `w>=500 && |x-22.05|<=1.5`），與排序臂／框內
+                        // 文字臂共用同一份 `cover_facts`。
+                        cover_facts,
+                    ),
                 }
             }
             // K25-B：釘定 VML 群組的子件框內文字——逐框排版（LO 真值擬合；
@@ -2435,6 +2529,9 @@ impl Engine {
                         Some(b),
                         !r6_buggy,
                         Some((self.image_pixels.as_slice(), &mut px_used, &self.doc.parts)),
+                        // D9b 欠債三：浮動框路徑帶滿版事實（退內縮／正文寬由
+                        // 宣告與版心推導，取代 `[11.3,4.0,3.0,0.0]`＋`540.5`）。
+                        cover_facts,
                     );
                 }
                 push_txbx_keys(
@@ -3686,6 +3783,12 @@ fn emit_txbx_texts(
     shape: Option<&quire_ooxml::InlineImage>,
     r6: bool,
     mut pixels: Option<PixelPool<'_>>,
+    // D9b 欠債三：滿版覆頁框判定的**輸入事實**（宣告偏移＋該頁版心盒），由
+    // 呼叫端按錨點語義裝填；判定在**本函數內**對 `bx/by/bw/bh`（txbx_rect 映射後
+    // 的框內矩形）做，與舊字面量臂同尺。無錨點事實的路徑（正文流／格內）＝
+    // `Default` ⇒ 恆不成立＝舊行為零擾動。命中時 `content` 同帶版心寬，
+    // 供正文寬上限推導（取代字面量 `540.5`）。
+    cover_facts: CoverFrameFacts,
 ) {
     if w <= 0.0 {
         return;
@@ -3701,16 +3804,38 @@ fn emit_txbx_texts(
     // 宿主框裁切底線：標註文字不得越出宿主佔位框（LO 默認視圖口徑）。
     let clip_bottom = if wps { by + bh } else { f32::INFINITY };
     // inset 吃成內邊界（契約 6）：缺宣告＝舊硬近（x+3、inner_w＝w−6）。
-    // 滿版整頁外框（bw >= 500pt 且左緣 ≈22.05pt，如 fdo76591）LO 文字左緣為版心 33.35pt（內縮 11.3pt）。
-    // TODO(D9b)：本臂的 `22.05`/`11.3`/`540.5` 同屬卡面第 2 條的待去字面量面，
-    // 且卡面指定的換法（改 pgMar 左邊距）實測不成立——22.05 是 pgMar.left(36.0)
-    // ＋VML 宣告 margin-left(-13.95) 的合成值，非邊距本身（`docs/d9b-inset-redlight.md` §2）。
-    // 正確寫法需解析層把 VML 宣告偏移原樣搬到排版層，待 PM 裁定（本卡未動、零回退）。
+    // D9b 欠債三：舊臂 `bw >= 500.0 && (bx - 22.05).abs() <= 1.5` ＋退內縮
+    // `[11.3, 4.0, 3.0, 0.0]` 是 fdo76591 專屬字面量（22.05＝pgMar.left 36.0＋
+    // VML 宣告 margin-left −13.95，`docs/d9b-inset-redlight.md` §2；11.3＝LO 框
+    // 內建 7.3＋該檔宣告 strokeweight 4.0）。滿版與否改由呼叫端經
+    // `is_page_covering_frame`（同源推導）判定並把該頁版心盒傳進來；左右/上下
+    // 內縮由框**自身宣告**推導：
+    //   左＝宣告線寬＋LO 框內建內縮（探針 cf_inset_experiment：strokeweight
+    //       4→8pt ⇒ 正文左緣 +4.00pt，線寬項 1:1；pgMar.left 36→72pt ⇒ 文字
+    //       同動 +36.00pt ⇒ 文字左緣錨版心系框起點，非頁面常數）；
+    //   上＝宣告線寬（同探針：sw=8pt ⇒ 首行 +4.00pt，y 軸同口徑）；
+    //   右/下＝沿用通用硬近 3.0/0.0（無反事實佐證，不動）。
+    // 有宣告 `v:textbox/@inset` 時宣告值照舊取勝（D9b txbx_inset 傳遞鏈）。
     let inset = shape.and_then(|b| b.txbx_inset);
     let old_style = inset.is_none();
-    let is_fullscreen_frame = bw >= 500.0 && (bx - 22.05).abs() <= 1.5;
+    // 判定對**框內矩形**（txbx_rect 映射後）做，與舊字面量臂同尺。
+    let is_fullscreen_frame =
+        is_page_covering_frame(cover_facts, (bx, by, bw, bh));
+    let cover_content = if is_fullscreen_frame {
+        cover_facts.content
+    } else {
+        None
+    };
     let [inset_l, inset_t, inset_r, inset_b] = inset.unwrap_or(if is_fullscreen_frame {
-        [11.3, 4.0, 3.0, 0.0]
+        let stroke_w = shape
+            .and_then(|b| b.stroke_width_pt)
+            .unwrap_or(IMAGE_PLACEHOLDER_RULE_PT);
+        [
+            stroke_w + LO_VML_TEXTBOX_BUILTIN_INSET_PT,
+            stroke_w,
+            3.0,
+            0.0,
+        ]
     } else {
         [3.0, 4.0, 3.0, 0.0]
     });
@@ -3721,13 +3846,14 @@ fn emit_txbx_texts(
         // （fdo74605 實據）；不再套 3pt 硬內縮，斷行才與 LO 對齊。
         (bw - 2.0).max(10.0)
     } else if old_style {
-        if is_fullscreen_frame {
-            // D8：正文可用寬度必須 ≤ 外框（VML 大框 567pt 內緣 587.05pt）與 section margin 取小者。
-            // 避免行寬算到框緣外導致「FOLLOWING」被裁切。
+        if let Some(cb) = cover_content {
+            // D8：正文可用寬度必須 ≤ 外框（VML 大框 567pt 內緣 587.05pt）與
+            // section 版心寬取小者，避免行寬算到框緣外導致「FOLLOWING」被裁切。
+            // D9b 欠債三：版心寬改由該頁 `page_content_box`（pgSz−pgMar）推導，
+            // 取代字面量 `540.5`（fdo76591 推導真值＝612−36−36＝540.0）。
             let frame_inner_right = bx + bw - 2.0;
             let frame_w = frame_inner_right - inner_x;
-            let sec_margin_w = 540.5f32;
-            frame_w.min(sec_margin_w).max(10.0)
+            frame_w.min(cb.w_pt).max(10.0)
         } else {
             (bw - 6.0).max(10.0)
         }
@@ -4199,8 +4325,10 @@ fn emit_txbx_texts(
                 } else {
                     nominal_step
                 };
-                // TODO(D9b)：本臂仍以**正文文字字面量**決定排版分支（文檔內容一改即失效）。
-                // 卡面第 3 條「能資料化則資料化」實測做不到，原因（`docs/d9b-inset-redlight.md` §4）：
+                // TODO(D8)：本臂仍以**正文文字字面量**決定排版分支（文檔內容一改即失效）。
+                // PM 定案（卡面 comment 11-07 10:00 第 4 條）：本判定屬源檔無結構特徵
+                // 的框內段落流**逐段推進校準**（D8 家族），**不進本卡**——保留現行
+                // 行為、只改掛帳標籤（原 TODO(D9b)）。實測原因（`docs/d9b-inset-redlight.md` §4）：
                 // 該兩串在 `word/document.xml` 跨 run 合成一段（宿主＝滿版背景框
                 // `_x0000_s1026` 的 `w:txbxContent` 第 36 段），該段無 `w:jc`、無域代碼
                 // （全文 `fldSimple`/`instrText` 零筆）、無 `mso-*` 排版宣告
@@ -4276,34 +4404,45 @@ const VML_TEXTBOX_DEFAULT_INSET: [f32; 4] = [7.2, 3.6, 7.2, 3.6];
 /// 即失效）。比 ECMA 預設 7.2 多 0.1pt 是 LO 自身的取整，保留實測值。
 const LO_VML_TEXTBOX_BUILTIN_INSET_PT: f32 = 7.3;
 
+/// D9b 欠債三：**滿版覆頁框**判定的輸入（呼叫端按錨點語義裝填；無錨點
+/// 事實的路徑＝`Default::default()` ⇒ 判定恆 false＝舊路徑零擾動）。
+/// 打包成一參數是為了不炸 `emit_image_shape` 的參數上限（clippy 閾值 7）。
+#[derive(Debug, Clone, Copy, Default)]
+struct CoverFrameFacts {
+    /// 宣告偏移原值 `(margin-left, margin-top)`。**Some 的語義已含原點系＝版心**
+    /// （`attach_floating_images` 只在 `x_frame`/`y_frame == Margin` 時搬運），
+    /// 兩軸缺一即不成立（`align`/`pct` 式、`page` 系釘定、inline/格內/HF 路徑
+    /// 一律 None）。
+    declared: Option<(f32, f32)>,
+    /// 該頁版心盒（`page_content_box`）。
+    content: Option<ContentBox>,
+}
+
 /// D9b 欠債三：**滿版覆頁框**判定（取代 `w >= 500.0 && (x - 22.05).abs() <= 1.5`
 /// 這組 fdo76591 專屬字面量）。PM 定案（卡面 comment 11-07 10:00）＝「框寬 ≥ 版心寬
 /// 且 |框起點 −（版心原點＋宣告偏移）| ≤ 容差」，容差沿用既有 1.5pt；本函數照定案
 /// 把**版心盒**與**宣告偏移**都當輸入吃，不自行發明白名單。
 ///
 /// 逐條口徑：
-/// * **版心盒必須在場**（`content`：該頁 section 的原點與宽高，呼叫端自 `Page`
-///   的 `margin_left_pt`／`margin_top_pt` ＋ `sec_geo_all` 推導，零檔案常量）；
+/// * **版心盒必須在場**（`content`＝該頁 `page_content_box`：頁原點邊距 ＋
+///   section `pgSz`−邊距 推導的宽高，零檔案常量）；
 /// * **宣告偏移必須存在**（VML `style` 的 `margin-left`／`margin-top`，且原點系
 ///   ＝版心；`align`／`pct` 式與 `page` 系釘定一律 `None` ⇒ 不成立）。n751077
 ///   （`pgMar.left`＝197.90pt）的群組就是靠這條不誤傷（卡面 §2 第 3 條點名場景）；
 /// * **框面積須蓋住版心（寬與高雙軸）**：PM 定案式字面只寫了寬軸，但全庫掃描
-///   （探針 `scan_predicate.py`，含頁首尾 part）顯示只比寬會讓 **29 個框**過關
-///   （最誇張的是 `height:6.05pt` 的細線框），把「描邊內收／文字左緣」套到一般
-///   文字框＝大面積回退。補高軸後**全庫唯 1 框命中＝fdo76591 `_x0000_s1026`**，
-///   命中集與舊字面量臂逐檔相同（零回退前提）。
+///   （本卡 scratch 探針 `scan_predicate.py`，含頁首尾 part）顯示只比寬會讓 **31 框**
+///   過關（最誇張的是 `height:6.05pt` 的細線框），把「描邊內收／文字左緣」套到
+///   一般文字框＝大面積回退。補高軸後**全庫唯 1 框命中＝fdo76591 `_x0000_s1026`**，
+///   命中集與舊字面量臂逐檔相同（零回退前提）。高軸是定案式的**保守加嚴**，
+///   非放寬——只在寬軸已成立的集合上再掐，不改 fdo76591 的命中。
 /// * 起點一致性（容差 1.5pt）照定案保留：現行合成律下它對 `Margin` 系恆成立，
 ///   實際角色是護欄——擋未來任何在合成後又搬動 `x_pt`/`y_pt` 的新路徑。
 ///
 /// 傳回 `false`＝舊路徑零擾動（無描邊內收、無退內縮）。
-fn is_page_covering_frame(
-    declared_offset: Option<(f32, f32)>,
-    frame: (f32, f32, f32, f32),
-    content: Option<ContentBox>,
-) -> bool {
+fn is_page_covering_frame(facts: CoverFrameFacts, frame: (f32, f32, f32, f32)) -> bool {
     // 容差沿用 D9 既有值（1.5pt），不新調。
     const TOLERANCE_PT: f32 = 1.5;
-    let (Some((dx, dy)), Some(cb)) = (declared_offset, content) else {
+    let (Some((dx, dy)), Some(cb)) = (facts.declared, facts.content) else {
         return false;
     };
     let (x, y, w, h) = frame;
@@ -5419,6 +5558,9 @@ fn emit_image_shape(
     w: f32,
     h: f32,
     shape: Option<&quire_ooxml::InlineImage>,
+    // D9b 欠債三：滿版覆頁框事實（呼叫端按錨點語義裝填；正文流／格內／HF
+    // 路徑無浮動錨點事實＝`Default` ⇒ 描邊內收臂不成立＝舊行為零擾動）。
+    cover: CoverFrameFacts,
 ) {
     if w <= 0.0 || h <= 0.0 {
         return; // 非法尺寸老實不發射（容錯鐵律）
@@ -5648,12 +5790,12 @@ fn emit_image_shape(
             dash: dash.clone(),
         })
     };
-    // D9：滿版外框（bw >= 500pt 且左緣 ≈22.05pt，如 fdo76591）4pt 描邊向內收縮半線寬（2.0pt），
-    // 使頂線、底線、左線、右線中心線精準對齊 LO 真值幾何（底線 749.85pt、頂線 20.20pt）。
-    // TODO(D9b)：同 `emit_txbx_texts` 與 `page_display_list` 的排序臂——卡面第 2 條的
-    // pgMar 換法實測不成立（22.05 非本 section 邊距值，`docs/d9b-inset-redlight.md` §2），
-    // 待 PM 裁定「背景覆頁框」資料化寫法；本臂暫維持字面量、零回退。
-    let is_fullscreen_frame = w >= 500.0 && (x - 22.05).abs() <= 1.5;
+    // D9b 欠債三（本卡落地）：滿版外框的 4pt 描邊向內收縮半線寬（2.0pt），
+    // 使頂線、底線、左線、右線中心線精準對齊 LO 真值幾何（底線 749.85pt、
+    // 頂線 20.20pt）。舊臂 `w >= 500.0 && (x - 22.05).abs() <= 1.5` 是 fdo76591
+    // 專屬字面量（`docs/d9b-inset-redlight.md` §2），換成呼叫端裝填的
+    // `cover`（VML 宣告偏移＋該頁版心盒）經 `is_page_covering_frame` 推導。
+    let is_fullscreen_frame = is_page_covering_frame(cover, (x, y, w, h));
     let (top_y, bottom_y, left_x, right_x) = if is_fullscreen_frame {
         let half_w = width_pt / 2.0;
         (y + half_w, y + h - half_w, x + half_w, x + w - half_w)
@@ -6271,7 +6413,16 @@ fn push_frag_items(
                 match pix {
                     Some(it) => items.push(it),
                     None => {
-                        emit_image_shape(items, ix, iy, im.w_pt, im.h_pt, hit.map(|(_, (_, b))| b))
+                        // D9b 欠債三：格內路徑無浮動錨點事實＝Default（零擾動）。
+                        emit_image_shape(
+                            items,
+                            ix,
+                            iy,
+                            im.w_pt,
+                            im.h_pt,
+                            hit.map(|(_, (_, b))| b),
+                            CoverFrameFacts::default(),
+                        )
                     }
                 }
                 // K4e2：格內文字框（tdf130120 實據——圖框錨在儲存格段落）。
@@ -6292,6 +6443,8 @@ fn push_frag_items(
                         Some(b),
                         std::env::var_os("R6_CLIP_BUGGY").is_none(),
                         pixels.as_mut().map(|(p, u, parts)| (*p, &mut **u, *parts)),
+                        // D9b 欠債三：格內路徑無浮動錨點事實＝Default（零擾動）。
+                        CoverFrameFacts::default(),
                     );
                 }
             }
@@ -6640,7 +6793,16 @@ impl Engine {
             );
             match pix {
                 Some(it) => items.push(it),
-                None => emit_image_shape(items, img_x, y, im.w_pt, im.h_pt, Some(im)),
+                None => emit_image_shape(
+                    items,
+                    img_x,
+                    y,
+                    im.w_pt,
+                    im.h_pt,
+                    Some(im),
+                    // D9b 欠債三：HF 路徑無浮動錨點事實＝Default（零擾動）。
+                    CoverFrameFacts::default(),
+                ),
             }
         }
         // ---- E2c：頁首／頁尾 part 的**直排浮動框**（fdo78957 頁首 TextBox 3
