@@ -140,7 +140,9 @@ fn d9c_lamp2_insets_derive_from_declared_stroke() {
         .items
         .iter()
         .find_map(|it| match it {
-            DrawItem::Text { x, text, .. } if text.contains("UNLESS OTHERWISE NOTIFIED") => Some(*x),
+            DrawItem::Text { x, text, .. } if text.contains("UNLESS OTHERWISE NOTIFIED") => {
+                Some(*x)
+            }
             _ => None,
         })
         .expect("必須存在框內正文「UNLESS OTHERWISE NOTIFIED」文字項");
@@ -207,8 +209,7 @@ fn d9c_lamp3_wide_margin_section_not_hit() {
         assert!(
             !legacy_hit,
             "前提：舊字面量臂對本檔框不命中（x={:.2}, w={:.2}）",
-            f.x_pt,
-            f.w_pt
+            f.x_pt, f.w_pt
         );
         assert!(
             derived_hit == legacy_hit,

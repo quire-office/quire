@@ -3819,8 +3819,7 @@ fn emit_txbx_texts(
     let inset = shape.and_then(|b| b.txbx_inset);
     let old_style = inset.is_none();
     // 判定對**框內矩形**（txbx_rect 映射後）做，與舊字面量臂同尺。
-    let is_fullscreen_frame =
-        is_page_covering_frame(cover_facts, (bx, by, bw, bh));
+    let is_fullscreen_frame = is_page_covering_frame(cover_facts, (bx, by, bw, bh));
     let cover_content = if is_fullscreen_frame {
         cover_facts.content
     } else {
