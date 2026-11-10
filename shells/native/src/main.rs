@@ -36,7 +36,10 @@ fn main() -> ExitCode {
                 styles.xml 的 style:page-layout 經 master-page 鏈換算；解不到
                 者回退 LO 預設頁 A4 portrait＋四邊 2.0cm——非
                 LayoutParams::default() 的假 A4＋1 吋）輸出固定 JSON 欄位：
-                paragraph_count／total_text_len／page_breaks／page／page_source。
+                paragraph_count／total_text_len／page_breaks／page／page_source
+                ＋ ODF-E2d 頁首尾獨立帳 hf_page_count／hf_paragraph_count／
+                hf_text_len／hf_chunks／hf_skipped_left_slots（頁首尾段不計進
+                paragraph_count／total_text_len）。
       quire-cli odt-dump <file.odt> [頁面 n]
                 ODT 顯示列表發射層（ODF-D1）：讀 .odt → 發射與 DOCX 線 `page`/
                 `dump` **同一個** PageDisplayList JSON 契約（同欄位名、同座標系；
@@ -568,10 +571,13 @@ fn xlsx_info(path: &str) -> ExitCode {
 /// `style:master-page` 鏈換算；解不到者回退 **LO 預設頁** A4 portrait＋四邊
 /// 2.0cm，數值以語料 LO PDF 真值實測覆核，見 `docs/odf-c4-anatomy.md` §5）→
 /// 固定 JSON `{"paragraph_count","total_text_len","page_breaks","page",
-/// "page_source"}`。`page` 為實際生效的頁寬高與 `[上,右,下,左]` 邊距（pt），
+/// "page_source","hf_page_count","hf_paragraph_count","hf_text_len","hf_chunks",
+/// "hf_skipped_left_slots"}`。`page` 為實際生效的頁寬高與 `[上,右,下,左]` 邊距（pt），
 /// `page_source` 為生效原因（`para_master_page_name`／`default_master_styles`
 /// ／`master_page_without_layout`／`no_master_page`）——鑑別力面：區分「真讀到
-/// page-layout」與「回退 LO 預設」。非零離開碼＝開檔／投影失敗（老實報錯，不吞）。
+/// page-layout」與「回退 LO 預設」。`hf_*` 五欄＝ODF-E2d 頁首尾**獨立帳**（逐頁
+/// 發射的頁首／頁尾段數與字數，不計進 `paragraph_count`／`total_text_len`）。
+/// 非零離開碼＝開檔／投影／頁首尾指派失敗（老實報錯，不吞）。
 fn odt_render(path: &str) -> ExitCode {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
@@ -606,6 +612,15 @@ fn odt_render(path: &str) -> ExitCode {
     let params = geom.to_layout_params();
     let (texts, _) = projection.flatten();
     let page_breaks = quire_odf::page_break_positions(&texts, &params);
+    // ODF-E2d：頁首尾發射面（**獨立帳**——不計進 paragraph_count/total_text_len，
+    // 那兩欄是宿主段落流口徑，LO 每頁重複渲染頁首尾若混入會污染斷頁與計數）。
+    let hf = match quire_odf::hf_assignment(&bundle, &projection) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("頁首尾指派失敗 {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
     let out = serde_json::json!({
         "paragraph_count": projection.paragraph_count(),
         "total_text_len": projection.total_text_len,
@@ -616,6 +631,13 @@ fn odt_render(path: &str) -> ExitCode {
             "margins_pt": geom.margins_pt(),
         },
         "page_source": geom.source.as_str(),
+        // 新增欄位一律**追加在後**（C4 記帳的 serialize 欄位順序鐵律：既有五欄
+        // 名稱與順序不動，下游 odt_render_page_geometry 逐欄取值不受影響）。
+        "hf_page_count": hf.pages.len(),
+        "hf_paragraph_count": hf.emitted_paragraphs,
+        "hf_text_len": hf.emitted_text_len,
+        "hf_chunks": hf.chunks,
+        "hf_skipped_left_slots": hf.skipped_left_slots,
     });
     match serde_json::to_string(&out) {
         Ok(s) => {

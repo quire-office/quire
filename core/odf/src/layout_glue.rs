@@ -96,6 +96,13 @@ pub struct OdfProjection {
     /// 物件發射文字總碼點數（= 各 `object_paragraphs[].text` 碼點和）。
     /// 與 `total_text_len` 分帳；對接 LO 的完整文字流總量＝兩者之和。
     pub object_text_len: usize,
+    /// ODF-E2d：styles.xml `office:master-styles` 的頁首／頁尾**宣告面**——逐主頁
+    /// 逐槽逐段（含巢裝表格／文字框內段落；宣告面照收空文字段，發射面才濾）。
+    ///
+    /// **獨立帳**：不進 `paragraphs`／`flatten()`（LO 每頁渲染頁首尾，若併入宿主
+    /// 流會把多頁檔的重複發射算成宿主段落，斷頁與計數口徑全亂）。發射面見
+    /// [`crate::header_footer::hf_assignment`]。
+    pub hf_masters: Vec<crate::header_footer::MasterHf>,
 }
 
 impl OdfProjection {
@@ -137,6 +144,9 @@ pub fn project(bundle: &OdfBundle) -> Result<OdfProjection, OdfError> {
     let (object_paragraphs, object_text_len) = object_face(bundle, &content)?;
     projection.object_paragraphs = object_paragraphs;
     projection.object_text_len = object_text_len;
+    // ODF-E2d：頁首尾宣告面（獨立帳，不進 paragraphs／flatten）。styles.xml
+    // 缺如＝空宣告；加密已被上面兩道閘門擋掉，這裡讀到的必是明文。
+    projection.hf_masters = crate::header_footer::hf_masters(bundle)?;
     Ok(projection)
 }
 
@@ -257,7 +267,7 @@ impl StyleRecord {
 /// 樣式簿：tier1 content.xml automatic-styles、tier2 styles.xml 具名
 /// common-styles（office:styles）、tier3 styles.xml default-style。
 #[derive(Debug, Clone, Default)]
-struct StyleBook {
+pub(crate) struct StyleBook {
     automatic: HashMap<String, StyleRecord>,
     named: HashMap<String, StyleRecord>,
     /// default-style(family=paragraph)（優先層）。
@@ -268,7 +278,8 @@ struct StyleBook {
 
 impl StyleBook {
     /// 級聯解析（套用缺省後）：回傳 `(字級pt, 粗體)`——段落代表值用。
-    fn resolve(&self, name: &str) -> (f32, bool) {
+    /// ODF-E2d 頁首尾段落字級同層複用（`header_footer`）。
+    pub(crate) fn resolve(&self, name: &str) -> (f32, bool) {
         let (size, bold) = self.resolve_opt(name);
         (size.unwrap_or(DEFAULT_FONT_SIZE_PT), bold.unwrap_or(false))
     }
@@ -353,18 +364,26 @@ impl StyleBook {
 
 /// `parse_style_file` 的收集範圍。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StyleScope {
+pub(crate) enum StyleScope {
     /// content.xml：只收 office:automatic-styles 內的 style:style。
     ContentXml,
     /// styles.xml：只收 office:styles 內的 style:style 與 style:default-style。
     StylesXml,
+    /// styles.xml：只收 **office:automatic-styles** 內的 style:style（ODF-E2d
+    /// 頁首尾段落樣式 MP1/MP3 宣告在這層——C3 的 `StylesXml` 不收，故另立一
+    /// 個 scope 而不是改既有 scope 的行為：C3 三層口徑逐字不動）。
+    StylesXmlAutomatic,
 }
 
 /// 從 XML 收樣式記錄進簿（巢裝深度掃描：style 記錄以 `style:style`／
 /// `style:default-style` 的 Start～End 為界，text-properties 子元素補
 /// 字級/字重欄位；`text:list-style` 等外來巢裝的 text-properties 因
 /// depth_style 未起不誤收）。
-fn parse_style_file(bytes: &[u8], book: &mut StyleBook, scope: StyleScope) -> Result<(), OdfError> {
+pub(crate) fn parse_style_file(
+    bytes: &[u8],
+    book: &mut StyleBook,
+    scope: StyleScope,
+) -> Result<(), OdfError> {
     let mut reader = Reader::from_reader(bytes);
     let mut buf = Vec::new();
 
@@ -387,7 +406,9 @@ fn parse_style_file(bytes: &[u8], book: &mut StyleBook, scope: StyleScope) -> Re
                     depth_style += 1;
                     let in_scope = match scope {
                         StyleScope::StylesXml => depth_office_styles > 0,
-                        StyleScope::ContentXml => depth_automatic > 0,
+                        StyleScope::ContentXml | StyleScope::StylesXmlAutomatic => {
+                            depth_automatic > 0
+                        }
                     };
                     if in_scope && pending.is_none() {
                         pending = Some(style_record_from_attrs(&e));
@@ -434,7 +455,9 @@ fn parse_style_file(bytes: &[u8], book: &mut StyleBook, scope: StyleScope) -> Re
                 if is_style_element(name) {
                     let in_scope = match scope {
                         StyleScope::StylesXml => depth_office_styles > 0,
-                        StyleScope::ContentXml => depth_automatic > 0,
+                        StyleScope::ContentXml | StyleScope::StylesXmlAutomatic => {
+                            depth_automatic > 0
+                        }
                     };
                     if in_scope && pending.is_none() {
                         let rec = style_record_from_attrs(&e);
@@ -473,7 +496,10 @@ fn commit_named_record(book: &mut StyleBook, rec: StyleRecord, scope: StyleScope
         return;
     }
     match scope {
-        StyleScope::ContentXml => {
+        // styles.xml 的 automatic-styles 層與 content.xml 同屬 automatic 簿
+        // （ODF-E2d 頁首尾段落樣式 MP1/MP3 在此層；automatic 覆寫 named 正是
+        //  既有 `StyleBook::resolve` 的優先序，不另造規則）。
+        StyleScope::ContentXml | StyleScope::StylesXmlAutomatic => {
             book.automatic.insert(name, rec);
         }
         StyleScope::StylesXml => {
@@ -791,9 +817,11 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
         text_p_count,
         text_h_count,
         // 物件獨立帳由 `project` 另行填入（`project_bytes` 純函數入口無容器，
-        // 讀不到 part——恆為空，非缺陷）。
+        // 讀不到 part——恆為空，非缺陷）。頁首尾宣告面同理需容器（讀 styles.xml），
+        // 由 `project` 填入。
         object_paragraphs: Vec::new(),
         object_text_len: 0,
+        hf_masters: Vec::new(),
     })
 }
 

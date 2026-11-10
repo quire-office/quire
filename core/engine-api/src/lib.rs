@@ -2994,26 +2994,13 @@ pub(crate) fn face_line_factor(face: &str) -> f32 {
         "arial" | "liberation sans" | "liberationsans" | "helvetica" => 1.1499,
         // theme 斷鏈 fallback（LO 落到自身預設 Noto Serif）。
         "noto serif" | "notoserif" => 1.3620,
-        // E1（t_8573d294）：`Trebuchet MS` 在本基準環境**無本機 face**，LO 25.8
-        // 以自身附帶的 Noto 系頂替（真檔 cell-grid-span 的 Trebuchet 組 span font
-        // 實測 `NotoSans-Regular`；本卡合成探針無 fontTable 時頂到
-        // `NotoSerif-Regular`）。LO 附帶的 NotoSans-Regular 與 NotoSerif-Regular
-        // hhea **同值**（asc=1069 desc=-293 gap=0 upm=1000 ⇒ real-LH 1.3620，
-        // 本機 ttf 實測），故頂替後的 real-LH 與上方 Noto Serif 臂**同因子**——
-        // 這是實測對齊，不是借用他族值湊數。
-        // 定量覆核（本卡，LO 25.8＋pymupdf，K6 `pitch = size×declared/240×LH` 口徑）：
-        //   本檔 Trebuchet 組無 w:line 段（吃 docDefaults 276）行距眾數 15.65
-        //     ⇒ LH = 15.65/(10×276/240) = 1.3609
-        //   直接宣告 w:line=240 段行距眾數 13.65
-        //     ⇒ LH = 13.65/(10×240/240) = 1.3650
-        //   合成探針（零段距、宣告 line=240）sz10/11/14/20 → 1.3700/1.3636/
-        //     1.3571/1.3600（PDF y 0.05pt 量化內）
-        // 三者皆落在 1.3620，**非** e1-redlight.md §3.1(B) 宣稱的 1.56–1.57——
-        // 該數是把 pitch 除以 size 卻漏乘 `declared_line/240`（本檔 docDefaults
-        // 宣告 `w:line="276"`＝1.15；15.65/10/1.15＝1.3609，15.65/10＝1.565 即誤源）。
-        // 水平軸**不入表**：LO 頂替 face 的 advance 寬比本卡未實測，依 K7-cal
-        // 「表沒有實測值的族絕不猜數」守門走 `_ => 1.0` 零擾動（TODO(K7-cal)）。
-        "trebuchet ms" | "trebuchetms" => 1.3620,
+        // E1-C 卡 B（t_ecb9aa10，重定錨自 E1-A t_8573d294）：`Trebuchet MS` 依定案之 LO 真 face 裝機態口徑重定錨為 **1.1611**（與下方 `face_advance_scale` 的 0.9744 同源對齊真 `trebuc.ttf`；舊值 1.3620 為 Linux 未注入真 face 時頂替 NotoSans-Regular 的裝機缺字假象，完整定案見 `docs/e1cb-lo-truth-canon.md`）。
+        // 四重實測對齊（K6 `pitch = size×declared/240×LH` 口徑）：
+        //   1. TTF 二進位直解（`trebuc.ttf`/`trebucbd.ttf`/`trebucit.ttf`/`trebucbi.ttf` 四字重同值）：upem=2048，hhea asc=1923 desc=-455 gap=0 ⇒ (1923+455+0)/2048 = 1.161133；OS/2 winAsc=1923 winDesc=455 ⇒ 1.161133。
+        //   2. 真檔 `cell-grid-span.docx` 無直接 `w:line` 段（繼承 docDefaults `w:line="276"`＝1.15 倍，10pt Team 段 9 行 8 個間距）：定錨 LO（Linux per-process `FONTCONFIG_FILE` 注入真 face 與 Windows LO 全等）實測行距眾數 13.30pt ⇒ LH = 13.30/(10×276/240) = 1.1565（與 1.1611 預測 13.35pt 差 0.05pt＝1 twip 量化內）。
+        //   3. 真檔直接宣告 `w:line="240"` 段（10pt Available 段與聯絡人段）：定錨 LO 實測行距眾數 11.60pt ⇒ LH = 11.60/(10×240/240) = 1.1600（與 1.1611 預測 11.61pt 差 0.01pt）。
+        //   4. 合成探針（零段距、宣告 `w:line="240"`）定錨 LO 實測 sz10/11/14/20 → pitch 11.60/12.75/16.25/23.25pt ⇒ LH = 1.1600/1.1591/1.1607/1.1625（PDF y 0.05pt 量化內）。
+        "trebuchet ms" | "trebuchetms" => 1.1611,
         // CJK 宣告族在本基準環境替到 WenQuanYi Zen Hei。
         "pmingliu" | "新細明體" | "kaititc" | "標楷體" | "msyahei" | "microsoft yahei"
         | "微軟雅黑" | "wenquanyi zen hei" | "wenquanyizenhei" => 1.3496,

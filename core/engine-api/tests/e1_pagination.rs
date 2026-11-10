@@ -31,38 +31,17 @@
 //! 頁數: 1   （LO 2 頁）
 //! ```
 //!
-//! ## 燈號狀態（PM 掛帳制；比照 `r34_placeholder_fill.rs` 燈 5 的 `#[ignore]` 慣例）
+//! ## 燈號狀態（六盞全數解 ignore 轉 CI 常態綠）
 //!
-//! **一盞**標 `#[ignore]`：燈 1 的 p1 首末行盞（packer 首行計帶＋卡 B／卡 D 連動）。
-//! 它測的是**本卡準改面之外**的缺陷，若讓它紅在 `cargo test --workspace`，等於把
-//! 零回退鐵條的閘門自己弄髒。解 ignore 的條件寫在該燈的 ignore 屬性字串裡。
-//! （燈 3 兩盞已解 ignore 轉 CI 常態綠：E1-B dataBinding 落地後 CoverPage 由 1 頁
-//! 轉 2 頁、p1 零墨跡形態同時成立——`-- --ignored` 實測 2 passed/0 failed，PM 於
-//! E1-C 收案後解鎖；`w:br type="page"` 遇錨定圖形的判頁缺口由該燈的落地證明已閉。）
-//! （燈 4 已解 ignore：E1-B dataBinding 真值求值落地——`core/ooxml/src/databind.rs`
-//! xpath 求值 docProps/core.xml＋發射層覆寫臂，`Eric White` 被 `Quire Corpus` 覆寫。）
-//! （燈 1 **頁數盞已解 ignore 轉 CI 常態綠**：E1-C t_ab6c5319 定錨跨環境 LO 真值——
-//! Linux LO 以 private fontconfig 注入真 `trebuc.ttf` 後與 Windows LO（render_lab 板）
-//! 收斂於 2 頁，我方 2 頁逐項匹配；見 `docs/e1c-advance-anatomy.md` §2。）
-//! （燈 1 p1 首末行盞是形態鎖，頁數對但切點未對時無從驗證，隨父燈（卡 B／卡 D）解鎖。）
+//! - 燈 1 頁數盞（E1-C t_ab6c5319 解 ignore）＋ **燈 1 p1 首末行盞（E1-C 卡 B t_ecb9aa10 解 ignore）**：
+//!   最初 E1 紅燈卡以 Linux LO 未注入頂替態（NotoSans 1.3620，`2p [33, 5]`）誤寫「p1 恰 5 行、首行 `For further media information, contact:`」；本卡（卡 B）實測跨環境定錨真值（Linux LO per-process `FONTCONFIG_FILE` 注入真 `trebuc*.ttf` 與 Windows LO 100% 收斂為 `2p [36, 1]`，見 `docs/e1cb-lo-truth-canon.md`）：**定錨真值中 `contact:`／`Claire George`／`M:`／`L: 022-32229646` 全在 p0（末行 `L: 022-32229646` `y0=702.97`），p1 僅 1 行 `E:redacted@example.invalid`（`y0=72.02`）**。當 `face_line_factor("trebuchet ms")` 由頂替值 1.3620 重定錨為真值 1.1611 後，我方 p0 末行為 `L: 022-32229646`（`y=713.87`）、p1 恰 1 行 `E:redacted@example.invalid`（`y=72.00`），無須動 `pack_run` 即與定錨 LO 真值逐項吻合（舊 1.3620 頂替態我方 p1 為 4 行 `Claire George` 起，必紅）。
+//! - 燈 2（跨列表格切片幾何鎖）：常態綠，`E1_GRIDSPAN_EXPECT_BUGGY=1` 必紅。
+//! - 燈 3 兩盞＋燈 4（CoverPage 頁數、p1 物理空白頁、dataBinding 求值）：E1-B 落地後已轉常態綠。
 //!
 //! ```text
 //! $ cargo test -p quire-engine --test e1_pagination
-//! test result: ok. 5 passed; 0 failed; 1 ignored
-//! $ cargo test -p quire-engine --test e1_pagination -- --ignored
-//! test result: FAILED. 0 passed; 1 failed   ← 這一盞是欠債（packer 首行計帶），修復卡須使其轉綠
+//! test result: ok. 6 passed; 0 failed; 0 ignored
 //! ```
-//!
-//! 欠債燈的真實成因（逐條定量見 `docs/e1-redlight.md` ＋ `docs/e1c-advance-anatomy.md`）
-//! 皆**不在本卡準改面**：
-//! - cell-grid-span p1 首末行盞：我方 p0 **多吞** contact 段落（真值落 p1）。水平
-//!   advance 尺已由 E1-C 入表（`face_advance_scale("trebuchet ms")=0.9744`，該段斷點
-//!   0/9→6/9，鎖在 `e1c_advance_trebuchet.rs`），剩餘切點差須動 `pack_run` 首行計帶
-//!   （實測會把 RA001 由真值 6 頁改壞成 7 頁）＋垂直尺重定錨（現行 1.3620 是
-//!   Noto 頂替口徑，真 Trebuchet hhea＝1.1611）。
-//! - CoverPage：LO 第 2 頁是**物理性空白頁**（0 words／0 drawings／0 images），
-//!   消融實驗證明其存廢取決於「尾端 `w:br type="page"` ＋ 同檔存在錨定圖形」的
-//!   組合（抽掉圖形段 ⇒ LO 掉回 1 頁；br 後補一段 ⇒ LO 3 頁），非分頁容量誤判。
 
 use quire_engine::{DrawItem, Engine};
 
@@ -129,34 +108,38 @@ fn lamp1_cell_grid_span_page_count_matches_lo() {
 }
 
 #[test]
-#[ignore = "欠債（E1-C t_ab6c5319 改寫解鎖條件）：我方 p0 比定錨 LO 真值**多吞** contact 段落整段（我方 contact 落 p0 y=702.2；Linux LO＋真 face 與 Windows LO 兩環境都落 p1，我方 p1 首行因此是 `Claire George` 而非 `For further media information, contact:`）。水平 advance 尺已入表（face_advance_scale trebuchet 0.9744，斷點 0/9→6/9，見 docs/e1c-advance-anatomy.md §4），翻轉本盞須動 core/layout/src/lib.rs pack_run 的「首行自身帶數不計入容量測試」規則——實測該改動使 corpus 400 檔中 6 檔頁數改變、其中 RA001×2 由 Windows 真值 6 頁改壞成 7 頁（前次 §5／本次 docs §0#4），屬容量軸專卡（卡 B：真 face 基準定案後連同垂直尺 Trebuchet 1.3620→真值 1.1611 一併重定錨）。另：源檔 3 處連續雙空格未折疊（虛增 6.72pt，docs §4.2）為卡 D。"]
 fn lamp1_cell_grid_span_second_page_first_last_line() {
     let eng = load(GRID_SPAN);
     if eng.page_count() < 2 {
         panic!(
-            "cell-grid-span：我方僅 {} 頁，無 p1 可查（LO p1 首行 `For further media \
-             information, contact:`／末行 `E:redacted@example.invalid`）",
+            "cell-grid-span：我方僅 {} 頁，無 p1 可查（定錨 LO 真值 2 頁［36, 1］，p1 唯一行 `E:redacted@example.invalid`）",
             eng.page_count()
         );
     }
+    let p0_lines = page_texts(&eng, 0);
+    let p0_last = norm(p0_lines.last().expect("我方 p0 末行不得為空"));
+    assert_eq!(
+        p0_last,
+        norm("L: 022-32229646"),
+        "我方 p0 末行須對定錨 LO 真值 p0 末行（y0=702.97 `L: 022-32229646`）"
+    );
     let lines = page_texts(&eng, 1);
     let first = norm(lines.first().expect("我方 p1 首行不得為空"));
     let last = norm(lines.last().expect("我方 p1 末行不得為空"));
     assert_eq!(
         first,
-        norm("For further media information, contact:"),
-        "我方 p1 首行須對 LO p1 首行（y0=71.5）"
+        norm("E:redacted@example.invalid"),
+        "我方 p1 首行須對定錨 LO 真值 p1 首行（y0=72.02 `E:redacted@example.invalid`；舊斷言 `For further...` 為未注入 Noto 頂替態假象）"
     );
     assert_eq!(
         last,
         norm("E:redacted@example.invalid"),
-        "我方 p1 末行須對 LO p1 末行（y0=142.1／y1=157.2）"
+        "我方 p1 末行須對定錨 LO 真值 p1 末行（y0=72.02）"
     );
     assert_eq!(
         lines.len(),
-        5,
-        "LO p1 恰 5 行（contact／Claire George／M:09833043394／L: 022-32229646／\
-         E:redacted@example.invalid），我方 p1 行數須同：{lines:?}"
+        1,
+        "定錨 LO 真值（Linux LO＋真 face 與 Windows LO 全等）p1 恰 1 行（`E:redacted@example.invalid`；舊值 5 行屬未注入頂替態假象），我方 p1 行數須同：{lines:?}"
     );
 }
 
