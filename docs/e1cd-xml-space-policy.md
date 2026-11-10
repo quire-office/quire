@@ -39,6 +39,12 @@ PM 覆核以 pymupdf **rawdict** 逐字量 LO 真值 PDF（Linux LO 25.8、真 T
 - 實作：`core/ooxml/src/lib.rs` 的 `is_xml_space`＋`flush_text_node`＋正文／框內兩組 `*_t_buf*` 狀態機（Start 設 preserve 旗標、Text 入緩衝、End 一次裁剪）。
 - 鑑別力：燈 3 在「逐片 trim」舊口徑必紅（吞跨片空白）；燈 2 在「一律 preserve」口徑必紅（該剝不剝）。兩燈方向相反互封退化實作。回塞實測紀錄見提交說明。
 
-## 4. 殘留（不在本卡）
+## 4. 殘留（不在本卡）——**卡 E 覆核更正（t_0e390551，2026-11-10）**
 
-cell-grid-span Team 段仍 6/9（真值 9 行，行 0／1／2 位移一格）。雙空格折疊說已死，根因改查方向（advance 尺字組差／對齊與 tab stop／可行帶計算）立 **E1-C 卡 E** 追，禁在未定案前調參。
+~~cell-grid-span Team 段仍 6/9（真值 9 行，行 0／1／2 位移一格）。~~雙空格折疊說已死，
+根因改查方向（advance 尺字組差／對齊與 tab stop／可行帶計算）立 **E1-C 卡 E** 追。
+**卡 E 實測收案**：卡 C（宣告族標點覆寫臂）落地後該段已 **9/9 逐行全等**（rawdict 真值
+口徑雙口徑互證）；翻轉源坐實＝行 0 `Innovation…` 的 U+2026 由 1.0 em 方塊收窄真 trebuc
+hmtx 7.344pt（淨 2.400pt）使 `helped` 放進行 0，同碼拔臂 A/B 退回 6/9 唯一變量＝臂。
+三候選中僅「標點 advance」一支成立，對齊／tab stop／段寬實測排除。全鏈記帳見
+`docs/e1c-card-e-team-99.md`。

@@ -2,7 +2,7 @@
 //!
 //! # 為什麼有這張考卷
 //!
-//! `corpus/ooxmlexport/cell-grid-span.docx` 的 Team 段宣告 `Trebuchet MS`（段標 rPr ＋ 9 個 run 的 rPr 都宣告，`w:rFonts w:ascii/hAnsi`）。查表無臂時走 `_ => 1.0`，該段斷行與 LO 真值**逐行全等 0/9**；水平尺入表 0.9744 後升到 **6/9**。垂直軸在 E1-A 曾按 Linux 未注入頂替態（NotoSans-Regular 1.3620）入表，導致 Team 段（繼承 docDefaults `w:line="276"`）行距推進量（pitch）實測 15.63pt、直接宣告 `w:line="240"` 段實測 13.60pt，較定錨真 face 真值（13.30pt／11.60pt）偏大 17.3%。本卡（E1-C 卡 B）依定案之 LO 真 face 裝機態口徑將 `face_line_factor("trebuchet ms")` 由 1.3620 重定錨為真值 **1.1611**，使垂直 pitch 與水平 advance 同源對齊真 `trebuc.ttf`。
+//! `corpus/ooxmlexport/cell-grid-span.docx` 的 Team 段宣告 `Trebuchet MS`（段標 rPr ＋ 9 個 run 的 rPr 都宣告，`w:rFonts w:ascii/hAnsi`）。查表無臂時走 `_ => 1.0`，該段斷行與 LO 真值**逐行全等 0/9**；水平尺入表 0.9744 後升到 **6/9**（卡 C 標點覆寫臂＋卡 E 連動後現為 **9/9**，見下方卡 E 記帳）。垂直軸在 E1-A 曾按 Linux 未注入頂替態（NotoSans-Regular 1.3620）入表，導致 Team 段（繼承 docDefaults `w:line="276"`）行距推進量（pitch）實測 15.63pt、直接宣告 `w:line="240"` 段實測 13.60pt，較定錨真 face 真值（13.30pt／11.60pt）偏大 17.3%。本卡（E1-C 卡 B）依定案之 LO 真 face 裝機態口徑將 `face_line_factor("trebuchet ms")` 由 1.3620 重定錨為真值 **1.1611**，使垂直 pitch 與水平 advance 同源對齊真 `trebuc.ttf`。
 //!
 //! # LO 真值口徑（本卡定案，逐條見 `docs/e1cb-lo-truth-canon.md` 與 `docs/e1c-advance-anatomy.md` §2）
 //!
@@ -13,9 +13,26 @@
 //! - 垂直軸回塞鎖：`K6_AUTO_PITCH_BUGGY=1 cargo test -p quire-engine --test e1c_advance_trebuchet` ⇒ 退回舊粗尺（Team 段 pitch 約 15.7pt、`w:line=240` 段約 13.65pt），燈 1 的垂直 pitch 斷言**必紅**（未重定錨前 1.3620 頂替口徑下實得 15.63pt／13.60pt 同樣必紅）。
 //! - 水平軸回塞鎖：`K7_ADVANCE_SCALE_BUGGY=1 cargo test -p quire-engine --test e1c_advance_trebuchet` ⇒ 全表退 1.0，燈 2 的斷行匹配數退回 **0/9 必紅**。
 //!
-//! # 本檔**不**斷言的事（老實記帳）
+//! # 卡 E（t_0e390551）對本檔的翻案記帳（2026-11-10）
 //!
-//! - 不斷言 9/9：殘餘 3 行差異（行 0/1/2 位移一格）。卡面舊歸因「源檔 3 處連續雙空格我方未折疊（LO 折疊；每處虛增 2.24pt）」已被 pymupdf rawdict 逐字真值推翻——LO 對節點內雙空格渲染**兩個空格字形**（受控 sp2 gap＝12pt 佐證），不折疊；舊誤判源自 get_text("words") 抽詞把空白折成單字的抽取器假象。空白口徑定案見 `docs/e1cd-xml-space-policy.md`，斷點差一格根因改查另立 E1-C 卡 E。燈 3 用「整段文字守恆」堵掉「靠丟字湊行數」的假綠。
+//! 舊版寫「不斷言 9/9：殘餘 3 行差異（行 0/1/2 位移一格）」。卡 E 在**含卡 C 的基線**
+//! （ef14bc9）上以 rawdict 真值口徑重跑斷行量測：該段已 **9/9 逐行全等**——PM 值守
+//! 11-10 起手自證閘門的「連動根治」分支坐實，燈 2 門檻由 ≥6 tightening 至 **9/9**、
+//! 穩定群由行 3..8 擴為全段行 0..8，防日後靜默退回。根因（實測，非推估）：行 0
+//! `Innovation…` 的 U+2026 舊吃內嵌子集 1.0 em 方塊（0.9744 尺後 9.744pt@10pt）、
+//! 真 trebuc.ttf hmtx＝7.344pt（覆寫臂取代不疊乘 ⇒ 行 0 淨縮 2.400pt）——`helped`
+//! 由放不下翻成放得下，行 0/1/2「位移一格」的鏈式錯位整體消解。三段歸因：
+//! base(279c1ee＝卡 D 態) 6/9 → head(ef14bc9＝含卡 C) 9/9 → 同碼只拔 Trebuchet
+//! 標點臂 6/9（實據 docs/e1c-card-e-team-99.md）⇒ 唯一變量＝標點臂；斷行需求帶的
+//! 逐字元瓜分未做（引擎端含 kerning/空格細項，pymupdf 裸 hmtx 模型復現不了 base
+//! 態的「放不下 help」判定的完整算式），故不宣稱翻轉的臨界餘量數值。
+//! 水平尺 0.9744 未動；對齊／tab stop／段寬三候選不構成殘錯位成因（拔臂態與
+//! base 錯位逐行相同，幾何在兩態間未變，翻轉量全部由標點臂承接）。
+//! 卡面舊歸因「源檔 3 處連續雙空格我方未折疊（LO 折疊；每處虛增 2.24pt）」早已被
+//! pymupdf rawdict 逐字真值推翻——LO 對節點內雙空格渲染**兩個空格字形**（受控
+//! sp2 gap＝12pt 佐證），不折疊；舊誤判源自 get_text("words") 抽詞把空白折成單字
+//! 的抽取器假象。空白口徑定案見 `docs/e1cd-xml-space-policy.md`。燈 3 用「整段文字
+//! 守恆」堵掉「靠丟字湊行數」的假綠。
 
 use quire_engine::Engine;
 use quire_render_trait::DrawItem;
@@ -138,8 +155,13 @@ fn lamp1_page_count_and_team_line_count_match_anchored_lo() {
     );
 }
 
-/// 燈 2：**入表鎖**。我方逐行斷點對定錨真值的匹配數 ≥6（實測 6/9）。
+/// 燈 2：**入表鎖**。我方逐行斷點對定錨真值**逐行全等 9/9**（卡 E 翻案後 tightening）。
 /// 尺退 1.0（`K7_ADVANCE_SCALE_BUGGY=1`）時退回 0/9 ⇒ 本燈必紅，鑑別力在此。
+///
+/// 舊門檻是 `≥6`（卡 A/B 時期實測 6/9）。卡 C 的標點覆寫臂落地後真值已是 9/9，
+/// `≥6` 變成「退回 3 行也不紅」的假防護——卡 C 記帳寫「燈 2 實跑仍 6/9（尺若走樣
+/// 該燈先紅）」，其實走樣到 6/9 時該燈仍然綠。卡 E（t_0e390551）把門檻釘死為 9/9，
+/// 並將穩定群由行 3..8 擴為全段，防日後靜默退回。
 #[test]
 fn lamp2_team_line_breaks_match_anchored_lo() {
     let full = concat!(env!("CARGO_MANIFEST_DIR"), "/../../corpus/").to_string() + GRID_SPAN;
@@ -150,20 +172,23 @@ fn lamp2_team_line_breaks_match_anchored_lo() {
         .zip(TRUTH_TEAM_LINES)
         .filter(|(mine, want)| norm(mine) == norm(want))
         .count();
-    assert!(
-        matched >= 6,
-        "face_advance_scale(\"trebuchet ms\")＝0.9744 入表後，該段逐行斷點須匹配定錨 LO 真值 ≥6/9\
-         （實測 6/9；未入表＝尺退 1.0 時匹配 0/9，本燈即鑑別力所在）。實得 {matched}/{}：{:#?}",
+    assert_eq!(
+        matched,
+        TRUTH_TEAM_LINES.len(),
+        "cell-grid-span Team 段逐行斷點須與定錨 LO 真值**逐行全等 9/9**\
+         （卡 E t_0e390551 實測：水平尺 0.9744 ＋ 卡 C 標點覆寫臂；`helped` 屬行 0，\
+         行 0/1/2 不得再位移一格。未入表＝尺退 1.0 時匹配 0/9、拔 Trebuchet 標點臂\
+         退回 6/9，兩者本燈皆紅）。實得 {matched}/{}：{:#?}",
         TRUTH_TEAM_LINES.len(),
         seg
     );
-    // 行 3..8（索引 3 起）是入表要鎖死的穩定群：尺一走樣（含卡 C 落地後未重掃）先在這裡紅。
-    for idx in 3..TRUTH_TEAM_LINES.len() {
+    // 全段行 0..8 是入表要鎖死的穩定群（卡 E 起）：尺或標點臂一走樣（含後續卡未重掃）先在這裡紅。
+    for idx in 0..TRUTH_TEAM_LINES.len() {
         assert_eq!(
             norm(&seg[idx]),
             norm(TRUTH_TEAM_LINES[idx]),
-            "Team 段第 {idx} 行斷點偏離定錨 LO 真值——水平尺走樣或被覆寫。\
-             我方={:?} 真值={:?}",
+            "Team 段第 {idx} 行斷點偏離定錨 LO 真值——水平尺走樣、被覆寫，或標點覆寫臂\
+             （卡 C）失效。我方={:?} 真值={:?}",
             seg[idx],
             TRUTH_TEAM_LINES[idx]
         );

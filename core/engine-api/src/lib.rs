@@ -3093,7 +3093,10 @@ pub(crate) fn face_advance_scale(face: &str) -> f32 {
         //     0.0107）；B 軌逐行中位 0.9744 → 0.9748（差 0.0004，取中位不變）。
         //     實據：scratch `rescan_cardC.py`／`c_rescan_cardC.json`（同口徑對照組
         //     頂替態重現 [0.9750, 0.9851) 且 0.9744 落帶外，證實卡面數只對頂替態成立）。
-        //   · `e1c_advance_trebuchet` 燈 2 實跑仍 6/9 綠，尺走樣會先紅、不會靜默走樣。
+        //   · `e1c_advance_trebuchet` 燈 2：卡 E（t_0e390551）覆核更正——本臂落地後
+        //     該段實跑為 **9/9 逐行全等**（卡 C 記帳寫「仍 6/9」係沿用卡 A 時期舊測，
+        //     燈 2 門檻 ≥6 綠時不輸出實得值故未察覺），門檻已由 ≥6 釘死為 9/9；
+        //     拔臂 A/B 實測 9/9→6/9（docs/e1c-card-e-team-99.md），尺與臂走樣都會先紅。
         "trebuchet ms" | "trebuchetms" => 0.9744,
         _ => 1.0,
     }

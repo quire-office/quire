@@ -76,7 +76,7 @@ TNR … 1.000 vs 1.0000（PDF 0.05pt 量化內）。
 | 模式 | 命令 | 結果 |
 |---|---|---|
 | 正常態 | `cargo test -p quire-engine --test e1c_subset_punct` | 6 passed 0 failed |
-| 正常態 | `cargo test -p quire-engine --test e1c_advance_trebuchet` | 3 passed 0 failed（燈 2 斷行 6/9） |
+| 正常態 | `cargo test -p quire-engine --test e1c_advance_trebuchet` | 3 passed 0 failed（燈 2 斷行——**卡 E 覆核更正**：本卡落地後實跑為 **9/9 逐行全等**，卡 C 記帳沿用卡 A 時期「6/9」舊測；≥6 綠態不輸出實得值故未察覺。燈 2 門檻已由卡 E 釘死 9/9） |
 | 回塞（水平軸） | `K7_ADVANCE_SCALE_BUGGY=1 …--test e1c_subset_punct` | **2 FAILED**（燈 1 ’ 退回 10.0pt＝9.744pt 方塊態、燈 4 的「拉丁必須被覆寫」反向防假綠斷言同時紅）→ 鑑別力坐實 |
 | 回塞（水平軸） | `K7_ADVANCE_SCALE_BUGGY=1 …--test e1c_advance_trebuchet` | **1 FAILED**（燈 2 斷行退回 0/9） |
 | 回塞（幾何＋水平） | `K7_WRAP_WIDTH_BUGGY=1 …--test e1c_subset_punct` | **2 FAILED**（同上二盞） |
@@ -101,7 +101,9 @@ TNR … 1.000 vs 1.0000（PDF 0.05pt 量化內）。
 判讀：卡面預期的 [0.9750, 0.9851) 只在頂替態下成立（本 run 對照組重現），而頂替態已被
 卡 B 否決；按實際落地的真 face 臂，帶只把下緣由 0.9617 抬到 0.9712（’ 收窄 ⇒ 行變窄 ⇒
 下緣上升），**0.9744 仍在帶內，故本臂不需重定值**。B 軌中位 0.9744→0.9748 的差 0.0004
-小於取樣步長，不構成分檔變動；`e1c_advance_trebuchet` 燈 2 實跑仍 6/9（尺若走樣該燈先紅）。
+小於取樣步長，不構成分檔變動；`e1c_advance_trebuchet` 燈 2 實跑——**卡 E（t_0e390551）
+覆核更正**：本卡落地後該段已 **9/9 逐行全等**（本節舊文「仍 6/9」係沿用卡 A 時期舊測未重跑；
+斷行鎖≥6 綠態不輸出實得值故未察覺，門檻已由卡 E 釘死 9/9，尺與臂走樣都會先紅）。
 尺帶上緣 0.9851 由行 7 的自然寬決定（實測 475.09pt×s < 468 需 s < 0.9851）。
 
 `face_advance_scale("trebuchet ms")` 檔頭的 TODO 已改寫為本節實測記帳（不是刪掉）。
