@@ -616,6 +616,17 @@ fn parse_rpr_body(
     rs
 }
 
+/// `parse_ppr`／`parse_ppr_default` 收出的段落欄位（未沿鏈合成前）。
+#[derive(Default)]
+struct PprFields {
+    line: Option<LineSpacing>,
+    before_pt: Option<f32>,
+    after_pt: Option<f32>,
+    align: Option<Align>,
+    page_break: Option<bool>,
+    run: RunStyle,
+}
+
 /// 讀取 `w:pPr` 子樹（呼叫端已消耗 pPr 的 Start；其內 `w:rPr` 併入段落
 /// run 基底回傳）。本卡收 spacing(line)/jc/pageBreakBefore/rPr，其餘段落
 /// 屬性略過。`pageBreakBefore` 是 toggle（無 `w:val`／`true|1|on`＝開，
@@ -624,14 +635,7 @@ fn parse_ppr(
     reader: &mut quick_xml::Reader<&[u8]>,
     theme: &ThemeColors,
     tf: Option<&ThemeFonts>,
-) -> (
-    Option<LineSpacing>,
-    Option<f32>,
-    Option<f32>,
-    Option<Align>,
-    Option<bool>,
-    RunStyle,
-) {
+) -> PprFields {
     let mut line = None;
     let mut before = None;
     let mut after = None;
@@ -715,7 +719,14 @@ fn parse_ppr(
             _ => {}
         }
     }
-    (line, before, after, align, page_break, run)
+    PprFields {
+        line,
+        before_pt: before,
+        after_pt: after,
+        align,
+        page_break,
+        run,
+    }
 }
 
 /// 在容器內向前掃到 `w:rPr` 起點並收其內容（呼叫端已消耗容器 Start；遇到
@@ -757,14 +768,7 @@ fn parse_ppr_default(
     reader: &mut quick_xml::Reader<&[u8]>,
     theme: &ThemeColors,
     tf: Option<&ThemeFonts>,
-) -> (
-    Option<LineSpacing>,
-    Option<f32>,
-    Option<f32>,
-    Option<Align>,
-    Option<bool>,
-    RunStyle,
-) {
+) -> PprFields {
     loop {
         match reader.read_event() {
             Err(_) | Ok(Event::Eof) => return Default::default(),
@@ -945,13 +949,13 @@ impl StyleTable {
                             t.empty = false;
                         }
                         b"pPrDefault" if in_doc_defaults => {
-                            let (l, b, af, a, pb, r) = parse_ppr_default(&mut reader, theme, tf);
-                            t.para_default_line = l;
-                            t.para_default_spacing_before_pt = b;
-                            t.para_default_spacing_after_pt = af;
-                            t.para_default_align = a;
-                            t.para_default_page_break = pb;
-                            t.para_default_run = r;
+                            let ppr = parse_ppr_default(&mut reader, theme, tf);
+                            t.para_default_line = ppr.line;
+                            t.para_default_spacing_before_pt = ppr.before_pt;
+                            t.para_default_spacing_after_pt = ppr.after_pt;
+                            t.para_default_align = ppr.align;
+                            t.para_default_page_break = ppr.page_break;
+                            t.para_default_run = ppr.run;
                             t.empty = false;
                         }
                         b"tblStylePr" if cur.is_some() => {
@@ -1030,21 +1034,21 @@ impl StyleTable {
                         }
                         b"pPr" => {
                             if let Some((_, own)) = cur.as_mut() {
-                                let (l, b, af, a, pb, r) = parse_ppr(&mut reader, theme, tf);
+                                let ppr = parse_ppr(&mut reader, theme, tf);
                                 if own.line.is_none() {
-                                    own.line = l;
+                                    own.line = ppr.line;
                                 }
                                 if own.spacing_before_pt.is_none() {
-                                    own.spacing_before_pt = b;
+                                    own.spacing_before_pt = ppr.before_pt;
                                 }
                                 if own.spacing_after_pt.is_none() {
-                                    own.spacing_after_pt = af;
+                                    own.spacing_after_pt = ppr.after_pt;
                                 }
                                 if own.align.is_none() {
-                                    own.align = a;
+                                    own.align = ppr.align;
                                 }
                                 if own.page_break.is_none() {
-                                    own.page_break = pb;
+                                    own.page_break = ppr.page_break;
                                 }
                                 // 段落樣式的 pPr/rPr（段落標記 run 屬性）對段內
                                 // 所有 run 生效（Word 段落標記/內容共用基底）；
@@ -1053,7 +1057,7 @@ impl StyleTable {
                                 // pPr 在 rPr 之前，就地 overlay 會讓先解析的
                                 // pPr/rPr 反客為主——合成式固定主 rPr 贏在
                                 // resolve_cached。
-                                own.ppr_run = std::mem::take(&mut own.ppr_run).overlay(&r);
+                                own.ppr_run = std::mem::take(&mut own.ppr_run).overlay(&ppr.run);
                             }
                         }
                         _ => {}

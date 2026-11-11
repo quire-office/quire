@@ -74,7 +74,11 @@ fn parent_true_inherited_and_inline_false_wins() {
         .as_bytes(),
     );
     let (_, inherited) = t.effective_para(Some("Child"), ParaStyle::default());
-    assert_eq!(inherited.page_break, Some(true), "子樣式未宣告 ⇒ 繼承父 true");
+    assert_eq!(
+        inherited.page_break,
+        Some(true),
+        "子樣式未宣告 ⇒ 繼承父 true"
+    );
 
     let inline = ParaStyle {
         page_break: Some(false),
