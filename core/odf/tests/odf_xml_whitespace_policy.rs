@@ -48,7 +48,8 @@ fn params() -> LayoutParams {
 
 /// 本卡核心 fixture：段落被 pretty-print 縮排包圍，兩個 `text:span` 之間只有
 /// 格式化空白（無 `<text:s/>`）。正規化後段文字必為 `甲 乙`（恰一空格、無換行）。
-const SPACED_BODY: &str = "   <text:p>\n    <text:span>甲</text:span>\n    <text:span>乙</text:span>\n   </text:p>";
+const SPACED_BODY: &str =
+    "   <text:p>\n    <text:span>甲</text:span>\n    <text:span>乙</text:span>\n   </text:p>";
 
 // ---------------------------------------------------------------------------
 // 燈 1：正規化純函數單元（純字串進出，不必組 ODT 容器）
@@ -60,7 +61,7 @@ fn lamp1_normalize_xml_text_strips_formatting_whitespace() {
     assert_eq!(normalize_xml_text("\n\t  標題文字  \n  "), "標題文字");
     // 卡面錨點 2：節點內部含 \n／\t 的連續空白折成單個半形空格——不是換行、不黏死。
     assert_eq!(normalize_xml_text("第一行\n\t第二行"), "第一行 第二行");
-    // 首尾只有**純空格**＝有意義空格（語料實態：LO 寫檔 `Prep 2 ` 这类段尾空格），
+    // 首尾只有**純空格**＝有意義空格（語料實態：LO 寫檔 `Prep 2 ` 這類段尾空格），
     // 不是 pretty-print 噪音 ⇒ 原樣保留，不得誤砍。
     assert_eq!(normalize_xml_text("Prep 2 "), "Prep 2 ");
     assert_eq!(normalize_xml_text(" Section"), " Section");
@@ -88,7 +89,11 @@ fn lamp1_normalize_xml_text_strips_formatting_whitespace() {
 #[test]
 fn lamp2_projection_drops_formatting_whitespace_and_keeps_one_gap_space() {
     let proj = project_bytes(content(SPACED_BODY).as_bytes(), None).expect("投影失敗");
-    assert_eq!(proj.paragraph_count(), 1, "pretty-print 縮排不得生出額外段落");
+    assert_eq!(
+        proj.paragraph_count(),
+        1,
+        "pretty-print 縮排不得生出額外段落"
+    );
     assert_eq!(
         proj.paragraphs[0].text, "甲 乙",
         "節點間格式化空白必須恰折成一個空格（不是零、也不是換行）"
@@ -131,7 +136,11 @@ fn lamp3_pretty_printed_paragraph_breaks_to_exactly_one_line() {
         1,
         "pretty-print 縮排曾被斷行器當成強制斷行（修前實測切出多行）；實得行集 {lines:?}"
     );
-    assert_eq!(lines, vec!["甲 乙"], "唯一一行的文字必須是正規化後的段落全文");
+    assert_eq!(
+        lines,
+        vec!["甲 乙"],
+        "唯一一行的文字必須是正規化後的段落全文"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -160,13 +169,18 @@ fn lamp4_emitter_drops_ghost_empty_items_and_keeps_true_empty_paragraph_line() {
         empty_text_items(&lists),
         0,
         "幽靈空行（正規化後長度為零）不得發射 DrawItem::Text；實發 {:?}",
-        lists.iter().flat_map(|d| d.items.iter()).collect::<Vec<_>>()
+        lists
+            .iter()
+            .flat_map(|d| d.items.iter())
+            .collect::<Vec<_>>()
     );
 
     // (b) 真空段：恰留 1 個空行維持垂直間距（防砍過頭）。
-    let proj_empty =
-        project_bytes(content("   <text:p/>").as_bytes(), None).expect("投影失敗");
-    assert_eq!(proj_empty.paragraphs[0].text, "", "自閉合 text:p 是零文字段");
+    let proj_empty = project_bytes(content("   <text:p/>").as_bytes(), None).expect("投影失敗");
+    assert_eq!(
+        proj_empty.paragraphs[0].text, "",
+        "自閉合 text:p 是零文字段"
+    );
     let lists_empty = emit_display_lists(&proj_empty, &params());
     assert_eq!(
         empty_text_items(&lists_empty),
@@ -181,7 +195,10 @@ fn lamp4_emitter_drops_ghost_empty_items_and_keeps_true_empty_paragraph_line() {
     )
     .expect("投影失敗");
     assert_eq!(mixed.paragraph_count(), 2, "pretty-print 不得生幽靈段落");
-    assert_eq!(mixed.paragraphs[1].text, "", "真空段仍為空字串（正規化不誤砍真空段）");
+    assert_eq!(
+        mixed.paragraphs[1].text, "",
+        "真空段仍為空字串（正規化不誤砍真空段）"
+    );
     let lists_mixed = emit_display_lists(&mixed, &params());
     assert_eq!(
         empty_text_items(&lists_mixed),
@@ -214,13 +231,16 @@ fn lamp5_explicit_line_break_still_produces_two_lines() {
     let body = "   <text:p>\n    上行\n    <text:line-break/>\n    下行\n   </text:p>";
     let proj = project_bytes(content(body).as_bytes(), None).expect("投影失敗");
     assert_eq!(
-        proj.paragraphs[0].text,
-        "上行\n下行",
+        proj.paragraphs[0].text, "上行\n下行",
         "顯式 text:line-break 必須保留為 \\n，其周圍縮排剝除"
     );
     let pls = layout_projection(&proj, &params());
     let lines: Vec<&str> = pls[0].lines.iter().map(|l| l.text.as_str()).collect();
-    assert_eq!(pls[0].lines.len(), 2, "顯式換行段落必須產 2 行；實得 {lines:?}");
+    assert_eq!(
+        pls[0].lines.len(),
+        2,
+        "顯式換行段落必須產 2 行；實得 {lines:?}"
+    );
     assert_eq!(lines, vec!["上行", "下行"], "兩行文字逐字對照");
 
     // 顯式 text:s（text:c 計數）與 text:tab 同樣不受正規化影響。
