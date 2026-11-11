@@ -1,0 +1,1054 @@
+/* Microsoft Word 樣式外殼原型 - 繁體中文樣式表 */
+:root {
+  --qw-primary: #0f6cbd;
+  --qw-primary-hover: #115ea3;
+  --qw-primary-active: #0c3b5e;
+  --qw-file-tab: #185abd;
+  --qw-file-tab-hover: #104a9e;
+  --qw-bg-app: #f3f2f1;
+  --qw-bg-ribbon: #fdfdfd;
+  --qw-bg-ribbon-active: #ffffff;
+  --qw-bg-hover: #f3f2f1;
+  --qw-bg-active: #edebe9;
+  --qw-bg-selected: #e1dfdd;
+  --qw-bg-desk: #e8e8e8;
+  --qw-bg-page: #ffffff;
+  --qw-border-subtle: #edebe9;
+  --qw-border-default: #d2d0ce;
+  --qw-border-active: #8a8886;
+  --qw-text-main: #201f1e;
+  --qw-text-secondary: #605e5c;
+  --qw-text-disabled: #a19f9d;
+  --qw-icon-fill: #323130;
+  --qw-icon-disabled: #a19f9d;
+  --qw-focus-ring: #0f6cbd;
+  --qw-shadow-page: 0 4px 16px rgba(0, 0, 0, 0.14), 0 1px 3px rgba(0, 0, 0, 0.08);
+  --qw-shadow-popup: 0 6.4px 14.4px 0 rgba(0, 0, 0, 0.13), 0 1.2px 3.6px 0 rgba(0, 0, 0, 0.11);
+  --qw-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+body, html {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--qw-font-family);
+  font-size: 12px;
+  color: var(--qw-text-main);
+  background: var(--qw-bg-app);
+}
+
+/* 主視窗外殼 */
+.qword-app {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  position: relative;
+}
+
+/* 1. 快速存取工具列 (QAT) */
+.qword-qat {
+  height: 32px;
+  min-height: 32px;
+  background-color: var(--qw-bg-app);
+  border-bottom: 1px solid var(--qw-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  font-size: 12px;
+  z-index: 20;
+}
+
+.qword-qat-left,
+.qword-qat-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.qword-qat-title {
+  font-weight: 600;
+  color: var(--qw-text-main);
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  letter-spacing: 0.2px;
+}
+
+.qword-qat-mode-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: #ffffff;
+  border: 1px solid var(--qw-border-default);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--qw-text-secondary);
+  cursor: pointer;
+}
+
+.qword-qat-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 3px 5px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--qw-text-main);
+}
+
+.qword-qat-btn:hover:not(:disabled):not([data-requirement^="pending"]) {
+  background-color: var(--qw-bg-hover);
+  border-color: var(--qw-border-default);
+}
+
+.qword-qat-btn:focus-visible {
+  outline: 2px solid var(--qw-focus-ring);
+  outline-offset: 1px;
+}
+
+/* 2. Ribbon 區域 */
+.qword-ribbon {
+  background: var(--qw-bg-ribbon);
+  border-bottom: 1px solid var(--qw-border-default);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  position: relative;
+  z-index: 15;
+}
+
+/* 標籤列 */
+.qword-ribbon-tabs {
+  display: flex;
+  align-items: flex-end;
+  padding: 0 4px;
+  height: 32px;
+  gap: 2px;
+  background: var(--qw-bg-app);
+  border-bottom: 1px solid var(--qw-border-default);
+}
+
+.qword-tab-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  padding: 6px 12px 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--qw-text-main);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  position: relative;
+  margin-bottom: -1px;
+}
+
+.qword-tab-btn:hover:not(.active):not(.is-file) {
+  background-color: rgba(255, 255, 255, 0.6);
+  border-color: var(--qw-border-subtle);
+}
+
+.qword-tab-btn.active {
+  background-color: var(--qw-bg-ribbon-active);
+  border-color: var(--qw-border-default);
+  border-bottom: 1px solid var(--qw-bg-ribbon-active);
+  color: var(--qw-primary);
+  font-weight: 600;
+  z-index: 2;
+}
+
+.qword-tab-btn:focus-visible {
+  outline: 2px solid var(--qw-focus-ring);
+  outline-offset: -2px;
+}
+
+/* 檔案按鈕特色填色 */
+.qword-tab-btn.is-file {
+  background-color: var(--qw-file-tab);
+  color: #ffffff;
+  font-weight: 600;
+  border-radius: 4px;
+  margin-bottom: 3px;
+  padding: 4px 14px;
+  border: 1px solid transparent;
+}
+
+.qword-tab-btn.is-file:hover {
+  background-color: var(--qw-file-tab-hover);
+}
+
+/* Ribbon 指令區 */
+.qword-ribbon-panels {
+  min-height: 98px;
+  height: 98px;
+  background: var(--qw-bg-ribbon-active);
+  position: relative;
+  overflow: hidden;
+}
+
+.qword-tab-panel {
+  display: none;
+  height: 100%;
+  padding: 2px 4px;
+  align-items: stretch;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.qword-tab-panel.active {
+  display: flex;
+}
+
+/* 群組容器 */
+.qword-group {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 2px 6px 3px;
+  border-right: 1px solid var(--qw-border-subtle);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.qword-group-body {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+
+.qword-group-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  font-size: 11px;
+  color: var(--qw-text-secondary);
+  position: relative;
+  margin-top: 2px;
+}
+
+.qword-group-title {
+  white-space: nowrap;
+}
+
+.qword-group-launcher {
+  position: absolute;
+  right: -2px;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--qw-text-secondary);
+  border-radius: 2px;
+}
+
+.qword-group-launcher:hover {
+  background-color: var(--qw-bg-hover);
+  color: var(--qw-text-main);
+}
+
+/* 控制項元件樣式 */
+.qword-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--qw-text-main);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 3px 6px;
+  transition: background 0.1s, border-color 0.1s;
+  white-space: nowrap;
+  position: relative;
+}
+
+.qword-btn:hover:not(:disabled):not([data-requirement^="pending"]) {
+  background-color: var(--qw-bg-hover);
+  border-color: var(--qw-border-default);
+}
+
+.qword-btn:active:not(:disabled):not([data-requirement^="pending"]) {
+  background-color: var(--qw-bg-active);
+}
+
+.qword-btn:focus-visible {
+  outline: 2px solid var(--qw-focus-ring);
+  outline-offset: -1px;
+}
+
+/* 大按鈕 (圖示上、文字下) */
+.qword-btn-large {
+  flex-direction: column;
+  height: 72px;
+  min-width: 48px;
+  padding: 6px 6px 4px;
+  gap: 2px;
+}
+
+.qword-btn-large .qword-icon {
+  width: 32px;
+  height: 32px;
+}
+
+.qword-btn-large .qword-btn-label {
+  font-size: 11px;
+  text-align: center;
+  line-height: 1.2;
+}
+
+/* 小按鈕 (16px 圖示) */
+.qword-btn-small {
+  height: 24px;
+  padding: 2px 4px;
+  font-size: 11px;
+}
+
+.qword-btn-small .qword-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.qword-btn-icon-only {
+  width: 24px;
+  height: 24px;
+  padding: 2px;
+}
+
+.qword-btn-icon-only .qword-icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* 下拉按鈕組合 */
+.qword-split-btn {
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+
+.qword-split-btn:hover:not(.is-disabled) {
+  border-color: var(--qw-border-default);
+}
+
+.qword-split-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.qword-split-arrow {
+  padding: 0 3px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid var(--qw-border-subtle);
+}
+
+/* 控制項網格與行排列 */
+.qword-btn-column {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.qword-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 輸入/選單控制項 (字型、字號) */
+.qword-select {
+  height: 22px;
+  border: 1px solid var(--qw-border-default);
+  border-radius: 3px;
+  background: #ffffff;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--qw-text-main);
+  padding: 1px 4px;
+  cursor: pointer;
+}
+
+.qword-select:focus-visible {
+  outline: 2px solid var(--qw-focus-ring);
+}
+
+.qword-select-font {
+  width: 120px;
+}
+
+.qword-select-size {
+  width: 52px;
+}
+
+/* 樣式庫預覽帶 */
+.qword-style-gallery {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #ffffff;
+  border: 1px solid var(--qw-border-default);
+  border-radius: 3px;
+  padding: 2px 4px;
+  height: 68px;
+}
+
+.qword-style-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 60px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+  padding: 2px;
+}
+
+.qword-style-item:hover {
+  background-color: var(--qw-bg-hover);
+  border-color: var(--qw-border-default);
+}
+
+.qword-style-preview {
+  font-size: 14px;
+  font-weight: 500;
+  color: #000000;
+  margin-bottom: 4px;
+}
+
+.qword-style-item.h1 .qword-style-preview {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--qw-primary);
+}
+
+.qword-style-item.h2 .qword-style-preview {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--qw-primary);
+}
+
+.qword-style-item.h3 .qword-style-preview {
+  font-size: 13px;
+  font-weight: 600;
+  color: #3b71ca;
+}
+
+.qword-style-name {
+  font-size: 10px;
+  color: var(--qw-text-secondary);
+}
+
+/* 3. 標尺 (Ruler) */
+.qword-ruler-container {
+  height: 22px;
+  min-height: 22px;
+  background: #fdfdfd;
+  border-bottom: 1px solid var(--qw-border-default);
+  display: flex;
+  align-items: stretch;
+  position: relative;
+  z-index: 10;
+}
+
+.qword-ruler-corner {
+  width: 24px;
+  min-width: 24px;
+  background: #edebe9;
+  border-right: 1px solid var(--qw-border-default);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.qword-ruler-track {
+  flex: 1;
+  position: relative;
+  background: #e1dfdd; /* 頁面邊界灰色 */
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+/* 白底主編輯區 */
+.qword-ruler-body {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px #d2d0ce;
+}
+
+.qword-ruler-ticks {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.qword-ruler-tick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  background-color: #8a8886;
+}
+
+.qword-ruler-tick.major {
+  height: 8px;
+}
+
+.qword-ruler-tick.minor {
+  height: 4px;
+}
+
+.qword-ruler-tick-num {
+  position: absolute;
+  top: 1px;
+  font-size: 9px;
+  color: #605e5c;
+  transform: translateX(-50%);
+  user-select: none;
+}
+
+/* 滑桿標記 (首行縮排/左縮排/右縮排) */
+.qword-ruler-marker {
+  position: absolute;
+  width: 12px;
+  height: 14px;
+  cursor: ew-resize;
+  z-index: 5;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.qword-ruler-marker-first {
+  top: 0px;
+}
+
+.qword-ruler-marker-hanging {
+  bottom: 6px;
+}
+
+.qword-ruler-marker-left {
+  bottom: 0px;
+}
+
+.qword-ruler-marker-right {
+  bottom: 0px;
+}
+
+/* 4. 文件編輯區 */
+.qword-workspace {
+  flex: 1;
+  background-color: var(--qw-bg-desk);
+  overflow: auto;
+  position: relative;
+  display: flex;
+}
+
+.qword-workspace-viewport {
+  flex: 1;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 16px 80px;
+}
+
+/* 垂直標尺佔位條 */
+.qword-vruler {
+  width: 24px;
+  background: #edebe9;
+  border-right: 1px solid var(--qw-border-default);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.qword-vruler-body {
+  margin: 32px 0;
+  flex: 1;
+  background: #ffffff;
+  border-top: 1px solid #d2d0ce;
+  border-bottom: 1px solid #d2d0ce;
+}
+
+/* 頁面紙張容器 */
+.qword-page-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: transform 0.1s ease-out;
+  transform-origin: top center;
+}
+
+/* A4 白色紙頁 */
+.qword-page {
+  width: 794px; /* A4 96DPI 約 794px × 1123px */
+  min-height: 1123px;
+  background: var(--qw-bg-page);
+  box-shadow: var(--qw-shadow-page);
+  padding: 96px 96px 96px 96px; /* 1 英吋邊界 = 96px */
+  position: relative;
+  box-sizing: border-box;
+  color: #000000;
+  outline: none;
+}
+
+/* 編輯區導引線（標尺拖曳時顯示） */
+.qword-indent-guideline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  border-left: 1px dashed var(--qw-primary);
+  display: none;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* 紙頁內容範本 */
+.qword-page-header-mark {
+  position: absolute;
+  top: 48px;
+  left: 96px;
+  right: 96px;
+  border-bottom: 1px dashed #d2d0ce;
+  font-size: 11px;
+  color: var(--qw-text-secondary);
+  padding-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.qword-page-footer-mark {
+  position: absolute;
+  bottom: 48px;
+  left: 96px;
+  right: 96px;
+  border-top: 1px dashed #d2d0ce;
+  font-size: 11px;
+  color: var(--qw-text-secondary);
+  padding-top: 4px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.qword-page-content {
+  font-size: 15px;
+  line-height: 1.7;
+  color: #201f1e;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.qword-doc-h1 {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--qw-primary);
+  margin-bottom: 16px;
+  border-bottom: 2px solid var(--qw-primary);
+  padding-bottom: 6px;
+}
+
+.qword-doc-p {
+  margin-bottom: 14px;
+  text-align: justify;
+}
+
+.qword-doc-table-placeholder {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 13px;
+}
+
+.qword-doc-table-placeholder th,
+.qword-doc-table-placeholder td {
+  border: 1px solid var(--qw-border-default);
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.qword-doc-table-placeholder th {
+  background-color: #f3f2f1;
+  font-weight: 600;
+}
+
+/* 檢視模式切換效果 */
+.qword-app[data-view-mode="read"] .qword-ribbon,
+.qword-app[data-view-mode="read"] .qword-ruler-container,
+.qword-app[data-view-mode="read"] .qword-vruler {
+  display: none !important;
+}
+
+.qword-app[data-view-mode="read"] .qword-workspace {
+  background: #fdfdfd;
+}
+
+.qword-app[data-view-mode="read"] .qword-page {
+  box-shadow: none;
+  max-width: 900px;
+  width: 90%;
+}
+
+.qword-app[data-view-mode="web"] .qword-page {
+  width: 100%;
+  max-width: 100%;
+  box-shadow: none;
+  border-radius: 0;
+  min-height: 100vh;
+}
+
+/* 5. 狀態列 (Status bar) */
+.qword-statusbar {
+  height: 24px;
+  min-height: 24px;
+  background: var(--qw-bg-app);
+  border-top: 1px solid var(--qw-border-default);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--qw-text-secondary);
+  z-index: 20;
+}
+
+.qword-status-left,
+.qword-status-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.qword-status-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.qword-status-pill:hover {
+  background: var(--qw-bg-hover);
+  color: var(--qw-text-main);
+}
+
+.qword-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.qword-zoom-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 90px;
+  height: 4px;
+  background: var(--qw-border-default);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.qword-zoom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--qw-primary);
+  cursor: pointer;
+}
+
+.qword-zoom-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--qw-primary);
+  cursor: pointer;
+  border: none;
+}
+
+.qword-zoom-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--qw-text-main);
+  border-radius: 2px;
+}
+
+.qword-zoom-btn:hover {
+  background: var(--qw-bg-hover);
+}
+
+.qword-zoom-percent {
+  min-width: 36px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.qword-zoom-percent:hover {
+  text-decoration: underline;
+}
+
+/* 6. 產品誠實紅線：停用態規格 */
+/* 帶有 pending:* 的所有控制項 */
+[data-requirement^="pending"],
+.is-disabled {
+  color: var(--qw-text-disabled) !important;
+  cursor: not-allowed !important;
+  opacity: 0.62;
+  pointer-events: auto; /* 保持 pointer-events 以觸發 tooltip 和誠實點擊事件 */
+}
+
+[data-requirement^="pending"] .qword-icon,
+.is-disabled .qword-icon {
+  fill: var(--qw-icon-disabled) !important;
+  stroke: var(--qw-icon-disabled) !important;
+}
+
+[data-requirement^="pending"]:hover,
+.is-disabled:hover {
+  background-color: transparent !important;
+  border-color: transparent !important;
+}
+
+/* 7. Tooltip 浮動提示框 */
+.qword-tooltip {
+  position: fixed;
+  background: #323130;
+  color: #ffffff;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  box-shadow: var(--qw-shadow-popup);
+  pointer-events: none;
+  z-index: 1000;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.15s, transform 0.15s;
+  max-width: 240px;
+  line-height: 1.4;
+}
+
+.qword-tooltip.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.qword-tooltip-req {
+  display: block;
+  font-size: 10px;
+  color: #f7a23b;
+  margin-top: 3px;
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  padding-top: 3px;
+}
+
+/* 8. 彈出面板 / Flyout Popovers */
+.qword-popover {
+  position: absolute;
+  background: #ffffff;
+  border: 1px solid var(--qw-border-default);
+  box-shadow: var(--qw-shadow-popup);
+  border-radius: 4px;
+  padding: 8px;
+  z-index: 200;
+  display: none;
+}
+
+.qword-popover.open {
+  display: block;
+}
+
+/* 8x5 表格網格選擇器 */
+.qword-table-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 176px;
+}
+
+.qword-table-picker-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--qw-text-main);
+  text-align: center;
+}
+
+.qword-table-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 18px);
+  grid-template-rows: repeat(5, 18px);
+  gap: 2px;
+}
+
+.qword-table-cell {
+  border: 1px solid var(--qw-border-default);
+  background: #ffffff;
+  cursor: pointer;
+  transition: background 0.05s;
+}
+
+.qword-table-cell.highlight {
+  background: #cfe4fa;
+  border-color: var(--qw-primary);
+}
+
+/* 色盤選擇器 */
+.qword-color-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 190px;
+}
+
+.qword-color-section-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--qw-text-secondary);
+}
+
+.qword-color-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 16px);
+  gap: 2px;
+}
+
+.qword-color-swatch {
+  width: 16px;
+  height: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  border-radius: 1px;
+}
+
+.qword-color-swatch:hover {
+  outline: 2px solid var(--qw-primary);
+  transform: scale(1.15);
+  z-index: 2;
+}
+
+/* 特殊字元面板 */
+.qword-symbol-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 260px;
+}
+
+.qword-symbol-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 28px);
+  gap: 3px;
+}
+
+.qword-symbol-item {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  border: 1px solid var(--qw-border-subtle);
+  background: #ffffff;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.qword-symbol-item:hover {
+  background: var(--qw-bg-hover);
+  border-color: var(--qw-primary);
+}
+
+/* 對話框 / 說明彈窗 Modal */
+.qword-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.qword-modal-backdrop.open {
+  display: flex;
+}
+
+.qword-modal {
+  background: #ffffff;
+  width: 520px;
+  max-width: 90vw;
+  border-radius: 6px;
+  box-shadow: var(--qw-shadow-popup);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.qword-modal-header {
+  padding: 12px 16px;
+  background: var(--qw-bg-app);
+  border-bottom: 1px solid var(--qw-border-default);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.qword-modal-body {
+  padding: 16px;
+  font-size: 13px;
+  line-height: 1.6;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.qword-modal-footer {
+  padding: 10px 16px;
+  background: var(--qw-bg-app);
+  border-top: 1px solid var(--qw-border-default);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
