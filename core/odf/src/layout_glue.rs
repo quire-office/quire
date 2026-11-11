@@ -598,6 +598,89 @@ fn attr_value_str(v: &[u8]) -> String {
 // 段落走查（段落流＋runs）
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// XML 格式化空白正規化（本卡契約：ODF 正文換行只認 <text:line-break/>、
+// 製表只認 <text:tab/>、空白只認 <text:s/>——OASIS ODF 1.3 Part 3 §5.1.1）
+// ---------------------------------------------------------------------------
+
+/// XML 空白字元判定：只認空格、TAB、CR、LF——刻意不用 `char::is_whitespace`
+/// （NBSP U+00A0、類空格 U+2007 等是**正文字元**，語料實測存在，動到即吞字）。
+#[inline]
+pub fn is_xml_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\r' | '\n')
+}
+
+/// run 內是否含「格式化換行／製表符」（CR／LF／TAB）——這三者只可能來自
+/// pretty-print 縮排產物，正文側一律不得進段落、更不得被斷行器當成硬換行。
+/// 純空格 run 不在此列：LO rawdict 實測**不折疊節點內連續空格**
+/// （`docs/e1cd-xml-space-policy.md` §1），故純空格原樣保留。
+#[inline]
+fn has_format_ws(s: &str) -> bool {
+    s.chars().any(|c| matches!(c, '\t' | '\r' | '\n'))
+}
+
+/// 剝除單一 XML 文字節點首尾的格式化換行／製表符，並把節點**內部**含
+/// CR／LF／TAB 的連續空白折成單個半形空格。純函數（字串進出），考卷直接打它。
+///
+/// 口徑（比照 DOCX 線 `docs/e1cd-xml-space-policy.md` §2 的節點級裁剪）：
+/// 1. 節點**首尾**的空白 run：含 CR／LF／TAB → 整段剷除；純空格 → 原樣保留
+///    （段首段尾的有意義空格不誤砍）。
+/// 2. 節點**內部**空白 run：含 CR／LF／TAB → 折成一個半形空格（**嚴禁把 `\\n`
+///    當成硬換行傳進 layout**）；純空格 run → 原樣保留（不折疊、不黏死）。
+/// 3. **整節點純空白** → 回傳空字串；「節點間原有單空格」的語義由呼叫端
+///    （`ParaCtx::push_gap`）以「待發單空格」承載——兩個 `text:span` 之間的
+///    格式化空白＝一個空格，不是零、也不是換行。
+pub fn normalize_xml_text(node: &str) -> String {
+    if node.chars().all(is_xml_space) {
+        return String::new();
+    }
+    let cs: Vec<char> = node.chars().collect();
+    let n = cs.len();
+    let mut out = String::with_capacity(node.len());
+    let mut i = 0usize;
+    // 首段空白 run。
+    while i < n && is_xml_space(cs[i]) {
+        i += 1;
+    }
+    let lead: String = cs[..i].iter().collect();
+    if !has_format_ws(&lead) {
+        out.push_str(&lead);
+    }
+    // 其餘：非空白照抄，空白 run 依「內部／尾段」分流。
+    while i < n {
+        if !is_xml_space(cs[i]) {
+            out.push(cs[i]);
+            i += 1;
+            continue;
+        }
+        let from = i;
+        while i < n && is_xml_space(cs[i]) {
+            i += 1;
+        }
+        let run: String = cs[from..i].iter().collect();
+        let fmt = has_format_ws(&run);
+        if i == n {
+            // 尾段空白：含格式化字元 → 剷除；純空格 → 保留。
+            if !fmt {
+                out.push_str(&run);
+            }
+        } else if fmt {
+            out.push(' ');
+        } else {
+            out.push_str(&run);
+        }
+    }
+    out
+}
+
+/// 回塞態旗標：`ODF_WS_BUGGY=1` ⇒ 文字節點走「零正規化」舊路徑（直接
+/// `push_str(&unescaped)`，不剝格式化空白、也不掛節點間待發空格），供考卷
+/// `odf_xml_whitespace_policy` 燈 6 證「正規化臂真的在被檢查」。正常態永不觸發
+/// （比照 `ODF_D1_BUGGY`／`ODF_E2D_BUGGY` 的既有鑑別力紀律）。
+pub fn buggy_no_whitespace_normalize() -> bool {
+    std::env::var_os("ODF_WS_BUGGY").is_some()
+}
+
 /// 進行中的段落上下文。
 #[derive(Debug, Clone)]
 struct ParaCtx {
@@ -605,9 +688,49 @@ struct ParaCtx {
     runs: Vec<(CpRange, f32, bool)>,
     /// 段落自身樣式的代表字級/字重（零文字段的代表 run）。
     own: (f32, bool),
+    /// 節點間格式化空白的「待發單空格」旗標：整節點純空白時置位，下一個
+    /// 有內容的文字節點推入前刷成一個空格。段落首尾無鄰側內容＝丟棄
+    /// （段首＝`text` 尚空不刷、段尾＝`finish` 不刷），故 pretty-print 縮排
+    /// 不會在段首段尾留幽靈空格。相鄰多個純空白節點仍是同一個空格。
+    pending_gap: bool,
 }
 
 impl ParaCtx {
+    /// 整節點純空白：掛「節點間單空格」待發語義（不直接進文字流）。
+    fn push_gap(&mut self) {
+        self.pending_gap = true;
+    }
+
+    /// 刷待發單空格：段落已有文字、且行內位置不是剛經過顯式硬換行／製表符
+    /// 才落地。段首無鄰側＝丟棄；硬換行後的縮排屬該行行首噪音＝同樣丟棄
+    /// （LO 在 `<text:line-break/>` 後從行首起排，不會多一個空格）。
+    fn flush_gap(&mut self, style: (f32, bool)) {
+        if self.pending_gap {
+            self.pending_gap = false;
+            let at_line_start = self
+                .text
+                .chars()
+                .next_back()
+                .is_none_or(|c| matches!(c, '\n' | '\t'));
+            if !self.text.is_empty() && !at_line_start {
+                self.push_str(" ", style);
+            }
+        }
+    }
+
+    /// 正規化後的**內容**節點：先刷待發空格，再推入（呼叫端保證 `s` 非純空白）。
+    fn push_text_node(&mut self, s: &str, style: (f32, bool)) {
+        self.flush_gap(style);
+        self.push_str(s, style);
+    }
+
+    /// 顯式空白元素（`text:s`／`text:tab`／`text:line-break`）：顯式元素是權威
+    /// 空白來源，其周圍的格式化縮排屬噪音 ⇒ 待發空格直接放棄，不疊加。
+    fn push_explicit(&mut self, s: &str, style: (f32, bool)) {
+        self.pending_gap = false;
+        self.push_str(s, style);
+    }
+
     /// 追加文字並按當前樣式開/續 run（相鄰同字級同字重合併）。
     fn push_str(&mut self, s: &str, style: (f32, bool)) {
         let from = self.text.chars().count();
@@ -690,6 +813,7 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                         text: String::new(),
                         runs: Vec::new(),
                         own,
+                        pending_gap: false,
                     });
                 } else if is_text_h(name) {
                     text_h_count += 1;
@@ -699,6 +823,7 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                         text: String::new(),
                         runs: Vec::new(),
                         own,
+                        pending_gap: false,
                     });
                 } else if is_span_like(name) {
                     let inherit = *style_stack.last().unwrap_or(&default_style);
@@ -709,10 +834,10 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     match name {
                         b"text:s" | b"s" => {
                             let spaces = " ".repeat(parse_space_count(&e));
-                            cur.push_str(&spaces, style);
+                            cur.push_explicit(&spaces, style);
                         }
-                        b"text:tab" | b"tab" => cur.push_str("\t", style),
-                        b"text:line-break" | b"line-break" => cur.push_str("\n", style),
+                        b"text:tab" | b"tab" => cur.push_explicit("\t", style),
+                        b"text:line-break" | b"line-break" => cur.push_explicit("\n", style),
                         _ => {}
                     }
                 }
@@ -739,6 +864,7 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                         text: String::new(),
                         runs: Vec::new(),
                         own,
+                        pending_gap: false,
                     };
                     let para = ctx.finish();
                     total_text_len += para.text.chars().count();
@@ -749,10 +875,10 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     match name {
                         b"text:s" | b"s" => {
                             let spaces = " ".repeat(parse_space_count(&e));
-                            cur.push_str(&spaces, style);
+                            cur.push_explicit(&spaces, style);
                         }
-                        b"text:tab" | b"tab" => cur.push_str("\t", style),
-                        b"text:line-break" | b"line-break" => cur.push_str("\n", style),
+                        b"text:tab" | b"tab" => cur.push_explicit("\t", style),
+                        b"text:line-break" | b"line-break" => cur.push_explicit("\n", style),
                         _ => {}
                     }
                 }
@@ -766,7 +892,19 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                                 .map_err(|e| e.to_string())
                         }) {
                             let style = *style_stack.last().unwrap_or(&default_style);
-                            cur.push_str(&unescaped, style);
+                            // XML 格式化空白剝除（本卡契約）：正規化後為空＝整節點
+                            // 純空白 → 只掛「節點間單空格」語義；否則推入正規化結果。
+                            // 回塞態（`ODF_WS_BUGGY`）走零正規化舊路徑，供燈 6 鑑別。
+                            if buggy_no_whitespace_normalize() {
+                                cur.push_str(&unescaped, style);
+                            } else {
+                                let normalized = normalize_xml_text(&unescaped);
+                                if normalized.is_empty() {
+                                    cur.push_gap();
+                                } else {
+                                    cur.push_text_node(&normalized, style);
+                                }
+                            }
                         }
                     }
                 }
@@ -776,7 +914,9 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     if let Some(cur) = p_stack.last_mut() {
                         let resolved = crate::body::resolve_general_ref(&e)?;
                         let style = *style_stack.last().unwrap_or(&default_style);
-                        cur.push_str(&resolved, style);
+                        // 實體引用值（如 `&nbsp;` → NBSP）是**正文字元**，不是格式化
+                        // 空白，一律原樣入文（不經正規化）。
+                        cur.push_text_node(&resolved, style);
                     }
                 }
             }

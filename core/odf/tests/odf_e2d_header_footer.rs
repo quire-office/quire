@@ -403,7 +403,12 @@ const CORPUS_PARAGRAPH_BASELINE: usize = 19_935;
 ///   相同**（57 檔差異檔數＝0），故本卡對宿主計數的貢獻嚴格為零——此欄更新只
 ///   反映上游合法演進，不稀釋「E2d 不動宿主計數」鐵律（段落數 19_935 逐位未動
 ///   即 ODF-C3 契約面同證）。
-const CORPUS_TOTAL_TEXT_BASELINE: usize = 591_774;
+/// * **591_699＝現行值**：t_ae9a9f22（正文投影剝除 XML 格式化空白）合法扣掉 75 字，
+///   PM 裁可（2026-11-11）。PM 獨立覆核（merge-base `aa9d04b` base binary vs
+///   分支 HEAD `0b80261` 逐檔 A/B）：51 可比檔中 9 檔下降合計 −75、**零檔上升**，
+///   逐檔差值與卡面 comment 列表一致；段落數 19_935（48 檔口徑）逐位未動，
+///   即正規化只剝格式化空白、不動段落數，ODF-C3 契約面同證。
+const CORPUS_TOTAL_TEXT_BASELINE: usize = 591_699;
 
 #[test]
 fn lamp6_host_counting_zero_regression() {

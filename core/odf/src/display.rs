@@ -181,6 +181,10 @@ fn push_line_items(
     para: Option<&crate::layout_glue::OdfLayoutParagraph>,
 ) {
     let line_len = line.text.chars().count();
+    // 幽靈空行（正規化後長度為零）在**解析層**已被剝除（見 layout_glue::normalize_xml_text），
+    // 到這裡的行都是真行：零長度行只剩「真空段」與「連續顯式 text:line-break」兩類，
+    // 二者都是 LO 會留垂直間距的真行 ⇒ 一律發 1 個空文字項維持行高，不在此層砍行
+    // （砍行會破壞 `odf_d1_display_list` 燈 3 的「一頁行數＝發射行群數」幾何契約）。
     if line_len == 0 {
         // 空行（零文字段／行首強制斷點）：發一個空文字項佔位，帶段落代表字級/字重
         // ——與 DOCX 線 `emit_line_run_items` 的零寬行分支同口徑（渲染端據此畫插入點）。
