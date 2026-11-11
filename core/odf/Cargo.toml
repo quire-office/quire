@@ -22,3 +22,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# 卡 t_4006056b：口徑對等考卷以 ZipBundle::serialize(changes) 合成 content.xml
+# （禁 corpus 新檔鐵律下的零新增資產路徑）。dev-only 依賴——分層閘門
+# （check-layering.sh）只查 -e normal 的直接依賴，測試依賴不構成新層級邊。
+quire-ooxml = { workspace = true }
