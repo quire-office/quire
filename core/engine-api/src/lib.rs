@@ -11,10 +11,10 @@ use quire_layout::{
     MARGIN_LEFT, MARGIN_TOP,
 };
 use quire_ooxml::{
-    diff_zip_structure, parse, parse_header_footer_part_with_fonts,
-    read_even_and_odd_headers, read_rels, read_sections_header_footer, read_sections_note_pr,
-    read_sections_per_paragraph, resolve_relationship, LineSpacing, OoxmlDoc, OoxmlError,
-    ParaStyle, RunFonts, SlotRefs, StyleTable, ThemeColors, ThemeFonts, ZipDiff,
+    diff_zip_structure, parse, parse_header_footer_part_with_fonts, read_even_and_odd_headers,
+    read_rels, read_sections_header_footer, read_sections_note_pr, read_sections_per_paragraph,
+    resolve_relationship, LineSpacing, OoxmlDoc, OoxmlError, ParaStyle, RunFonts, SlotRefs,
+    StyleTable, ThemeColors, ThemeFonts, ZipDiff,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};

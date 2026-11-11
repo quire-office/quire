@@ -175,10 +175,7 @@ pub enum MutationError {
         para_len: usize,
     },
     #[error("跨容器邊界非法: 起點與終點不位於同一儲存格或同一文字框子樹")]
-    CrossContainerBoundary {
-        start_para: usize,
-        end_para: usize,
-    },
+    CrossContainerBoundary { start_para: usize, end_para: usize },
     #[error("受保護的結構節點不可刪除或拆裂: {reason}")]
     ProtectedStructure { reason: String },
     #[error("樣式引用非法或型別不符: style_id={style_id}，期望型別={expected_type}")]
@@ -784,7 +781,13 @@ impl Engine {
                     cp: range.start.cp,
                 };
 
-                (applied, orig_slice, range.start.para, Some(caret_after), new_xml)
+                (
+                    applied,
+                    orig_slice,
+                    range.start.para,
+                    Some(caret_after),
+                    new_xml,
+                )
             }
 
             Mutation::InsertBreak { target, pos, kind } => {
@@ -1025,9 +1028,10 @@ impl Engine {
 
         // touched 自動退場機制
         for part_name in &affected_parts {
-            if let (Some(cur), Some(baseline)) =
-                (self.doc.parts.get(part_name), self.part_baselines.get(part_name))
-            {
+            if let (Some(cur), Some(baseline)) = (
+                self.doc.parts.get(part_name),
+                self.part_baselines.get(part_name),
+            ) {
                 if cur == baseline {
                     self.touched.remove(part_name);
                 } else {

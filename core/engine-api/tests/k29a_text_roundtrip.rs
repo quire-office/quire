@@ -48,7 +48,9 @@ fn k29a_lamp1_text_edit_persistence_closed_loop() {
         "重開後第 0 段文字必須持久化"
     );
 
-    let p0_dl = reopened.page_display_list(0).expect("第 0 頁顯示列表必須存在");
+    let p0_dl = reopened
+        .page_display_list(0)
+        .expect("第 0 頁顯示列表必須存在");
     let bold_item = p0_dl
         .items
         .into_iter()
@@ -94,24 +96,22 @@ fn extract_body_child_spans(xml: &[u8]) -> Vec<(usize, usize, Vec<u8>)> {
         };
         let tag_start = cursor + rel_lt;
         let rem = &slice[tag_start..];
-        let (tag_name, is_target) = if rem.starts_with("<w:p ")
-            || rem.starts_with("<w:p>")
-            || rem.starts_with("<w:p/>")
-        {
-            ("w:p", true)
-        } else if rem.starts_with("<w:tbl ")
-            || rem.starts_with("<w:tbl>")
-            || rem.starts_with("<w:tbl/>")
-        {
-            ("w:tbl", true)
-        } else if rem.starts_with("<mc:AlternateContent ")
-            || rem.starts_with("<mc:AlternateContent>")
-            || rem.starts_with("<mc:AlternateContent/>")
-        {
-            ("mc:AlternateContent", true)
-        } else {
-            ("", false)
-        };
+        let (tag_name, is_target) =
+            if rem.starts_with("<w:p ") || rem.starts_with("<w:p>") || rem.starts_with("<w:p/>") {
+                ("w:p", true)
+            } else if rem.starts_with("<w:tbl ")
+                || rem.starts_with("<w:tbl>")
+                || rem.starts_with("<w:tbl/>")
+            {
+                ("w:tbl", true)
+            } else if rem.starts_with("<mc:AlternateContent ")
+                || rem.starts_with("<mc:AlternateContent>")
+                || rem.starts_with("<mc:AlternateContent/>")
+            {
+                ("mc:AlternateContent", true)
+            } else {
+                ("", false)
+            };
 
         if !is_target {
             let tag_end = match rem.find('>') {
@@ -156,13 +156,12 @@ fn extract_body_child_spans(xml: &[u8]) -> Vec<(usize, usize, Vec<u8>)> {
 
             if tag_inner.starts_with(&open_tag_prefix) {
                 let after_prefix = &tag_inner[open_tag_prefix.len()..];
-                if after_prefix.starts_with(' ')
+                if (after_prefix.starts_with(' ')
                     || after_prefix.starts_with('>')
-                    || after_prefix.starts_with('/')
+                    || after_prefix.starts_with('/'))
+                    && !is_self_closing
                 {
-                    if !is_self_closing {
-                        depth += 1;
-                    }
+                    depth += 1;
                 }
             } else if tag_inner == close_tag {
                 depth -= 1;
@@ -206,10 +205,7 @@ fn k29a_lamp2_untouched_parts_and_neighbor_paragraphs_zero_loss() {
             .expect("必須有 word/document.xml")
             .to_vec();
         let orig_spans = extract_body_child_spans(&orig_doc_xml);
-        assert!(
-            !orig_spans.is_empty(),
-            "{rel} 頂層結構元素切片提取不可為空"
-        );
+        assert!(!orig_spans.is_empty(), "{rel} 頂層結構元素切片提取不可為空");
 
         // 執行單段 M1.1 (InsertText) 與單段 M1.2 (DeleteRange)
         engine
