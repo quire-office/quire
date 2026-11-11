@@ -22,6 +22,20 @@
 //!    且真空段仍恰留 1 個空行（防砍過頭把真空段垂直間距一起刪掉）。
 //! 5. 顯式元素不被誤傷：含 `<text:line-break/>` 的段落仍產 2 行。
 //! 6. 回塞鑑別：`ODF_WS_BUGGY=1` 時燈 3／燈 4 必紅（證明兩盞燈真的在看正規化）。
+//!
+//! 返修（卡 t_2a983570）追加燈 7–10：跨節點黏連。燈 1–6 的正規化只在「整節點
+//! 純空白」時掛節點間單空格，**文字節點自身首／尾的格式化空白被剝除時沒有任何
+//! gap 記帳** ⇒ 相鄰節點文字直接黏連（`"甲乙"`）。追加契約：
+//!
+//! 7. 文字節點**尾端**格式化空白被剝 ⇒ 等價節點間單空格（`甲`＋尾縮排＋span`乙`）。
+//! 8. 文字節點**首部**格式化空白被剝 ⇒ 同口徑（span`甲`＋首縮排＋`乙`）。
+//! 9. **純空格節點不得折疊**：兩個 span 之間的兩個空格（無 `\n`／`\t`／`\r`）是
+//!    正文字元，渲染兩個空格字形（燈 1 同口徑，`docs/e1cd-xml-space-policy.md` §1）。
+//! 10. 實體引用（`&amp;`）走 GeneralRef 路徑時同樣不得黏連（`A & B`）。
+//!
+//! 鑑別力：燈 7–10 於卡前語料（main `7c2c0a9`）先紅；回塞態 `ODF_WS_BUGGY=1`
+//! （文字節點走零正規化舊路徑＝不剝邊界空白、也不掛 gap）時必紅，證明四盞燈
+//! 真的在看空白政策而不是在盯別的東西。
 
 use quire_odf::display::{emit_display_lists, DrawItem, OdtView};
 use quire_odf::layout_glue::{layout_projection, normalize_xml_text, project_bytes, LayoutParams};
@@ -299,4 +313,89 @@ fn lamp6_buggy_reinjection_is_distinguishable() {
         0,
         "BUGGY 態若零幽靈項 ⇒ 燈 4 沒有鑑別力"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 燈 7–10（卡 t_2a983570 返修）：跨節點黏連——被剝除的首尾格式化空白必須記
+// pending_gap，且純空格（無 \n／\t／\r）節點不得折疊。探針來源
+// `~/.hermes/scripts/ow-fixtures/odf_ws_boundary_probe.rs`（PM 於 main 7c2c0a9
+// 實跑 4 failed／1 passed），四例逐字搬進考卷。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lamp7_text_node_trailing_format_ws_earns_a_gap() {
+    // 文字節點 `\n  甲\n  ` 的尾端縮排被剝除 ⇒ 必須等價「節點間單空格」，
+    // 不得與後續 `text:span` 黏成 `甲乙`。
+    let proj = project_bytes(
+        content("<text:p>\n  甲\n  <text:span>乙</text:span>\n</text:p>").as_bytes(),
+        None,
+    )
+    .expect("投影失敗");
+    assert_eq!(
+        proj.paragraphs[0].text, "甲 乙",
+        "節點尾縮排被剝時必須記一個待發空格（修前實得黏連）"
+    );
+    assert_eq!(proj.paragraph_count(), 1, "不得生出額外段落");
+}
+
+#[test]
+fn lamp8_text_node_leading_format_ws_earns_a_gap() {
+    // 反向：span 之後的文字節點以 `\n` 開頭（前置縮排被剝）⇒ 同口徑恰一空格。
+    let proj = project_bytes(
+        content("<text:p><text:span>甲</text:span>\n  乙\n</text:p>").as_bytes(),
+        None,
+    )
+    .expect("投影失敗");
+    assert_eq!(
+        proj.paragraphs[0].text, "甲 乙",
+        "文字節點首部縮排被剝時必須記一個待發空格（修前實得黏連）"
+    );
+}
+
+#[test]
+fn lamp9_pure_space_node_between_spans_is_not_folded() {
+    // 純雙空格節點（無 CR／LF／TAB）不是 pretty-print 噪音：LO rawdict 實測
+    // 不折疊純空格（docs/e1cd-xml-space-policy.md §1）⇒ 兩個空格字形原樣入文。
+    let proj = project_bytes(
+        content("<text:p><text:span>甲</text:span>  <text:span>乙</text:span></text:p>")
+            .as_bytes(),
+        None,
+    )
+    .expect("投影失敗");
+    assert_eq!(
+        proj.paragraphs[0].text, "甲  乙",
+        "純空格節點不得被 all(is_xml_space) 折成單空格"
+    );
+    assert_eq!(
+        proj.total_text_len, 4,
+        "甲＋兩個空格＋乙＝4 碼點（折疊即與 LO 真值背道）"
+    );
+    // 純空格節點與格式化空白節點不混為一談：`\n` 在節點內 ⇒ 仍是節點間單空格。
+    let newline_case = project_bytes(
+        content("<text:p><text:span>甲</text:span> \n <text:span>乙</text:span></text:p>")
+            .as_bytes(),
+        None,
+    )
+    .expect("投影失敗");
+    assert_eq!(
+        newline_case.paragraphs[0].text, "甲 乙",
+        "含 \\n 的空白節點＝格式化噪音 ⇒ 恰折一個空格"
+    );
+}
+
+#[test]
+fn lamp10_entity_ref_boundary_not_glued() {
+    // 實體引用走 `Event::GeneralRef` ⇒ `push_text_node`，gap 刷入自然生效：
+    // `A\n  &amp;\n  B` 必為 `A & B`（修前實得 `A&B`）。
+    let proj = project_bytes(
+        content("<text:p>\n  A\n  &amp;\n  B\n</text:p>").as_bytes(),
+        None,
+    )
+    .expect("投影失敗");
+    assert_eq!(
+        proj.paragraphs[0].text, "A & B",
+        "實體引用兩側的格式化縮排各記一個待發空格（修前實得黏連）"
+    );
+    let pls = layout_projection(&proj, &params());
+    assert_eq!(pls[0].lines.len(), 1, "邊界空白不得被斷行器當成硬換行");
 }
