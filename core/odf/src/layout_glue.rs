@@ -610,13 +610,110 @@ pub fn is_xml_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\r' | '\n')
 }
 
-/// run 內是否含「格式化換行／製表符」（CR／LF／TAB）——這三者只可能來自
-/// pretty-print 縮排產物，正文側一律不得進段落、更不得被斷行器當成硬換行。
-/// 純空格 run 不在此列：LO rawdict 實測**不折疊節點內連續空格**
-/// （`docs/e1cd-xml-space-policy.md` §1），故純空格原樣保留。
+/// XML 空白四碼的位元組級判定。四碼全是 ASCII，而 UTF-8 多字節序列的第二碼起
+/// 恆 ≥ 0x80 ⇒ 以位元組比對不會誤切碼點，也無需每節點 `Vec<char>`（效能路徑）。
 #[inline]
-fn has_format_ws(s: &str) -> bool {
-    s.chars().any(|c| matches!(c, '\t' | '\r' | '\n'))
+fn is_ws_byte(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\r' | b'\n')
+}
+
+/// 格式化空白（CR／LF／TAB）的位元組級判定——純空格不算。
+#[inline]
+fn is_fmt_byte(b: u8) -> bool {
+    matches!(b, b'\t' | b'\r' | b'\n')
+}
+
+/// 把「只含 ASCII 空白」或「由非空白位元組切出」的切片還原成字串。切片邊界恆落
+/// 在碼點邊界上（理由同上：空白四碼全 ASCII），故 `from_utf8` 必然成功；不可能
+/// 路徑退回空字串，不 panic。
+#[inline]
+fn ws_slice_str(b: &[u8]) -> &str {
+    core::str::from_utf8(b).unwrap_or("")
+}
+
+/// `normalize_xml_text_with_edge` 的邊界記帳：節點首／尾是否有**含格式化字元的
+/// 空白 run 被剷除**（卡 t_2a983570 返修核心）。
+///
+/// 跨節點語義：被剷除的邊界格式化空白和「整節點純空白」是同一件事——兩者都代表
+/// 源檔在這裡原本有空白、正規化把噪音剝掉了。因此呼叫端（`walk_paragraphs` 的
+/// `Event::Text` 分支）必須為任一旗標補一次 `ParaCtx::push_gap()`，否則相鄰節點
+/// 文字直接黏連（`甲`＋尾縮排＋`乙` ⇒ `甲乙`，修前實測）。段首段尾的丟棄規則仍由
+/// `flush_gap` 統一把關（段落尚無文字／剛過顯式硬換行 ⇒ 不落地）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EdgeInfo {
+    /// 節點**首部**含 CR／LF／TAB 的空白 run 被剷除。
+    pub lead_fmt_ws_stripped: bool,
+    /// 節點**尾端**含 CR／LF／TAB 的空白 run 被剷除。
+    pub trail_fmt_ws_stripped: bool,
+}
+
+/// 正規化＋邊界記帳版（呼叫端用這個）。契約同 `normalize_xml_text`，另回傳
+/// 首尾格式化空白是否被剷除。
+///
+/// 整節點全為 XML 空白時的分流（卡 t_2a983570 燈 9）：
+/// * 含 CR／LF／TAB ⇒ 回傳空字串＋雙旗標：格式化噪音，呼叫端掛「節點間單空格」。
+/// * **純空格** ⇒ 原樣回傳（不折疊、不進 gap）：LO rawdict 實測純空格是正文字元，
+///   兩個空格渲染兩個空格字形（`docs/e1cd-xml-space-policy.md` §1）。
+pub fn normalize_xml_text_with_edge(node: &str) -> (String, EdgeInfo) {
+    let bs = node.as_bytes();
+    let n = bs.len();
+    let mut edge = EdgeInfo::default();
+    // 整節點純空白：先分流（含格式化字元 ⇒ gap 語義；純空格 ⇒ 原樣入文）。
+    if bs.iter().all(|b| is_ws_byte(*b)) {
+        if bs.iter().any(|b| is_fmt_byte(*b)) {
+            edge.lead_fmt_ws_stripped = true;
+            edge.trail_fmt_ws_stripped = true;
+            return (String::new(), edge);
+        }
+        return (node.to_owned(), edge);
+    }
+    let mut out: String = String::with_capacity(n);
+    let mut i = 0usize;
+    // 首段空白 run：含格式化字元 → 整段剷除並記帳；純空格 → 原樣保留。
+    let lead_from = i;
+    while i < n && is_ws_byte(bs[i]) {
+        i += 1;
+    }
+    let lead = &bs[lead_from..i];
+    if !lead.is_empty() {
+        if lead.iter().any(|b| is_fmt_byte(*b)) {
+            edge.lead_fmt_ws_stripped = true;
+        } else {
+            out.push_str(ws_slice_str(lead));
+        }
+    }
+    // 其餘：非空白一次吃一整段，空白 run 依「內部／尾段」分流。
+    while i < n {
+        if !is_ws_byte(bs[i]) {
+            let from = i;
+            while i < n && !is_ws_byte(bs[i]) {
+                i += 1;
+            }
+            out.push_str(ws_slice_str(&bs[from..i]));
+            continue;
+        }
+        let from = i;
+        while i < n && is_ws_byte(bs[i]) {
+            i += 1;
+        }
+        let run = &bs[from..i];
+        let fmt = run.iter().any(|b| is_fmt_byte(*b));
+        if i == n {
+            // 尾段空白：含格式化字元 → 剷除並記帳；純空格 → 保留。
+            if fmt {
+                edge.trail_fmt_ws_stripped = true;
+            } else {
+                out.push_str(ws_slice_str(run));
+            }
+        } else if fmt {
+            // 節點**內部**含格式化字元的空白 run：折恰一個空格（不是硬換行）。
+            // 這是「折疊」不是「剷除」⇒ 不記 gap 帳，否則會疊出兩個空格。
+            out.push(' ');
+        } else {
+            out.push_str(ws_slice_str(run));
+        }
+    }
+    (out, edge)
 }
 
 /// 剝除單一 XML 文字節點首尾的格式化換行／製表符，並把節點**內部**含
@@ -631,46 +728,7 @@ fn has_format_ws(s: &str) -> bool {
 ///    （`ParaCtx::push_gap`）以「待發單空格」承載——兩個 `text:span` 之間的
 ///    格式化空白＝一個空格，不是零、也不是換行。
 pub fn normalize_xml_text(node: &str) -> String {
-    if node.chars().all(is_xml_space) {
-        return String::new();
-    }
-    let cs: Vec<char> = node.chars().collect();
-    let n = cs.len();
-    let mut out = String::with_capacity(node.len());
-    let mut i = 0usize;
-    // 首段空白 run。
-    while i < n && is_xml_space(cs[i]) {
-        i += 1;
-    }
-    let lead: String = cs[..i].iter().collect();
-    if !has_format_ws(&lead) {
-        out.push_str(&lead);
-    }
-    // 其餘：非空白照抄，空白 run 依「內部／尾段」分流。
-    while i < n {
-        if !is_xml_space(cs[i]) {
-            out.push(cs[i]);
-            i += 1;
-            continue;
-        }
-        let from = i;
-        while i < n && is_xml_space(cs[i]) {
-            i += 1;
-        }
-        let run: String = cs[from..i].iter().collect();
-        let fmt = has_format_ws(&run);
-        if i == n {
-            // 尾段空白：含格式化字元 → 剷除；純空格 → 保留。
-            if !fmt {
-                out.push_str(&run);
-            }
-        } else if fmt {
-            out.push(' ');
-        } else {
-            out.push_str(&run);
-        }
-    }
-    out
+    normalize_xml_text_with_edge(node).0
 }
 
 /// 回塞態旗標：`ODF_WS_BUGGY=1` ⇒ 文字節點走「零正規化」舊路徑（直接
@@ -686,16 +744,32 @@ pub fn buggy_no_whitespace_normalize() -> bool {
 struct ParaCtx {
     text: String,
     runs: Vec<(CpRange, f32, bool)>,
+    /// `text` 的**碼點數**快取：`push_str` 每推一片都要知道起訖碼點位置，逐次
+    /// `chars().count()` 全掃會讓單段成本變成 O(L²)（長段落＋大量節點切片實測
+    /// 熱點）。此欄位與 `text` 同步維護，run 開窗改讀它。
+    char_len: usize,
     /// 段落自身樣式的代表字級/字重（零文字段的代表 run）。
     own: (f32, bool),
-    /// 節點間格式化空白的「待發單空格」旗標：整節點純空白時置位，下一個
-    /// 有內容的文字節點推入前刷成一個空格。段落首尾無鄰側內容＝丟棄
+    /// 節點間格式化空白的「待發單空格」旗標：整節點純空白、或文字節點首／尾的
+    /// 格式化空白被正規化剷除（卡 t_2a983570 `EdgeInfo`）時置位，下一個有內容的
+    /// 文字節點推入前刷成一個空格。段落首尾無鄰側內容＝丟棄
     /// （段首＝`text` 尚空不刷、段尾＝`finish` 不刷），故 pretty-print 縮排
     /// 不會在段首段尾留幽靈空格。相鄰多個純空白節點仍是同一個空格。
     pending_gap: bool,
 }
 
 impl ParaCtx {
+    /// 建一段全新上下文（欄位初值集中一處，三處建站點不再各自展開）。
+    fn new(own: (f32, bool)) -> Self {
+        ParaCtx {
+            text: String::new(),
+            runs: Vec::new(),
+            char_len: 0,
+            own,
+            pending_gap: false,
+        }
+    }
+
     /// 整節點純空白：掛「節點間單空格」待發語義（不直接進文字流）。
     fn push_gap(&mut self) {
         self.pending_gap = true;
@@ -731,11 +805,13 @@ impl ParaCtx {
         self.push_str(s, style);
     }
 
-    /// 追加文字並按當前樣式開/續 run（相鄰同字級同字重合併）。
+    /// 追加文字並按當前樣式開/續 run（相鄰同字級同字重合併）。碼點起訖取自
+    /// `char_len` 快取，不再逐次全掃（O(L²) 熱點，卡 t_2a983570 順車修）。
     fn push_str(&mut self, s: &str, style: (f32, bool)) {
-        let from = self.text.chars().count();
+        let from = self.char_len;
         self.text.push_str(s);
-        let to = self.text.chars().count();
+        self.char_len += s.chars().count();
+        let to = self.char_len;
         if let Some(last) = self.runs.last_mut() {
             if last.0 .1 == from && last.1 == style.0 && last.2 == style.1 {
                 last.0 .1 = to;
@@ -784,6 +860,9 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
     let mut text_p_count = 0usize;
     let mut text_h_count = 0usize;
     let mut total_text_len = 0usize;
+    // 回塞旗標於走查進入時讀一次存區域變數：現況每個文字節點讀一次 env ⇒
+    // 數萬節點＝數萬次全域 env 鎖（卡 t_2a983570 順車效能項）。
+    let buggy = buggy_no_whitespace_normalize();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -809,22 +888,12 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     text_p_count += 1;
                     let own = resolve_style_of(&e, book);
                     style_stack.push(own);
-                    p_stack.push(ParaCtx {
-                        text: String::new(),
-                        runs: Vec::new(),
-                        own,
-                        pending_gap: false,
-                    });
+                    p_stack.push(ParaCtx::new(own));
                 } else if is_text_h(name) {
                     text_h_count += 1;
                     let own = resolve_style_of(&e, book);
                     style_stack.push(own);
-                    p_stack.push(ParaCtx {
-                        text: String::new(),
-                        runs: Vec::new(),
-                        own,
-                        pending_gap: false,
-                    });
+                    p_stack.push(ParaCtx::new(own));
                 } else if is_span_like(name) {
                     let inherit = *style_stack.last().unwrap_or(&default_style);
                     style_stack.push(span_style_of(&e, book, inherit));
@@ -860,12 +929,7 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                         text_h_count += 1;
                     }
                     let own = resolve_style_of(&e, book);
-                    let ctx = ParaCtx {
-                        text: String::new(),
-                        runs: Vec::new(),
-                        own,
-                        pending_gap: false,
-                    };
+                    let ctx = ParaCtx::new(own);
                     let para = ctx.finish();
                     total_text_len += para.text.chars().count();
                     paragraphs.push(para);
@@ -892,17 +956,29 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                                 .map_err(|e| e.to_string())
                         }) {
                             let style = *style_stack.last().unwrap_or(&default_style);
-                            // XML 格式化空白剝除（本卡契約）：正規化後為空＝整節點
-                            // 純空白 → 只掛「節點間單空格」語義；否則推入正規化結果。
+                            // XML 格式化空白剝除（本卡契約）：正規化＋邊界記帳。
+                            // * 正規化後為空＝整節點純格式化空白 → 只掛「節點間單空格」。
+                            // * `EdgeInfo` 任一旗標＝該節點首／尾的格式化空白被剷除
+                            //   （卡 t_2a983570 返修）→ 同一套 pending_gap 記帳，否則
+                            //   相鄰節點文字黏連（`甲`＋尾縮排＋`乙` ⇒ `甲乙`）。
+                            // * 首端記帳要在推入**之前**掛（flush_gap 於推入前落地），
+                            //   尾端記帳在推入**之後**掛（留給下一節點刷）。
+                            // * 純空格節點（無 CR／LF／TAB）不折疊、原樣入文。
                             // 回塞態（`ODF_WS_BUGGY`）走零正規化舊路徑，供燈 6 鑑別。
-                            if buggy_no_whitespace_normalize() {
+                            if buggy {
                                 cur.push_str(&unescaped, style);
                             } else {
-                                let normalized = normalize_xml_text(&unescaped);
+                                let (normalized, edge) = normalize_xml_text_with_edge(&unescaped);
+                                if edge.lead_fmt_ws_stripped {
+                                    cur.push_gap();
+                                }
                                 if normalized.is_empty() {
                                     cur.push_gap();
                                 } else {
                                     cur.push_text_node(&normalized, style);
+                                }
+                                if edge.trail_fmt_ws_stripped {
+                                    cur.push_gap();
                                 }
                             }
                         }
