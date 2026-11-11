@@ -241,6 +241,11 @@ pub struct ParaStyle {
     pub spacing_after_pt: Option<f32>,
     /// 對齊（本卡僅保留；未消費）。
     pub align: Option<Align>,
+    /// 段前分頁（`w:pageBreakBefore` 三態；未宣告＝None）。合成沿用
+    /// `.or()` 鏈：樣式 own 優先於 basedOn 父鏈，段落直接格式再壓樣式級。
+    /// `Some(false)`＝明確關（toggle 的 `w:val="false"|"0"|"off"`），
+    /// 與 `None`（未宣告）語義不同——前者要壓過繼承的 true。
+    pub page_break: Option<bool>,
 }
 
 /// 一張 `w:style` 的自帶宣告（未沿鏈合成前）。
@@ -256,6 +261,8 @@ struct OwnStyle {
     spacing_before_pt: Option<f32>,
     spacing_after_pt: Option<f32>,
     align: Option<Align>,
+    /// 樣式 `w:pPr/w:pageBreakBefore` 的三態宣告（見 [`ParaStyle::page_break`]）。
+    page_break: Option<bool>,
     based_on: Option<String>,
     /// `w:link`（字元樣式配對，UI/格式刷語義）：本卡只收不用。
     #[allow(dead_code)]
@@ -322,6 +329,7 @@ pub struct StyleTable {
     para_default_spacing_before_pt: Option<f32>,
     para_default_spacing_after_pt: Option<f32>,
     para_default_align: Option<Align>,
+    para_default_page_break: Option<bool>,
     para_default_run: RunStyle,
     /// styleId → 自帶宣告。
     styles: HashMap<String, OwnStyle>,
@@ -609,7 +617,9 @@ fn parse_rpr_body(
 }
 
 /// 讀取 `w:pPr` 子樹（呼叫端已消耗 pPr 的 Start；其內 `w:rPr` 併入段落
-/// run 基底回傳）。本卡只收 spacing(line)/jc/rPr，其餘段落屬性略過。
+/// run 基底回傳）。本卡收 spacing(line)/jc/pageBreakBefore/rPr，其餘段落
+/// 屬性略過。`pageBreakBefore` 是 toggle（無 `w:val`／`true|1|on`＝開，
+/// `false|0|off`＝明確關），以三態保留「未宣告」與「明確關」之別。
 fn parse_ppr(
     reader: &mut quick_xml::Reader<&[u8]>,
     theme: &ThemeColors,
@@ -619,12 +629,14 @@ fn parse_ppr(
     Option<f32>,
     Option<f32>,
     Option<Align>,
+    Option<bool>,
     RunStyle,
 ) {
     let mut line = None;
     let mut before = None;
     let mut after = None;
     let mut align = None;
+    let mut page_break = None;
     let mut run = RunStyle::default();
     let mut in_rpr = false;
     loop {
@@ -661,6 +673,9 @@ fn parse_ppr(
                     b"jc" if align.is_none() => {
                         align = align_of(attr_val(&e, "val").as_deref());
                     }
+                    b"pageBreakBefore" if page_break.is_none() => {
+                        page_break = Some(toggle_on_attr(&e));
+                    }
                     b"rPr" => in_rpr = true,
                     _ => {}
                 }
@@ -691,13 +706,16 @@ fn parse_ppr(
                     b"jc" if align.is_none() => {
                         align = align_of(attr_val(&e, "val").as_deref());
                     }
+                    b"pageBreakBefore" if page_break.is_none() => {
+                        page_break = Some(toggle_on_attr(&e));
+                    }
                     _ => {}
                 }
             }
             _ => {}
         }
     }
-    (line, before, after, align, run)
+    (line, before, after, align, page_break, run)
 }
 
 /// 在容器內向前掃到 `w:rPr` 起點並收其內容（呼叫端已消耗容器 Start；遇到
@@ -744,6 +762,7 @@ fn parse_ppr_default(
     Option<f32>,
     Option<f32>,
     Option<Align>,
+    Option<bool>,
     RunStyle,
 ) {
     loop {
@@ -926,11 +945,12 @@ impl StyleTable {
                             t.empty = false;
                         }
                         b"pPrDefault" if in_doc_defaults => {
-                            let (l, b, af, a, r) = parse_ppr_default(&mut reader, theme, tf);
+                            let (l, b, af, a, pb, r) = parse_ppr_default(&mut reader, theme, tf);
                             t.para_default_line = l;
                             t.para_default_spacing_before_pt = b;
                             t.para_default_spacing_after_pt = af;
                             t.para_default_align = a;
+                            t.para_default_page_break = pb;
                             t.para_default_run = r;
                             t.empty = false;
                         }
@@ -1010,7 +1030,7 @@ impl StyleTable {
                         }
                         b"pPr" => {
                             if let Some((_, own)) = cur.as_mut() {
-                                let (l, b, af, a, r) = parse_ppr(&mut reader, theme, tf);
+                                let (l, b, af, a, pb, r) = parse_ppr(&mut reader, theme, tf);
                                 if own.line.is_none() {
                                     own.line = l;
                                 }
@@ -1022,6 +1042,9 @@ impl StyleTable {
                                 }
                                 if own.align.is_none() {
                                     own.align = a;
+                                }
+                                if own.page_break.is_none() {
+                                    own.page_break = pb;
                                 }
                                 // 段落樣式的 pPr/rPr（段落標記 run 屬性）對段內
                                 // 所有 run 生效（Word 段落標記/內容共用基底）；
@@ -1170,6 +1193,7 @@ impl StyleTable {
                 spacing_before_pt: self.para_default_spacing_before_pt,
                 spacing_after_pt: self.para_default_spacing_after_pt,
                 align: self.para_default_align,
+                page_break: self.para_default_page_break,
             },
         )
     }
@@ -1239,6 +1263,7 @@ impl StyleTable {
             spacing_before_pt: own.spacing_before_pt.or(parent.1.spacing_before_pt),
             spacing_after_pt: own.spacing_after_pt.or(parent.1.spacing_after_pt),
             align: own.align.or(parent.1.align),
+            page_break: own.page_break.or(parent.1.page_break),
         };
         let hit = (run, para);
         self.resolved.insert(id.to_string(), hit.clone());
@@ -1318,6 +1343,7 @@ impl StyleTable {
         para.spacing_before_pt = inline.spacing_before_pt.or(para.spacing_before_pt);
         para.spacing_after_pt = inline.spacing_after_pt.or(para.spacing_after_pt);
         para.align = inline.align.or(para.align);
+        para.page_break = inline.page_break.or(para.page_break);
         let base = para.run.clone();
         (base, para)
     }
@@ -1761,6 +1787,7 @@ mod tests {
             spacing_before_pt: None,
             spacing_after_pt: None,
             align: Some(Align::Center),
+            page_break: None,
         };
         let (base, para) = t.effective_para(None, inline);
         assert_eq!(base.size_pt, Some(10.0)); // 樣式級（段落直接 rPr 未宣告 sz）。

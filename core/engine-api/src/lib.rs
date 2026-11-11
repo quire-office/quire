@@ -467,8 +467,6 @@ impl Engine {
         let widths: Vec<f32> = (0..n_paras)
             .map(|i| quire_layout::section_break_w_pt(&params, &sections, i))
             .collect();
-        // 顯式分頁旗標（parser 直讀，任何檔案都收；全 false＝舊行為）。
-        let grid_break_v: Vec<bool> = doc.paragraphs.iter().map(|p| p.page_break).collect();
         // 逐段落所屬 section id（清單 eachSect 重啟與尾註編號共用）。
         let para_sec_v: Vec<u32> = sections.iter().map(|s| s.id).collect();
         // K2b：清單 marker 規劃。無 `w:numPr` 引用 ⇒ 空表（零變化：不插
@@ -528,6 +526,9 @@ impl Engine {
                 cond_color: &cond_color_of,
             },
         );
+        // 顯式分頁旗標：直接 pPr **或** 級聯結果（樣式級 `pageBreakBefore`
+        // 經 `effective_para` 流入投影段落；與上一步同一趟級聯，不另開）。
+        let grid_break_v: Vec<bool> = eff_all.iter().map(|p| p.page_break).collect();
         let grid_size_v: Vec<f32> = metrics.iter().map(|m| m.0).collect();
         // K6：逐段量化前行高（格內文字行距基準；細化檔由 table_map 消費）。
         let mut para_line_h_v: Vec<f32> = metrics.iter().map(|m| m.1).collect();
@@ -556,6 +557,7 @@ impl Engine {
                             spacing_before_pt: p.spacing_before_pt,
                             spacing_after_pt: p.spacing_after_pt,
                             align: p.jc,
+                            page_break: p.page_break.then_some(true),
                         };
                         let eff_line = style_table
                             .effective_para(p.style.as_deref(), inline)
@@ -3417,6 +3419,7 @@ fn cascade_paragraphs(
             spacing_before_pt: p.spacing_before_pt,
             spacing_after_pt: p.spacing_after_pt,
             align: p.jc,
+            page_break: p.page_break.then_some(true),
         };
         let (base, mut para) = st.effective_para(p.style.as_deref(), inline.clone());
         // K6：表格樣式插在「段落＞Normal 樣式＞表格樣式＞docDefaults」第三層。
@@ -3641,6 +3644,9 @@ fn cascade_paragraphs(
         spacings.push((para.spacing_before_pt, para.spacing_after_pt));
         let mut ep = p.clone();
         ep.jc = para.align;
+        // 段落級三態分頁旗標：直接 pPr（inline）已由 effective_para 疊在
+        // 樣式級之上；此處把合成值寫回投影段落，供分頁旗標向量單一趟取用。
+        ep.page_break = para.page_break.unwrap_or(p.page_break);
         ep.runs = eff_runs;
         if !baked_txbx.is_empty() {
             ep.txbx_runs = baked_txbx;
@@ -8138,6 +8144,7 @@ mod tests {
                     spacing_before_pt: p.spacing_before_pt,
                     spacing_after_pt: p.spacing_after_pt,
                     align: p.jc,
+                    page_break: p.page_break.then_some(true),
                 };
                 let (_, eff) = st.effective_para(p.style.as_deref(), inline);
                 (eff.spacing_before_pt, eff.spacing_after_pt)

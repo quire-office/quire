@@ -337,6 +337,7 @@ fn cascade_paragraphs(
             spacing_before_pt: p.spacing_before_pt,
             spacing_after_pt: p.spacing_after_pt,
             align: p.jc,
+            page_break: p.page_break.then_some(true),
         };
         let (base, mut para) = st.effective_para(p.style.as_deref(), inline.clone());
         if let (true, Some(tid)) = (calibrated, table_styles.get(&pi)) {
@@ -614,6 +615,7 @@ pub fn from_docx_bytes(bytes: &[u8]) -> Result<DocInputs, OoxmlError> {
                     spacing_before_pt: p.spacing_before_pt,
                     spacing_after_pt: p.spacing_after_pt,
                     align: p.jc,
+                    page_break: p.page_break.then_some(true),
                 };
                 let eff_line = style_table
                     .effective_para(p.style.as_deref(), inline)
