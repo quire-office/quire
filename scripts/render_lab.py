@@ -444,6 +444,154 @@ def layout_key(lines: list[str]) -> str:
     return " | ".join(norm(l) for l in lines[:8])
 
 
+# ───────────────────── 走向拓撲錨定（bug65649 判準修正） ─────────────────────
+# 舊口徑把 LO 第 i 頁與我方第 i 頁直接比寬高。當兩側**總頁數有位移**（分頁容量
+# 漂移）時，同位索引已不是同一段正文——bug65649 實測 LO 178 頁 vs 我方 190 頁，
+# 同位比對一次灌 22 筆假「sectPr 錯位」進 baseline（docs/bug65649-landscape-diag.md
+# §三：該檔兩側走向拓撲其實 100% 全等，22 頁錯位全落在相位差區間內）。
+# 新口徑兩段式：先抽兩側連續走向段（orientation runs）拓撲序列；
+#   拓撲全等 ⇒ 尺寸注記改 run 錨定（第 k 段對第 k 段，段內頁數差記「容量漂移」），
+#              不再逐同位索引報 sectPr 錯位；
+#   拓撲不全等 ⇒ 照舊逐同位索引報（真 section 缺陷的訊號，不可掩蓋）＋寫明拓撲差。
+# 注意：**只動注記臂**，內容/版面分數、first_divergence、measurement_artifacts
+# 全部不受影響（test_run_anchor_metrics.py 有燈鎖死）。
+
+SIZE_TOL = 2.0        # pt：沿用舊逐頁尺寸注記的容差，本卡不改尺
+ORIENT_SQUARE_TOL = 2.0  # pt：長寬差小於此視為方形頁（無走向），記 "S"
+ORIENT_LABEL = {"P": "直向", "L": "橫向", "S": "方形"}
+
+
+def _pt1(v) -> float:
+    """尺寸取一位小數（LO 側 pdf_page_facts 已 round，我方 breaks 未 round）。"""
+    try:
+        return round(float(v), 1)
+    except (TypeError, ValueError):
+        return -1.0
+
+
+def page_orient(w_pt: float, h_pt: float) -> str:
+    """單頁走向符號：P＝直向、L＝橫向、S＝方形（長寬同於容差內，無走向可言）。"""
+    if w_pt - h_pt > ORIENT_SQUARE_TOL:
+        return "L"
+    if h_pt - w_pt > ORIENT_SQUARE_TOL:
+        return "P"
+    return "S"
+
+
+def orientation_runs(dims: list[tuple[float, float]]) -> list[dict]:
+    """逐頁尺寸序列 ⇒ 連續走向段（runs）拓撲序列。
+
+    回傳 [{"orient": "P"|"L"|"S", "start": 0-based 首頁索引, "n": 段內頁數,
+           "sizes": 段內去重尺寸 tuple 集合}...]，相鄰同走向頁合併成一段。
+    空輸入回傳空清單（呼叫端據此判「不可比」，不進拓撲全等分支）。
+    """
+    runs: list[dict] = []
+    for i, (w, h) in enumerate(dims):
+        o = page_orient(w, h)
+        if runs and runs[-1]["orient"] == o:
+            runs[-1]["n"] += 1
+            runs[-1]["sizes"].add((w, h))
+        else:
+            runs.append({"orient": o, "start": i, "n": 1, "sizes": {(w, h)}})
+    for r in runs:
+        r["sizes"] = frozenset(r["sizes"])
+    return runs
+
+
+def _fmt_sizes(sizes: frozenset) -> str:
+    return "／".join(f"{w}×{h}" for w, h in sorted(sizes))
+
+
+def _size_close(a: tuple[float, float], b: tuple[float, float]) -> bool:
+    """兩組尺寸在 SIZE_TOL 內是否視為相同（twip→pt 有 0.1pt 級捨入差，
+    LO 841.9×595.3 vs 我方 842.0×595.4 是同一個 A4 橫向，不是幾何缺陷）。"""
+    return abs(a[0] - b[0]) <= SIZE_TOL and abs(a[1] - b[1]) <= SIZE_TOL
+
+
+def _run_rep_size(sizes: frozenset) -> tuple[float, float]:
+    """段代表尺寸：取段內最小者（段內多值時仍給單一代表，多值另行如實記錄）。"""
+    return min(sizes)
+
+
+def _run_spread(sizes: frozenset) -> bool:
+    """段內是否混雜超出容差的多種尺寸（同段理應同宣告；混尺如實記錄）。"""
+    rep = _run_rep_size(sizes)
+    return any(not _size_close(rep, s) for s in sizes)
+
+
+def _sizes_sym_cover(a: frozenset, b: frozenset) -> bool:
+    """a 的每個尺寸在 b 有容差內夥伴、且 b 反向也成立 ⇒ 該段宣告尺寸等價。"""
+    return (all(any(_size_close(x, y) for y in b) for x in a)
+            and all(any(_size_close(x, y) for y in a) for x in b))
+
+
+def _size_note_same_index(row: dict, lo_pages: list[dict], brks: list[dict]) -> None:
+    """舊口徑（同位索引逐頁比寬高）——拓撲不全等時照舊走這條，不掩蓋真缺陷。"""
+    for i, p in enumerate(lo_pages):
+        if i >= len(brks):
+            row["notes"].append(f"第 {i + 1} 頁我方無 pagebreak 記錄")
+            continue
+        ow_w, ow_h = _pt1(brks[i].get("width_pt")), _pt1(brks[i].get("height_pt"))
+        if abs(p["w_pt"] - ow_w) > SIZE_TOL or abs(p["h_pt"] - ow_h) > SIZE_TOL:
+            row["notes"].append(
+                f"第 {i + 1} 頁 LO {p['w_pt']}×{p['h_pt']} ≠ 我方 {ow_w}×{ow_h}（sectPr）"
+            )
+
+
+def annotate_page_sizes(row: dict, lo_pages: list[dict], brks: list[dict]) -> None:
+    """逐頁尺寸注記臂（Phase0-2b → 走向拓撲錨定版）。只寫 notes，不動任何分數欄位。"""
+    lo_dims = [(_pt1(p.get("w_pt")), _pt1(p.get("h_pt"))) for p in lo_pages]
+    ow_dims = [(_pt1(b.get("width_pt")), _pt1(b.get("height_pt"))) for b in brks]
+    lo_runs = orientation_runs(lo_dims)
+    ow_runs = orientation_runs(ow_dims)
+    topo_lo = "".join(r["orient"] for r in lo_runs)
+    topo_ow = "".join(r["orient"] for r in ow_runs)
+
+    if lo_runs and ow_runs and topo_lo == topo_ow:
+        # ── 拓撲全等：run 錨定比對，不再逐同位索引報 sectPr 錯位 ──
+        n = len(lo_runs)
+        drift_total = len(ow_dims) - len(lo_dims)
+        if drift_total:
+            _add_note(
+                row,
+                f"走向拓撲全等（{n} 段 {topo_lo}）；總頁數差 {drift_total:+d} 頁"
+                f"＝分頁容量漂移（非 sectPr），尺寸注記改 run 錨定",
+            )
+        for k, (lr, rr) in enumerate(zip(lo_runs, ow_runs)):
+            label = ORIENT_LABEL.get(lr["orient"], lr["orient"])
+            for side, run in (("LO", lr), ("我方", rr)):
+                if _run_spread(run["sizes"]):
+                    _add_note(
+                        row,
+                        f"第 {k + 1} 段（{label}）{side} 段內混尺："
+                        f"{_fmt_sizes(run['sizes'])}（同段多宣告，如實記錄）",
+                    )
+            if not _sizes_sym_cover(lr["sizes"], rr["sizes"]):
+                _add_note(
+                    row,
+                    f"第 {k + 1} 段（{label}）LO {_fmt_sizes(lr['sizes'])} ≠ 我方 "
+                    f"{_fmt_sizes(rr['sizes'])}（sectPr，run 錨定）",
+                )
+            d = rr["n"] - lr["n"]
+            if d:
+                _add_note(
+                    row,
+                    f"第 {k + 1} 段（{label}）容量漂移 {d:+d} 頁"
+                    f"（LO {lr['n']} 頁／我方 {rr['n']} 頁）",
+                )
+        return
+
+    # ── 拓撲不全等（任一側無頁亦走此路）：真 section 缺陷訊號，照舊逐同位索引報 ──
+    if lo_runs and ow_runs:
+        _add_note(row, f"走向拓撲不一致：LO={topo_lo} 我方={topo_ow}")
+    _size_note_same_index(row, lo_pages, brks)
+
+
+def _add_note(row: dict, note: str) -> None:
+    if note not in row["notes"]:
+        row["notes"].append(note)
+
+
 def _synthetic_shared_resources_pdf(path: pathlib.Path, paint_second: bool) -> None:
     """合成 2 頁 PDF（自測 fixture 用；不碰 LO/引擎，只用 pymupdf 寫檔）。
 
@@ -577,19 +725,12 @@ def compare(name: str, lo: list[dict], ow: dict, sect_pr: int | None = None) -> 
         # 內容近同但版面分數低 ⇒ 主要是換行位置差，記 notes 不記分歧。
         if cs is not None and ls is not None and cs >= 0.85 and ls < 0.5:
             row["notes"].append(f"第 {i + 1} 頁內容近同、僅換行位置不同")
-    # 逐頁尺寸對照（Phase0-2b）：我方每頁尺寸如實取自檔案 sectPr（pagebreaks.json
-    # 的 width_pt/height_pt），與 LO 逐頁比——只有真的不同才備註，不再拿固定
-    # A4 當尺（舊備註「LO 頁尺寸 ≠ 我方固定 A4」自此退役）。
-    brks = ow.get("breaks") or []
-    for i, p in enumerate(lo_pages):
-        if i >= len(brks):
-            row["notes"].append(f"第 {i + 1} 頁我方無 pagebreak 記錄")
-            continue
-        ow_w, ow_h = round(brks[i]["width_pt"], 1), round(brks[i]["height_pt"], 1)
-        if abs(p["w_pt"] - ow_w) > 2.0 or abs(p["h_pt"] - ow_h) > 2.0:
-            row["notes"].append(
-                f"第 {i + 1} 頁 LO {p['w_pt']}×{p['h_pt']} ≠ 我方 {ow_w}×{ow_h}（sectPr）"
-            )
+    # 逐頁尺寸對照（Phase0-2b，bug65649 起改「走向拓撲錨定」）：我方每頁尺寸如實
+    # 取自檔案 sectPr（pagebreaks.json 的 width_pt/height_pt），與 LO 逐頁比——只有
+    # 真的不同才備註，不再拿固定 A4 當尺（舊備註「LO 頁尺寸 ≠ 我方固定 A4」自此
+    # 退役）。兩側走向拓撲全等時改 run 錨定（同位位移的容量漂移不再誤報 sectPr），
+    # 拓撲不一致才照舊逐同位索引報。詳見 annotate_page_sizes 上方說明。
+    annotate_page_sizes(row, lo_pages, ow.get("breaks") or [])
     return row
 
 
@@ -1314,6 +1455,95 @@ def selftest() -> int:
         check("8d 逐字直排定位：同 x 單向 y 推進判 (0,1)、同 y 橫向推進判 (1,0)",
               pc_dirs[:4] == [(0.0, 1.0)] * 4 and pc_dirs[4:] == [(1.0, 0.0)] * 4,
               f"dirs={pc_dirs}")
+
+    # ── (9) bug65649 走向拓撲錨定：同拓撲＋頁數位移 ⇒ 不報 sectPr，報容量漂移；
+    #      拓撲不同 ⇒ 照報（防放水臂，比照 4b2/4c/4d 慣例——改口徑只能修假錯位，
+    #      不能把真 section 缺陷修沒）。分數欄位必須逐位不動（注記臂獨立）。
+    P, L = (595.3, 841.9), (841.9, 595.3)   # A4 直／橫（pt）
+    # (9a) 同拓撲 P-L-P、我方總頁數多 k：LO 20+69+5=94 頁，我方 21+71+7=99 頁
+    #      （bug65649 前四 Runs 的縮影）。舊口徑在此必然誤報一橫一直假 sectPr 錯位。
+    def _lo(dim, n, tag):
+        w, h = dim
+        return [{"lines": [f"{tag} 第 {i + 1} 頁正文填充"], "w_pt": w, "h_pt": h}
+                for i in range(n)]
+
+    lo9 = _lo(P, 20, "LOa") + _lo(L, 69, "LOb") + _lo(P, 5, "LOc")
+    ow9 = {"pages": [{"lines": [f"OWx 第 {i + 1} 頁正文填充"]} for i in range(99)],
+           "breaks": ([{"width_pt": w, "height_pt": h}
+                       for (w, h) in [P] * 21 + [L] * 71 + [P] * 7])}
+    r9 = compare("t9-run", lo9, ow9)
+    sect9 = [n for n in r9["notes"] if "（sectPr）" in n]
+    drift9 = [n for n in r9["notes"] if "容量漂移 " in n]   # 頁首總差註記無空格，不計入
+    check("9a 同拓撲＋頁數位移＝零假 sectPr 錯位、改報容量漂移（bug65649 型）",
+          not sect9
+          and any("走向拓撲全等" in n and "+5 頁" in n for n in r9["notes"])
+          and len(drift9) == 3  # 三段頁數差 21-20 / 71-69 / 7-5 全非零
+          and any("容量漂移 +2 頁" in n and "橫向" in n for n in r9["notes"])
+          and r9["page_count_match"] is False,
+          f"sectPr={sect9} drift={drift9[:2]}")
+    # (9b) 分數燈（本卡紀律「分數逐位相同」的機制面鎖）：同輸入只改 breaks 的尺寸
+    #      餵成與 LO 逐頁相同——注記臂輸出必消失（只剩容量漂移類注記、零 sectPr），
+    #      而 breaks 只被注記臂消費，故逐頁分與 first_divergence 必須逐位不動。
+    ow9b = {"pages": ow9["pages"],
+            "breaks": [{"width_pt": p["w_pt"], "height_pt": p["h_pt"]} for p in lo9]
+                     + [{"width_pt": P[0], "height_pt": P[1]}
+                        for _ in range(len(ow9["pages"]) - len(lo9))]}
+    r9b = compare("t9-run-clean", lo9, ow9b)
+    check("9b 注記臂隔離燈：只改 breaks 尺寸 ⇒ 零 sectPr 注記＋分數欄位逐位不動",
+          not [n for n in r9b["notes"] if "（sectPr）" in n or "拓撲不一致" in n]
+          and r9b["content_scores"] == r9["content_scores"]
+          and r9b["layout_scores"] == r9["layout_scores"]
+          and r9b["first_divergence"] == r9["first_divergence"]
+          and r9b["measurement_artifacts"] == r9["measurement_artifacts"],
+          f"notes={r9b['notes'][:3]}")
+    # (9c) 防放水臂：拓撲不同（LO 有橫向段、我方全直向——真 section 缺陷）⇒
+    #      照舊逐同位索引報 sectPr 錯位＋注記寫明拓撲不一致。
+    lo10 = _lo(P, 3, "LOp") + _lo(L, 2, "LOl")
+    ow10 = {"pages": [{"lines": [f"OWq 第 {i + 1} 頁正文填充"]} for i in range(5)],
+            "breaks": [{"width_pt": w, "height_pt": h} for (w, h) in [P] * 5]}
+    r10 = compare("t10-topo-diff", lo10, ow10)
+    check("9c 防放水：拓撲不同仍照報 sectPr 錯位＋寫明走向拓撲不一致",
+          any(n.startswith("走向拓撲不一致：LO=PL 我方=P") for n in r10["notes"])
+          and len([n for n in r10["notes"] if "（sectPr）" in n]) == 2
+          and not any("容量漂移" in n for n in r10["notes"]),
+          f"notes={r10['notes']}")
+    # (9d) run 錨定下的**真**幾何缺陷不被掩蓋：拓撲全等（P-L-P）但第 2 段 LO 橫向、
+    #      我方該段同拓撲標籤下尺寸宣告不同（L 但 900×600）⇒ 仍報 sectPr（run 錨定）。
+    lo11 = _lo(P, 2, "LOr") + _lo(L, 2, "LOs")
+    ow11 = {"pages": [{"lines": [f"OWt 第 {i + 1} 頁正文填充"]} for i in range(4)],
+            "breaks": [{"width_pt": P[0], "height_pt": P[1]},
+                       {"width_pt": P[0], "height_pt": P[1]},
+                       {"width_pt": 900.0, "height_pt": 600.0},
+                       {"width_pt": 900.0, "height_pt": 600.0}]}
+    r11 = compare("t11-run-real-geo", lo11, ow11)
+    check("9d run 錨定不掩蓋真幾何差：同拓撲段內尺寸全異仍報 sectPr（run 錨定）",
+          any("（sectPr，run 錨定）" in n and "第 2 段" in n for n in r11["notes"]),
+          f"notes={r11['notes']}")
+    # (9e) 我方無 pagebreak 記錄的退化態（brks 空）⇒ 照舊逐頁記「我方無 pagebreak」，
+    #      不因拓撲比較路徑吞掉缺頁訊號。
+    lo12 = _lo(P, 2, "LOu")
+    r12 = compare("t12-no-brks", lo12, {"pages": [], "breaks": []})
+    check("9e 零 pagebreak 退化態：缺頁注記照舊（不被拓撲臂吞掉）",
+          [n for n in r12["notes"] if "我方無 pagebreak" in n]
+          == ["第 1 頁我方無 pagebreak 記錄", "第 2 頁我方無 pagebreak 記錄"],
+          f"notes={r12['notes']}")
+    # (9f) orientation_runs 單元：混合序列分段正確＋方形頁記 S＋空輸入回空清單。
+    runs_f = orientation_runs([(595.3, 841.9), (595.3, 841.9), (841.9, 595.3),
+                               (600.0, 600.0), (600.0, 600.0)])
+    check("9f orientation_runs 分段：P2-L1-S2、方頁記 S、空輸入回空清單",
+          [(r["orient"], r["start"], r["n"]) for r in runs_f]
+          == [("P", 0, 2), ("L", 2, 1), ("S", 3, 2)] and orientation_runs([]) == [],
+          f"runs={[(r['orient'], r['start'], r['n']) for r in runs_f]}")
+
+    # (9g) 容差鎖：twip→pt 的 0.1pt 級捨入差（LO 841.9×595.3 vs 我方 842.0×595.4）
+    #      不得被 run 錨定判成 sectPr——bug65649 觸發集實跑抓到的誤報態。
+    lo13 = _lo((841.9, 595.3), 3, "LOv")
+    ow13 = {"pages": [{"lines": [f"OWw 第 {i + 1} 頁正文填充"]} for i in range(3)],
+            "breaks": [{"width_pt": 842.0, "height_pt": 595.4}] * 3}
+    r13 = compare("t13-rounding", lo13, ow13)
+    check("9g 容差：0.1pt 級捨入差不判 sectPr（run 錨定同段尺寸等價）",
+          not [n for n in r13["notes"] if "sectPr" in n],
+          f"notes={r13['notes']}")
 
     print("SELFTEST", "ALL-PASS" if fails == 0 else f"{fails}-FAIL")
     return 0 if fails == 0 else 1
