@@ -23,7 +23,7 @@
 //!
 //! 管轄邊界（不在本卷射程）：`text:section` 隱藏（E2b）與 draw 替代文字（E2c）
 //! 只在 project 側抑制——body.rs 是「原始計數＋最小內文」口徑，刻意保留隱藏段
-//! 文字以對齊 survey.json，不属本卡的空白／CData 口徑分岔，本卷 fixture 不引入
+//! 文字以對齊 survey.json，不屬本卡的空白／CData 口徑分岔，本卷 fixture 不引入
 //! 該形（引入即比錯東西）。
 //!
 //! fixture 合成方式（「嚴禁 corpus 新檔」鐵律下的零新增資產路徑）：開 corpus-odt
@@ -91,7 +91,7 @@ fn content(inner: &str) -> String {
     )
 }
 
-/// 段間分隔符：取 `U+1F`（文字流永不出现的控制字元），串接後相等＝逐段逐字元相等。
+/// 段間分隔符：取 `U+1F`（文字流永不出現的控制字元），串接後相等＝逐段逐字元相等。
 const SEP: char = '\u{1f}';
 
 /// 走查器一：`extract_body()` 段落文字串接。
@@ -132,7 +132,10 @@ fn assert_parity(tag: &str, content_xml: &[u8], bundle: &OdfBundle, expected: &[
     let ptexts: Vec<&str> = proj.paragraphs.iter().map(|x| x.text.as_str()).collect();
 
     assert_eq!(btexts, expected, "{tag}：body 口徑必須等於釘死的預期段落");
-    assert_eq!(ptexts, expected, "{tag}：project 口徑必須等於釘死的預期段落");
+    assert_eq!(
+        ptexts, expected,
+        "{tag}：project 口徑必須等於釘死的預期段落"
+    );
     assert_eq!(
         btexts, ptexts,
         "{tag}：兩走查器逐段逐字元必須一致（body {btexts:?} vs project {ptexts:?}）"
@@ -169,10 +172,7 @@ const FIX_A_INNER: &str = r#"<text:p>
    後段文字
  </text:p>
  <text:p>甲 <text:span>乙</text:span> 丙</text:p>"#;
-const FIX_A_EXPECTED: &[&str] = &[
-    concat!("前段文字 A", "\u{00a0}", "&B 後段文字"),
-    "甲 乙 丙",
-];
+const FIX_A_EXPECTED: &[&str] = &[concat!("前段文字 A", "\u{00a0}", "&B 後段文字"), "甲 乙 丙"];
 
 /// B 組：CData 不丟（卡面燈 2 逐字）＋ CData 左側節點間 gap。
 /// 段 2 的 `</text:span>` 與 CDATA 之間有一個純縮排文字節點（`\n`）⇒ 恰一空格。
@@ -184,7 +184,8 @@ const FIX_B_EXPECTED: &[&str] = &["甲 <b> & 乙", "甲乙 丙丁"];
 /// C 組：NBSP 隔離——text 節點內部、CData 內部、NBSP 緊鄰顯式硬換行的邊界，
 /// 三種位置的 `\u{00a0}` 皆為正文字元，空白政策與 gap 規則都不得動它。
 const FIX_C_INNER: &str = concat!(
-    r#"<text:p>"#, "\u{00a0}前\u{00a0}中\u{00a0}\u{00a0}後</text:p>\n", // 段首段尾皆 NBSP
+    r#"<text:p>"#,
+    "\u{00a0}前\u{00a0}中\u{00a0}\u{00a0}後</text:p>\n", // 段首段尾皆 NBSP
     r#" <text:p><![CDATA[甲"#,
     "\u{00a0}",
     r#"乙]]></text:p>"#,
@@ -226,7 +227,10 @@ fn lamp1b_concatenated_streams_equal_and_free_of_formatting_newlines() {
         !bs.contains('\n'),
         "A 組：pretty-print 縮排不得殘留在 body 口徑（實際 {bs:?}）"
     );
-    assert!(bs.contains('前') && bs.contains('後'), "A 組：正文不得被誤砍");
+    assert!(
+        bs.contains('前') && bs.contains('後'),
+        "A 組：正文不得被誤砍"
+    );
     assert!(
         bs.contains("甲 乙 丙"),
         "A 組：span 兩側純空格須原樣保留為恰一空格（實際 {bs:?}）"
@@ -234,7 +238,7 @@ fn lamp1b_concatenated_streams_equal_and_free_of_formatting_newlines() {
 }
 
 /// 燈 2：CData 不丟——兩軌都必須逐字投影 `甲 <b> & 乙`（CData 內不解析實體：
-/// `&` 原樣保留；若误走 unescape 路徑必紅或報錯）。修前 CData 落 `_ => {}`
+/// `&` 原樣保留；若誤走 unescape 路徑必紅或報錯）。修前 CData 落 `_ => {}`
 /// 靜默丟棄 ⇒ 段 1 為空字串 ⇒ 必紅。另釘 CData 左側 gap＝恰一空格。
 #[test]
 fn lamp2_cdata_is_not_silently_dropped() {

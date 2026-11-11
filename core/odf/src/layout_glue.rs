@@ -30,6 +30,7 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 
 use crate::objects::{self, OdfObjectText};
+use crate::ws::{self, TextSink, TextStream};
 use crate::{OdfBundle, OdfError};
 
 /// layout 層型別再匯出：殼層（quire-cli）經本 crate 取用，不直接 import
@@ -599,219 +600,52 @@ fn attr_value_str(v: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// XML 格式化空白正規化（本卡契約：ODF 正文換行只認 <text:line-break/>、
-// 製表只認 <text:tab/>、空白只認 <text:s/>——OASIS ODF 1.3 Part 3 §5.1.1）
+// XML 格式化空白正規化：實作已抽至共用作業模組 `crate::ws`（卡 t_4006056b
+// 雙走查器口徑對齊）。以下 re-export 是**薄包裝**：既有外部路徑
+// （`layout_glue::normalize_xml_text` 等，考卷 `odf_xml_whitespace_policy`
+// 燈 1 直接打它）逐字不動。本檔不再持有任何一份正規化/gap 實作——
+// `body.rs` 與下方 `walk_paragraphs` 同吃 `ws::emit_text_node`＋
+// `TextStream` 的 pending_gap 狀態機（單一實作，嚴禁複製貼上第二份）。
+// 語義管轄在 t_ae9a9f22／t_2a983570 的已定案契約，搬移零改寫；
+// `ParaCtx` 只保留 layout 側的 run 樣式帳。
 // ---------------------------------------------------------------------------
+pub use crate::ws::{
+    buggy_no_whitespace_normalize, is_xml_space, normalize_xml_text, normalize_xml_text_with_edge,
+    EdgeInfo,
+};
 
-/// XML 空白字元判定：只認空格、TAB、CR、LF——刻意不用 `char::is_whitespace`
-/// （NBSP U+00A0、類空格 U+2007 等是**正文字元**，語料實測存在，動到即吞字）。
-#[inline]
-pub fn is_xml_space(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\r' | '\n')
-}
-
-/// XML 空白四碼的位元組級判定。四碼全是 ASCII，而 UTF-8 多字節序列的第二碼起
-/// 恆 ≥ 0x80 ⇒ 以位元組比對不會誤切碼點，也無需每節點 `Vec<char>`（效能路徑）。
-#[inline]
-fn is_ws_byte(b: u8) -> bool {
-    matches!(b, b' ' | b'\t' | b'\r' | b'\n')
-}
-
-/// 格式化空白（CR／LF／TAB）的位元組級判定——純空格不算。
-#[inline]
-fn is_fmt_byte(b: u8) -> bool {
-    matches!(b, b'\t' | b'\r' | b'\n')
-}
-
-/// 把「只含 ASCII 空白」或「由非空白位元組切出」的切片還原成字串。切片邊界恆落
-/// 在碼點邊界上（理由同上：空白四碼全 ASCII），故 `from_utf8` 必然成功；不可能
-/// 路徑退回空字串，不 panic。
-#[inline]
-fn ws_slice_str(b: &[u8]) -> &str {
-    core::str::from_utf8(b).unwrap_or("")
-}
-
-/// `normalize_xml_text_with_edge` 的邊界記帳：節點首／尾是否有**含格式化字元的
-/// 空白 run 被剷除**（卡 t_2a983570 返修核心）。
-///
-/// 跨節點語義：被剷除的邊界格式化空白和「整節點純空白」是同一件事——兩者都代表
-/// 源檔在這裡原本有空白、正規化把噪音剝掉了。因此呼叫端（`walk_paragraphs` 的
-/// `Event::Text` 分支）必須為任一旗標補一次 `ParaCtx::push_gap()`，否則相鄰節點
-/// 文字直接黏連（`甲`＋尾縮排＋`乙` ⇒ `甲乙`，修前實測）。段首段尾的丟棄規則仍由
-/// `flush_gap` 統一把關（段落尚無文字／剛過顯式硬換行 ⇒ 不落地）。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct EdgeInfo {
-    /// 節點**首部**含 CR／LF／TAB 的空白 run 被剷除。
-    pub lead_fmt_ws_stripped: bool,
-    /// 節點**尾端**含 CR／LF／TAB 的空白 run 被剷除。
-    pub trail_fmt_ws_stripped: bool,
-}
-
-/// 正規化＋邊界記帳版（呼叫端用這個）。契約同 `normalize_xml_text`，另回傳
-/// 首尾格式化空白是否被剷除。
-///
-/// 整節點全為 XML 空白時的分流（卡 t_2a983570 燈 9）：
-/// * 含 CR／LF／TAB ⇒ 回傳空字串＋雙旗標：格式化噪音，呼叫端掛「節點間單空格」。
-/// * **純空格** ⇒ 原樣回傳（不折疊、不進 gap）：LO rawdict 實測純空格是正文字元，
-///   兩個空格渲染兩個空格字形（`docs/e1cd-xml-space-policy.md` §1）。
-pub fn normalize_xml_text_with_edge(node: &str) -> (String, EdgeInfo) {
-    let bs = node.as_bytes();
-    let n = bs.len();
-    let mut edge = EdgeInfo::default();
-    // 整節點純空白：先分流（含格式化字元 ⇒ gap 語義；純空格 ⇒ 原樣入文）。
-    if bs.iter().all(|b| is_ws_byte(*b)) {
-        if bs.iter().any(|b| is_fmt_byte(*b)) {
-            edge.lead_fmt_ws_stripped = true;
-            edge.trail_fmt_ws_stripped = true;
-            return (String::new(), edge);
-        }
-        return (node.to_owned(), edge);
-    }
-    let mut out: String = String::with_capacity(n);
-    let mut i = 0usize;
-    // 首段空白 run：含格式化字元 → 整段剷除並記帳；純空格 → 原樣保留。
-    let lead_from = i;
-    while i < n && is_ws_byte(bs[i]) {
-        i += 1;
-    }
-    let lead = &bs[lead_from..i];
-    if !lead.is_empty() {
-        if lead.iter().any(|b| is_fmt_byte(*b)) {
-            edge.lead_fmt_ws_stripped = true;
-        } else {
-            out.push_str(ws_slice_str(lead));
-        }
-    }
-    // 其餘：非空白一次吃一整段，空白 run 依「內部／尾段」分流。
-    while i < n {
-        if !is_ws_byte(bs[i]) {
-            let from = i;
-            while i < n && !is_ws_byte(bs[i]) {
-                i += 1;
-            }
-            out.push_str(ws_slice_str(&bs[from..i]));
-            continue;
-        }
-        let from = i;
-        while i < n && is_ws_byte(bs[i]) {
-            i += 1;
-        }
-        let run = &bs[from..i];
-        let fmt = run.iter().any(|b| is_fmt_byte(*b));
-        if i == n {
-            // 尾段空白：含格式化字元 → 剷除並記帳；純空格 → 保留。
-            if fmt {
-                edge.trail_fmt_ws_stripped = true;
-            } else {
-                out.push_str(ws_slice_str(run));
-            }
-        } else if fmt {
-            // 節點**內部**含格式化字元的空白 run：折恰一個空格（不是硬換行）。
-            // 這是「折疊」不是「剷除」⇒ 不記 gap 帳，否則會疊出兩個空格。
-            out.push(' ');
-        } else {
-            out.push_str(ws_slice_str(run));
-        }
-    }
-    (out, edge)
-}
-
-/// 剝除單一 XML 文字節點首尾的格式化換行／製表符，並把節點**內部**含
-/// CR／LF／TAB 的連續空白折成單個半形空格。純函數（字串進出），考卷直接打它。
-///
-/// 口徑（比照 DOCX 線 `docs/e1cd-xml-space-policy.md` §2 的節點級裁剪）：
-/// 1. 節點**首尾**的空白 run：含 CR／LF／TAB → 整段剷除；純空格 → 原樣保留
-///    （段首段尾的有意義空格不誤砍）。
-/// 2. 節點**內部**空白 run：含 CR／LF／TAB → 折成一個半形空格（**嚴禁把 `\\n`
-///    當成硬換行傳進 layout**）；純空格 run → 原樣保留（不折疊、不黏死）。
-/// 3. **整節點純空白** → 回傳空字串；「節點間原有單空格」的語義由呼叫端
-///    （`ParaCtx::push_gap`）以「待發單空格」承載——兩個 `text:span` 之間的
-///    格式化空白＝一個空格，不是零、也不是換行。
-pub fn normalize_xml_text(node: &str) -> String {
-    normalize_xml_text_with_edge(node).0
-}
-
-/// 回塞態旗標：`ODF_WS_BUGGY=1` ⇒ 文字節點走「零正規化」舊路徑（直接
-/// `push_str(&unescaped)`，不剝格式化空白、也不掛節點間待發空格），供考卷
-/// `odf_xml_whitespace_policy` 燈 6 證「正規化臂真的在被檢查」。正常態永不觸發
-/// （比照 `ODF_D1_BUGGY`／`ODF_E2D_BUGGY` 的既有鑑別力紀律）。
-pub fn buggy_no_whitespace_normalize() -> bool {
-    std::env::var_os("ODF_WS_BUGGY").is_some()
-}
-
-/// 進行中的段落上下文。
+/// 進行中的段落上下文：文字流與 pending_gap 語義由共用的 [`TextStream`] 承載
+/// （卡 t_4006056b——`body.rs` 走查器吃同一實作），本結構只疊 layout 側的
+/// **run 樣式帳**（`(字級, 粗體)` 斷點合併）。
 #[derive(Debug, Clone)]
 struct ParaCtx {
-    text: String,
+    stream: TextStream,
     runs: Vec<(CpRange, f32, bool)>,
-    /// `text` 的**碼點數**快取：`push_str` 每推一片都要知道起訖碼點位置，逐次
-    /// `chars().count()` 全掃會讓單段成本變成 O(L²)（長段落＋大量節點切片實測
-    /// 熱點）。此欄位與 `text` 同步維護，run 開窗改讀它。
-    char_len: usize,
     /// 段落自身樣式的代表字級/字重（零文字段的代表 run）。
     own: (f32, bool),
-    /// 節點間格式化空白的「待發單空格」旗標：整節點純空白、或文字節點首／尾的
-    /// 格式化空白被正規化剷除（卡 t_2a983570 `EdgeInfo`）時置位，下一個有內容的
-    /// 文字節點推入前刷成一個空格。段落首尾無鄰側內容＝丟棄
-    /// （段首＝`text` 尚空不刷、段尾＝`finish` 不刷），故 pretty-print 縮排
-    /// 不會在段首段尾留幽靈空格。相鄰多個純空白節點仍是同一個空格。
-    pending_gap: bool,
 }
 
 impl ParaCtx {
     /// 建一段全新上下文（欄位初值集中一處，三處建站點不再各自展開）。
     fn new(own: (f32, bool)) -> Self {
         ParaCtx {
-            text: String::new(),
+            stream: TextStream::new(),
             runs: Vec::new(),
-            char_len: 0,
             own,
-            pending_gap: false,
         }
-    }
-
-    /// 整節點純空白：掛「節點間單空格」待發語義（不直接進文字流）。
-    fn push_gap(&mut self) {
-        self.pending_gap = true;
-    }
-
-    /// 刷待發單空格：段落已有文字、且行內位置不是剛經過顯式硬換行／製表符
-    /// 才落地。段首無鄰側＝丟棄；硬換行後的縮排屬該行行首噪音＝同樣丟棄
-    /// （LO 在 `<text:line-break/>` 後從行首起排，不會多一個空格）。
-    fn flush_gap(&mut self, style: (f32, bool)) {
-        if self.pending_gap {
-            self.pending_gap = false;
-            let at_line_start = self
-                .text
-                .chars()
-                .next_back()
-                .is_none_or(|c| matches!(c, '\n' | '\t'));
-            if !self.text.is_empty() && !at_line_start {
-                self.push_str(" ", style);
-            }
-        }
-    }
-
-    /// 正規化後的**內容**節點：先刷待發空格，再推入（呼叫端保證 `s` 非純空白）。
-    fn push_text_node(&mut self, s: &str, style: (f32, bool)) {
-        self.flush_gap(style);
-        self.push_str(s, style);
-    }
-
-    /// 顯式空白元素（`text:s`／`text:tab`／`text:line-break`）：顯式元素是權威
-    /// 空白來源，其周圍的格式化縮排屬噪音 ⇒ 待發空格直接放棄，不疊加。
-    fn push_explicit(&mut self, s: &str, style: (f32, bool)) {
-        self.pending_gap = false;
-        self.push_str(s, style);
     }
 
     /// 追加文字並按當前樣式開/續 run（相鄰同字級同字重合併）。碼點起訖取自
-    /// `char_len` 快取，不再逐次全掃（O(L²) 熱點，卡 t_2a983570 順車修）。
+    /// `TextStream::push_raw` 的碼點快取，不逐次全掃（O(L²) 熱點，卡 t_2a983570
+    /// 順車修）。
     fn push_str(&mut self, s: &str, style: (f32, bool)) {
-        let from = self.char_len;
-        self.text.push_str(s);
-        self.char_len += s.chars().count();
-        let to = self.char_len;
+        let (from, to) = self.stream.push_raw(s);
+        self.push_range((from, to), style);
+    }
+
+    /// 為**已入文**的碼點區間開/續 run（`flush_gap` 落地的空格走這條——空格由
+    /// `TextStream` 推入，run 帳在本側補）。
+    fn push_range(&mut self, (from, to): CpRange, style: (f32, bool)) {
         if let Some(last) = self.runs.last_mut() {
             if last.0 .1 == from && last.1 == style.0 && last.2 == style.1 {
                 last.0 .1 = to;
@@ -821,6 +655,21 @@ impl ParaCtx {
         self.runs.push(((from, to), style.0, style.1));
     }
 
+    /// 顯式空白元素（`text:s`／`text:tab`／`text:line-break`）：顯式元素是權威
+    /// 空白來源，其周圍的格式化縮排屬噪音 ⇒ 待發空格直接放棄，不疊加
+    /// （`TextStream::push_explicit` 同款語義，差別只在 run 帳要記在本側）。
+    fn push_explicit(&mut self, s: &str, style: (f32, bool)) {
+        self.stream.drop_gap();
+        self.push_str(s, style);
+    }
+
+    /// 實體引用（GeneralRef）解析值：是**正文字元**（如 `&nbsp;` → NBSP），
+    /// 不經正規化，但要先刷掉節點間待發空格（t_2a983570 燈 10 口徑）。發射
+    /// 路徑直接複用 `TextSink::sink_push_content`（刷 gap＋推入），不另寫一份。
+    fn push_entity(&mut self, s: &str, style: (f32, bool)) {
+        TextSink::sink_push_content(self, s, style);
+    }
+
     fn finish(self) -> OdfLayoutParagraph {
         let mut runs = self.runs;
         if runs.is_empty() {
@@ -828,9 +677,28 @@ impl ParaCtx {
             runs.push(((0, 0), self.own.0, self.own.1));
         }
         OdfLayoutParagraph {
-            text: self.text,
+            text: self.stream.into_text(),
             runs,
         }
+    }
+}
+
+/// 共用發射器實作（卡 t_4006056b）：`ws::emit_text_node` 經這兩條方法把文字節點
+/// 打進本上下文——gap 記帳落 `TextStream`，run 開窗留本側。
+impl TextSink for ParaCtx {
+    #[inline]
+    fn sink_arm_gap(&mut self) {
+        self.stream.arm_gap();
+    }
+
+    #[inline]
+    fn sink_push_content(&mut self, s: &str, style: (f32, bool)) {
+        // 正規化後的內容節點：先刷待發空格（可能落地成一個空格 run），再推入
+        // （呼叫端保證 `s` 非純空白）。順序是 t_2a983570 的契約，不可顛倒。
+        if let Some(range) = self.stream.flush_gap() {
+            self.push_range(range, style);
+        }
+        self.push_str(s, style);
     }
 }
 
@@ -968,19 +836,30 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                             if buggy {
                                 cur.push_str(&unescaped, style);
                             } else {
-                                let (normalized, edge) = normalize_xml_text_with_edge(&unescaped);
-                                if edge.lead_fmt_ws_stripped {
-                                    cur.push_gap();
-                                }
-                                if normalized.is_empty() {
-                                    cur.push_gap();
-                                } else {
-                                    cur.push_text_node(&normalized, style);
-                                }
-                                if edge.trail_fmt_ws_stripped {
-                                    cur.push_gap();
-                                }
+                                // 共用發射路徑（卡 t_4006056b）：正規化＋邊界記帳
+                                // ＋pending_gap 記帳與 `body.rs` 同一實作
+                                // （`ws::emit_text_node`——首端記帳在推入前掛、
+                                // 正規化空節點只掛 gap、尾端記帳留給下一節點刷，
+                                // 順序契約見 `ws` 模組文件）。
+                                ws::emit_text_node(cur, &unescaped, style);
                             }
+                        }
+                    }
+                }
+            }
+            // CDATA（quick-xml 0.41 起是獨立事件；卡 t_4006056b）：視同文字節點
+            // 走與 `body.rs` 同一條共發射路徑。CDATA 段本就是在 XML 裡保留原文
+            // 的容器，解析器不對其內容解實體 ⇒ **只 decode、不 unescape**，
+            // `<![CDATA[甲 <b> & 乙]]>` 必須原樣入文。修前落 `_ => {}` 靜默丟棄。
+            // 隱藏區段與替代文字跳過守則與 `Event::Text` 完全同形。
+            // 回塞態 `ODF_WS_BUGGY` 的零正規化臂不擴及 CData：修前 CData 本就
+            // 整段丟棄，回塞態維持「CData 不入文」以如實反映卡前語料行為。
+            Ok(Event::CData(e)) if !in_hidden_section(&section_hidden_stack) => {
+                if alt_skip_depth == 0 && !buggy {
+                    if let Some(cur) = p_stack.last_mut() {
+                        if let Ok(raw) = e.decode().map(|d| d.into_owned()) {
+                            let style = *style_stack.last().unwrap_or(&default_style);
+                            ws::emit_text_node(cur, &raw, style);
                         }
                     }
                 }
@@ -992,7 +871,7 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                         let style = *style_stack.last().unwrap_or(&default_style);
                         // 實體引用值（如 `&nbsp;` → NBSP）是**正文字元**，不是格式化
                         // 空白，一律原樣入文（不經正規化）。
-                        cur.push_text_node(&resolved, style);
+                        cur.push_entity(&resolved, style);
                     }
                 }
             }
