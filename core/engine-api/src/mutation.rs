@@ -571,7 +571,7 @@ pub fn extract_para_text_from_xml(xml: &[u8], p_span: ParagraphSpan) -> String {
 impl Engine {
     /// 依據 Mutation 規格套用單筆變更。
     pub fn apply_mutation(&mut self, op: Mutation) -> Result<MutationOutcome, MutationError> {
-        let (applied_span, original_slice, affected_para, caret_after) = match &op {
+        let (applied_span, original_slice, affected_para, caret_after, new_xml) = match &op {
             Mutation::InsertText {
                 target,
                 pos,
@@ -683,8 +683,7 @@ impl Engine {
                     cp: pos.cp + text.chars().count(),
                 };
 
-                self.doc.parts.insert(part_name.to_string(), new_xml);
-                (applied, orig_slice, pos.para, Some(caret_after))
+                (applied, orig_slice, pos.para, Some(caret_after), new_xml)
             }
 
             Mutation::DeleteRange { range } => {
@@ -785,8 +784,7 @@ impl Engine {
                     cp: range.start.cp,
                 };
 
-                self.doc.parts.insert(part_name.to_string(), new_xml);
-                (applied, orig_slice, range.start.para, Some(caret_after))
+                (applied, orig_slice, range.start.para, Some(caret_after), new_xml)
             }
 
             Mutation::InsertBreak { target, pos, kind } => {
@@ -907,13 +905,15 @@ impl Engine {
                     cp: pos.cp + 1,
                 };
 
-                self.doc.parts.insert(part_name.to_string(), new_xml);
-                (applied, orig_slice, pos.para, Some(caret_after))
+                (applied, orig_slice, pos.para, Some(caret_after), new_xml)
             }
         };
 
-        // 維護 touched 白名單（若位元組與開檔完全相同則自動退場）
         let part_name = "word/document.xml";
+        // [K29A_BUGGY_POINT_1: PARTS_WRITEBACK]
+        self.doc.parts.insert(part_name.to_string(), new_xml);
+
+        // 維護 touched 白名單（若位元組與開檔完全相同則自動退場）
         if let (Some(cur), Some(baseline)) = (
             self.doc.parts.get(part_name),
             self.part_baselines.get(part_name),
@@ -1016,6 +1016,7 @@ impl Engine {
                 restored_xml.extend_from_slice(&xml[..patch.applied_span.start]);
                 restored_xml.extend_from_slice(&patch.original_slice);
                 restored_xml.extend_from_slice(&xml[patch.applied_span.end..]);
+                // [K29A_BUGGY_POINT_2: UNDO_XML_RESTORE]
                 *xml = restored_xml;
 
                 affected_parts.push(patch.part_name.clone());
