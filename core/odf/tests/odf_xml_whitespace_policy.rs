@@ -357,8 +357,7 @@ fn lamp9_pure_space_node_between_spans_is_not_folded() {
     // 純雙空格節點（無 CR／LF／TAB）不是 pretty-print 噪音：LO rawdict 實測
     // 不折疊純空格（docs/e1cd-xml-space-policy.md §1）⇒ 兩個空格字形原樣入文。
     let proj = project_bytes(
-        content("<text:p><text:span>甲</text:span>  <text:span>乙</text:span></text:p>")
-            .as_bytes(),
+        content("<text:p><text:span>甲</text:span>  <text:span>乙</text:span></text:p>").as_bytes(),
         None,
     )
     .expect("投影失敗");
