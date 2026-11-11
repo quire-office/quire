@@ -25,6 +25,7 @@
 
 use quire_odf::display::{emit_display_lists, DrawItem, OdtView};
 use quire_odf::layout_glue::{layout_projection, normalize_xml_text, project_bytes, LayoutParams};
+use quire_render_trait::PageDisplayList;
 
 /// 最小合法 `content.xml` 殼（前綴宣告齊備；`walk_paragraphs` 按 `text:p`／
 /// `text:span` 限定名比對，故前綴必須寫成 `text:`）。
@@ -78,7 +79,7 @@ fn lamp1_normalize_xml_text_strips_formatting_whitespace() {
     assert_eq!(normalize_xml_text("\u{00a0}X\u{2007}"), "\u{00a0}X\u{2007}");
     // 正規化冪等：二次正規化不再變動（防「折完又折」造成的二次位移）。
     let once = normalize_xml_text("  \n 甲 \t\n 乙  \n");
-    assert_eq!(once.as_str(), "甲  乙");
+    assert_eq!(once.as_str(), "甲 乙");
     assert_eq!(normalize_xml_text(&once), once);
 }
 
@@ -148,7 +149,7 @@ fn lamp3_pretty_printed_paragraph_breaks_to_exactly_one_line() {
 // ---------------------------------------------------------------------------
 
 /// 取某頁「正規化後長度為零」的文字項數（正規化＝折疊空白；判定口徑與發射層一致）。
-fn empty_text_items(lists: &[quire_render_trait::PageDisplayList]) -> usize {
+fn empty_text_items(lists: &[PageDisplayList]) -> usize {
     lists
         .iter()
         .flat_map(|dl| dl.items.iter())
@@ -299,5 +300,3 @@ fn lamp6_buggy_reinjection_is_distinguishable() {
         "BUGGY 態若零幽靈項 ⇒ 燈 4 沒有鑑別力"
     );
 }
-
-use quire_render_trait;
