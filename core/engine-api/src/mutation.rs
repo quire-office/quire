@@ -205,12 +205,779 @@ pub struct XmlBytePatch {
     pub replacement: Vec<u8>,
 }
 
+/// 判斷字元是否為 XML 空白字元。
+pub fn is_xml_space(c: char) -> bool {
+    c == ' ' || c == '\t' || c == '\r' || c == '\n'
+}
+
+/// XML 跳脫字元處理。
+pub fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// XML 反跳脫字元處理。
+pub fn xml_unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            let mut entity = String::new();
+            for ec in chars.by_ref() {
+                if ec == ';' {
+                    break;
+                }
+                entity.push(ec);
+            }
+            match entity.as_str() {
+                "amp" => out.push('&'),
+                "lt" => out.push('<'),
+                "gt" => out.push('>'),
+                "quot" => out.push('"'),
+                "apos" => out.push('\''),
+                _ => {
+                    out.push('&');
+                    out.push_str(&entity);
+                    out.push(';');
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// 段落節點在 XML 中的位元組區間。
+#[derive(Debug, Clone, Copy)]
+pub struct ParagraphSpan {
+    pub start: usize,
+    pub end: usize,
+}
+
+/// 依據解析器口徑掃描並定位指定索引的扁平段落位元組區間。
+pub fn find_paragraph_span(
+    xml: &[u8],
+    target_para: usize,
+) -> Result<(ParagraphSpan, usize), MutationError> {
+    let text = match std::str::from_utf8(xml) {
+        Ok(t) => t,
+        Err(_) => {
+            return Err(MutationError::XmlPatchRejected {
+                detail: "XML 明文非合法 UTF-8".to_string(),
+            })
+        }
+    };
+
+    let mut cursor = 0;
+    let mut fb_depth = 0usize;
+    let mut ac_stack = Vec::new();
+    let mut txbx_depth = 0usize;
+    let mut para_index = 0usize;
+    let n = text.len();
+
+    let mut target_span: Option<ParagraphSpan> = None;
+
+    while cursor < n {
+        let lt = match text[cursor..].find('<') {
+            Some(i) => cursor + i,
+            None => break,
+        };
+        let gt = match text[lt..].find('>') {
+            Some(i) => lt + i,
+            None => break,
+        };
+        let tag = &text[lt..=gt];
+        cursor = gt + 1;
+
+        let is_close = tag.starts_with("</");
+        let is_empty = tag.ends_with("/>");
+        let inner = if is_close {
+            &tag[2..tag.len() - 1]
+        } else if is_empty {
+            &tag[1..tag.len() - 2]
+        } else {
+            &tag[1..tag.len() - 1]
+        };
+        let name = inner.split_whitespace().next().unwrap_or("");
+        let local = name.rsplit(':').next().unwrap_or("");
+
+        if !is_close {
+            if local == "AlternateContent" {
+                ac_stack.push(fb_depth);
+            } else if local == "Fallback" {
+                fb_depth += 1;
+            }
+        } else if local == "Fallback" {
+            fb_depth = fb_depth.saturating_sub(1);
+        } else if local == "AlternateContent" {
+            if let Some(prev) = ac_stack.pop() {
+                fb_depth = prev;
+            }
+        }
+
+        if fb_depth > 0 {
+            continue;
+        }
+
+        if !is_close {
+            if local == "txbxContent" {
+                txbx_depth += 1;
+            }
+        } else if local == "txbxContent" {
+            txbx_depth = txbx_depth.saturating_sub(1);
+        }
+
+        if txbx_depth > 0 {
+            continue;
+        }
+
+        if !is_close && !is_empty && local == "p" {
+            let p_start = lt;
+            let mut p_depth = 1usize;
+            let mut search_cur = gt + 1;
+            let mut p_end = None;
+
+            while search_cur < n {
+                let next_lt = match text[search_cur..].find('<') {
+                    Some(i) => search_cur + i,
+                    None => break,
+                };
+                let next_gt = match text[next_lt..].find('>') {
+                    Some(i) => next_lt + i,
+                    None => break,
+                };
+                let t2 = &text[next_lt..=next_gt];
+                search_cur = next_gt + 1;
+
+                let ic = t2.starts_with("</");
+                let ie = t2.ends_with("/>");
+                let in2 = if ic {
+                    &t2[2..t2.len() - 1]
+                } else if ie {
+                    &t2[1..t2.len() - 2]
+                } else {
+                    &t2[1..t2.len() - 1]
+                };
+                let nm2 = in2.split_whitespace().next().unwrap_or("");
+                let loc2 = nm2.rsplit(':').next().unwrap_or("");
+
+                if loc2 == "p" {
+                    if !ic && !ie {
+                        p_depth += 1;
+                    } else if ic {
+                        p_depth = p_depth.saturating_sub(1);
+                        if p_depth == 0 {
+                            p_end = Some(next_gt + 1);
+                            cursor = next_gt + 1;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if let Some(end) = p_end {
+                if para_index == target_para {
+                    target_span = Some(ParagraphSpan {
+                        start: p_start,
+                        end,
+                    });
+                }
+                para_index += 1;
+            }
+        }
+    }
+
+    if let Some(span) = target_span {
+        Ok((span, para_index))
+    } else {
+        Err(MutationError::ParagraphOutOfBounds {
+            para: target_para,
+            len: para_index,
+        })
+    }
+}
+
+/// 段落內 `<w:t>` 節點定位資訊。
+#[derive(Debug, Clone)]
+pub struct TextNodeInfo {
+    /// `<w:t ...>...</w:t>` 整個標籤的半開位元組區間
+    pub node_span: ByteSpan,
+    /// 內容文字的半開位元組區間
+    pub text_span: ByteSpan,
+    /// 是否帶有 xml:space="preserve"
+    pub preserve_space: bool,
+    /// 反跳脫後的純文字
+    pub unescaped: String,
+    /// 碼點在段落中的起點（含）
+    pub start_cp: usize,
+    /// 碼點在段落中的終點（不含）
+    pub end_cp: usize,
+    /// 所屬 run 的 `<w:r>` 起訖位元組區間
+    pub run_span: Option<ByteSpan>,
+}
+
+/// 段落內部結構分析結果。
+#[derive(Debug, Clone)]
+pub struct ParagraphAnalysis {
+    pub ppr_end_offset: Option<usize>,
+    pub p_open_end_offset: usize,
+    pub p_close_start_offset: usize,
+    pub text_nodes: Vec<TextNodeInfo>,
+    pub total_cp: usize,
+}
+
+/// 解析單一段落 XML 內部的文字節點、換行與斷點結構。
+pub fn analyze_paragraph(xml: &[u8], p_span: ParagraphSpan) -> ParagraphAnalysis {
+    let p_slice = &xml[p_span.start..p_span.end];
+    let text = std::str::from_utf8(p_slice).unwrap_or("");
+
+    let first_gt = text.find('>').unwrap_or(0);
+    let p_open_end = p_span.start + first_gt + 1;
+    let p_close_start = p_span.start + text.rfind("</").unwrap_or(text.len());
+
+    let mut ppr_end_offset = None;
+    let mut text_nodes = Vec::new();
+    let mut current_cp = 0usize;
+
+    let mut cursor = 0;
+    let mut current_run_span: Option<ByteSpan> = None;
+
+    while cursor < text.len() {
+        let lt = match text[cursor..].find('<') {
+            Some(i) => cursor + i,
+            None => break,
+        };
+        let gt = match text[lt..].find('>') {
+            Some(i) => lt + i,
+            None => break,
+        };
+        let tag = &text[lt..=gt];
+        cursor = gt + 1;
+
+        let is_close = tag.starts_with("</");
+        let is_empty = tag.ends_with("/>");
+        let inner = if is_close {
+            &tag[2..tag.len() - 1]
+        } else if is_empty {
+            &tag[1..tag.len() - 2]
+        } else {
+            &tag[1..tag.len() - 1]
+        };
+        let name = inner.split_whitespace().next().unwrap_or("");
+        let local = name.rsplit(':').next().unwrap_or("");
+
+        if local == "pPr" && (is_close || is_empty) {
+            ppr_end_offset = Some(p_span.start + gt + 1);
+        } else if local == "r" && !is_close && !is_empty {
+            // 尋找對應的 </w:r>
+            let r_start = p_span.start + lt;
+            if let Some(r_close_rel) = text[cursor..].find("</") {
+                let r_close_lt = cursor + r_close_rel;
+                if let Some(r_close_gt_rel) = text[r_close_lt..].find('>') {
+                    let r_end = p_span.start + r_close_lt + r_close_gt_rel + 1;
+                    current_run_span = Some(ByteSpan {
+                        start: r_start,
+                        end: r_end,
+                    });
+                }
+            }
+        } else if local == "r" && is_close {
+            current_run_span = None;
+        } else if local == "br" && is_empty {
+            let has_page_type = inner.contains(r#"type="page""#)
+                || inner.contains(r#"type='page'"#)
+                || inner.contains(r#"w:type="page""#);
+            let has_col_type = inner.contains(r#"type="column""#)
+                || inner.contains(r#"type='column'"#)
+                || inner.contains(r#"w:type="column""#);
+            if !has_page_type && !has_col_type {
+                // 軟換行算 1 個碼點 (\n)
+                current_cp += 1;
+            }
+        } else if local == "t" && !is_close && !is_empty {
+            let preserve = inner.contains(r#"xml:space="preserve""#)
+                || inner.contains(r#"xml:space='preserve'"#)
+                || inner.contains(r#"space="preserve""#);
+
+            // 尋找 </w:t>
+            let t_open_end = lt + gt - lt + 1;
+            if let Some(t_close_rel) = text[t_open_end..].find("</") {
+                let t_close_lt = t_open_end + t_close_rel;
+                if let Some(t_close_gt_rel) = text[t_close_lt..].find('>') {
+                    let t_close_end = t_close_lt + t_close_gt_rel + 1;
+                    let raw_content = &text[t_open_end..t_close_lt];
+                    let unescaped_raw = xml_unescape(raw_content);
+                    let final_str = if preserve {
+                        unescaped_raw
+                    } else {
+                        unescaped_raw.trim_matches(is_xml_space).to_string()
+                    };
+                    let char_count = final_str.chars().count();
+                    let start_cp = current_cp;
+                    let end_cp = current_cp + char_count;
+                    current_cp = end_cp;
+
+                    text_nodes.push(TextNodeInfo {
+                        node_span: ByteSpan {
+                            start: p_span.start + lt,
+                            end: p_span.start + t_close_end,
+                        },
+                        text_span: ByteSpan {
+                            start: p_span.start + t_open_end,
+                            end: p_span.start + t_close_lt,
+                        },
+                        preserve_space: preserve,
+                        unescaped: final_str,
+                        start_cp,
+                        end_cp,
+                        run_span: current_run_span,
+                    });
+                    cursor = t_close_end;
+                }
+            }
+        }
+    }
+
+    ParagraphAnalysis {
+        ppr_end_offset,
+        p_open_end_offset: p_open_end,
+        p_close_start_offset: p_close_start,
+        text_nodes,
+        total_cp: current_cp,
+    }
+}
+
+/// 從段落 XML 切片提取純文字（同步 LayoutEngine 用）。
+pub fn extract_para_text_from_xml(xml: &[u8], p_span: ParagraphSpan) -> String {
+    let analysis = analyze_paragraph(xml, p_span);
+    let mut out = String::new();
+    for node in analysis.text_nodes {
+        out.push_str(&node.unescaped);
+    }
+    out
+}
+
 impl Engine {
-    /// 套用單筆 Mutation。
-    pub fn apply_mutation(&mut self, _op: Mutation) -> Result<MutationOutcome, MutationError> {
-        // 先給紅燈打底：尚未實作時直接回報失敗或未實作
-        Err(MutationError::XmlPatchRejected {
-            detail: "尚未實作 Surgical XML Patch 寫回".to_string(),
+    /// 依據 Mutation 規格套用單筆變更。
+    pub fn apply_mutation(&mut self, op: Mutation) -> Result<MutationOutcome, MutationError> {
+        let (applied_span, original_slice, affected_para, caret_after) = match &op {
+            Mutation::InsertText {
+                target,
+                pos,
+                text,
+                style_override: _,
+            } => {
+                if *target != SubDocTarget::Body {
+                    return Err(MutationError::SubDocNotFound {
+                        target: target.clone(),
+                    });
+                }
+                let part_name = "word/document.xml";
+                let xml = self.doc.parts.get(part_name).ok_or_else(|| {
+                    MutationError::XmlPatchRejected {
+                        detail: "找不到 word/document.xml".to_string(),
+                    }
+                })?;
+
+                let (p_span, _total_paras) = find_paragraph_span(xml, pos.para)?;
+                let analysis = analyze_paragraph(xml, p_span);
+
+                if pos.cp > analysis.total_cp {
+                    return Err(MutationError::CodepointOutOfBounds {
+                        para: pos.para,
+                        start_cp: pos.cp,
+                        end_cp: pos.cp,
+                        para_len: analysis.total_cp,
+                    });
+                }
+
+                let mut replaced_span = None;
+                let mut replacement_bytes = Vec::new();
+
+                // 嘗試尋找涵蓋該碼點之既有 <w:t>
+                for node in &analysis.text_nodes {
+                    if (node.start_cp <= pos.cp && pos.cp < node.end_cp)
+                        || (pos.cp == node.end_cp && pos.cp == analysis.total_cp)
+                    {
+                        let local_cp = pos.cp - node.start_cp;
+                        let mut new_text = String::new();
+                        let mut count = 0;
+                        for ch in node.unescaped.chars() {
+                            if count == local_cp {
+                                new_text.push_str(text);
+                            }
+                            new_text.push(ch);
+                            count += 1;
+                        }
+                        if count == local_cp {
+                            new_text.push_str(text);
+                        }
+
+                        let needs_preserve = node.preserve_space
+                            || new_text.starts_with(is_xml_space)
+                            || new_text.ends_with(is_xml_space);
+                        let new_tag = if needs_preserve {
+                            format!(
+                                r#"<w:t xml:space="preserve">{}</w:t>"#,
+                                xml_escape(&new_text)
+                            )
+                        } else {
+                            format!(r#"<w:t>{}</w:t>"#, xml_escape(&new_text))
+                        };
+
+                        replaced_span = Some(node.node_span);
+                        replacement_bytes = new_tag.into_bytes();
+                        break;
+                    }
+                }
+
+                if replaced_span.is_none() {
+                    // 段落內無 <w:t>，在 pPr 後或段首插入新 run
+                    let ins_offset = analysis
+                        .ppr_end_offset
+                        .unwrap_or(analysis.p_open_end_offset);
+                    let needs_preserve =
+                        text.starts_with(is_xml_space) || text.ends_with(is_xml_space);
+                    let new_run = if needs_preserve {
+                        format!(
+                            r#"<w:r><w:t xml:space="preserve">{}</w:t></w:r>"#,
+                            xml_escape(text)
+                        )
+                    } else {
+                        format!(r#"<w:r><w:t>{}</w:t></w:r>"#, xml_escape(text))
+                    };
+                    replaced_span = Some(ByteSpan {
+                        start: ins_offset,
+                        end: ins_offset,
+                    });
+                    replacement_bytes = new_run.into_bytes();
+                }
+
+                let span = replaced_span.unwrap();
+                let orig_slice = xml[span.start..span.end].to_vec();
+
+                let mut new_xml =
+                    Vec::with_capacity(xml.len() + replacement_bytes.len() - orig_slice.len());
+                new_xml.extend_from_slice(&xml[..span.start]);
+                new_xml.extend_from_slice(&replacement_bytes);
+                new_xml.extend_from_slice(&xml[span.end..]);
+
+                let applied = ByteSpan {
+                    start: span.start,
+                    end: span.start + replacement_bytes.len(),
+                };
+
+                let caret_after = DocPos {
+                    para: pos.para,
+                    cp: pos.cp + text.chars().count(),
+                };
+
+                self.doc.parts.insert(part_name.to_string(), new_xml);
+                (applied, orig_slice, pos.para, Some(caret_after))
+            }
+
+            Mutation::DeleteRange { range } => {
+                if range.target != SubDocTarget::Body {
+                    return Err(MutationError::SubDocNotFound {
+                        target: range.target.clone(),
+                    });
+                }
+                if range.start.para != range.end.para {
+                    return Err(MutationError::ProtectedStructure {
+                        reason: "跨段刪除留待 Slice 2 實作".to_string(),
+                    });
+                }
+                let part_name = "word/document.xml";
+                let xml = self.doc.parts.get(part_name).ok_or_else(|| {
+                    MutationError::XmlPatchRejected {
+                        detail: "找不到 word/document.xml".to_string(),
+                    }
+                })?;
+
+                let (p_span, _total_paras) = find_paragraph_span(xml, range.start.para)?;
+                let analysis = analyze_paragraph(xml, p_span);
+
+                if range.start.cp > range.end.cp || range.end.cp > analysis.total_cp {
+                    return Err(MutationError::CodepointOutOfBounds {
+                        para: range.start.para,
+                        start_cp: range.start.cp,
+                        end_cp: range.end.cp,
+                        para_len: analysis.total_cp,
+                    });
+                }
+
+                if range.start.cp == range.end.cp {
+                    return Ok(MutationOutcome {
+                        events: Vec::new(),
+                        touched_parts: Vec::new(),
+                        inverse: Vec::new(),
+                        caret_after: Some(range.start),
+                    });
+                }
+
+                let mut replaced_span = None;
+                let mut replacement_bytes = Vec::new();
+
+                // 處理單一 <w:t> 內部的局部刪除
+                for node in &analysis.text_nodes {
+                    if node.start_cp <= range.start.cp && range.end.cp <= node.end_cp {
+                        let local_start = range.start.cp - node.start_cp;
+                        let local_end = range.end.cp - node.start_cp;
+
+                        let mut new_text = String::new();
+                        for (idx, ch) in node.unescaped.chars().enumerate() {
+                            if idx < local_start || idx >= local_end {
+                                new_text.push(ch);
+                            }
+                        }
+
+                        let needs_preserve = node.preserve_space
+                            || new_text.starts_with(is_xml_space)
+                            || new_text.ends_with(is_xml_space);
+                        let new_tag = if needs_preserve {
+                            format!(
+                                r#"<w:t xml:space="preserve">{}</w:t>"#,
+                                xml_escape(&new_text)
+                            )
+                        } else {
+                            format!(r#"<w:t>{}</w:t>"#, xml_escape(&new_text))
+                        };
+
+                        replaced_span = Some(node.node_span);
+                        replacement_bytes = new_tag.into_bytes();
+                        break;
+                    }
+                }
+
+                if replaced_span.is_none() {
+                    return Err(MutationError::XmlPatchRejected {
+                        detail: "跨節點刪除尚未支援".to_string(),
+                    });
+                }
+
+                let span = replaced_span.unwrap();
+                let orig_slice = xml[span.start..span.end].to_vec();
+
+                let mut new_xml =
+                    Vec::with_capacity(xml.len() + replacement_bytes.len() - orig_slice.len());
+                new_xml.extend_from_slice(&xml[..span.start]);
+                new_xml.extend_from_slice(&replacement_bytes);
+                new_xml.extend_from_slice(&xml[span.end..]);
+
+                let applied = ByteSpan {
+                    start: span.start,
+                    end: span.start + replacement_bytes.len(),
+                };
+
+                let caret_after = DocPos {
+                    para: range.start.para,
+                    cp: range.start.cp,
+                };
+
+                self.doc.parts.insert(part_name.to_string(), new_xml);
+                (applied, orig_slice, range.start.para, Some(caret_after))
+            }
+
+            Mutation::InsertBreak { target, pos, kind } => {
+                if *target != SubDocTarget::Body {
+                    return Err(MutationError::SubDocNotFound {
+                        target: target.clone(),
+                    });
+                }
+                let part_name = "word/document.xml";
+                let xml = self.doc.parts.get(part_name).ok_or_else(|| {
+                    MutationError::XmlPatchRejected {
+                        detail: "找不到 word/document.xml".to_string(),
+                    }
+                })?;
+
+                let (p_span, _total_paras) = find_paragraph_span(xml, pos.para)?;
+                let analysis = analyze_paragraph(xml, p_span);
+
+                if pos.cp > analysis.total_cp {
+                    return Err(MutationError::CodepointOutOfBounds {
+                        para: pos.para,
+                        start_cp: pos.cp,
+                        end_cp: pos.cp,
+                        para_len: analysis.total_cp,
+                    });
+                }
+
+                let break_tag = match kind {
+                    BreakKind::LineWrapping => "<w:br/>",
+                    BreakKind::Page => r#"<w:br w:type="page"/>"#,
+                    BreakKind::Column => r#"<w:br w:type="column"/>"#,
+                    BreakKind::Tab => "<w:tab/>",
+                };
+
+                let mut replaced_span = None;
+                let mut replacement_bytes = Vec::new();
+
+                for node in &analysis.text_nodes {
+                    if node.start_cp <= pos.cp && pos.cp <= node.end_cp {
+                        let local_cp = pos.cp - node.start_cp;
+                        if local_cp == 0 {
+                            if let Some(r_span) = node.run_span {
+                                replaced_span = Some(ByteSpan {
+                                    start: r_span.start,
+                                    end: r_span.start,
+                                });
+                                replacement_bytes =
+                                    format!("<w:r>{}</w:r>", break_tag).into_bytes();
+                                break;
+                            }
+                        } else if local_cp == node.unescaped.chars().count() {
+                            if let Some(r_span) = node.run_span {
+                                replaced_span = Some(ByteSpan {
+                                    start: r_span.end,
+                                    end: r_span.end,
+                                });
+                                replacement_bytes =
+                                    format!("<w:r>{}</w:r>", break_tag).into_bytes();
+                                break;
+                            }
+                        } else {
+                            // 拆開 <w:t>
+                            let chars: Vec<char> = node.unescaped.chars().collect();
+                            let s1: String = chars[..local_cp].iter().collect();
+                            let s2: String = chars[local_cp..].iter().collect();
+
+                            let t1 = if node.preserve_space
+                                || s1.starts_with(is_xml_space)
+                                || s1.ends_with(is_xml_space)
+                            {
+                                format!(r#"<w:t xml:space="preserve">{}</w:t>"#, xml_escape(&s1))
+                            } else {
+                                format!(r#"<w:t>{}</w:t>"#, xml_escape(&s1))
+                            };
+
+                            let t2 = if node.preserve_space
+                                || s2.starts_with(is_xml_space)
+                                || s2.ends_with(is_xml_space)
+                            {
+                                format!(r#"<w:t xml:space="preserve">{}</w:t>"#, xml_escape(&s2))
+                            } else {
+                                format!(r#"<w:t>{}</w:t>"#, xml_escape(&s2))
+                            };
+
+                            let new_content = format!("{}{}{}", t1, break_tag, t2);
+                            replaced_span = Some(node.node_span);
+                            replacement_bytes = new_content.into_bytes();
+                            break;
+                        }
+                    }
+                }
+
+                if replaced_span.is_none() {
+                    let ins_offset = analysis.p_close_start_offset;
+                    replaced_span = Some(ByteSpan {
+                        start: ins_offset,
+                        end: ins_offset,
+                    });
+                    replacement_bytes = format!("<w:r>{}</w:r>", break_tag).into_bytes();
+                }
+
+                let span = replaced_span.unwrap();
+                let orig_slice = xml[span.start..span.end].to_vec();
+
+                let mut new_xml =
+                    Vec::with_capacity(xml.len() + replacement_bytes.len() - orig_slice.len());
+                new_xml.extend_from_slice(&xml[..span.start]);
+                new_xml.extend_from_slice(&replacement_bytes);
+                new_xml.extend_from_slice(&xml[span.end..]);
+
+                let applied = ByteSpan {
+                    start: span.start,
+                    end: span.start + replacement_bytes.len(),
+                };
+
+                let caret_after = DocPos {
+                    para: pos.para,
+                    cp: pos.cp + 1,
+                };
+
+                self.doc.parts.insert(part_name.to_string(), new_xml);
+                (applied, orig_slice, pos.para, Some(caret_after))
+            }
+        };
+
+        // 維護 touched 白名單（若位元組與開檔完全相同則自動退場）
+        let part_name = "word/document.xml";
+        if let (Some(cur), Some(baseline)) = (
+            self.doc.parts.get(part_name),
+            self.part_baselines.get(part_name),
+        ) {
+            if cur == baseline {
+                self.touched.remove(part_name);
+            } else {
+                self.touched.insert(part_name.to_string(), ());
+            }
+        }
+
+        // 同步記憶體語義模型
+        let updated_xml = self.doc.parts.get(part_name).unwrap();
+        let (updated_p_span, _) = find_paragraph_span(updated_xml, affected_para)?;
+        let new_para_text = extract_para_text_from_xml(updated_xml, updated_p_span);
+
+        let _ = self.replace_paragraph_text(affected_para, &new_para_text);
+
+        if let Some(p) = self.doc.paragraphs.get_mut(affected_para) {
+            if let Some(first) = p.runs.first_mut() {
+                first.text = new_para_text.clone();
+                first.field = None;
+                for r in p.runs.iter_mut().skip(1) {
+                    r.text.clear();
+                }
+            } else {
+                p.runs.push(quire_ooxml::Run {
+                    text: new_para_text.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+
+        while !self.is_settled() {
+            self.reflow_step_json();
+        }
+
+        // 建立 Undo 記錄
+        let reverse_patch = XmlReversePatch {
+            part_name: part_name.to_string(),
+            applied_span,
+            original_slice,
+        };
+
+        let undo_entry = UndoEntry {
+            tx_id: self.undo_stack.len() as u64 + 1,
+            inverse_ops: vec![InverseMutation {
+                semantic_inverse: SemanticInverseOp::Mutation(op),
+                xml_patches: vec![reverse_patch],
+                part_lifecycle_inverse: Vec::new(),
+            }],
+            caret_before: None,
+            caret_after,
+            reversibility: ReversibilityLevel::StrictByteReversible,
+        };
+
+        self.undo_stack.push(undo_entry);
+        self.redo_stack.clear();
+
+        Ok(MutationOutcome {
+            events: Vec::new(),
+            touched_parts: vec![part_name.to_string()],
+            inverse: Vec::new(),
+            caret_after,
         })
     }
 
@@ -227,15 +994,106 @@ impl Engine {
 
     /// 復原頂端操作。
     pub fn undo(&mut self) -> Result<Option<MutationOutcome>, MutationError> {
-        Err(MutationError::XmlPatchRejected {
-            detail: "尚未實作 Undo".to_string(),
-        })
+        let entry = match self.undo_stack.pop() {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        let mut affected_parts = Vec::new();
+
+        for inv in entry.inverse_ops.iter().rev() {
+            for patch in inv.xml_patches.iter().rev() {
+                let xml = self.doc.parts.get_mut(&patch.part_name).ok_or_else(|| {
+                    MutationError::XmlPatchRejected {
+                        detail: format!("找不到 part {}", patch.part_name),
+                    }
+                })?;
+
+                let mut restored_xml = Vec::with_capacity(
+                    xml.len() + patch.original_slice.len()
+                        - (patch.applied_span.end - patch.applied_span.start),
+                );
+                restored_xml.extend_from_slice(&xml[..patch.applied_span.start]);
+                restored_xml.extend_from_slice(&patch.original_slice);
+                restored_xml.extend_from_slice(&xml[patch.applied_span.end..]);
+                *xml = restored_xml;
+
+                affected_parts.push(patch.part_name.clone());
+            }
+        }
+
+        // touched 自動退場機制
+        for part_name in &affected_parts {
+            if let (Some(cur), Some(baseline)) =
+                (self.doc.parts.get(part_name), self.part_baselines.get(part_name))
+            {
+                if cur == baseline {
+                    self.touched.remove(part_name);
+                } else {
+                    self.touched.insert(part_name.clone(), ());
+                }
+            }
+        }
+
+        // 同步語義模型
+        let part_name = "word/document.xml";
+        let mut updates = Vec::new();
+        if let Some(xml) = self.doc.parts.get(part_name) {
+            let p_count = self.doc.paragraphs.len();
+            for p_idx in 0..p_count {
+                if let Ok((p_span, _)) = find_paragraph_span(xml, p_idx) {
+                    let text = extract_para_text_from_xml(xml, p_span);
+                    updates.push((p_idx, text));
+                }
+            }
+        }
+        for (p_idx, text) in updates {
+            let _ = self.replace_paragraph_text(p_idx, &text);
+            if let Some(p) = self.doc.paragraphs.get_mut(p_idx) {
+                if let Some(first) = p.runs.first_mut() {
+                    first.text = text;
+                    for r in p.runs.iter_mut().skip(1) {
+                        r.text.clear();
+                    }
+                }
+            }
+        }
+
+        while !self.is_settled() {
+            self.reflow_step_json();
+        }
+
+        self.redo_stack.push(entry);
+
+        Ok(Some(MutationOutcome {
+            events: Vec::new(),
+            touched_parts: affected_parts,
+            inverse: Vec::new(),
+            caret_after: None,
+        }))
     }
 
     /// 重做頂端操作。
     pub fn redo(&mut self) -> Result<Option<MutationOutcome>, MutationError> {
-        Err(MutationError::XmlPatchRejected {
-            detail: "尚未實作 Redo".to_string(),
-        })
+        let entry = match self.redo_stack.pop() {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        // Redo 藉由重新執行原語義操作或逆向補丁
+        for inv in &entry.inverse_ops {
+            match &inv.semantic_inverse {
+                SemanticInverseOp::Mutation(m) => {
+                    self.apply_mutation(m.clone())?;
+                }
+            }
+        }
+
+        Ok(Some(MutationOutcome {
+            events: Vec::new(),
+            touched_parts: vec!["word/document.xml".to_string()],
+            inverse: Vec::new(),
+            caret_after: entry.caret_after,
+        }))
     }
 }
