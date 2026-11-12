@@ -1996,13 +1996,13 @@ sequenceDiagram
 
 ### A.4 可重放錨點稽核指令（Reproducible Verification Commands）
 
-於 worktree `/home/jerry/projects/quire/.worktrees/argon-sdk`（分支 `argon/editor-sdk`）執行以下指令，可一鍵重放本設計書之全數錨點稽核與變更集範圍檢查：
+於 `<repo>/.worktrees/argon-sdk`（分支 `argon/editor-sdk`；`<repo>` 為本倉庫本機 checkout 根）執行以下指令，可一鍵重放本設計書之全數錨點稽核與變更集範圍檢查：
 
 ```bash
 # 1. 執行 PM 錨點稽核器（驗證所有檔案存在、行號無越界、Rust 符號皆實存於目標行號區間）
 python3 ~/.hermes/scripts/ow-doc-anchor-audit.py argon/editor-sdk docs/editor-sdk-design.md \
-  --repo /home/jerry/projects/quire/.worktrees/argon-sdk
+  --repo <repo>/.worktrees/argon-sdk
 
 # 2. 驗證變更集範圍鐵律（只含 docs/editor-sdk-design.md）
-git -C /home/jerry/projects/quire/.worktrees/argon-sdk diff --name-only main..HEAD
+git -C <repo>/.worktrees/argon-sdk diff --name-only main..HEAD
 ```
