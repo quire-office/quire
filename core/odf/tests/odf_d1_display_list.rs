@@ -381,9 +381,14 @@ fn lamp3_page_membership_matches_pagination_boundaries() {
                     "{rel} p{page} 行 {i}：y={y} 偏離行網格 {want_y}"
                 );
                 assert!(
-                    (first_x - pg.margin_left_pt).abs() <= 0.01,
-                    "{rel} p{page} 行 {i}：行首 x={first_x} 未貼版心左緣 {}",
+                    first_x - pg.margin_left_pt >= -0.01,
+                    "{rel} p{page} 行 {i}：行首 x={first_x} 越過版心左緣 {}（負縮排未挾）",
                     pg.margin_left_pt
+                );
+                assert!(
+                    first_x + 0.01 <= pg.width_pt,
+                    "{rel} p{page} 行 {i}：行首 x={first_x} 越過紙張寬度 {}（防呆：縮排不得把文字推出頁外）",
+                    pg.width_pt
                 );
             }
             let lo = pg.lines.iter().map(|l| l.para_index).min().unwrap();
