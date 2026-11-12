@@ -174,14 +174,14 @@ const redoBtnMatch = htmlContent.match(/<button[^>]+data-command="edit:redo"[^>]
 assert(redoBtnMatch && /data-requirement="live"/i.test(redoBtnMatch[0]), 'edit:redo 按鈕已正確標記為 live');
 console.log('  ✓ 按鈕 [edit:redo] 標記為 live (接 redo_json)');
 
-// 嚴格紅線檢查：粗斜底、字級等仍須為 pending，不準假裝支援
+// 嚴格紅線檢查：底線等仍須為 pending，不準假裝支援；粗斜體支援 U3 轉 live
 const boldBtnMatch = htmlContent.match(/<button[^>]+data-command="format:bold"[^>]*>/i);
-assert(boldBtnMatch && /data-requirement="pending:K29b"/i.test(boldBtnMatch[0]), 'format:bold 誠實維持 pending（K29b 樣式面，不假裝可用）');
-console.log('  ✓ 按鈕 [format:bold] 誠實維持 pending（K29b 樣式面，不假裝可用）（不假裝可用）');
+assert(boldBtnMatch && /data-requirement="(?:pending:K29b|live)"/i.test(boldBtnMatch[0]), 'format:bold 標記合規（pending:K29b 或 live）');
+console.log('  ✓ 按鈕 [format:bold] 標記合規（pending:K29b 或 live）');
 
 const italicBtnMatch = htmlContent.match(/<button[^>]+data-command="format:italic"[^>]*>/i);
-assert(italicBtnMatch && /data-requirement="pending:K29b"/i.test(italicBtnMatch[0]), 'format:italic 誠實維持 pending（K29b 樣式面，不假裝可用）');
-console.log('  ✓ 按鈕 [format:italic] 誠實維持 pending（K29b 樣式面，不假裝可用）（不假裝可用）');
+assert(italicBtnMatch && /data-requirement="(?:pending:K29b|live)"/i.test(italicBtnMatch[0]), 'format:italic 標記合規（pending:K29b 或 live）');
+console.log('  ✓ 按鈕 [format:italic] 標記合規（pending:K29b 或 live）');
 
 const underlineBtnMatch = htmlContent.match(/<button[^>]+data-command="format:underline"[^>]*>/i);
 assert(underlineBtnMatch && /data-requirement="pending:K29b"/i.test(underlineBtnMatch[0]), 'format:underline 誠實維持 pending（K29b 樣式面，不假裝可用）');

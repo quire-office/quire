@@ -113,6 +113,22 @@ export class QWordUI {
         this.handleBackspace();
       } else if (type === 'edit:enter') {
         this.handleEnter();
+      } else if (type === 'format:bold') {
+        this.handleFormatBold(data);
+      } else if (type === 'format:italic') {
+        this.handleFormatItalic(data);
+      } else if (type === 'format:font-color') {
+        this.handleFormatColor(data);
+      } else if (type === 'font:grow') {
+        this.handleGrowFont();
+      } else if (type === 'font:shrink') {
+        this.handleShrinkFont();
+      } else if (type === 'font:size') {
+        this.handleSetFontSize(data);
+      } else if (type === 'paragraph:align') {
+        this.handleAlign(data);
+      } else if (type === 'style:apply') {
+        this.handleApplyStyle(data);
       } else if (type === 'page:change') {
         this.scrollToPage(data.currentPage - 1);
       }
@@ -224,10 +240,18 @@ export class QWordUI {
     // 7. Popovers 觸發綁定
     this.initPopovers();
 
-    // 8. 開檔管線事件 (檔案選擇器與拖放上傳)
+    // 8. 字型大小下拉選單變更
+    const fontSizeSelect = document.querySelector('.qword-select-size');
+    if (fontSizeSelect) {
+      fontSizeSelect.addEventListener('change', (e) => {
+        this.dispatchCommand('font:size', { size: e.target.value }, 'live');
+      });
+    }
+
+    // 9. 開檔管線事件 (檔案選擇器與拖放上傳)
     this.initFilePipeline();
 
-    // 9. 頁面點擊游標定位與鍵盤輸入打字閉環
+    // 10. 頁面點擊游標定位與鍵盤輸入打字閉環
     this.initTypingLoop();
   }
 
@@ -264,9 +288,12 @@ export class QWordUI {
   }
 
   initTypingLoop() {
-    // 點擊畫布反查游標落點
+    // 畫布滑鼠點擊定位與拖曳選取
     if (this.pageContainer) {
-      this.pageContainer.addEventListener('click', (e) => {
+      let isPointerDown = false;
+      let startPos = null;
+
+      this.pageContainer.addEventListener('pointerdown', (e) => {
         const realPage = e.target.closest('.qword-real-page');
         if (!realPage || !this.adapter.engine) return;
 
@@ -284,13 +311,66 @@ export class QWordUI {
 
         const pos = this.adapter.caretAt(pageIndex, clickXPt, clickYPt);
         if (pos) {
+          isPointerDown = true;
+          startPos = pos;
           this.adapter.caret = pos;
+          this.adapter.selection = null;
           this.renderCaret();
+          this.renderSelection();
         }
         if (this.inputSink) {
           this.inputSink.focus();
         }
       });
+
+      this.pageContainer.addEventListener('pointermove', (e) => {
+        if (!isPointerDown || !startPos || !this.adapter.engine) return;
+        const realPage = e.target.closest('.qword-real-page');
+        if (!realPage) return;
+
+        const pageIndex = parseInt(realPage.getAttribute('data-page-index'), 10);
+        const canvas = realPage.querySelector('.qword-page-canvas');
+        if (!canvas) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const dl = this.adapter.getPageDisplayList(pageIndex);
+        const widthPt = (dl && dl.width_pt) || 595;
+        const scale = rect.width / widthPt;
+
+        const moveXPt = (e.clientX - rect.left) / scale;
+        const moveYPt = (e.clientY - rect.top) / scale;
+
+        const curPos = this.adapter.caretAt(pageIndex, moveXPt, moveYPt);
+        if (curPos) {
+          if (curPos.para !== startPos.para || curPos.cp !== startPos.cp) {
+            this.adapter.selection = {
+              target: 'Body',
+              start: startPos,
+              end: curPos
+            };
+            this.adapter.caret = curPos;
+            this.renderCaret();
+            this.renderSelection();
+          }
+        }
+      });
+
+      const onPointerEnd = () => {
+        if (isPointerDown) {
+          isPointerDown = false;
+          if (this.adapter.selection) {
+            const s = this.adapter.selection.start;
+            const ed = this.adapter.selection.end;
+            if (s.para === ed.para && s.cp === ed.cp) {
+              this.adapter.selection = null;
+            }
+          }
+          this.renderSelection();
+        }
+      };
+
+      window.addEventListener('pointerup', onPointerEnd);
+      window.addEventListener('pointercancel', onPointerEnd);
     }
 
     // 全域鍵盤快捷鍵與輸入處理
@@ -332,6 +412,48 @@ export class QWordUI {
         return;
       }
 
+      // Ctrl+B / Cmd+B 粗體
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'b' || e.key === 'B')) {
+        e.preventDefault();
+        this.dispatchCommand('format:bold');
+        return;
+      }
+
+      // Ctrl+I / Cmd+I 斜體
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'i' || e.key === 'I')) {
+        e.preventDefault();
+        this.dispatchCommand('format:italic');
+        return;
+      }
+
+      // Ctrl+L 靠左對齊
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'l' || e.key === 'L')) {
+        e.preventDefault();
+        this.dispatchCommand('paragraph:align-left');
+        return;
+      }
+
+      // Ctrl+E 置中對齊
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'e' || e.key === 'E')) {
+        e.preventDefault();
+        this.dispatchCommand('paragraph:align-center');
+        return;
+      }
+
+      // Ctrl+R 靠右對齊
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R')) {
+        e.preventDefault();
+        this.dispatchCommand('paragraph:align-right');
+        return;
+      }
+
+      // Ctrl+J 左右對齊
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'j' || e.key === 'J')) {
+        e.preventDefault();
+        this.dispatchCommand('paragraph:align-justify');
+        return;
+      }
+
       if (!this.adapter.engine) return;
 
       if (e.key === 'Backspace') {
@@ -350,7 +472,9 @@ export class QWordUI {
         e.preventDefault();
         if (this.adapter.caret && this.adapter.caret.cp > 0) {
           this.adapter.caret.cp--;
+          this.adapter.selection = null;
           this.renderCaret();
+          this.renderSelection();
         }
         return;
       }
@@ -359,7 +483,9 @@ export class QWordUI {
         e.preventDefault();
         if (this.adapter.caret) {
           this.adapter.caret.cp++;
+          this.adapter.selection = null;
           this.renderCaret();
+          this.renderSelection();
         }
         return;
       }
@@ -474,6 +600,168 @@ export class QWordUI {
     }
   }
 
+  renderSelection() {
+    if (!this.pageContainer) return;
+    this.pageContainer.querySelectorAll('.qword-selection-rect').forEach(el => el.remove());
+
+    if (!this.adapter.engine || !this.adapter.selection) return;
+
+    let s = this.adapter.selection.start;
+    let e = this.adapter.selection.end;
+    if (s.para > e.para || (s.para === e.para && s.cp > e.cp)) {
+      const tmp = s;
+      s = e;
+      e = tmp;
+    }
+    if (s.para === e.para && s.cp === e.cp) return;
+
+    for (let p = s.para; p <= e.para; p++) {
+      const text = this.adapter.paragraphText(p) || '';
+      const totalCp = Array.from(text).length;
+      const sCp = (p === s.para) ? s.cp : 0;
+      const eCp = (p === e.para) ? e.cp : totalCp;
+
+      let currentLine = null;
+      for (let cp = sCp; cp < eCp; cp++) {
+        const r = this.adapter.caretRect(p, cp);
+        const rNext = this.adapter.caretRect(p, cp + 1);
+        if (!r || !rNext) continue;
+
+        if (!currentLine || currentLine.y_pt !== r.y_pt || currentLine.page !== r.page) {
+          if (currentLine) {
+            this._appendSelectionRect(currentLine);
+          }
+          currentLine = {
+            page: r.page,
+            x_pt: r.x_pt,
+            y_pt: r.y_pt,
+            width_pt: Math.max(2, rNext.x_pt - r.x_pt),
+            height_pt: r.height_pt || 12
+          };
+        } else {
+          currentLine.width_pt = Math.max(currentLine.width_pt, rNext.x_pt - currentLine.x_pt);
+        }
+      }
+      if (currentLine) {
+        this._appendSelectionRect(currentLine);
+      }
+    }
+  }
+
+  _appendSelectionRect(rectData) {
+    const wrapper = this.pageWrappers && this.pageWrappers[rectData.page];
+    if (!wrapper) return;
+    const caretLayer = wrapper.querySelector('.qword-caret-layer');
+    const canvas = wrapper.querySelector('.qword-page-canvas');
+    if (!caretLayer || !canvas) return;
+
+    const dl = this.adapter.getPageDisplayList(rectData.page);
+    const widthPt = (dl && dl.width_pt) || 595;
+    const scale = canvas.width / widthPt;
+
+    const div = document.createElement('div');
+    div.className = 'qword-selection-rect';
+    div.style.left = `${Math.round(rectData.x_pt * scale)}px`;
+    div.style.top = `${Math.round(rectData.y_pt * scale)}px`;
+    div.style.width = `${Math.round(rectData.width_pt * scale)}px`;
+    div.style.height = `${Math.round(rectData.height_pt * scale)}px`;
+    caretLayer.appendChild(div);
+  }
+
+  async handleFormatBold(payload) {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.formatBold(payload?.bold);
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    }
+  }
+
+  async handleFormatItalic(payload) {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.formatItalic(payload?.italic);
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    }
+  }
+
+  async handleFormatColor(payload) {
+    if (!this.adapter.engine) return;
+    const color = payload?.color || '#e74c3c';
+    const res = this.adapter.formatColor(color);
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    }
+  }
+
+  async handleGrowFont() {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.growFont();
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    }
+  }
+
+  async handleShrinkFont() {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.shrinkFont();
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    }
+  }
+
+  async handleSetFontSize(payload) {
+    if (!this.adapter.engine) return;
+    const size = payload?.size || 12;
+    const res = this.adapter.setFontSize(size);
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    }
+  }
+
+  async handleAlign(payload) {
+    if (!this.adapter.engine) return;
+    const align = payload?.alignment || 'left';
+    const res = this.adapter.setAlignment(align);
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    }
+  }
+
+  async handleApplyStyle(payload) {
+    if (!this.adapter.engine) return;
+    const styleId = payload?.styleId || 'Normal';
+    const res = this.adapter.setStyle(styleId);
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    } else {
+      console.warn(`[QWordUI] 樣式 ${styleId} 套用失敗:`, res.error);
+    }
+  }
+
   async handleType(payload = {}) {
     if (!this.adapter.engine) return;
     const text = payload.text || '';
@@ -481,8 +769,10 @@ export class QWordUI {
 
     const res = this.adapter.typeAt(payload.para, payload.cp, text);
     if (res.ok) {
+      this.adapter.selection = null;
       await this.refreshPages();
       this.renderCaret();
+      this.renderSelection();
       this.syncEngineStats();
     } else {
       console.warn('[QWordUI] 打字變更被拒絕:', res.error);
@@ -493,8 +783,10 @@ export class QWordUI {
     if (!this.adapter.engine) return;
     const res = this.adapter.backspace();
     if (res.ok) {
+      this.adapter.selection = null;
       await this.refreshPages();
       this.renderCaret();
+      this.renderSelection();
       this.syncEngineStats();
     } else if (res.error) {
       console.log('[QWordUI] 退格未執行:', res.error);
@@ -505,8 +797,10 @@ export class QWordUI {
     if (!this.adapter.engine) return;
     const res = this.adapter.enter();
     if (res.ok) {
+      this.adapter.selection = null;
       await this.refreshPages();
       this.renderCaret();
+      this.renderSelection();
       this.syncEngineStats();
     }
   }
@@ -517,6 +811,7 @@ export class QWordUI {
     if (res.ok && res.undone) {
       await this.refreshPages();
       this.renderCaret();
+      this.renderSelection();
       this.syncEngineStats();
     }
   }
@@ -527,6 +822,7 @@ export class QWordUI {
     if (res.ok && res.redone) {
       await this.refreshPages();
       this.renderCaret();
+      this.renderSelection();
       this.syncEngineStats();
     }
   }
@@ -582,6 +878,20 @@ export class QWordUI {
     }
     if (this.qatTitleEl) {
       this.qatTitleEl.textContent = `${fileName} - Quire 文書編輯器`;
+    }
+
+    // 同步字型樣式按鈕 active 狀態與控制項數值
+    const formatState = this.adapter.getCursorFormatState();
+    const boldBtn = document.querySelector('[data-command="format:bold"]');
+    if (boldBtn) boldBtn.classList.toggle('active', Boolean(formatState.bold));
+    const italicBtn = document.querySelector('[data-command="format:italic"]');
+    if (italicBtn) italicBtn.classList.toggle('active', Boolean(formatState.italic));
+    const sizeSelect = document.querySelector('.qword-select-size');
+    if (sizeSelect && formatState.size_pt) {
+      const rounded = String(Math.round(formatState.size_pt));
+      if (Array.from(sizeSelect.options).some(o => o.value === rounded)) {
+        sizeSelect.value = rounded;
+      }
     }
   }
 
@@ -867,7 +1177,8 @@ export class QWordUI {
         swatch.setAttribute('data-color', col);
         swatch.addEventListener('click', () => {
           const mode = palette.getAttribute('data-color-target') || 'font';
-          this.dispatchCommand(`format:color:${mode}`, { color: col }, 'pending:K29a');
+          const req = mode === 'font' ? 'live' : 'pending:K29b';
+          this.dispatchCommand(`format:color:${mode}`, { color: col }, req);
           this.closeAllPopovers();
         });
         palette.appendChild(swatch);
