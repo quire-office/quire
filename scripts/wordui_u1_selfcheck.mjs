@@ -277,7 +277,7 @@ if (warnings.length > 0) {
 
 if (pass) {
   console.log(' 自檢結果: PASS');
-  console.log(' 恭喜！Quire Word 外觀編輯器 (U1 窗體骨架) 通過所有規格與紅線檢查。');
+  console.log(' 恭喜！Quire 文書編輯器外殼 (U1 窗體骨架) 通過所有規格與紅線檢查。');
   console.log('='.repeat(70));
   process.exit(0);
 } else {
