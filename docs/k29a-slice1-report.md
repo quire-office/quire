@@ -2,7 +2,7 @@
 
 ## 0. 執行環境與邊界自證
 
-- 工作目錄自證：`pwd` 實測輸出 `/home/jerry/projects/quire/.worktrees/agy-k29a`，所有路徑嚴格以該 worktree 為根。
+- 工作目錄自證：`pwd` 實測輸出 `<repo>/.worktrees/agy-k29a`（本機工作樹，不在 repo 內），所有路徑嚴格以該 worktree 為根。
 - 嚴格遵守白名單：僅建立與修改以下白名單檔案，未碰觸任何禁改面（`core/ooxml/**`、`core/layout/**`、`core/odf/**`、`shells/**`、`corpus/**`、`fixtures/**` 全數零動）：
   - `core/engine-api/src/mutation.rs`（新建）
   - `core/engine-api/src/lib.rs`（接線與 re-export、touched 自動退場比對基準、part 唯讀入口）

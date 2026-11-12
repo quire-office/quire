@@ -1,7 +1,7 @@
 # AGY-WORDUI 任務交付報告：Word 外觀編輯器外殼原型（U1 窗體骨架）
 
 ## 0. 工作位置自證與執行規範確認
-- 工作目錄 (`pwd`)：`/home/jerry/projects/quire/.worktrees/agy-wordui`
+- 工作目錄 (`pwd`)：`<repo>/.worktrees/agy-wordui`（本機工作樹，不在 repo 內）
 - 嚴格遵守檔案白名單操作：
   - `shells/web/editor/**`（全部新建：index.html、css/、js/、README.md、package.json）
   - `scripts/wordui_u1_selfcheck.mjs`（新建：Node 自檢驗收腳本）
