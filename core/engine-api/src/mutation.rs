@@ -8,6 +8,7 @@
 
 use crate::Engine;
 use quire_layout::Invalidation;
+use quire_ooxml::{NoteKind2, NoteNumberFormat, NoteRestart};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -397,6 +398,151 @@ pub enum Mutation {
         drawing_index: usize,
         gc_unreferenced_media: bool,
     },
+    /// M6.1 設定節屬性（分欄／邊距／紙張方向／節起點型別；設計書 §2.3.6）。
+    SetSectionProperties {
+        section_id: u32,
+        patch: SectionPropsPatch,
+    },
+    /// M6.2 在 `para` 段之前插入分節符（段內 `<w:pPr><w:sectPr>`，ECMA-376 §17.2.3）。
+    InsertSectionBreak { para: usize, kind: SectionStartKind },
+    /// M6.2 刪除第 `section_id` 節的分節符（根級 body 尾 sectPr 誠實拒絕）。
+    DeleteSectionBreak { section_id: u32 },
+    /// M6.3 頁首頁尾 slot 三態設定（titlePg／奇偶頁開關／綁定動作；設計書 §2.2.5）。
+    ConfigureHeaderFooterSlot {
+        section_id: u32,
+        title_pg: Option<bool>,
+        even_and_odd_headers: Option<bool>,
+        slot_bind: Option<(HfKind, HfSlotKind, HfBindAction)>,
+    },
+    /// M6.4 插入註腳／尾註（正文錨點＋註體，一次交易）。
+    InsertNote {
+        kind: NoteKind2,
+        pos: DocPos,
+        initial_text: String,
+    },
+    /// M6.4 刪除註腳／尾註（正文錨點與註體同拆；系統分隔線註誠實拒絕）。
+    DeleteNote { kind: NoteKind2, note_id: i32 },
+    /// M6.4 設定註腳／尾註編號（設定落 `word/settings.xml`，設計書 §2.3.7）。
+    SetNoteProperties {
+        kind: NoteKind2,
+        patch: NotePropsPatch,
+    },
+}
+
+/// 紙張方向（M6.1；pgSz 的 w/h 是絕對尺寸，方向只是宣告語意）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PageOrientation {
+    Portrait,
+    Landscape,
+}
+
+/// 節起點型別（`w:type/@w:val`，ECMA-376 §17.18.19）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SectionStartKind {
+    NextPage,
+    Continuous,
+    EvenPage,
+    OddPage,
+}
+
+/// 分欄設定（M6.1；§2.2.5 平分模式：欄寬＝(版心−(n−1)×space)/n）。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SectionColsPatch {
+    /// 欄數（`w:cols/@w:num`；1＝單欄）。
+    pub num: u32,
+    /// 欄距（pt；`w:cols/@w:space`；None＝沿用既有宣告）。
+    #[serde(default)]
+    pub space_pt: Option<f32>,
+}
+
+/// 節屬性覆寫（M6.1）：`None`＝保持原宣告，`Some`＝明確設定。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SectionPropsPatch {
+    /// 分欄（含欄數與欄距）。
+    #[serde(default)]
+    pub cols: Option<SectionColsPatch>,
+    /// 上邊距（pt；`w:pgMar/@w:top`）。
+    #[serde(default)]
+    pub margin_top_pt: Option<f32>,
+    /// 下邊距（pt）。
+    #[serde(default)]
+    pub margin_bottom_pt: Option<f32>,
+    /// 左邊距（pt）。
+    #[serde(default)]
+    pub margin_left_pt: Option<f32>,
+    /// 右邊距（pt）。
+    #[serde(default)]
+    pub margin_right_pt: Option<f32>,
+    /// 頁首距（pt；`w:pgMar/@w:header`）。
+    #[serde(default)]
+    pub margin_header_pt: Option<f32>,
+    /// 頁尾距（pt；`w:pgMar/@w:footer`）。
+    #[serde(default)]
+    pub margin_footer_pt: Option<f32>,
+    /// 紙張方向。
+    #[serde(default)]
+    pub orientation: Option<PageOrientation>,
+    /// 節起點型別。
+    #[serde(default)]
+    pub section_type: Option<SectionStartKind>,
+}
+
+impl SectionPropsPatch {
+    /// 全空 patch（拒絕 no-op 用）。
+    pub fn is_empty(&self) -> bool {
+        self.cols.is_none()
+            && self.margin_top_pt.is_none()
+            && self.margin_bottom_pt.is_none()
+            && self.margin_left_pt.is_none()
+            && self.margin_right_pt.is_none()
+            && self.margin_header_pt.is_none()
+            && self.margin_footer_pt.is_none()
+            && self.orientation.is_none()
+            && self.section_type.is_none()
+    }
+}
+
+/// 頁首／頁尾族（M6.3 slot 綁定用；slot 細分見 [`HfSlotKind`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HfKind {
+    Header,
+    Footer,
+}
+
+/// slot 綁定動作（M6.3；Unbind 只拆 sectPr 引用，part 本體與註冊留存）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HfBindAction {
+    /// 新建一個空 part 並綁定到該 slot（才允許觸碰 rels 與 [Content_Types].xml）。
+    Create,
+    /// 解除該 slot 的綁定。
+    Unbind,
+}
+
+/// 註腳／尾註編號與位置設定（M6.4；§2.3.7 落 `word/settings.xml`）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotePropsPatch {
+    /// 編號格式（`w:numFmt/@w:val`）。
+    #[serde(default)]
+    pub num_fmt: Option<NoteNumberFormat>,
+    /// 重啟時機（`w:numRestart/@w:val`）。
+    #[serde(default)]
+    pub num_restart: Option<NoteRestart>,
+    /// 起始編號（`w:numStart/@w:val`）。
+    #[serde(default)]
+    pub num_start: Option<i32>,
+    /// 位置（`w:pos/@w:val`；本片未接線，留位）。
+    #[serde(default)]
+    pub pos: Option<quire_ooxml::NotePos>,
+}
+
+impl NotePropsPatch {
+    /// 全空 patch（拒絕 no-op 用）。
+    pub fn is_empty(&self) -> bool {
+        self.num_fmt.is_none()
+            && self.num_restart.is_none()
+            && self.num_start.is_none()
+            && self.pos.is_none()
+    }
 }
 
 /// 半開位元組區間。
@@ -1544,6 +1690,11 @@ impl Engine {
         // 單段落外科手術主幹糾纏；兩者共用同一 Undo／touched／rebuild 紀律。
         if crate::mutation_k29c::is_k29c_mutation(&op) {
             return self.apply_k29c_mutation(op);
+        }
+        // K29d（Slice 4）：M6 節／分節／頁首頁尾／註腳尾註家族與非 Body 目標的
+        // SubDocTarget 文字路由走獨立實作檔（共用同一 Undo／touched／rebuild 紀律）。
+        if crate::mutation_k29d::is_k29d_mutation(&op) {
+            return self.apply_k29d_mutation(op);
         }
         let (
             part_name,

@@ -55,14 +55,18 @@ pub use footnotes::{AnchorMark, NoteLayout, NoteRun, PageFoot};
 pub mod mutation;
 // K29c（Slice 3）：M4 表格家族與 M5 圖片家族 Mutation 實作。
 mod mutation_k29c;
+// K29d（Slice 4）：M6 節／分節／頁首頁尾／註腳尾註家族＋SubDocTarget 完整路由。
+mod mutation_k29d;
 pub use mutation::{
-    BreakKind, ByteSpan, CellPropsPatch, DocPos, DocRange, FloatingAxisSpec, HfSlotKind,
-    InsertSide, InverseMutation, IrreversibleReason, ListAction, Mutation, MutationError,
-    MutationOutcome, ParaPropsPatch, PartLifecycleInverse, ReversibilityLevel, RowPropsPatch,
-    RunDirectPatch, SemanticInverseOp, StyleType, SubDocTarget, TablePath, TablePropsPatch,
-    UndoEntry, VMergeState, WrapModeSpec, XmlBytePatch, XmlReversePatch,
+    BreakKind, ByteSpan, CellPropsPatch, DocPos, DocRange, FloatingAxisSpec, HfBindAction, HfKind,
+    HfSlotKind, InsertSide, InverseMutation, IrreversibleReason, ListAction, Mutation,
+    MutationError, MutationOutcome, NotePropsPatch, PageOrientation, ParaPropsPatch,
+    PartLifecycleInverse, ReversibilityLevel, RowPropsPatch, RunDirectPatch, SectionColsPatch,
+    SectionPropsPatch, SectionStartKind, SemanticInverseOp, StyleType, SubDocTarget, TablePath,
+    TablePropsPatch, UndoEntry, VMergeState, WrapModeSpec, XmlBytePatch, XmlReversePatch,
 };
 pub use quire_ooxml::diff_untouched;
+pub use quire_ooxml::{NoteKind2, NoteNumberFormat, NotePos, NoteRestart};
 #[derive(Error, Debug)]
 pub enum EngineError {
     #[error(transparent)]
@@ -1741,6 +1745,41 @@ impl Engine {
         &self.para_sec
     }
 
+    /// K29d 四套索引同步斷言面：把 `para_sec`、`sec_geo_all`、`shape_boxes`
+    /// 段落索引、`image_pixels` 配對鍵與表格段落起點匯出成穩定 JSON 指紋。
+    /// 考卷用它比對「編輯態」與「存檔重開乾淨投影」是否逐位相同（K29b/K29c 紀律）。
+    /// 純讀取派生——存檔路徑完全不經本欄。
+    pub fn index_sync_json(&self) -> String {
+        let mut geo: Vec<(u32, f32, f32, bool, u32)> = self
+            .sec_geo_all
+            .iter()
+            .map(|(id, g)| (*id, g.page_w_pt, g.page_h_pt, g.landscape, g.cols.num))
+            .collect();
+        geo.sort_by_key(|(id, _, _, _, _)| *id);
+        serde_json::to_string(&serde_json::json!({
+            "para_sec": self.para_sec,
+            "para_count": self.paragraph_count(),
+            "sec_geo_all": geo,
+            "shape_boxes": self
+                .shape_boxes
+                .iter()
+                .map(|(para, img)| (*para, img.w_pt, img.h_pt, img.floating, img.in_cell))
+                .collect::<Vec<_>>(),
+            "image_pixels": self
+                .image_pixels
+                .iter()
+                .map(|p| (p.para, p.w_pt, p.src.0.clone()))
+                .collect::<Vec<_>>(),
+            "tables": self
+                .doc
+                .tables
+                .iter()
+                .map(|t| (t.para_start, t.table.rows.len(), t.table.grid.len()))
+                .collect::<Vec<_>>(),
+        }))
+        .unwrap_or_else(|_| "{}".to_string())
+    }
+
     /// 尾註發射層的唯讀視圖（逐頁條目＋正文錨點記號）。
     pub fn endnote_layout(&self) -> &footnotes::EndLayout {
         &self.end
@@ -2788,7 +2827,15 @@ impl Engine {
     /// 表格索引、清單 marker 等）。Undo／Redo 書籤與開檔基線原樣保留。
     pub(crate) fn rebuild_derived(&mut self) -> Result<(), EngineError> {
         let saved = self.doc.save()?;
-        let fresh = Self::from_docx_bytes(&saved)?;
+        let mut fresh = Self::from_docx_bytes(&saved)?;
+        // bundle 基準保真鐵律（K29d 探針實據）：`from_docx_bytes(&saved)` 的
+        // bundle 是「編輯中途存檔件」——被編輯過的 entry 在裡頭是引擎重.deflate
+        // 的壓縮流，不是原檔的原始壓縮流。若讓它覆蓋进来，Undo 把 parts 還原成
+        // 開檔基線後，save() 對該 entry 仍判「與 entry 明文不同」而再次重建，
+        // 壓縮流偏離原檔 ⇒ 全檔 byte_identical 假性失敗（touched 已退場、明文
+        // 逐位相同卻非 byte-identical）。故重建派生層後把 bundle 換回開檔基準
+        // （original 的 zip 結構），未觸碰 entry 的逐位元組搬運依據永不污染。
+        fresh.doc.bundle = self.doc.bundle.clone();
         let original = std::mem::take(&mut self.original);
         let part_baselines = std::mem::take(&mut self.part_baselines);
         let touched = std::mem::take(&mut self.touched);
@@ -2812,6 +2859,11 @@ impl Engine {
     /// 讀取 part 明文切片（唯讀檢視）。
     pub fn part(&self, name: &str) -> Option<&[u8]> {
         self.doc.parts.get(name).map(|v| v.as_slice())
+    }
+
+    /// 目前 part 明文表的全部 entry 名（K29d 新建 part 斷言用；唯讀檢視）。
+    pub fn part_names(&self) -> Vec<String> {
+        self.doc.parts.keys().cloned().collect()
     }
 
     /// 離線對照：原始位元組 vs 存回位元組，`allow` 為允許內容變動的 part 白名單。
