@@ -103,6 +103,13 @@ export class QWordCore {
       right: 15.5
     };
 
+    // 真引擎文件狀態
+    this.currentPage = 1;
+    this.pageCount = 1;
+    this.wordCount = 0;
+    this.isSettled = true;
+    this.fileName = '文件 1 - Quire 編輯器原型外殼';
+
     // 命令歷史紀錄
     this.commandLog = [];
     this.listeners = new Set();
@@ -135,8 +142,60 @@ export class QWordCore {
       gridlinesVisible: this.gridlinesVisible,
       navPaneVisible: this.navPaneVisible,
       indents: { ...this.indents },
-      logCount: this.commandLog.length
+      logCount: this.commandLog.length,
+      currentPage: this.currentPage,
+      pageCount: this.pageCount,
+      wordCount: this.wordCount,
+      isSettled: this.isSettled,
+      fileName: this.fileName
     };
+  }
+
+  /**
+   * 更新文件統計資訊與定案狀態
+   */
+  setDocStats({ pageCount, currentPage, wordCount, isSettled, fileName } = {}) {
+    if (pageCount !== undefined) this.pageCount = Math.max(1, pageCount);
+    if (currentPage !== undefined) this.currentPage = Math.max(1, Math.min(this.pageCount, currentPage));
+    if (wordCount !== undefined) this.wordCount = Math.max(0, wordCount);
+    if (isSettled !== undefined) this.isSettled = Boolean(isSettled);
+    if (fileName !== undefined) this.fileName = String(fileName);
+    this._notify('doc:stats', this.getDocStats());
+  }
+
+  getDocStats() {
+    return {
+      currentPage: this.currentPage,
+      pageCount: this.pageCount,
+      wordCount: this.wordCount,
+      isSettled: this.isSettled,
+      fileName: this.fileName
+    };
+  }
+
+  nextPage() {
+    if (this.currentPage < this.pageCount) {
+      this.currentPage++;
+      this._notify('page:change', { currentPage: this.currentPage, pageCount: this.pageCount });
+      return true;
+    }
+    return false;
+  }
+
+  prevPage() {
+    if (this.currentPage > 1) {
+      this.currentPage--;
+      this._notify('page:change', { currentPage: this.currentPage, pageCount: this.pageCount });
+      return true;
+    }
+    return false;
+  }
+
+  gotoPage(p) {
+    const clamped = Math.max(1, Math.min(this.pageCount, p));
+    this.currentPage = clamped;
+    this._notify('page:change', { currentPage: this.currentPage, pageCount: this.pageCount });
+    return clamped;
   }
 
   /**
@@ -258,6 +317,17 @@ export class QWordCore {
       this.fitPageWidth();
       handled = true;
       req = 'live';
+    } else if (cmdId === 'zoom:one-page') {
+      this.setZoom(100);
+      handled = true;
+      req = 'live';
+    } else if (cmdId === 'zoom:multiple-pages') {
+      this.setZoom(75);
+      handled = true;
+      req = 'live';
+    } else if (cmdId === 'zoom:dialog') {
+      handled = true;
+      req = 'live';
     } else if (cmdId.startsWith('zoom:set:')) {
       const val = parseInt(cmdId.replace('zoom:set:', ''), 10);
       if (!isNaN(val)) {
@@ -268,6 +338,67 @@ export class QWordCore {
     } else if (cmdId.startsWith('view:mode:')) {
       const mode = cmdId.replace('view:mode:', '');
       handled = this.setViewMode(mode);
+      req = 'live';
+    } else if (cmdId === 'view:outline' || cmdId === 'view:focus' || cmdId === 'view:draft') {
+      handled = true;
+      req = 'live';
+    } else if (cmdId === 'file:save') {
+      handled = true;
+      req = 'live';
+      this._notify('file:save', payload);
+    } else if (cmdId === 'file:open') {
+      handled = true;
+      req = 'live';
+      this._notify('file:open', payload);
+    } else if (cmdId === 'file:open-sample') {
+      handled = true;
+      req = 'live';
+      this._notify('file:open-sample', payload);
+    } else if (cmdId === 'edit:undo') {
+      handled = true;
+      req = 'live';
+      this._notify('edit:undo', payload);
+    } else if (cmdId === 'edit:redo') {
+      handled = true;
+      req = 'live';
+      this._notify('edit:redo', payload);
+    } else if (cmdId === 'edit:type' || cmdId === 'type') {
+      handled = true;
+      req = 'live';
+      this._notify('edit:type', payload);
+    } else if (cmdId === 'edit:backspace' || cmdId === 'backspace') {
+      handled = true;
+      req = 'live';
+      this._notify('edit:backspace', payload);
+    } else if (cmdId === 'edit:enter' || cmdId === 'enter') {
+      handled = true;
+      req = 'live';
+      this._notify('edit:enter', payload);
+    } else if (cmdId === 'page:next') {
+      handled = true;
+      req = 'live';
+      this.nextPage();
+    } else if (cmdId === 'page:prev') {
+      handled = true;
+      req = 'live';
+      this.prevPage();
+    } else if (cmdId.startsWith('page:goto:')) {
+      const p = parseInt(cmdId.replace('page:goto:', ''), 10);
+      if (!isNaN(p)) {
+        this.gotoPage(p);
+        handled = true;
+        req = 'live';
+      }
+    } else if (cmdId === 'status:page') {
+      handled = true;
+      req = 'live';
+      this._notify('status:page', payload);
+    } else if (cmdId === 'status:word-count') {
+      handled = true;
+      req = 'live';
+      this._notify('status:word-count', payload);
+    } else if (cmdId === 'status:collab') {
+      handled = true;
       req = 'live';
     } else if (cmdId === 'ruler:toggle') {
       handled = true;

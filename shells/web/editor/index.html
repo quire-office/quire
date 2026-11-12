@@ -12,6 +12,10 @@
 <svg style="display: none;" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <!-- 通用 -->
+    <g id="icon-folder-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path>
+      <path d="M2 10h20"></path>
+    </g>
     <g id="icon-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
       <polyline points="17 21 17 13 7 13 7 21"></polyline>
@@ -399,13 +403,16 @@
   <!-- 1. 快速存取工具列 (QAT) -->
   <header class="qword-qat" role="toolbar" aria-label="快速存取工具列">
     <div class="qword-qat-left">
-      <button type="button" class="qword-qat-btn" data-command="file:save" data-requirement="pending:K29f" aria-label="儲存 (Ctrl+S)" title="需要引擎 K29f 支援（開發中）">
+      <button type="button" class="qword-qat-btn" data-command="file:open" data-requirement="live" aria-label="開啟 (Ctrl+O)" title="開啟 DOCX 文件">
+        <svg class="qword-icon" style="width:16px;height:16px;"><use href="#icon-folder-open"></use></svg>
+      </button>
+      <button type="button" class="qword-qat-btn" data-command="file:save" data-requirement="live" aria-label="儲存 (Ctrl+S)" title="儲存 (Ctrl+S)">
         <svg class="qword-icon" style="width:16px;height:16px;"><use href="#icon-save"></use></svg>
       </button>
-      <button type="button" class="qword-qat-btn" data-command="edit:undo" data-requirement="pending:K29a" aria-label="復原 (Ctrl+Z)" title="需要引擎 K29a 支援（開發中）">
+      <button type="button" class="qword-qat-btn" data-command="edit:undo" data-requirement="live" aria-label="復原 (Ctrl+Z)" title="復原 (Ctrl+Z)">
         <svg class="qword-icon" style="width:16px;height:16px;"><use href="#icon-undo"></use></svg>
       </button>
-      <button type="button" class="qword-qat-btn" data-command="edit:redo" data-requirement="pending:K29a" aria-label="重複 (Ctrl+Y)" title="需要引擎 K29a 支援（開發中）">
+      <button type="button" class="qword-qat-btn" data-command="edit:redo" data-requirement="live" aria-label="重複 (Ctrl+Y)" title="重複 (Ctrl+Y)">
         <svg class="qword-icon" style="width:16px;height:16px;"><use href="#icon-redo"></use></svg>
       </button>
       <button type="button" class="qword-qat-btn" data-command="review:quick-spelling" data-requirement="pending:K29d" aria-label="快速拼寫檢查 (F7)" title="需要引擎 K29d 支援（開發中）">
@@ -429,11 +436,14 @@
     </div>
   </header>
 
+  <!-- 隱藏原生檔案選擇器 (支援開檔管線) -->
+  <input type="file" id="qword-file-input" accept=".docx,.odt" style="display:none;" />
+
   <!-- 2. Ribbon 區域 -->
   <nav class="qword-ribbon" role="region" aria-label="功能區">
     <!-- 標籤列 -->
     <div class="qword-ribbon-tabs" role="tablist" aria-label="Ribbon 標籤頁">
-      <button type="button" class="qword-tab-btn is-file" data-command="file:menu" data-requirement="pending:K29f" aria-label="檔案" title="需要引擎 K29f 支援（開發中）">檔案</button>
+      <button type="button" class="qword-tab-btn is-file" data-command="file:open" data-requirement="live" aria-label="檔案" title="開啟檔案 / 載入示範檔">檔案</button>
       <button type="button" class="qword-tab-btn active" role="tab" aria-selected="true" data-tab-target="tab-home" data-command="tab:switch:tab-home" data-requirement="live" aria-controls="tab-home" aria-label="常用" id="tab-btn-home">常用</button>
       <button type="button" class="qword-tab-btn" role="tab" aria-selected="false" data-tab-target="tab-insert" data-command="tab:switch:tab-insert" data-requirement="live" aria-controls="tab-insert" aria-label="插入" id="tab-btn-insert">插入</button>
       <button type="button" class="qword-tab-btn" role="tab" aria-selected="false" data-tab-target="tab-design" data-command="tab:switch:tab-design" data-requirement="live" aria-controls="tab-design" aria-label="設計" id="tab-btn-design">設計</button>
@@ -1615,8 +1625,8 @@
         <!-- 縮排拖曳虛線導引 -->
         <div class="qword-indent-guideline"></div>
 
-        <!-- A4 白色紙頁 -->
-        <article class="qword-page" contenteditable="false" tabindex="0" aria-label="文件頁面編輯區">
+        <!-- A4 白色紙頁（未載入檔案時之 mock 預設示範頁） -->
+        <article class="qword-page qword-doc-mock" contenteditable="false" tabindex="0" aria-label="文件頁面編輯區">
           <header class="qword-page-header-mark" aria-hidden="true">
             <span>Quire 文件原型外殼</span>
             <span>U1 窗體骨架</span>
@@ -1708,16 +1718,16 @@
   <footer class="qword-statusbar" role="status" aria-label="狀態列">
     <div class="qword-status-left">
       <div class="qword-status-pill" data-command="status:page" aria-label="頁數資訊">
-        <span>第 1 頁，共 1 頁</span>
+        <span class="qword-status-page-text">第 1 頁，共 1 頁</span>
       </div>
       <div class="qword-status-pill" data-command="status:word-count" aria-label="字數資訊">
-        <span>328 個字</span>
+        <span class="qword-status-word-text">328 個字</span>
       </div>
       <div class="qword-status-pill" data-command="status:language" aria-label="校對語言">
         <span>中文 (台灣)</span>
       </div>
       <div class="qword-status-pill" data-command="status:collab" aria-label="儲存狀態">
-        <span>● 已儲存至本機</span>
+        <span class="qword-status-settled-text">● 已儲存至本機</span>
       </div>
     </div>
 
@@ -1810,6 +1820,28 @@
       </div>
     </div>
   </div>
+
+  <!-- 6. 錯誤訊息 Modal 對話框 (誠實錯誤回報) -->
+  <div class="qword-modal-backdrop" id="modal-error" role="dialog" aria-modal="true" aria-labelledby="modal-error-title">
+    <div class="qword-modal">
+      <div class="qword-modal-header">
+        <span id="modal-error-title" style="color:#a80000;">錯誤訊息</span>
+        <button type="button" class="qword-btn qword-btn-icon-only" data-command="error:close" data-requirement="live" onclick="document.getElementById('modal-error').classList.remove('open')" aria-label="關閉錯誤提示">
+          ✕
+        </button>
+      </div>
+      <div class="qword-modal-body" id="modal-error-body">
+        <p style="margin-bottom:8px;font-weight:600;" id="modal-error-message"></p>
+        <pre id="modal-error-detail" style="background:var(--qw-bg-app);padding:8px;border-radius:4px;font-size:11px;overflow-x:auto;white-space:pre-wrap;"></pre>
+      </div>
+      <div class="qword-modal-footer">
+        <button type="button" class="qword-btn qword-btn-small" data-command="error:close" data-requirement="live" aria-label="確定關閉錯誤提示" onclick="document.getElementById('modal-error').classList.remove('open')">確定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 離屏鍵盤輸入錨點 -->
+  <input type="text" class="qword-input-sink" id="qword-input-sink" aria-label="文字輸入錨點" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
 
 </div>
 

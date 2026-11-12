@@ -1,29 +1,43 @@
 /**
- * QWord UI DOM 綁定層
+ * QWord UI DOM 綁定層 (AGY-U2)
  * 負責 DOM 事件接聽、Ribbon 標籤與鍵盤無障礙操作、標尺拖曳回饋、縮放變換、
  * 自訂 Tooltip 與彈出面板（表格網格、色盤、符號選擇器）。
- * 核心指令一律透過 QWordCore.onCommand 派發。
+ *
+ * U2 增強：
+ * - 整合 EngineAdapter 真引擎（WasmEngine / wasm 載入）
+ * - 開檔管線（檔案選擇器與拖放上傳、validateDocumentFile 檢驗）
+ * - 真分頁 Canvas 渲染堆疊（取代靜態 mock 頁）
+ * - 點擊定位（caret_at_json）與游標繪製（caret_rect_json）
+ * - 鍵盤輸入閉環（type / backspace / enter / undo / redo / save）
+ * - QAT 標題與狀態列即時資訊同步（頁數、字數、定案狀態）
  */
 
 import { QWordCore, TABS, DEPENDENCY_MAP } from './qword-core.js';
+import { EngineAdapter, getDefaultSampleBytes } from './engine-adapter.js';
 
 export class QWordUI {
   constructor() {
     this.core = new QWordCore();
+    this.adapter = new EngineAdapter();
     this.activePopover = null;
     this.rulerDragState = null;
+    this.pageWrappers = [];
 
-    // 將核心與外殼掛載至 window 供探針與後續卡整合
+    // 將核心、外殼與引擎適配器掛載至 window 供探針與外部腳本呼叫
     window.QWordCore = this.core;
+    window.QWordEngine = this.adapter;
     window.QWordShell = {
       core: this.core,
+      adapter: this.adapter,
       onCommand: (cmdId, payload = {}) => {
         const btn = document.querySelector(`[data-command="${cmdId}"]`);
         const req = btn ? btn.getAttribute('data-requirement') : null;
         return this.dispatchCommand(cmdId, payload, req);
       },
       getState: () => this.core.getState(),
-      getLog: () => this.core.getLog()
+      getLog: () => this.core.getLog(),
+      openFile: (bytes, name) => this.loadFile(bytes, name),
+      openDefaultSample: () => this.loadDefaultSample()
     };
     window.__qwordLog = this.core.commandLog;
 
@@ -31,6 +45,11 @@ export class QWordUI {
     this.bindEvents();
     this.renderRulerTicks();
     this.syncStateToUI();
+
+    // 異步預載入 wasm 引擎
+    this.adapter.init().catch(err => {
+      console.warn('[QWordUI] Wasm 預先初始化提醒:', err);
+    });
   }
 
   dispatchCommand(cmdId, payload = {}, req = null) {
@@ -56,6 +75,16 @@ export class QWordUI {
     this.rulerBody = document.querySelector('.qword-ruler-body');
     this.guidelineEl = document.querySelector('.qword-indent-guideline');
 
+    // U2 真引擎相關 DOM
+    this.viewportEl = document.querySelector('.qword-workspace-viewport');
+    this.fileInput = document.getElementById('qword-file-input');
+    this.mockPageEl = document.querySelector('.qword-doc-mock');
+    this.inputSink = document.getElementById('qword-input-sink');
+    this.qatTitleEl = document.querySelector('.qword-qat-title');
+    this.statusPageEl = document.querySelector('.qword-status-page-text');
+    this.statusWordEl = document.querySelector('.qword-status-word-text');
+    this.statusSettledEl = document.querySelector('.qword-status-settled-text');
+
     // 建立全域 Tooltip DOM
     this.tooltipEl = document.createElement('div');
     this.tooltipEl.className = 'qword-tooltip';
@@ -67,6 +96,26 @@ export class QWordUI {
     // 監聽 Core 狀態改變
     this.core.subscribe((type, data) => {
       this.syncStateToUI(type, data);
+
+      if (type === 'file:save') {
+        this.saveCurrentDoc();
+      } else if (type === 'file:open') {
+        if (this.fileInput) this.fileInput.click();
+      } else if (type === 'file:open-sample') {
+        this.loadDefaultSample();
+      } else if (type === 'edit:undo') {
+        this.handleUndo();
+      } else if (type === 'edit:redo') {
+        this.handleRedo();
+      } else if (type === 'edit:type') {
+        this.handleType(data);
+      } else if (type === 'edit:backspace') {
+        this.handleBackspace();
+      } else if (type === 'edit:enter') {
+        this.handleEnter();
+      } else if (type === 'page:change') {
+        this.scrollToPage(data.currentPage - 1);
+      }
     });
 
     // 1. 全域指令按鈕委派
@@ -172,8 +221,389 @@ export class QWordUI {
     // 6. 標尺拖曳處理
     this.initRulerDrag();
 
-    // 7. Popovers 觸發綁定 (表格網格、色盤、特殊符號)
+    // 7. Popovers 觸發綁定
     this.initPopovers();
+
+    // 8. 開檔管線事件 (檔案選擇器與拖放上傳)
+    this.initFilePipeline();
+
+    // 9. 頁面點擊游標定位與鍵盤輸入打字閉環
+    this.initTypingLoop();
+  }
+
+  initFilePipeline() {
+    if (this.fileInput) {
+      this.fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        await this.loadFile(bytes, file.name);
+        this.fileInput.value = '';
+      });
+    }
+
+    if (this.viewportEl) {
+      this.viewportEl.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        this.viewportEl.classList.add('drag-over');
+      });
+      this.viewportEl.addEventListener('dragleave', (e) => {
+        if (!this.viewportEl.contains(e.relatedTarget)) {
+          this.viewportEl.classList.remove('drag-over');
+        }
+      });
+      this.viewportEl.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        this.viewportEl.classList.remove('drag-over');
+        const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!file) return;
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        await this.loadFile(bytes, file.name);
+      });
+    }
+  }
+
+  initTypingLoop() {
+    // 點擊畫布反查游標落點
+    if (this.pageContainer) {
+      this.pageContainer.addEventListener('click', (e) => {
+        const realPage = e.target.closest('.qword-real-page');
+        if (!realPage || !this.adapter.engine) return;
+
+        const pageIndex = parseInt(realPage.getAttribute('data-page-index'), 10);
+        const canvas = realPage.querySelector('.qword-page-canvas');
+        if (!canvas) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const dl = this.adapter.getPageDisplayList(pageIndex);
+        const widthPt = (dl && dl.width_pt) || 595;
+        const scale = rect.width / widthPt;
+
+        const clickXPt = (e.clientX - rect.left) / scale;
+        const clickYPt = (e.clientY - rect.top) / scale;
+
+        const pos = this.adapter.caretAt(pageIndex, clickXPt, clickYPt);
+        if (pos) {
+          this.adapter.caret = pos;
+          this.renderCaret();
+        }
+        if (this.inputSink) {
+          this.inputSink.focus();
+        }
+      });
+    }
+
+    // 全域鍵盤快捷鍵與輸入處理
+    document.addEventListener('keydown', (e) => {
+      // 若聚焦於其他對話框內部的 input/textarea 則放行
+      if (e.target && e.target !== this.inputSink && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+        return;
+      }
+
+      // Ctrl+S / Cmd+S 存檔
+      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        this.dispatchCommand('file:save');
+        return;
+      }
+
+      // Ctrl+Z / Cmd+Z 復原 (Shift 轉重做)
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        if (e.shiftKey) {
+          this.dispatchCommand('edit:redo');
+        } else {
+          this.dispatchCommand('edit:undo');
+        }
+        return;
+      }
+
+      // Ctrl+Y / Cmd+Y 重複
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault();
+        this.dispatchCommand('edit:redo');
+        return;
+      }
+
+      // Ctrl+O / Cmd+O 開啟
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'o' || e.key === 'O')) {
+        e.preventDefault();
+        this.dispatchCommand('file:open');
+        return;
+      }
+
+      if (!this.adapter.engine) return;
+
+      if (e.key === 'Backspace') {
+        e.preventDefault();
+        this.handleBackspace();
+        return;
+      }
+
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this.handleEnter();
+        return;
+      }
+
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        if (this.adapter.caret && this.adapter.caret.cp > 0) {
+          this.adapter.caret.cp--;
+          this.renderCaret();
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (this.adapter.caret) {
+          this.adapter.caret.cp++;
+          this.renderCaret();
+        }
+        return;
+      }
+    });
+
+    if (this.inputSink) {
+      this.inputSink.addEventListener('input', () => {
+        const val = this.inputSink.value;
+        this.inputSink.value = '';
+        if (val && this.adapter.engine) {
+          this.handleType({ text: val });
+        }
+      });
+    }
+  }
+
+  async loadFile(bytes, fileName) {
+    try {
+      await this.adapter.init();
+      this.adapter.openFile(bytes, fileName);
+      await this.renderDocument();
+      this.syncEngineStats();
+      console.log(`[QWordUI] 成功載入文件: ${fileName}`);
+    } catch (err) {
+      console.error('[QWordUI] 開檔失敗:', err);
+      let userMsg = err.message || '檔案格式無法讀取';
+      if (err.reason === 'FILE_EMPTY') {
+        userMsg = '檔案內容為空（0 位元組），請選擇有效的 DOCX 文件。';
+      } else if (err.reason === 'INVALID_EXTENSION') {
+        userMsg = '不支援的檔案副檔名，編輯器目前僅支援 DOCX 格式。';
+      } else if (err.reason === 'NOT_ZIP_CONTAINER') {
+        userMsg = '所選檔案缺少 ZIP (PK) 封裝標頭，非合規 DOCX 容器。';
+      }
+      this.showErrorModal('開啟檔案失敗', userMsg, err.message);
+    }
+  }
+
+  async loadDefaultSample() {
+    const bytes = getDefaultSampleBytes();
+    await this.loadFile(bytes, 'sample.docx');
+  }
+
+  async renderDocument() {
+    if (!this.adapter.engine) return;
+
+    // 隱藏靜態 mock 頁
+    if (this.mockPageEl) {
+      this.mockPageEl.style.display = 'none';
+    }
+
+    // 移除先前繪製的真頁面
+    this.pageContainer.querySelectorAll('.qword-real-page').forEach(el => el.remove());
+
+    const count = this.adapter.pageCount();
+    this.pageWrappers = [];
+
+    for (let i = 0; i < count; i++) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'qword-real-page';
+      wrapper.setAttribute('data-page-index', i.toString());
+
+      const canvas = document.createElement('canvas');
+      canvas.className = 'qword-page-canvas';
+      wrapper.appendChild(canvas);
+
+      const caretLayer = document.createElement('div');
+      caretLayer.className = 'qword-caret-layer';
+      const caretEl = document.createElement('div');
+      caretEl.className = 'qword-caret';
+      caretLayer.appendChild(caretEl);
+      wrapper.appendChild(caretLayer);
+
+      this.pageContainer.appendChild(wrapper);
+      this.pageWrappers.push(wrapper);
+
+      await this.adapter.renderPage(i, canvas, 794);
+    }
+
+    this.renderCaret();
+  }
+
+  renderCaret() {
+    if (!this.adapter.engine || !this.adapter.caret) return;
+    const { para, cp } = this.adapter.caret;
+    const rectJson = this.adapter.caretRect(para, cp);
+    if (!rectJson) return;
+
+    const pageIdx = rectJson.page;
+    const wrapper = this.pageWrappers && this.pageWrappers[pageIdx];
+    if (!wrapper) return;
+
+    // 隱藏其他頁面的游標
+    this.pageContainer.querySelectorAll('.qword-caret').forEach(c => {
+      c.style.display = 'none';
+    });
+
+    const caretEl = wrapper.querySelector('.qword-caret');
+    const canvas = wrapper.querySelector('.qword-page-canvas');
+    if (!caretEl || !canvas) return;
+
+    const dl = this.adapter.getPageDisplayList(pageIdx);
+    const widthPt = (dl && dl.width_pt) || 595;
+    const scale = canvas.width / widthPt;
+
+    caretEl.style.left = `${Math.round(rectJson.x_pt * scale)}px`;
+    caretEl.style.top = `${Math.round(rectJson.y_pt * scale)}px`;
+    caretEl.style.height = `${Math.round((rectJson.height_pt || 12) * scale)}px`;
+    caretEl.style.display = 'block';
+
+    if (this.inputSink) {
+      this.inputSink.focus();
+    }
+  }
+
+  async handleType(payload = {}) {
+    if (!this.adapter.engine) return;
+    const text = payload.text || '';
+    if (!text) return;
+
+    const res = this.adapter.typeAt(payload.para, payload.cp, text);
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.syncEngineStats();
+    } else {
+      console.warn('[QWordUI] 打字變更被拒絕:', res.error);
+    }
+  }
+
+  async handleBackspace() {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.backspace();
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.syncEngineStats();
+    } else if (res.error) {
+      console.log('[QWordUI] 退格未執行:', res.error);
+    }
+  }
+
+  async handleEnter() {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.enter();
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.syncEngineStats();
+    }
+  }
+
+  async handleUndo() {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.undo();
+    if (res.ok && res.undone) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.syncEngineStats();
+    }
+  }
+
+  async handleRedo() {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.redo();
+    if (res.ok && res.redone) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.syncEngineStats();
+    }
+  }
+
+  async refreshPages() {
+    const count = this.adapter.pageCount();
+    if (!this.pageWrappers || this.pageWrappers.length !== count) {
+      await this.renderDocument();
+      return;
+    }
+    for (let i = 0; i < count; i++) {
+      const wrapper = this.pageWrappers[i];
+      const canvas = wrapper.querySelector('.qword-page-canvas');
+      if (canvas) {
+        await this.adapter.renderPage(i, canvas, 794);
+      }
+    }
+  }
+
+  saveCurrentDoc() {
+    if (!this.adapter.engine) {
+      this.showErrorModal('尚未開啟文件', '目前尚未載入任何 DOCX 文件，無法進行存檔操作。');
+      return;
+    }
+    const bytes = this.adapter.save();
+    console.log(`[QWordUI] 已成功存檔並下載 (${bytes.length} 位元組)`);
+  }
+
+  syncEngineStats() {
+    if (!this.adapter.engine) return;
+    const pageCount = this.adapter.pageCount();
+    const wordCount = this.adapter.getWordCount();
+    const isSettled = this.adapter.isSettled();
+    const fileName = this.adapter.fileName;
+    const curPage = (this.adapter.caret && this.adapter.caretRect(this.adapter.caret.para, this.adapter.caret.cp)?.page + 1) || 1;
+
+    this.core.setDocStats({
+      pageCount,
+      currentPage: curPage,
+      wordCount,
+      isSettled,
+      fileName
+    });
+
+    if (this.statusPageEl) {
+      this.statusPageEl.textContent = `第 ${curPage} 頁，共 ${pageCount} 頁`;
+    }
+    if (this.statusWordEl) {
+      this.statusWordEl.textContent = `${wordCount} 個字`;
+    }
+    if (this.statusSettledEl) {
+      this.statusSettledEl.textContent = isSettled ? '● 已完成排版 (定案)' : '○ 背景排版中...';
+    }
+    if (this.qatTitleEl) {
+      this.qatTitleEl.textContent = `${fileName} - Quire 文書編輯器`;
+    }
+  }
+
+  scrollToPage(pageIdx) {
+    if (this.pageWrappers && this.pageWrappers[pageIdx]) {
+      this.pageWrappers[pageIdx].scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  showErrorModal(title, message, detail = '') {
+    const modal = document.getElementById('modal-error');
+    const titleEl = document.getElementById('modal-error-title');
+    const msgEl = document.getElementById('modal-error-message');
+    const detailEl = document.getElementById('modal-error-detail');
+
+    if (titleEl) titleEl.textContent = title;
+    if (msgEl) msgEl.textContent = message;
+    if (detailEl) {
+      detailEl.textContent = detail ? `錯誤細節代碼: ${detail}` : '';
+      detailEl.style.display = detail ? 'block' : 'none';
+    }
+    if (modal) modal.classList.add('open');
   }
 
   showTooltip(target, label, req, shortcut) {
@@ -187,7 +617,7 @@ export class QWordUI {
       const depInfo = DEPENDENCY_MAP[req] || { name: cardId, desc: '開發中' };
       html += `<span class="qword-tooltip-req">⚠️ 需要編輯 API（開發中: ${depInfo.name}）</span>`;
     } else if (req === 'live') {
-      html += `<span style="display:block;font-size:9px;color:#85e085;margin-top:2px;">● 現已可用（外殼/檢視能力）</span>`;
+      html += `<span style="display:block;font-size:9px;color:#85e085;margin-top:2px;">● 現已可用（真引擎/檢視能力）</span>`;
     }
 
     this.tooltipEl.innerHTML = html;
@@ -267,12 +697,10 @@ export class QWordUI {
 
     ticksContainer.innerHTML = '';
     // A4 頁寬為 21cm，兩邊留白各約 2.5cm，中間編輯區為 16cm
-    // 每公分繪製一大刻度，每半公分繪製一小刻度
     const totalCm = 16;
     for (let cm = 0; cm <= totalCm; cm++) {
       const pct = (cm / totalCm) * 100;
 
-      // 主要刻度與數字
       const majorTick = document.createElement('div');
       majorTick.className = 'qword-ruler-tick major';
       majorTick.style.left = `${pct}%`;
