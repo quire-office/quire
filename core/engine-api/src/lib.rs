@@ -60,13 +60,13 @@ mod mutation_k29d;
 pub use mutation::{
     BreakKind, ByteSpan, CellPropsPatch, DocPos, DocRange, FloatingAxisSpec, HfBindAction, HfKind,
     HfSlotKind, InsertSide, InverseMutation, IrreversibleReason, ListAction, Mutation,
-    MutationError, MutationOutcome, NotePropsPatch, ParaPropsPatch, PageOrientation,
+    MutationError, MutationOutcome, NotePropsPatch, PageOrientation, ParaPropsPatch,
     PartLifecycleInverse, ReversibilityLevel, RowPropsPatch, RunDirectPatch, SectionColsPatch,
     SectionPropsPatch, SectionStartKind, SemanticInverseOp, StyleType, SubDocTarget, TablePath,
     TablePropsPatch, UndoEntry, VMergeState, WrapModeSpec, XmlBytePatch, XmlReversePatch,
 };
-pub use quire_ooxml::{NoteKind2, NoteNumberFormat, NotePos, NoteRestart};
 pub use quire_ooxml::diff_untouched;
+pub use quire_ooxml::{NoteKind2, NoteNumberFormat, NotePos, NoteRestart};
 #[derive(Error, Debug)]
 pub enum EngineError {
     #[error(transparent)]
@@ -2827,7 +2827,15 @@ impl Engine {
     /// 表格索引、清單 marker 等）。Undo／Redo 書籤與開檔基線原樣保留。
     pub(crate) fn rebuild_derived(&mut self) -> Result<(), EngineError> {
         let saved = self.doc.save()?;
-        let fresh = Self::from_docx_bytes(&saved)?;
+        let mut fresh = Self::from_docx_bytes(&saved)?;
+        // bundle 基準保真鐵律（K29d 探針實據）：`from_docx_bytes(&saved)` 的
+        // bundle 是「編輯中途存檔件」——被編輯過的 entry 在裡頭是引擎重.deflate
+        // 的壓縮流，不是原檔的原始壓縮流。若讓它覆蓋进来，Undo 把 parts 還原成
+        // 開檔基線後，save() 對該 entry 仍判「與 entry 明文不同」而再次重建，
+        // 壓縮流偏離原檔 ⇒ 全檔 byte_identical 假性失敗（touched 已退場、明文
+        // 逐位相同卻非 byte-identical）。故重建派生層後把 bundle 換回開檔基準
+        // （original 的 zip 結構），未觸碰 entry 的逐位元組搬運依據永不污染。
+        fresh.doc.bundle = self.doc.bundle.clone();
         let original = std::mem::take(&mut self.original);
         let part_baselines = std::mem::take(&mut self.part_baselines);
         let touched = std::mem::take(&mut self.touched);

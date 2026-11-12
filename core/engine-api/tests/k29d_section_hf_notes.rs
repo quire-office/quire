@@ -92,6 +92,17 @@ fn texts_with(engine: &Engine, page: usize, needle: &str) -> Vec<(f32, f32, Stri
         .collect()
 }
 
+/// 第 `page` 頁含 `marker` 的正文行最小 y（燈 2 專用「正文首行」定義）。
+/// 口徑說明：`first_body_y` 取全頁最小 y，在頁首含文字的檔會先撞上頁首項
+/// （本引擎顯示列表不帶頁首／正文分帶標籤，k7b 金燈的檔頁首是圖才無此誤撞）。
+/// 頁首增高推下鎖必須盯正文行本身，故以正文段落的標記字串過濾。
+fn body_marker_min_y(engine: &Engine, page: usize, marker: &str) -> f32 {
+    texts_with(engine, page, marker)
+        .iter()
+        .map(|(_, y, _)| *y)
+        .fold(f32::INFINITY, f32::min)
+}
+
 fn find_para(engine: &Engine, needle: &str) -> Option<usize> {
     (0..engine.paragraph_count()).find(|&i| {
         engine
@@ -109,8 +120,10 @@ fn reopen(engine: &Engine) -> Engine {
     e
 }
 
-/// 觸碰面斷言核心：`pass` 為真、`whitelisted_changed` 恰為 `expect`（排序比較）、
-/// 其餘全部 entry `zero_loss()`，並回傳 diff 供追加個別 entry 斷言。
+/// 觸碰面斷言核心：`pass` 為真、`whitelisted_changed ∪ added` 恰為 `expect`
+/// （排序比較；新建 part 在原檔無 entry，diff_zip_structure 把它記進 `added`
+/// 而非 `whitelisted_changed`——兩者同屬「本次編輯造成的內容變動」，故併入），
+/// 其餘全部 entry `zero_loss()`。
 fn assert_touch_face(engine: &Engine, expect: &[&str], ctx: &str) {
     let diff = engine.roundtrip_check().expect("roundtrip_check 失敗");
     assert!(
@@ -119,10 +132,14 @@ fn assert_touch_face(engine: &Engine, expect: &[&str], ctx: &str) {
         diff.violations
     );
     let mut got: Vec<String> = diff.whitelisted_changed.clone();
+    got.extend(diff.added.iter().cloned());
     got.sort();
     let mut want: Vec<String> = expect.iter().map(|s| s.to_string()).collect();
     want.sort();
-    assert_eq!(got, want, "{ctx}：whitelisted_changed 必須恰為 {want:?}");
+    assert_eq!(
+        got, want,
+        "{ctx}：whitelisted_changed∪added 必須恰為 {want:?}"
+    );
     for (name, entry) in &diff.per_entry {
         if want.iter().any(|w| w == name) {
             continue;
@@ -167,6 +184,7 @@ fn sec_ids(engine: &Engine) -> Vec<u32> {
 }
 
 /// `word/footnotes.xml` 中最大的 `w:footnote/@w:id`（派發新 id 的觀察口）。
+/// 注意 `w:id="` 長度是 6，值起點＝ pos+6（用 7 會吃掉值首字元導致恆失敗）。
 fn max_footnote_id(xml: &[u8]) -> Option<i32> {
     let text = std::str::from_utf8(xml).ok()?;
     let mut max: Option<i32> = None;
@@ -176,7 +194,7 @@ fn max_footnote_id(xml: &[u8]) -> Option<i32> {
         let gt = text[start..].find('>')? + start;
         let tag = &text[start..=gt];
         if let Some(pos) = tag.find(r#"w:id=""#) {
-            let rest = &tag[pos + 7..];
+            let rest = &tag[pos + 6..];
             if let Some(end) = rest.find('"') {
                 if let Ok(v) = rest[..end].trim().parse::<i32>() {
                     max = Some(max.unwrap_or(i32::MIN).max(v));
@@ -199,8 +217,7 @@ fn k29d_lamp1_section_columns_relayout_and_minimal_touch() {
     // 基準：雙欄檔 p0 兩個欄起點（l1_columns.rs:42-70 口徑）。
     let xs0 = text_xs(&e, 0);
     assert!(
-        xs0.iter().any(|x| (x - 72.0).abs() < 0.6)
-            && xs0.iter().any(|x| (x - 315.65).abs() < 0.6),
+        xs0.iter().any(|x| (x - 72.0).abs() < 0.6) && xs0.iter().any(|x| (x - 315.65).abs() < 0.6),
         "基準雙欄 p0 必須兩欄起點齊備：xs={xs0:?}"
     );
 
@@ -280,8 +297,7 @@ fn k29d_lamp1_section_columns_relayout_and_minimal_touch() {
     let r = reopen(&e);
     let rx = text_xs(&r, 0);
     assert!(
-        rx.iter().any(|x| (x - 72.0).abs() < 0.6)
-            && rx.iter().any(|x| (x - 315.65).abs() < 0.6),
+        rx.iter().any(|x| (x - 72.0).abs() < 0.6) && rx.iter().any(|x| (x - 315.65).abs() < 0.6),
         "存檔重開後必須仍是雙欄：xs={rx:?}"
     );
     assert!(
@@ -319,8 +335,11 @@ fn k29d_lamp1_orientation_margins_and_writeback_without_sectpr() {
         .and_then(|s| s.split('>').next())
         .unwrap_or_default()
         .to_string();
+    // PM 裁決（11-12）：sample.docx 無 sectPr，生效幾何＝LayoutParams::default() 整數
+    // A4 595×842pt（core/layout/src/lib.rs:352）⇒ 橫向正確值 16840/11900（Word 真 A4
+    // 的 16838/11906 屬 twip 精度另卡議題，本卡嚴禁改引擎預設湊小數）。
     assert!(
-        pgsz.contains(r#"w:w="16838""#) && pgsz.contains(r#"w:h="11906""#),
+        pgsz.contains(r#"w:w="16840""#) && pgsz.contains(r#"w:h="11900""#),
         "橫向必須寫回 pgSz w/h 互換（twip＝pt×20），實得 {pgsz}"
     );
     assert!(
@@ -367,7 +386,10 @@ fn k29d_lamp1_orientation_margins_and_writeback_without_sectpr() {
     let r = reopen(&e);
     let doc = String::from_utf8(r.part("word/document.xml").expect("document.xml").to_vec())
         .expect("UTF-8");
-    assert!(doc.contains(r#"w:orient="landscape""#), "重開後 orient 保留");
+    assert!(
+        doc.contains(r#"w:orient="landscape""#),
+        "重開後 orient 保留"
+    );
     assert!(doc.contains(r#"w:left="1800""#), "重開後邊距保留");
 }
 
@@ -408,10 +430,7 @@ fn k29d_lamp1_section_type_and_honest_rejects() {
         })
         .expect_err("版心寬 <= 0 必須誠實拒絕");
     assert!(
-        matches!(
-            err,
-            quire_engine::MutationError::XmlPatchRejected { .. }
-        ),
+        matches!(err, quire_engine::MutationError::XmlPatchRejected { .. }),
         "版心歸零的拒絕型別必須是 XmlPatchRejected，實得 {err:?}"
     );
     assert!(!e2.can_undo(), "被拒絕的操作不得留下 Undo 記錄（零副作用）");
@@ -432,10 +451,7 @@ fn k29d_lamp1_section_type_and_honest_rejects() {
         })
         .expect_err("不存在的節 id 必須誠實拒絕");
     assert!(
-        matches!(
-            err,
-            quire_engine::MutationError::SubDocNotFound { .. }
-        ),
+        matches!(err, quire_engine::MutationError::SubDocNotFound { .. }),
         "未知節 id 的拒絕型別必須是 SubDocNotFound，實得 {err:?}"
     );
 }
@@ -448,14 +464,20 @@ fn k29d_lamp1_section_type_and_honest_rejects() {
 fn k29d_lamp2_header_text_routes_to_header_part_only() {
     let mut e = open("fixtures/hf_table_header.docx");
     settle(&mut e);
-    assert_eq!(e.page_count(), 2, "hf_table_header.docx 頁數基準 2");
+    // PM 裁決（11-12）：金燈 k9 的 >=2 是寬鬆基準；本卡要鎖「編輯零擾動」，故釘死
+    // 實測基線 3 頁（編輯前 3、頁首路由編輯後仍 3），嚴禁改引擎頁數湊 2。
+    assert_eq!(
+        e.page_count(),
+        3,
+        "hf_table_header.docx 頁數基準 3（本引擎實測基線）"
+    );
     assert!(
         texts_with(&e, 1, "頁首覆核字串").is_empty(),
         "基準態 p1 不得已含新頁首字串"
     );
     let doc_before = e.part("word/document.xml").expect("document.xml").to_vec();
     let hdr_before = e.part("word/header1.xml").expect("header1.xml").to_vec();
-    let first_before = first_body_y(&e, 1);
+    let first_before = body_marker_min_y(&e, 1, "正文填充");
 
     // 對 SubDocTarget::Header（default slot → word/header1.xml）插入長文字。
     e.apply_mutation(Mutation::InsertText {
@@ -471,7 +493,14 @@ fn k29d_lamp2_header_text_routes_to_header_part_only() {
     settle(&mut e);
 
     // (a) 頁首增高 ⇒ header_pushes_pt 重算、正文首行 y 同步下推（k7b 口徑）。
-    let after = first_body_y(&e, 1);
+    // 「正文首行」以正文標記字串過濾（見 body_marker_min_y 注：全頁最小 y 會先
+    // 撞上頁首文字項，非正文行）。
+    assert_eq!(
+        e.page_count(),
+        3,
+        "頁首路由後頁數必須零擾動（編輯前後恆 3）"
+    );
+    let after = body_marker_min_y(&e, 1, "正文填充");
     assert!(
         after > first_before + 10.0,
         "頁首增高後 p1 正文首行必須隨之推下：修前 {first_before} → 修後 {after}"
@@ -505,7 +534,7 @@ fn k29d_lamp2_header_text_routes_to_header_part_only() {
         !texts_with(&r, 1, "頁首覆核字串").is_empty(),
         "重開後頁首文字保留"
     );
-    let ra = first_body_y(&r, 1);
+    let ra = body_marker_min_y(&r, 1, "正文填充");
     assert!(
         (ra - after).abs() < 0.01,
         "重開後正文首行 y 必須與編輯態一致：{after} vs {ra}"
@@ -586,13 +615,24 @@ fn k29d_lamp2_configure_slots_minimal_touch() {
     })
     .expect("M6.3 停 titlePg 失敗");
     settle(&mut e);
+    // 反向：停 titlePg 同樣只碰 document.xml。PM 裁決（11-12）第 3 項查語意結論：
+    // on→off 淨零變動 ⇒ Slice 1 主幹「touched 自動退場」紀律（k29a 紅燈 3 同口徑）
+    // 使該 part 退出白名單、存檔回到原檔——停態 whitelisted_changed 正解是空集合，
+    // 原斷言把「碰過」與「最終內容不同」混為一談，屬考卷口徑錯誤，在此修正；
+    // 「off 真的移除旗標」由上方 !doc.contains 斷言獨立鎖住，不靠觸碰面背書。
     let doc = String::from_utf8(e.part("word/document.xml").expect("document.xml").to_vec())
         .expect("UTF-8");
     assert!(
         !doc.contains("<w:titlePg"),
         "停 titlePg 必須移除 <w:titlePg/>"
     );
-    assert_touch_face(&e, &["word/document.xml"], "紅燈 2 停 titlePg");
+    assert_touch_face(&e, &[], "紅燈 2 停 titlePg（淨零變動退場）");
+    let diff_off = e.roundtrip_check().expect("roundtrip_check 失敗");
+    assert!(
+        diff_off.byte_identical,
+        "on→off 淨零變動存檔必須 byte_identical，殘留 {:?}",
+        diff_off.whitelisted_changed
+    );
 
     // (ii) 啟 evenAndOddHeaders：僅碰 word/settings.xml（正文零失真）。
     let mut e2 = open("corpus/poi/test-data_document_Bug51170.docx");
@@ -605,9 +645,8 @@ fn k29d_lamp2_configure_slots_minimal_touch() {
     })
     .expect("M6.3 啟奇偶頁失敗");
     settle(&mut e2);
-    let settings =
-        String::from_utf8(e2.part("word/settings.xml").expect("settings.xml").to_vec())
-            .expect("UTF-8");
+    let settings = String::from_utf8(e2.part("word/settings.xml").expect("settings.xml").to_vec())
+        .expect("UTF-8");
     assert!(
         settings.contains("<w:evenAndOddHeaders"),
         "evenAndOddHeaders 必須落地 settings.xml"
@@ -634,7 +673,10 @@ fn k29d_lamp2_configure_slots_minimal_touch() {
     names.sort();
     assert_eq!(
         names,
-        vec!["word/header1.xml".to_string(), "word/header2.xml".to_string()],
+        vec![
+            "word/header1.xml".to_string(),
+            "word/header2.xml".to_string()
+        ],
         "新建 even 頁首必須落為最小空號 word/header2.xml（既有 header1.xml 之後）"
     );
     let doc3 = String::from_utf8(e3.part("word/document.xml").expect("document.xml").to_vec())
@@ -653,9 +695,12 @@ fn k29d_lamp2_configure_slots_minimal_touch() {
         rels3.contains("header2.xml"),
         "新 part 必須註冊進 word/_rels/document.xml.rels"
     );
-    let ct3 =
-        String::from_utf8(e3.part("[Content_Types].xml").expect("[Content_Types].xml").to_vec())
-            .expect("UTF-8");
+    let ct3 = String::from_utf8(
+        e3.part("[Content_Types].xml")
+            .expect("[Content_Types].xml")
+            .to_vec(),
+    )
+    .expect("UTF-8");
     assert!(
         ct3.contains("/word/header2.xml"),
         "新建 part 必須註冊進 [Content_Types].xml 的 Override"
@@ -748,10 +793,7 @@ fn k29d_lamp3_insert_note_anchors_to_footer_and_undoes_byte_identical() {
     // (1) InsertNote：正文錨點＋footnotes.xml 新註體（id 由引擎派發）。
     e.apply_mutation(Mutation::InsertNote {
         kind: NoteKind2::Footnote,
-        pos: DocPos {
-            para: host,
-            cp: 0,
-        },
+        pos: DocPos { para: host, cp: 0 },
         initial_text: String::new(),
     })
     .expect("M6.4 InsertNote 失敗");
@@ -869,10 +911,7 @@ fn k29d_lamp3_delete_note_and_protected_structure() {
             })
             .expect_err("系統分隔線註必須誠實拒絕刪除");
         assert!(
-            matches!(
-                err,
-                quire_engine::MutationError::ProtectedStructure { .. }
-            ),
+            matches!(err, quire_engine::MutationError::ProtectedStructure { .. }),
             "id={id} 的拒絕型別必須是 ProtectedStructure，實得 {err:?}"
         );
     }
@@ -899,9 +938,8 @@ fn k29d_lamp3_note_properties_go_through_settings_only() {
     })
     .expect("M6.4 SetNoteProperties 失敗");
     settle(&mut e);
-    let settings =
-        String::from_utf8(e.part("word/settings.xml").expect("settings.xml").to_vec())
-            .expect("UTF-8");
+    let settings = String::from_utf8(e.part("word/settings.xml").expect("settings.xml").to_vec())
+        .expect("UTF-8");
     assert!(
         settings.contains(r#"w:numFmt w:val="lowerRoman""#),
         "numFmt 必須寫入 settings.xml 的 w:footnotePr"
@@ -933,9 +971,8 @@ fn k29d_lamp3_note_properties_go_through_settings_only() {
     })
     .expect("M6.4 SetNoteProperties（尾註）失敗");
     settle(&mut e);
-    let settings =
-        String::from_utf8(e.part("word/settings.xml").expect("settings.xml").to_vec())
-            .expect("UTF-8");
+    let settings = String::from_utf8(e.part("word/settings.xml").expect("settings.xml").to_vec())
+        .expect("UTF-8");
     let end_block = settings
         .split("<w:endnotePr")
         .nth(1)
@@ -962,7 +999,10 @@ fn k29d_lamp3_note_properties_go_through_settings_only() {
     let r = reopen(&e);
     let rs = String::from_utf8(r.part("word/settings.xml").expect("settings.xml").to_vec())
         .expect("UTF-8");
-    assert!(rs.contains(r#"w:numFmt w:val="lowerRoman""#), "重開後設定保留");
+    assert!(
+        rs.contains(r#"w:numFmt w:val="lowerRoman""#),
+        "重開後設定保留"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,12 +1046,24 @@ fn k29d_lamp4_insert_section_break_keeps_four_index_sets_in_sync() {
         "分節符必須落在目標段的 <w:pPr><w:sectPr>，實得 {host_p}"
     );
 
-    // 節數 1→2：para_sec 出現第 1 節 id，長度仍＝段落數；段落索引零位移。
+    // 節數 1→2：para_sec 出現第 1 節 id；段落數 base+1（PM 裁決 11-12：插分節符
+    // 採「新增宿主页」口徑——python-docx add_section() 生態慣例即新增承載段，
+    // 掛既有段會讓無辜段落悄然變成節收束點，編輯 API 非破壞性優先。斷言口徑
+    // 同步改為「插入後 para_sec 長度＝插入後段落數＝base+1」，實作零讓步）。
     let ids = sec_ids(&e);
-    assert_eq!(ids.len(), base, "para_sec 長度必須恆等於段落數");
-    assert_eq!(ids[0], 0, "分節符所在段仍屬第 0 節");
+    assert_eq!(
+        ids.len(),
+        base + 1,
+        "para_sec 長度必須恆等於插入後段落數（base+1）"
+    );
+    assert_eq!(
+        e.paragraph_count(),
+        base + 1,
+        "宿主段插入後段落數必須 base+1"
+    );
+    assert_eq!(ids[0], 0, "分節符所在宿主段仍屬第 0 節");
     assert!(
-        ids.iter().any(|id| *id == 1),
+        ids.contains(&1),
         "分節後其後段落必須歸第 1 節，實得 {ids:?}"
     );
     assert!(
@@ -1021,19 +1073,15 @@ fn k29d_lamp4_insert_section_break_keeps_four_index_sets_in_sync() {
     );
     assert_eq!(
         find_para(&e, "表格後段落"),
-        Some(12),
-        "段內 sectPr 不得增減段落，表後段落索引必須不動"
+        Some(13),
+        "宿主段插在第 0 段前：其後段落索引整體 +1（12→13），除此之外零額外位移"
     );
     assert_touch_face(&e, &["word/document.xml"], "紅燈 4 插分節符");
     assert_indices_in_sync(&e, "紅燈 4 插分節符");
 
     // 存檔重開：節邊界逐位保留。
     let r = reopen(&e);
-    assert_eq!(
-        sec_ids(&r),
-        ids,
-        "存檔重開後 para_sec 必須與編輯態逐位相同"
-    );
+    assert_eq!(sec_ids(&r), ids, "存檔重開後 para_sec 必須與編輯態逐位相同");
 
     // 刪除分節符：回單節、索引回穩。
     e.apply_mutation(Mutation::DeleteSectionBreak { section_id: 0 })
@@ -1071,10 +1119,7 @@ fn k29d_lamp4_delete_root_sectpr_is_refused() {
         .apply_mutation(Mutation::DeleteSectionBreak { section_id: 0 })
         .expect_err("根級 sectPr 的刪除必須誠實拒絕");
     assert!(
-        matches!(
-            err,
-            quire_engine::MutationError::ProtectedStructure { .. }
-        ),
+        matches!(err, quire_engine::MutationError::ProtectedStructure { .. }),
         "根 sectPr 拒絕型別必須是 ProtectedStructure，實得 {err:?}"
     );
     assert!(!e.can_undo(), "被拒絕的分節刪除不得留下 Undo 記錄");

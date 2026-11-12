@@ -138,7 +138,13 @@ impl Engine {
                 original_slice: old,
             });
             self.doc.set_part(&name, bytes);
-            self.touched.insert(name.clone(), ());
+            // touched 自動退場（Slice 1 主幹同口徑）：改完與開檔基線逐位相同 ⇒
+            // 退出白名單（淨零變動誠實回報 byte_identical，不虛報觸碰面）。
+            if self.doc.parts.get(&name) == self.part_baselines.get(&name) {
+                self.touched.remove(&name);
+            } else {
+                self.touched.insert(name.clone(), ());
+            }
             touched_parts.push(name);
         }
         for (name, bytes) in additions {
@@ -186,7 +192,9 @@ fn rejected(detail: impl Into<String>) -> MutationError {
 }
 
 fn part_text(engine: &Engine, name: &str) -> Result<String, MutationError> {
-    let bytes = engine.part(name).ok_or_else(|| rejected(format!("找不到 {name}")))?;
+    let bytes = engine
+        .part(name)
+        .ok_or_else(|| rejected(format!("找不到 {name}")))?;
     std::str::from_utf8(bytes)
         .map(str::to_string)
         .map_err(|_| rejected(format!("{name} 明文非合法 UTF-8")))
@@ -229,11 +237,6 @@ fn all_sectprs(text: &str) -> Vec<(usize, usize)> {
         cursor = e;
     }
     out
-}
-
-/// 除錯鉤（交付前移除）：直接暴露 locate_element 結果供考卷探測。
-pub(crate) fn dbg_locate(text: &str, name: &str) -> Option<(usize, usize)> {
-    locate_element(text, name, 0)
 }
 
 /// 從標籤字串取屬性值。
@@ -338,19 +341,24 @@ fn pt_to_twip(pt: f32) -> i64 {
 fn para_spans(xml: &str) -> Vec<ParagraphSpan> {
     let mut out = Vec::new();
     let bytes = xml.as_bytes();
-    loop {
-        match find_paragraph_span(bytes, out.len()) {
-            Ok((span, _)) => out.push(span),
-            Err(_) => break,
-        }
+    while let Ok((span, _)) = find_paragraph_span(bytes, out.len()) {
+        out.push(span);
     }
     out
 }
 
-/// 包住 `offset` 的 `<w:r>` 元素區間（同層不嵌套前提）。
+/// 包住 `offset` 的 `<w:r>` 元素區間（同層不嵌套前提）。開標籤有兩種字面
+/// （`<w:r>`／`<w:r attrs…>`）：兩者都要查，單邊 None 不得短路成解析失敗——
+/// hf_table_header.docx 的 footer1.xml 首段全是無屬性 `<w:r>`，舊寫法用 `?` 吃
+/// `<w:r ` 會把整段判成「首 run 解析失敗」。
 fn enclosing_run(text: &str, offset: usize) -> Option<(usize, usize)> {
     let head = &text[..offset];
-    let open = head.rfind("<w:r>")?.max(head.rfind("<w:r ")?);
+    let open = match (head.rfind("<w:r>"), head.rfind("<w:r ")) {
+        (Some(a), Some(b)) => a.max(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return None,
+    };
     let close_rel = text[offset..].find("</w:r>")?;
     Some((open, offset + close_rel + "</w:r>".len()))
 }
@@ -373,8 +381,8 @@ fn leading_rpr(inner: &str) -> String {
 
 /// `<w:t>` 標籤生成（首尾空白自動 preserve，主幹 make_text_tag 同口徑）。
 fn make_text_tag(text: &str) -> String {
-    let needs_preserve =
-        text.chars().next().is_some_and(|c| c == ' ') || text.chars().last().is_some_and(|c| c == ' ');
+    let needs_preserve = text.chars().next().is_some_and(|c| c == ' ')
+        || text.chars().last().is_some_and(|c| c == ' ');
     if needs_preserve {
         format!(r#"<w:t xml:space="preserve">{}</w:t>"#, xml_escape(text))
     } else {
@@ -425,21 +433,20 @@ impl Engine {
         let doc = part_text(self, DOC)?;
         let sects = all_sectprs(&doc);
         let (mut seg, seg_span) = if sects.is_empty() {
-            // 無 sectPr 文檔：僅第 0 節可寫（合成件），其餘誠實拒絕。
+            // 無 sectPr 文檔：僅第 0 節可寫（合成件），其餘誠實拒絕。PM 裁決（11-12）：
+            // 查無節 id 一律 SubDocNotFound（設計書口徑），detail 不改變型別。
             if section_id != 0 {
-                return Err(rejected(format!(
-                    "本檔無任何 <w:sectPr>，查無 section_id={section_id}"
-                )));
+                return Err(MutationError::SubDocNotFound {
+                    target: unknown_section_target(section_id),
+                });
             }
             let synth = synthesized_sectpr(self);
-            eprintln!("TRACE_SYNTH=[{synth}]");
             (synth, None)
         } else {
             let Some(&(s, e)) = sects.get(section_id as usize) else {
-                return Err(rejected(format!(
-                    "查無 section_id={section_id}（本檔共 {} 節）",
-                    sects.len()
-                )));
+                return Err(MutationError::SubDocNotFound {
+                    target: unknown_section_target(section_id),
+                });
             };
             (doc[s..e].to_string(), Some((s, e)))
         };
@@ -515,10 +522,10 @@ impl Engine {
                 .map(|(h, _)| h.trim_end().trim_end_matches('/').to_string())
                 .ok_or_else(|| rejected("<w:cols> 開標籤解析失敗"))?;
             if cols.num > 1 {
-                let col_w =
-                    ((body_w - space_twip as f64 * (cols.num as f64 - 1.0)) / cols.num as f64)
-                        .max(1.0)
-                        .round();
+                let col_w = ((body_w - space_twip as f64 * (cols.num as f64 - 1.0))
+                    / cols.num as f64)
+                    .max(1.0)
+                    .round();
                 let mut inner = String::new();
                 for _ in 0..cols.num {
                     inner.push_str(&format!(r#"<w:col w:w="{col_w}" w:space="{space_twip}"/>"#));
@@ -623,12 +630,10 @@ impl Engine {
     ) -> Result<MutationOutcome, MutationError> {
         let doc = part_text(self, DOC)?;
         let spans = para_spans(&doc);
-        let sp = spans
-            .get(para)
-            .ok_or(MutationError::ParagraphOutOfBounds {
-                para,
-                len: spans.len(),
-            })?;
+        let sp = spans.get(para).ok_or(MutationError::ParagraphOutOfBounds {
+            para,
+            len: spans.len(),
+        })?;
         let sects = all_sectprs(&doc);
         if sects.is_empty() {
             return Err(rejected(
@@ -662,7 +667,10 @@ impl Engine {
             let mut sect = out[bs..be].to_string();
             strip_element_all(&mut sect, "w:type");
             let gt = sect.find('>').expect("sectPr 必含 '>'") + 1;
-            sect.replace_range(gt..gt, &format!(r#"<w:type w:val="{}"/>"#, start_kind_oxml(kind)));
+            sect.replace_range(
+                gt..gt,
+                &format!(r#"<w:type w:val="{}"/>"#, start_kind_oxml(kind)),
+            );
             out.replace_range(bs..be, &sect);
         }
         self.commit_k29d(op, vec![(DOC.to_string(), out.into_bytes())], vec![])
@@ -690,7 +698,7 @@ impl Engine {
                 reason: format!(
                     "section_id={section_id} 非段落級分節符（根級 body 尾 sectPr ECMA 必存，不準刪）"
                 ),
-            })
+            });
         };
         // 宿主段落拆掉 sectPr 後若殘留為空段 ⇒ 整段移除（與插分節互為逆、索引回穩）；
         // 有內容的段 ⇒ 只拆 sectPr（段落保留、索引零位移）。
@@ -715,7 +723,8 @@ impl Engine {
             remove_whole = inner.is_empty()
                 || inner == "<w:pPr></w:pPr>"
                 || inner == "<w:pPr/>"
-                || inner.starts_with("<w:pPr></w:pPr>") && inner["<w:pPr></w:pPr>".len()..].trim().is_empty();
+                || inner.starts_with("<w:pPr></w:pPr>")
+                    && inner["<w:pPr></w:pPr>".len()..].trim().is_empty();
         }
         if remove_whole {
             if let Some(sp) = host {
@@ -741,7 +750,9 @@ impl Engine {
         slot_bind: Option<(HfKind, HfSlotKind, HfBindAction)>,
     ) -> Result<MutationOutcome, MutationError> {
         if title_pg.is_none() && even_odd.is_none() && slot_bind.is_none() {
-            return Err(rejected("ConfigureHeaderFooterSlot 三態皆 None，拒絕 no-op"));
+            return Err(rejected(
+                "ConfigureHeaderFooterSlot 三態皆 None，拒絕 no-op",
+            ));
         }
         let mut updates: Vec<(String, Vec<u8>)> = Vec::new();
         let mut additions: Vec<(String, Vec<u8>)> = Vec::new();
@@ -803,7 +814,9 @@ impl Engine {
                         }
                     }
                     if cuts.is_empty() {
-                        return Err(rejected(format!("查無 {elem} w:type=\"{ty}\" 綁定，無需解除")));
+                        return Err(rejected(format!(
+                            "查無 {elem} w:type=\"{ty}\" 綁定，無需解除"
+                        )));
                     }
                     for (es, ee) in cuts.into_iter().rev() {
                         sect.replace_range(es..ee, "");
@@ -872,7 +885,12 @@ impl Engine {
                         updates.push((CONTENT_TYPES.to_string(), ct.into_bytes()));
                     }
                     // 4) sectPr 綁 reference（群組內維持 default→first→even 序）
-                    insert_ref_by_order(&mut sect, elem, ty, &format!(r#"<{elem} w:type="{ty}" r:id="{rid}"/>"#));
+                    insert_ref_by_order(
+                        &mut sect,
+                        elem,
+                        ty,
+                        &format!(r#"<{elem} w:type="{ty}" r:id="{rid}"/>"#),
+                    );
                     doc.replace_range(sect_s..sect_e, &sect);
                     updates.push((DOC.to_string(), doc.into_bytes()));
                 }
@@ -1026,7 +1044,8 @@ fn resolve_hf_part_exact(
             .unwrap_or("default")
             == want
         {
-            let rid = attr_of(&sect_xml[s..e], "r:id").ok_or_else(|| rejected("reference 缺 r:id"))?;
+            let rid =
+                attr_of(&sect_xml[s..e], "r:id").ok_or_else(|| rejected("reference 缺 r:id"))?;
             return rel_target(engine, &rid)
                 .ok_or_else(|| rejected("reference 的 r:id 查無 rels 對應"));
         }
@@ -1034,6 +1053,16 @@ fn resolve_hf_part_exact(
     Err(MutationError::SubDocNotFound {
         target: target_for(kind, slot),
     })
+}
+
+/// 查無節 id 時的拒絕承載體（PM 裁決 11-12：未知節 id 一律 `SubDocNotFound`；
+/// `SubDocTarget` 沒有「裸節 id」變體，借 Header/Default 當診斷承載，型別正確性
+/// 重於承載體美化，detail 訊息不進錯誤型別）。
+fn unknown_section_target(section_id: u32) -> SubDocTarget {
+    SubDocTarget::Header {
+        section_id,
+        slot: HfSlotKind::Default,
+    }
 }
 
 fn target_for(kind: HfKind, slot: HfSlotKind) -> SubDocTarget {
@@ -1095,10 +1124,7 @@ fn note_element(xml: &str, kind: NoteKind2, note_id: i32) -> Option<(usize, usiz
     let mut cursor = 0usize;
     while let Some((s, e)) = locate_element(xml, tag, cursor) {
         cursor = e;
-        if attr_of(&xml[s..e], "w:id")
-            .and_then(|v| v.trim().parse::<i32>().ok())
-            == Some(note_id)
-        {
+        if attr_of(&xml[s..e], "w:id").and_then(|v| v.trim().parse::<i32>().ok()) == Some(note_id) {
             return Some((s, e));
         }
     }
@@ -1145,7 +1171,8 @@ impl Engine {
         let mut cursor = 0usize;
         while let Some((s, e)) = locate_element(&notes, tag, cursor) {
             cursor = e;
-            if let Some(id) = attr_of(&notes[s..e], "w:id").and_then(|v| v.trim().parse::<i32>().ok())
+            if let Some(id) =
+                attr_of(&notes[s..e], "w:id").and_then(|v| v.trim().parse::<i32>().ok())
             {
                 max_id = max_id.max(id);
             }
@@ -1153,11 +1180,12 @@ impl Engine {
         let new_id = max_id + 1;
 
         // 正文錨點：cp 所在 run 之前（cp 在節點首）／之後（節點末）／run 中部拆 run。
-        let (span, _) = find_paragraph_span(doc.as_bytes(), pos.para)
-            .map_err(|_| MutationError::ParagraphOutOfBounds {
+        let (span, _) = find_paragraph_span(doc.as_bytes(), pos.para).map_err(|_| {
+            MutationError::ParagraphOutOfBounds {
                 para: pos.para,
                 len: 0,
-            })?;
+            }
+        })?;
         let analysis = analyze_paragraph(doc.as_bytes(), span);
         let ref_run = format!(r#"<w:r><{ref_elem} w:id="{new_id}"/></w:r>"#);
         let mut out = doc.clone();
@@ -1199,7 +1227,9 @@ impl Engine {
             }
             None => {
                 // 空段或純非文字段：pPr 之後（或 p 開標籤後）插引用 run
-                let at = analysis.ppr_end_offset.unwrap_or(analysis.p_open_end_offset);
+                let at = analysis
+                    .ppr_end_offset
+                    .unwrap_or(analysis.p_open_end_offset);
                 out.replace_range(at..at, &ref_run);
             }
         }
@@ -1346,13 +1376,20 @@ impl Engine {
             children.push_str(&format!(r#"<w:numStart w:val="{start}"/>"#));
         }
         if let Some(restart) = patch.num_restart {
-            children.push_str(&format!(r#"<w:numRestart w:val="{}"/>"#, restart_oxml(restart)));
+            children.push_str(&format!(
+                r#"<w:numRestart w:val="{}"/>"#,
+                restart_oxml(restart)
+            ));
         }
         // ECMA §17.11.13 子元素序：numFmt→numStart→numRestart 置于節點首。
         let gt = sect.find('>').expect("剛定位必含 '>'") + 1;
         sect.replace_range(gt..gt, &children);
         settings.replace_range(ps..pe, &sect);
-        self.commit_k29d(op, vec![(SETTINGS.to_string(), settings.into_bytes())], vec![])
+        self.commit_k29d(
+            op,
+            vec![(SETTINGS.to_string(), settings.into_bytes())],
+            vec![],
+        )
     }
 }
 
@@ -1373,7 +1410,11 @@ fn subdoc_slice(
                 _ => NoteKind2::Endnote,
             };
             let (s, e) = note_element(xml, kind, *note_id).expect("上游已守門");
-            Ok((xml[s..e].to_string(), xml[..s].to_string(), xml[e..].to_string()))
+            Ok((
+                xml[s..e].to_string(),
+                xml[..s].to_string(),
+                xml[e..].to_string(),
+            ))
         }
         _ => Ok((xml.to_string(), String::new(), String::new())),
     }
@@ -1384,12 +1425,10 @@ fn subdoc_para(
     para: usize,
 ) -> Result<(ParagraphSpan, crate::mutation::ParagraphAnalysis), MutationError> {
     let spans = para_spans(slice);
-    let sp = *spans
-        .get(para)
-        .ok_or(MutationError::ParagraphOutOfBounds {
-            para,
-            len: spans.len(),
-        })?;
+    let sp = *spans.get(para).ok_or(MutationError::ParagraphOutOfBounds {
+        para,
+        len: spans.len(),
+    })?;
     Ok((sp, analyze_paragraph(slice.as_bytes(), sp)))
 }
 
@@ -1408,20 +1447,19 @@ impl Engine {
         let part = resolve_subdoc_part(self, target)?;
         let xml = part_text(self, &part)?;
         let (slice, prefix, suffix) = subdoc_slice(&xml, target)?;
-        let (sp, analysis) = subdoc_para(&slice, para)?;
+        let (_sp, analysis) = subdoc_para(&slice, para)?;
         let cp = cp.min(analysis.total_cp);
         let inject_run = format!(r#"<w:r>{}</w:r>"#, make_text_tag(text));
         let mut out = slice.clone();
-        // 注入點三式：節點中部拆 run／cp=0 插首 run 之前／段尾插 `</w:p>` 之前。
+        // 注入點兩式：節點中部拆 run／cp=0（含段尾）一律插段落起點（pPr 之後）。
+        // cp=0 走段首而非「首 run 之前」的取捨（K29d 探針實據）：hf_table_header
+        // 的 footer1.xml 首段是 fldChar 複雜欄，插進 begin～end 之間的結果 run 前
+        // 會被欄位標記波及——代換層把新 run 一併覆寫成頁碼（「頁尾覆核」變「2」）。
+        // 段首注入在欄位結構之外，Word 游標段首語意一致且零欄位污染。
         let mid = analysis
             .text_nodes
             .iter()
             .find(|n| n.start_cp < cp && cp < n.end_cp && n.run_span.is_some());
-        let head = if mid.is_none() && cp == 0 {
-            analysis.text_nodes.iter().find(|n| n.run_span.is_some())
-        } else {
-            None
-        };
         if let Some(n) = mid {
             let run = enclosing_run(&slice, n.node_span.start)
                 .ok_or_else(|| rejected("run 區間解析失敗"))?;
@@ -1447,12 +1485,12 @@ impl Engine {
                 make_text_tag(&right),
             );
             out.replace_range(run.0..run.1, &replacement);
-        } else if let Some(n) = head {
-            let run = enclosing_run(&slice, n.node_span.start)
-                .ok_or_else(|| rejected("首 run 解析失敗"))?;
-            out.replace_range(run.0..run.0, &inject_run);
         } else {
-            let at = p_close_offset(&slice, sp);
+            // cp=0（或整段無可拆文字節點）：插段落起點＝pPr 之後（無 pPr 則 p 開
+            // 標籤之後）。此位置在 fldChar 欄位 begin 之前／段內欄位結構之外。
+            let at = analysis
+                .ppr_end_offset
+                .unwrap_or(analysis.p_open_end_offset);
             out.replace_range(at..at, &inject_run);
         }
         let final_xml = format!("{prefix}{out}{suffix}");
@@ -1498,22 +1536,11 @@ impl Engine {
             let chars: Vec<char> = n.unescaped.chars().collect();
             let mut kept: String = chars[..a - n.start_cp].iter().collect();
             kept.extend(chars[b - n.start_cp..].iter());
-            out.replace_range(
-                n.text_span.start..n.text_span.end,
-                &xml_escape(&kept),
-            );
+            out.replace_range(n.text_span.start..n.text_span.end, &xml_escape(&kept));
         }
         let final_xml = format!("{prefix}{out}{suffix}");
         self.commit_k29d(op, vec![(part, final_xml.into_bytes())], vec![])
     }
-}
-
-/// 段落 span 內 `</w:p>` 起點（段尾注入點）。
-fn p_close_offset(slice: &str, sp: ParagraphSpan) -> usize {
-    slice[sp.start..sp.end]
-        .rfind("</w:p>")
-        .map(|rel| sp.start + rel)
-        .unwrap_or(sp.end)
 }
 
 #[cfg(test)]

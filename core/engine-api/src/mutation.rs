@@ -404,10 +404,7 @@ pub enum Mutation {
         patch: SectionPropsPatch,
     },
     /// M6.2 在 `para` 段之前插入分節符（段內 `<w:pPr><w:sectPr>`，ECMA-376 §17.2.3）。
-    InsertSectionBreak {
-        para: usize,
-        kind: SectionStartKind,
-    },
+    InsertSectionBreak { para: usize, kind: SectionStartKind },
     /// M6.2 刪除第 `section_id` 節的分節符（根級 body 尾 sectPr 誠實拒絕）。
     DeleteSectionBreak { section_id: u32 },
     /// M6.3 頁首頁尾 slot 三態設定（titlePg／奇偶頁開關／綁定動作；設計書 §2.2.5）。
@@ -541,7 +538,10 @@ pub struct NotePropsPatch {
 impl NotePropsPatch {
     /// 全空 patch（拒絕 no-op 用）。
     pub fn is_empty(&self) -> bool {
-        self.num_fmt.is_none() && self.num_restart.is_none() && self.num_start.is_none() && self.pos.is_none()
+        self.num_fmt.is_none()
+            && self.num_restart.is_none()
+            && self.num_start.is_none()
+            && self.pos.is_none()
     }
 }
 
