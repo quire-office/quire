@@ -75,7 +75,8 @@ export const GROUPS = {
  */
 export const DEPENDENCY_MAP = {
   'live': { name: '既有能力', desc: '外殼或當前引擎直接支援' },
-  'pending:K29a': { name: 'K29a 基礎編輯與格式化', desc: '文字輸入、字型、粗斜底線、色彩、段落對齊、清單與剪貼簿' },
+  'pending:K29b': { name: 'K29b 段落拆併與樣式', desc: '字型、粗斜底線、色彩、段落對齊、清單編號（引擎切片開發中）' },
+  'pending:shell': { name: '外殼功能待接線', desc: '剪貼簿、尋找取代等外殼自身功能（開發中）' },
   'pending:K29b': { name: 'K29b 物件與插入引擎', desc: '表格、圖片、圖形、SmartArt、文字方塊、頁首頁尾與符號' },
   'pending:K29c': { name: 'K29c 版面與樣式系統', desc: '主題、樣式庫、邊界、紙張方向、分欄、背景浮水印與繞排' },
   'pending:K29d': { name: 'K29d 校對與審閱協同', desc: '拼寫檢查、同義字、字數統計、翻譯、批註、修訂追蹤與保護' },
