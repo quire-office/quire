@@ -30,6 +30,7 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 
 use crate::objects::{self, OdfObjectText};
+use crate::ws::{self, TextSink, TextStream};
 use crate::{OdfBundle, OdfError};
 
 /// layout 層型別再匯出：殼層（quire-cli）經本 crate 取用，不直接 import
@@ -598,21 +599,53 @@ fn attr_value_str(v: &[u8]) -> String {
 // 段落走查（段落流＋runs）
 // ---------------------------------------------------------------------------
 
-/// 進行中的段落上下文。
+// ---------------------------------------------------------------------------
+// XML 格式化空白正規化：實作已抽至共用作業模組 `crate::ws`（卡 t_4006056b
+// 雙走查器口徑對齊）。以下 re-export 是**薄包裝**：既有外部路徑
+// （`layout_glue::normalize_xml_text` 等，考卷 `odf_xml_whitespace_policy`
+// 燈 1 直接打它）逐字不動。本檔不再持有任何一份正規化/gap 實作——
+// `body.rs` 與下方 `walk_paragraphs` 同吃 `ws::emit_text_node`＋
+// `TextStream` 的 pending_gap 狀態機（單一實作，嚴禁複製貼上第二份）。
+// 語義管轄在 t_ae9a9f22／t_2a983570 的已定案契約，搬移零改寫；
+// `ParaCtx` 只保留 layout 側的 run 樣式帳。
+// ---------------------------------------------------------------------------
+pub use crate::ws::{
+    buggy_no_whitespace_normalize, is_xml_space, normalize_xml_text, normalize_xml_text_with_edge,
+    EdgeInfo,
+};
+
+/// 進行中的段落上下文：文字流與 pending_gap 語義由共用的 [`TextStream`] 承載
+/// （卡 t_4006056b——`body.rs` 走查器吃同一實作），本結構只疊 layout 側的
+/// **run 樣式帳**（`(字級, 粗體)` 斷點合併）。
 #[derive(Debug, Clone)]
 struct ParaCtx {
-    text: String,
+    stream: TextStream,
     runs: Vec<(CpRange, f32, bool)>,
     /// 段落自身樣式的代表字級/字重（零文字段的代表 run）。
     own: (f32, bool),
 }
 
 impl ParaCtx {
-    /// 追加文字並按當前樣式開/續 run（相鄰同字級同字重合併）。
+    /// 建一段全新上下文（欄位初值集中一處，三處建站點不再各自展開）。
+    fn new(own: (f32, bool)) -> Self {
+        ParaCtx {
+            stream: TextStream::new(),
+            runs: Vec::new(),
+            own,
+        }
+    }
+
+    /// 追加文字並按當前樣式開/續 run（相鄰同字級同字重合併）。碼點起訖取自
+    /// `TextStream::push_raw` 的碼點快取，不逐次全掃（O(L²) 熱點，卡 t_2a983570
+    /// 順車修）。
     fn push_str(&mut self, s: &str, style: (f32, bool)) {
-        let from = self.text.chars().count();
-        self.text.push_str(s);
-        let to = self.text.chars().count();
+        let (from, to) = self.stream.push_raw(s);
+        self.push_range((from, to), style);
+    }
+
+    /// 為**已入文**的碼點區間開/續 run（`flush_gap` 落地的空格走這條——空格由
+    /// `TextStream` 推入，run 帳在本側補）。
+    fn push_range(&mut self, (from, to): CpRange, style: (f32, bool)) {
         if let Some(last) = self.runs.last_mut() {
             if last.0 .1 == from && last.1 == style.0 && last.2 == style.1 {
                 last.0 .1 = to;
@@ -622,6 +655,21 @@ impl ParaCtx {
         self.runs.push(((from, to), style.0, style.1));
     }
 
+    /// 顯式空白元素（`text:s`／`text:tab`／`text:line-break`）：顯式元素是權威
+    /// 空白來源，其周圍的格式化縮排屬噪音 ⇒ 待發空格直接放棄，不疊加
+    /// （`TextStream::push_explicit` 同款語義，差別只在 run 帳要記在本側）。
+    fn push_explicit(&mut self, s: &str, style: (f32, bool)) {
+        self.stream.drop_gap();
+        self.push_str(s, style);
+    }
+
+    /// 實體引用（GeneralRef）解析值：是**正文字元**（如 `&nbsp;` → NBSP），
+    /// 不經正規化，但要先刷掉節點間待發空格（t_2a983570 燈 10 口徑）。發射
+    /// 路徑直接複用 `TextSink::sink_push_content`（刷 gap＋推入），不另寫一份。
+    fn push_entity(&mut self, s: &str, style: (f32, bool)) {
+        TextSink::sink_push_content(self, s, style);
+    }
+
     fn finish(self) -> OdfLayoutParagraph {
         let mut runs = self.runs;
         if runs.is_empty() {
@@ -629,9 +677,28 @@ impl ParaCtx {
             runs.push(((0, 0), self.own.0, self.own.1));
         }
         OdfLayoutParagraph {
-            text: self.text,
+            text: self.stream.into_text(),
             runs,
         }
+    }
+}
+
+/// 共用發射器實作（卡 t_4006056b）：`ws::emit_text_node` 經這兩條方法把文字節點
+/// 打進本上下文——gap 記帳落 `TextStream`，run 開窗留本側。
+impl TextSink for ParaCtx {
+    #[inline]
+    fn sink_arm_gap(&mut self) {
+        self.stream.arm_gap();
+    }
+
+    #[inline]
+    fn sink_push_content(&mut self, s: &str, style: (f32, bool)) {
+        // 正規化後的內容節點：先刷待發空格（可能落地成一個空格 run），再推入
+        // （呼叫端保證 `s` 非純空白）。順序是 t_2a983570 的契約，不可顛倒。
+        if let Some(range) = self.stream.flush_gap() {
+            self.push_range(range, style);
+        }
+        self.push_str(s, style);
     }
 }
 
@@ -661,6 +728,9 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
     let mut text_p_count = 0usize;
     let mut text_h_count = 0usize;
     let mut total_text_len = 0usize;
+    // 回塞旗標於走查進入時讀一次存區域變數：現況每個文字節點讀一次 env ⇒
+    // 數萬節點＝數萬次全域 env 鎖（卡 t_2a983570 順車效能項）。
+    let buggy = buggy_no_whitespace_normalize();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -686,20 +756,12 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     text_p_count += 1;
                     let own = resolve_style_of(&e, book);
                     style_stack.push(own);
-                    p_stack.push(ParaCtx {
-                        text: String::new(),
-                        runs: Vec::new(),
-                        own,
-                    });
+                    p_stack.push(ParaCtx::new(own));
                 } else if is_text_h(name) {
                     text_h_count += 1;
                     let own = resolve_style_of(&e, book);
                     style_stack.push(own);
-                    p_stack.push(ParaCtx {
-                        text: String::new(),
-                        runs: Vec::new(),
-                        own,
-                    });
+                    p_stack.push(ParaCtx::new(own));
                 } else if is_span_like(name) {
                     let inherit = *style_stack.last().unwrap_or(&default_style);
                     style_stack.push(span_style_of(&e, book, inherit));
@@ -709,10 +771,10 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     match name {
                         b"text:s" | b"s" => {
                             let spaces = " ".repeat(parse_space_count(&e));
-                            cur.push_str(&spaces, style);
+                            cur.push_explicit(&spaces, style);
                         }
-                        b"text:tab" | b"tab" => cur.push_str("\t", style),
-                        b"text:line-break" | b"line-break" => cur.push_str("\n", style),
+                        b"text:tab" | b"tab" => cur.push_explicit("\t", style),
+                        b"text:line-break" | b"line-break" => cur.push_explicit("\n", style),
                         _ => {}
                     }
                 }
@@ -735,11 +797,7 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                         text_h_count += 1;
                     }
                     let own = resolve_style_of(&e, book);
-                    let ctx = ParaCtx {
-                        text: String::new(),
-                        runs: Vec::new(),
-                        own,
-                    };
+                    let ctx = ParaCtx::new(own);
                     let para = ctx.finish();
                     total_text_len += para.text.chars().count();
                     paragraphs.push(para);
@@ -749,10 +807,10 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     match name {
                         b"text:s" | b"s" => {
                             let spaces = " ".repeat(parse_space_count(&e));
-                            cur.push_str(&spaces, style);
+                            cur.push_explicit(&spaces, style);
                         }
-                        b"text:tab" | b"tab" => cur.push_str("\t", style),
-                        b"text:line-break" | b"line-break" => cur.push_str("\n", style),
+                        b"text:tab" | b"tab" => cur.push_explicit("\t", style),
+                        b"text:line-break" | b"line-break" => cur.push_explicit("\n", style),
                         _ => {}
                     }
                 }
@@ -766,7 +824,42 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                                 .map_err(|e| e.to_string())
                         }) {
                             let style = *style_stack.last().unwrap_or(&default_style);
-                            cur.push_str(&unescaped, style);
+                            // XML 格式化空白剝除（本卡契約）：正規化＋邊界記帳。
+                            // * 正規化後為空＝整節點純格式化空白 → 只掛「節點間單空格」。
+                            // * `EdgeInfo` 任一旗標＝該節點首／尾的格式化空白被剷除
+                            //   （卡 t_2a983570 返修）→ 同一套 pending_gap 記帳，否則
+                            //   相鄰節點文字黏連（`甲`＋尾縮排＋`乙` ⇒ `甲乙`）。
+                            // * 首端記帳要在推入**之前**掛（flush_gap 於推入前落地），
+                            //   尾端記帳在推入**之後**掛（留給下一節點刷）。
+                            // * 純空格節點（無 CR／LF／TAB）不折疊、原樣入文。
+                            // 回塞態（`ODF_WS_BUGGY`）走零正規化舊路徑，供燈 6 鑑別。
+                            if buggy {
+                                cur.push_str(&unescaped, style);
+                            } else {
+                                // 共用發射路徑（卡 t_4006056b）：正規化＋邊界記帳
+                                // ＋pending_gap 記帳與 `body.rs` 同一實作
+                                // （`ws::emit_text_node`——首端記帳在推入前掛、
+                                // 正規化空節點只掛 gap、尾端記帳留給下一節點刷，
+                                // 順序契約見 `ws` 模組文件）。
+                                ws::emit_text_node(cur, &unescaped, style);
+                            }
+                        }
+                    }
+                }
+            }
+            // CDATA（quick-xml 0.41 起是獨立事件；卡 t_4006056b）：視同文字節點
+            // 走與 `body.rs` 同一條共發射路徑。CDATA 段本就是在 XML 裡保留原文
+            // 的容器，解析器不對其內容解實體 ⇒ **只 decode、不 unescape**，
+            // `<![CDATA[甲 <b> & 乙]]>` 必須原樣入文。修前落 `_ => {}` 靜默丟棄。
+            // 隱藏區段與替代文字跳過守則與 `Event::Text` 完全同形。
+            // 回塞態 `ODF_WS_BUGGY` 的零正規化臂不擴及 CData：修前 CData 本就
+            // 整段丟棄，回塞態維持「CData 不入文」以如實反映卡前語料行為。
+            Ok(Event::CData(e)) if !in_hidden_section(&section_hidden_stack) => {
+                if alt_skip_depth == 0 && !buggy {
+                    if let Some(cur) = p_stack.last_mut() {
+                        if let Ok(raw) = e.decode().map(|d| d.into_owned()) {
+                            let style = *style_stack.last().unwrap_or(&default_style);
+                            ws::emit_text_node(cur, &raw, style);
                         }
                     }
                 }
@@ -776,7 +869,9 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     if let Some(cur) = p_stack.last_mut() {
                         let resolved = crate::body::resolve_general_ref(&e)?;
                         let style = *style_stack.last().unwrap_or(&default_style);
-                        cur.push_str(&resolved, style);
+                        // 實體引用值（如 `&nbsp;` → NBSP）是**正文字元**，不是格式化
+                        // 空白，一律原樣入文（不經正規化）。
+                        cur.push_entity(&resolved, style);
                     }
                 }
             }

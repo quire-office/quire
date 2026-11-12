@@ -18,6 +18,9 @@ mod manifest;
 mod objects;
 pub mod page_geometry;
 mod skeleton;
+/// 兩文字走查器（`body.rs`／`layout_glue.rs`）共用的空白正規化＋gap 狀態機
+/// （卡 t_4006056b：口徑對齊的單一實作處）。
+pub mod ws;
 
 pub use body::{BodyModel, OdfParagraph};
 pub use display::{

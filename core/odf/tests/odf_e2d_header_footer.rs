@@ -398,12 +398,25 @@ const CORPUS_PARAGRAPH_BASELINE: usize = 19_935;
 /// * 65_569＝前 run 臆測值，實為 strict.odt 附近量級的**單檔**數，非全庫和。
 /// * 593_902＝本卡動工前基線（CLI 全語料實測＝`docs/odf-e2a-redlight.md` §合計
 ///   表雙線鎖死），當時 main 尚未有 E2b／E2c。
-/// * **591_774＝現行值**：上游 `a0a2d82`（E2b 隱藏 section／E2c alt-text 抑制
+/// * 591_774＝上游 `a0a2d82`（E2b 隱藏 section／E2c alt-text 抑制
 ///   正文發射）合法扣掉 2_128 字。PM 零污染鐵證：分支態 vs main **逐檔逐位元組
 ///   相同**（57 檔差異檔數＝0），故本卡對宿主計數的貢獻嚴格為零——此欄更新只
 ///   反映上游合法演進，不稀釋「E2d 不動宿主計數」鐵律（段落數 19_935 逐位未動
 ///   即 ODF-C3 契約面同證）。
-const CORPUS_TOTAL_TEXT_BASELINE: usize = 591_774;
+/// * 591_699＝t_ae9a9f22（正文投影剝除 XML 格式化空白）合法扣掉 75 字，
+///   PM 裁可（2026-11-11）。PM 獨立覆核（merge-base `aa9d04b` base binary vs
+///   分支 HEAD `0b80261` 逐檔 A/B）：51 可比檔中 9 檔下降合計 −75、**零檔上升**，
+///   逐檔差值與卡面 comment 列表一致；段落數 19_935（48 檔口徑）逐位未動，
+///   即正規化只剝格式化空白、不動段落數，ODF-C3 契約面同證。
+/// * **591_763＝現行值**：t_2a983570（跨節點黏連返修：文字節點首／尾被剝除的
+///   格式化空白改記 pending_gap＋純空格節點不再折疊）合法回升 64 字，PM 裁可
+///   （2026-11-12）。PM 獨立覆核（merge-base `7c2c0a9` base binary vs 合併 tip
+///   `1a33f81` 逐檔 A/B，48 可比檔）：**8 檔上升合計 +64、零檔下降**（逐檔值：
+///   form_footnotes +25／drawing +17／bug65649 +12／tdf104061 +4／tdf152710 +2／
+///   tdf123705 +2／fdo78420 +1／checkboxes +1），與卡面 comment 八檔列表逐位一致；
+///   段落數 19_935（48 檔口徑）逐位未動。方向正確——被剝的邊界空白回歸成 gap
+///   空格、被誤折的純空格節點回歸第二個空格字形，兩者都是往 LO 真值靠攏。
+const CORPUS_TOTAL_TEXT_BASELINE: usize = 591_763;
 
 #[test]
 fn lamp6_host_counting_zero_regression() {

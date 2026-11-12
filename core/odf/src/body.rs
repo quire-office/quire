@@ -2,11 +2,16 @@
 //!
 //! 由 content.xml 抽取段落（<text:p>）與標題（<text:h>），
 //! 累積段落計數與純文字流長度，並與 survey.json 數字核對。
+//!
+//! 空白政策（卡 t_4006056b）：文字節點（含 `Event::CData`）一律經 `crate::ws`
+//! 的**共用**正規化＋gap 狀態機（與 `layout_glue::walk_paragraphs` 同一實作），
+//! 務求 `extract_body()` 與 `project()` 對同一檔產出逐字元一致的段落文字。
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
 use crate::manifest::Manifest;
+use crate::ws::{self, TextStream};
 use crate::OdfError;
 
 /// 內文段落最小模型
@@ -49,8 +54,14 @@ pub fn extract_body_from_bytes(
     let mut reader = Reader::from_reader(content_bytes);
     let mut buf = Vec::new();
 
+    // 回塞旗標（`ODF_BODY_WS_BUGGY`）於進入走查時讀一次：與 layout 側的
+    // `ODF_WS_BUGGY` 刻意分開（各扳各側，見 `ws::buggy_body_no_normalize`）。
+    let buggy = ws::buggy_body_no_normalize();
+
     let mut paragraphs = Vec::new();
-    let mut p_stack: Vec<String> = Vec::new();
+    // 進行中段落：與 `layout_glue::ParaCtx` 同吃 `ws::TextStream`（gap 狀態機
+    // 只此一處實作），差異僅在 body 側不記 run 樣式帳。
+    let mut p_stack: Vec<TextStream> = Vec::new();
     let mut text_p_count = 0usize;
     let mut text_h_count = 0usize;
     let mut total_text_len = 0usize;
@@ -61,7 +72,7 @@ pub fn extract_body_from_bytes(
                 let qname = e.name();
                 if is_text_p(qname.as_ref()) {
                     text_p_count += 1;
-                    p_stack.push(String::new());
+                    p_stack.push(TextStream::new());
                 } else if is_text_h(qname.as_ref()) {
                     text_h_count += 1;
                 }
@@ -80,12 +91,10 @@ pub fn extract_body_from_bytes(
                     match qname.as_ref() {
                         b"text:s" | b"s" => {
                             let count = parse_space_count(&e);
-                            for _ in 0..count {
-                                cur.push(' ');
-                            }
+                            cur.push_explicit(&" ".repeat(count));
                         }
-                        b"text:tab" | b"tab" => cur.push('\t'),
-                        b"text:line-break" | b"line-break" => cur.push('\n'),
+                        b"text:tab" | b"tab" => cur.push_explicit("\t"),
+                        b"text:line-break" | b"line-break" => cur.push_explicit("\n"),
                         _ => {}
                     }
                 }
@@ -97,20 +106,40 @@ pub fn extract_body_from_bytes(
                             .map(|u| u.into_owned())
                             .map_err(|e| e.to_string())
                     }) {
-                        cur.push_str(&unescaped);
+                        if buggy {
+                            cur.push_raw(&unescaped);
+                        } else {
+                            ws::emit_text_node(cur, &unescaped, ws::BODY_PLAIN_STYLE);
+                        }
+                    }
+                }
+            }
+            // CDATA（quick-xml 0.41 起是獨立事件）：視同文字節點走同一正規化
+            // 路徑（卡 t_4006056b）。CDATA 段本就是在 XML 裡保留原文的容器，
+            // 解析器不對其內容解實體 ⇒ **只 decode、不 unescape**，
+            // `<![CDATA[甲 <b> & 乙]]>` 必須原樣入文。修前落 `_ => {}` 靜默丟棄。
+            Ok(Event::CData(e)) => {
+                // 回塞態比照舊路徑：CData 不入文（修前落 `_ => {}` 整段丟棄）
+                // ⇒ 燈 4 靠「兩軌分岔」取得鑑別力。
+                if !buggy {
+                    if let Some(cur) = p_stack.last_mut() {
+                        if let Ok(raw) = e.decode().map(|d| d.into_owned()) {
+                            ws::emit_text_node(cur, &raw, ws::BODY_PLAIN_STYLE);
+                        }
                     }
                 }
             }
             Ok(Event::GeneralRef(e)) => {
                 if let Some(cur) = p_stack.last_mut() {
                     let resolved = resolve_general_ref(&e)?;
-                    cur.push_str(&resolved);
+                    cur.push_text_node(&resolved);
                 }
             }
             Ok(Event::End(e)) => {
                 let qname = e.name();
                 if is_text_p(qname.as_ref()) {
-                    if let Some(text) = p_stack.pop() {
+                    if let Some(stream) = p_stack.pop() {
+                        let text = stream.into_text();
                         total_text_len += text.chars().count();
                         paragraphs.push(OdfParagraph { text });
                     }

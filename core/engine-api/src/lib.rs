@@ -11,10 +11,10 @@ use quire_layout::{
     MARGIN_LEFT, MARGIN_TOP,
 };
 use quire_ooxml::{
-    diff_untouched, diff_zip_structure, parse, parse_header_footer_part_with_fonts,
-    read_even_and_odd_headers, read_rels, read_sections_header_footer, read_sections_note_pr,
-    read_sections_per_paragraph, resolve_relationship, LineSpacing, OoxmlDoc, OoxmlError,
-    ParaStyle, RunFonts, SlotRefs, StyleTable, ThemeColors, ThemeFonts, ZipDiff,
+    diff_zip_structure, parse, parse_header_footer_part_with_fonts, read_even_and_odd_headers,
+    read_rels, read_sections_header_footer, read_sections_note_pr, read_sections_per_paragraph,
+    resolve_relationship, LineSpacing, OoxmlDoc, OoxmlError, ParaStyle, RunFonts, SlotRefs,
+    StyleTable, ThemeColors, ThemeFonts, ZipDiff,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -50,6 +50,15 @@ pub mod footnotes;
 /// settings/sectPr 逐欄合併）。消費接线在註腳/尾註兩條鏈各自的卡。
 pub mod numbering;
 pub use footnotes::{AnchorMark, NoteLayout, NoteRun, PageFoot};
+
+// 編輯 API Mutation 型錄、Surgical XML Patch 與 Undo/Redo（Slice 1 / K29a）。
+pub mod mutation;
+pub use mutation::{
+    BreakKind, ByteSpan, DocPos, DocRange, HfSlotKind, InverseMutation, IrreversibleReason,
+    Mutation, MutationError, MutationOutcome, PartLifecycleInverse, ReversibilityLevel,
+    RunDirectPatch, SemanticInverseOp, SubDocTarget, UndoEntry, XmlBytePatch, XmlReversePatch,
+};
+pub use quire_ooxml::diff_untouched;
 #[derive(Error, Debug)]
 pub enum EngineError {
     #[error(transparent)]
@@ -87,6 +96,12 @@ pub struct Engine {
     original: Vec<u8>,
     /// 被編輯器動過的 part key（round-trip 白名單：這些 entry 允許內容變動）。
     touched: BTreeMap<String, ()>,
+    /// Undo 堆疊（操作可逆性單位；K29a / Slice 1）。
+    pub(crate) undo_stack: Vec<mutation::UndoEntry>,
+    /// Redo 堆疊。
+    pub(crate) redo_stack: Vec<mutation::UndoEntry>,
+    /// 開檔時各 part 明文快照（touched 自動退場比對基準）。
+    pub(crate) part_baselines: BTreeMap<String, Vec<u8>>,
     /// 頁首頁尾發射層（t_b39f108b）：section id → 宣告（rId 已換算成 part
     /// 路徑，跨節繼承已套用）；`hf_parts` 為 part 路徑 → 已解析投影。
     /// 純讀取派生資料——存檔路徑完全不經此層（round-trip 零影響）。
@@ -869,6 +884,7 @@ impl Engine {
         if std::env::var_os("F1_CHART_BUGGY").is_some() {
             charts.clear();
         }
+        let part_baselines = doc.parts.clone();
         let engine = Self {
             doc,
             layout,
@@ -876,6 +892,9 @@ impl Engine {
             paras_eff,
             original: bytes.to_vec(),
             touched: BTreeMap::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            part_baselines,
             hf,
             hf_parts,
             even_odd,
@@ -2764,6 +2783,11 @@ impl Engine {
     pub fn set_part(&mut self, name: &str, bytes: Vec<u8>) {
         self.touched.insert(name.to_string(), ());
         self.doc.set_part(name, bytes);
+    }
+
+    /// 讀取 part 明文切片（唯讀檢視）。
+    pub fn part(&self, name: &str) -> Option<&[u8]> {
+        self.doc.parts.get(name).map(|v| v.as_slice())
     }
 
     /// 離線對照：原始位元組 vs 存回位元組，`allow` 為允許內容變動的 part 白名單。
