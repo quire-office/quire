@@ -141,7 +141,7 @@ impl WasmEngine {
 //
 // 為何錯誤型別用 `String` 而非 `JsError`：`JsError::new` 是 wasm-bindgen
 // import（非 wasm target 呼叫即 panic），用 `String` 考卷才能在 host target
-// 跑錯誤路徑。JS 端語義不變——wasm-bindgen 把 `Err(String)` 抛成 `Error`
+// 跑錯誤路徑。JS 端語義不變——wasm-bindgen 把 `Err(String)` 拋成 `Error`
 // 物件（`err.message`＝該字串），playground.js 現行的
 // `err.message || String(err)` 兩條口徑都吃得下。
 

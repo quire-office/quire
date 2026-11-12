@@ -176,16 +176,16 @@ console.log('  ✓ 按鈕 [edit:redo] 標記為 live (接 redo_json)');
 
 // 嚴格紅線檢查：粗斜底、字級等仍須為 pending，不準假裝支援
 const boldBtnMatch = htmlContent.match(/<button[^>]+data-command="format:bold"[^>]*>/i);
-assert(boldBtnMatch && /data-requirement="pending:K29a"/i.test(boldBtnMatch[0]), 'format:bold 誠實維持 pending:K29a');
-console.log('  ✓ 按鈕 [format:bold] 誠實維持 pending:K29a（不假裝可用）');
+assert(boldBtnMatch && /data-requirement="pending:K29b"/i.test(boldBtnMatch[0]), 'format:bold 誠實維持 pending（K29b 樣式面，不假裝可用）');
+console.log('  ✓ 按鈕 [format:bold] 誠實維持 pending（K29b 樣式面，不假裝可用）（不假裝可用）');
 
 const italicBtnMatch = htmlContent.match(/<button[^>]+data-command="format:italic"[^>]*>/i);
-assert(italicBtnMatch && /data-requirement="pending:K29a"/i.test(italicBtnMatch[0]), 'format:italic 誠實維持 pending:K29a');
-console.log('  ✓ 按鈕 [format:italic] 誠實維持 pending:K29a（不假裝可用）');
+assert(italicBtnMatch && /data-requirement="pending:K29b"/i.test(italicBtnMatch[0]), 'format:italic 誠實維持 pending（K29b 樣式面，不假裝可用）');
+console.log('  ✓ 按鈕 [format:italic] 誠實維持 pending（K29b 樣式面，不假裝可用）（不假裝可用）');
 
 const underlineBtnMatch = htmlContent.match(/<button[^>]+data-command="format:underline"[^>]*>/i);
-assert(underlineBtnMatch && /data-requirement="pending:K29a"/i.test(underlineBtnMatch[0]), 'format:underline 誠實維持 pending:K29a');
-console.log('  ✓ 按鈕 [format:underline] 誠實維持 pending:K29a（不假裝可用）');
+assert(underlineBtnMatch && /data-requirement="pending:K29b"/i.test(underlineBtnMatch[0]), 'format:underline 誠實維持 pending（K29b 樣式面，不假裝可用）');
+console.log('  ✓ 按鈕 [format:underline] 誠實維持 pending（K29b 樣式面，不假裝可用）（不假裝可用）');
 
 // 5. 無 DOM 純邏輯層 WasmEngine 執行閉環測試
 console.log('\n[檢查 5] 探針驗證：Node.js ESM 執行 WasmEngine 打字閉環...');
