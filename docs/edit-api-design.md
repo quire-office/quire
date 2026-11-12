@@ -247,7 +247,7 @@ pub enum MutationError {
 
 2. **套用模型層級**【設計提案】：
    - **語義層（`OoxmlDoc`）**：定位目標段落 `Paragraph`（`core/ooxml/src/lib.rs:242`），按碼點偏移尋址目標 `Run`（`core/ooxml/src/lib.rs:89`）。若目標 `Run` 帶有動態頁碼欄位 `r.field: Some(FieldKind)`（`core/ooxml/src/lib.rs:106`），在其內部直接修改文字時依 `core/engine-api/src/lib.rs:2189-2191` 現有紀律撤除 `r.field = None`（或拒絕在未展開欄位中拆裂，見失敗語義）。同時更新 `Paragraph::page_breaks`（平移 `pos.cp` 之後的硬分頁偏移，對齊 `core/layout/src/lib.rs:981-997` 的 `shift_breaks` 契約）。
-   - **結構索引同步（當 `SplitParagraph`、`MergeParagraphWithNext` 或跨段 `DeleteRange` 增減扁平段落數 $\Delta p$ 時）**：必須同步平移目標點之後所有 `OoxmlDoc::tables[..].para_start`（`core/ooxml/src/table.rs:459`）與格內 `Block::Paragraph(idx)`（`core/ooxml/src/table.rs:446`）、`Engine::shape_boxes` 的宿主段落索引（`core/engine-api/src/lib.rs:116`）、`Engine::image_pixels` 的 `PixelSource::para`（`core/engine-api/src/lib.rs:229`）、以及 `Engine::para_sec`（`core/engine-api/src/lib.rs:90`）。
+   - **結構索引同步（當 `SplitParagraph`、`MergeParagraphWithNext` 或跨段 `DeleteRange` 增減扁平段落數 $\Delta p$ 時）**：必須同步平移目標點之後所有 `OoxmlDoc::tables[..].para_start`（`core/ooxml/src/table.rs:459`）與格內 `Block::Paragraph(idx)`（`core/ooxml/src/table.rs:400`）、`Engine::shape_boxes` 的宿主段落索引（`core/engine-api/src/lib.rs:116`）、`Engine::image_pixels` 的 `PixelSource::para`（`core/engine-api/src/lib.rs:229`）、以及 `Engine::para_sec`（`core/engine-api/src/lib.rs:90`）。
    - **投影與版面層（`Engine` ＋ `LayoutEngine`）**：局部重跑受影響段落的樣式級聯與清單 marker 計算，更新 `paras_eff`，並呼叫 `LayoutEngine` 的單段重排或段落增刪方法，最後呼叫 `self.recompute_notes()`（`core/engine-api/src/lib.rs:969-974`）。
 
 3. **對 DOCX Part 的最小影響面**【設計提案】：
@@ -325,7 +325,7 @@ pub enum MutationError {
 #### 2.3.4 家族 M4：表格結構與屬性變更（`InsertTable`、`DeleteTable`、`InsertTableRow`、`DeleteTableRow`、`InsertTableColumn`、`DeleteTableColumn`、`MergeTableCells`、`SplitTableCell`、`SetTableProps`、`SetRowProps`、`SetCellProps`）【設計提案】
 
 1. **表格尋址契約（支援巢狀表）**【設計提案】：
-   - 【已實測】`OoxmlDoc::tables: Vec<BodyTable>`（`core/ooxml/src/lib.rs:313`）支援儲存格內巢狀表格 `Block::Table(Table)`（ECMA-376 §17.4.67，見 `core/ooxml/src/table.rs:401`, `core/ooxml/src/table.rs:448`）。
+   - 【已實測】`OoxmlDoc::tables: Vec<BodyTable>`（`core/ooxml/src/lib.rs:313`）支援儲存格內巢狀表格 `Block::Table(Table)`（ECMA-376 §17.4.67，見 `core/ooxml/src/table.rs:401`, `core/ooxml/src/table.rs:461`）。
    - 【設計提案】定義 `TablePath { target: SubDocTarget, root_slot: usize, nested_steps: Vec<(usize, usize, usize)> }`（每步為 `(row_idx, cell_idx, sub_table_idx)`），可唯一且穩定地定位任意層級的表格。
 
 2. **操作參數定義**【設計提案】：
