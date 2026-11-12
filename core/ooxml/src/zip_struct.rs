@@ -673,7 +673,7 @@ impl Planned {
         }
     }
 
-    /// 覆寫內容：時間/属性/extra（去 zip64）/comment 沿用原 entry，sizes/crc/method 更新。
+    /// 覆寫內容：時間/屬性/extra（去 zip64）/comment 沿用原 entry，sizes/crc/method 更新。
     fn replaced(e: &ZipEntry, plain_len: u64, data: Vec<u8>, crc: u32, method: u16) -> Planned {
         Planned {
             src: Some(e.clone()),

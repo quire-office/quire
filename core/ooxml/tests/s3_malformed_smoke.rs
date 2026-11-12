@@ -205,7 +205,7 @@ fn png_poison(kind: u8) -> Vec<u8> {
 #[test]
 fn png_poison_never_panics() {
     install_silencer();
-    // 注意：本測試跑在【加固前】代碼上，poison 0/_（爆量像素）会在
+    // 注意：本測試跑在【加固前】代碼上，poison 0/_（爆量像素）會在
     // `vec![0u8; w*h*4]` 處 OOM（非 panic）——S2 的 checked 上限落地後才安全。
     // 因此爆量案例僅在 debug_assertions（S2 落地後 CI 常態跑的組）啟用，
     // 且 S2 落地前以 `--ignored` 手工跑；先驗證「截斷／謊言型」不 panic。

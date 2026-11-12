@@ -24,7 +24,7 @@
 //! # 紅燈規格
 //! 1. 燈1（真檔）：shapes-with-text p0 顯示列表出現 #156082 實心填色圖元
 //!    （面積>0；LO ellipse 1857375×876300 EMU = 146.3×69.0pt ≈ 10094pt²，
-//!    我方以 Rect 發射——色軸按色直方圖計，橢圓形状差留口徑，卡面白名單
+//!    我方以 Rect 發射——色軸按色直方圖計，橢圓形狀差留口徑，卡面白名單
 //!    不含 render-trait/shells，不擴權）。群組子形（star5 等）fillRef 同落。
 //! 2. 燈2（合成最小檔）：一個 ellipse solidFill srgbClr=FF0000 →
 //!    `InlineImage.fill_argb == 0xFFFF0000`（走 spPr 直路，證明管線端到端
@@ -32,7 +32,7 @@
 //! 3. 燈2b（合成）：無 spPr solidFill、僅 fillRef idx=1 schemeClr accent1 →
 //!    fill_argb == theme accent1；fillRef idx=0 → None（明確「無」）。
 //! 4. 燈3（零回退）：K12 WC048 三藍圖元既有行為逐位不動（spPr solidFill 檔
-//!    序列化零位移——本卡只改三者优先序全缺時的退化路徑）。
+//!    序列化零位移——本卡只改三者優先序全缺時的退化路徑）。
 //! 5. 燈4：lnStyleLst 兜底——fillRef 有色時 Rect 色＝fillRef 色（描邊走
 //!    Rule 既有鏈，lnRef 色進 stroke_argb）。
 //! 6. `K24_STYLE_BUGGY=1` → 燈1/燈2 必紅（回塞鎖）。

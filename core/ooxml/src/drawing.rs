@@ -3,7 +3,7 @@
 //! 定位（與 [`crate::table`] 同款「唯讀投影」，PM 補正 1）：本模組是純讀取
 //! 投影，**不參與序列化**——無損寫回來源仍是 `parts` 明文，round-trip 零影響。
 //! 只回答一個問題：這個 run 裡的圖形**多大、在哪、屬不屬於儲存格**，供
-//! 版面層撑行帶＋顯示層發射灰底 Rect（點陣直出屬像素渲染卡，本卡不做）。
+//! 版面層撐行帶＋顯示層發射灰底 Rect（點陣直出屬像素渲染卡，本卡不做）。
 //!
 //! 覆蓋（ECMA-376 §20.4 / VML）：
 //! - `wp:inline`／`wp:anchor` 的**直下** `wp:extent/@cx、@cy`（EMU；÷12700
@@ -38,7 +38,7 @@
 //!   atomic block，不參與斷行）。
 //! - anchor（浮動）：**不佔正文流**（ECMA-376：浮動圖形不排進文字流），只在
 //!   鎖點發射佔位 Rect。鎖點＝`wp:positionH/V` 的 `posOffset`（缺任一律＝
-//!   退化為 inline 佔帶——卡片鐵律：宁可多撑帶，不可讓含圖段落虛構空頁）。
+//!   退化為 inline 佔帶——卡片鐵律：寧可多撐帶，不可讓含圖段落虛構空頁）。
 //!   `relativeFrom` 決定原點系換算：page/pageMargin＝頁左上；column/margin
 //!   ＝版心左上（單欄近似）；paragraph/line＝錨定段落帶左上（近似——LO 同款
 //!   近似，寫實欄位/多欄偏移留像素渲染卡）。
@@ -50,7 +50,7 @@ pub const EMU_PER_PT: f64 = 12_700.0;
 
 /// OOXML 整數值域上限（xsd:long）：屬性值寫到連 64 位整數都放不下
 /// （如 1e39／4e21）必為垃圾——不採納（t_c1fb4c69 S1-4）。真正的病態危害
-/// 在下游 `(h/line_h).ceil() as u32` 爆量→分頁迴圈 OOM，源头擋掉最乾淨。
+/// 在下游 `(h/line_h).ceil() as u32` 爆量→分頁迴圈 OOM，源頭擋掉最乾淨。
 const MAX_OOXML_LONG: f64 = i64::MAX as f64;
 
 /// R5：serde 空值不外露（`txbx_start == 0` 等同舊資料）。
@@ -68,7 +68,7 @@ fn is_zero_usize(v: &usize) -> bool {
 /// serde default＋空不外露＝無此形態檔案的序列化位元組逐位不變。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TxbxDrawing {
-    /// 宿主框（VML 候補）`txbx_texts` 展平清單的**段落索引**（文档序，
+    /// 宿主框（VML 候補）`txbx_texts` 展平清單的**段落索引**（文檔序，
     /// flush 時取 `v.txbx.len()`＝進行中段落序號；合法值必 < txbx 段數）。
     pub para_ix: usize,
     /// `a:blip/@r:embed` 像素 rId（採集期即要求 Some——無 rid 不入列）。
@@ -189,7 +189,7 @@ pub struct InlineChildShape {
     pub stroke_dash: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub txbx_texts: Vec<String>,
-    /// F2：本子件自己的 `wps:spPr/a:prstGeom/@prst`（文档序首見為準）。
+    /// F2：本子件自己的 `wps:spPr/a:prstGeom/@prst`（文檔序首見為準）。
     /// serde default＋None 不外露＝既有投影序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geom_prst: Option<String>,
@@ -218,7 +218,7 @@ pub struct VmlGroupChild {
     /// 垂直對 margin 置中；n751077 實測 union=[63.70,125.92,484.60,550.90]）。
     pub rect: [f32; 4],
     /// 本子件 `w:txbxContent` 各段在**群組候補** `txbx_texts`／`txbx_runs`
-    /// 展平清單的起始索引與段數（文档序切片＝本框自己的文字與 run）。
+    /// 展平清單的起始索引與段數（文檔序切片＝本框自己的文字與 run）。
     pub txbx_start: usize,
     pub txbx_len: usize,
     /// 子件自身 `style/v-text-anchor:bottom`：框內文字**底堆疊**（末行帶底
@@ -361,7 +361,7 @@ pub struct TextboxGrow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rins_pt: Option<f32>,
     /// 框內**最大** `w:rPr/w:sz`÷2（pt）。None＝呼叫端退 docDefaults 字級。
-    /// 取最大＝保守少算行數（多字号混排框不虛構塞得下的行）。
+    /// 取最大＝保守少算行數（多字號混排框不虛構塞得下的行）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_pt: Option<f32>,
     /// 框內首見 `w:rFonts/@w:ascii`（K18 鐵則：吃不到＝None，**勿在此吃
@@ -462,7 +462,7 @@ pub struct InlineImage {
     // ---- K4c：填充／描邊／虛線／框內幾何（全部 serde default；欄位不存在
     // ＝None＝舊行為，舊顯示列表 JSON 與序列化位元組零位移）----
     /// 填色（0xAARRGGBB）：`v:fill/@color` > `o:fillcolor`（VML）；
-    /// DrawingML 取 `wps:spPr/a:solidFill/a:srgbClr`。不認識的颜色字串＝
+    /// DrawingML 取 `wps:spPr/a:solidFill/a:srgbClr`。不認識的顏色字串＝
     /// None（不冒充）；`auto`＝明確黑。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill_argb: Option<u32>,
@@ -506,7 +506,7 @@ pub struct InlineImage {
     /// `a:blip/@r:embed`（VML 為 `v:imagedata/@r:id`）。本卡記錄不使用。
     #[serde(default)]
     pub embed_rid: Option<String>,
-    /// 同一候選的**全部** blip rId（文档序；`embed_rid`＝首見）。K4c-image：
+    /// 同一候選的**全部** blip rId（文檔序；`embed_rid`＝首見）。K4c-image：
     /// `mc:AlternateContent`（含 `ve:` 變體）的 Choice 與 Fallback 各帶一個
     /// `a:blip r:embed`，幾何相同、像素不同（Bug51170：Choice→pdf 不可渲染、
     /// Fallback→png 可渲染）。解析層把 Fallback 的 rId 也記進本欄（不吞），
@@ -558,12 +558,12 @@ pub struct InlineImage {
     // coord 映射成功子件」才記（LO 真值擬合範圍＝頁面釘定群組）；DrawingML
     // 群組、非釘定群組、巢狀子組＝空＝舊行為零擾動。serde default＋空不外露
     // ＝既有投影序列化位元組逐位不變。----
-    /// K25-B：釘定 VML 群組的子件清單（文档序；`rect`＝coord→pt 映射後的
+    /// K25-B：釘定 VML 群組的子件清單（文檔序；`rect`＝coord→pt 映射後的
     /// **原始**矩形，相對群組 coord 原點，未做 union 平移）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vml_group_children: Vec<VmlGroupChild>,
     /// D9b 欠債一：`v:group` 容器群組的**子件框內 `w:drawing` 圖片**清單
-    /// （文档序）。採集條件與宿主退化閂見 [`VmlGroupPicture`]。serde default
+    /// （文檔序）。採集條件與宿主退化閂見 [`VmlGroupPicture`]。serde default
     /// ＋空不外露＝既有投影序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vml_group_pics: Vec<VmlGroupPicture>,
@@ -582,7 +582,7 @@ pub struct InlineImage {
     /// serde default＋None 不外露＝無宣告檔案的序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duotone: Option<DuotoneEffect>,
-    /// R35：框內段落流內嵌 DrawingML 的獨立清單（文档序；與 K12 群組子件
+    /// R35：框內段落流內嵌 DrawingML 的獨立清單（文檔序；與 K12 群組子件
     /// `group_shapes` 徹底分家——後者只吃 `wpg:wgp` 幾何子件，R31 的欄位
     /// 挪用（stroke_dash 塞 rid／dx_pt 塞段落索引）是七條狀態機缺口的同根，
     /// 見 [`TxbxDrawing`]）。serde default＋空不外露＝無此形態檔案的
@@ -638,8 +638,8 @@ pub struct InlineImage {
     /// 不外露＝舊投影序列化位元組逐位不變。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_anchor: Option<String>,
-    // ---- F2：`a:prstGeom/@prst` 與 `a:prstTxWarp/@prst`（預設形状／翹曲**名稱**
-    // 的純事實捕獲，文档序首見為準）。解析層不做幾何近似，只記名稱＋flip
+    // ---- F2：`a:prstGeom/@prst` 與 `a:prstTxWarp/@prst`（預設形狀／翹曲**名稱**
+    // 的純事實捕獲，文檔序首見為準）。解析層不做幾何近似，只記名稱＋flip
     // 鏡射事實；名稱→輪廓點集的映表在 `crate::preset`（LO 真值校準），映射
     // 與發射在 engine 發射層。全部 serde default＋空值不外露＝既有投影
     // 序列化位元組逐位不變（無 prstGeom 檔案零位移鐵條）。----
@@ -660,7 +660,7 @@ pub struct InlineImage {
 impl InlineImage {
     /// 浮動鎖點（ECMA-376 `wp:positionH/V` 之 `wp:posOffset`）：兩軸齊備即
     /// 鎖點可用——浮動圖**不撐行帶**、只在鎖點發射 Rect（卡片佔位語義）。
-    /// 缺任一軸＝None → 呼叫端退化為 inline 佔帶（宁可多撑帶，不虛構空頁）。
+    /// 缺任一軸＝None → 呼叫端退化為 inline 佔帶（寧可多撐帶，不虛構空頁）。
     /// `relativeFrom` 決定原點系（[`InlineImage::origin_of`] 的字串來源）。
     pub fn anchor_lock_pt(&self) -> Option<(f32, f32)> {
         match (self.pos_x_pt, self.pos_y_pt) {
@@ -687,7 +687,7 @@ pub fn origin_of(relative_from: Option<&str>) -> &'static str {
     }
 }
 
-/// EMU 字串 → pt（非法／缺／<=0＝None，容錯鐵律：不猜、不虚構）。
+/// EMU 字串 → pt（非法／缺／<=0＝None，容錯鐵律：不猜、不虛構）。
 /// 超出 OOXML 整數值域（[`MAX_OOXML_LONG`]）或換算後 `as f32` 溢出成 inf
 /// （1e39）＝同樣 None——inf／爆量尺寸流入下游 bands 量化會把分頁打成
 /// 無限迴圈 OOM（t_c1fb4c69 S1-4）。
@@ -905,7 +905,7 @@ fn apply_vml_position(v: &mut Pending, e: &quick_xml::events::BytesStart) {
 /// - `auto` → 明確黑（VML 慣例：auto 即主題文字色，近似黑）；
 /// - **不認識 → None**（老實不發色，不冒充）；
 /// - 帶尾註的 Word 產出（`"white [3201]"`／`"#7f7f7f [1601]"`）只吃空格前
-///   本體——尾註是主題索引註解，非颜色值的一部分。
+///   本體——尾註是主題索引註解，非顏色值的一部分。
 ///   名稱大小寫不敏感。
 pub fn parse_vml_color(raw: Option<&str>) -> Option<u32> {
     let s = raw?.trim();
@@ -992,7 +992,7 @@ fn fold_duo_node(node: &DuoNode) -> Option<u32> {
         base & 0xFF,
     );
     // 單一狀態 cur＝sRGB 值域 f64（不在中途量化成 8bit——LO 梯度實測吻合的
-    // 管線是 shade 線性域结果直接進 satMod，中間不落地）。線性域修飾器
+    // 管線是 shade 線性域結果直接進 satMod，中間不落地）。線性域修飾器
     // （s/t）把 cur 經 srgb_to_linear 換域、算完回換；satMod 直接在 cur 上
     // 做。混序（如 satMod 後再接 shade）因此天然正確——每次 s/t 都從 cur
     // 現值重新換域，不信任任何快取。
@@ -1218,7 +1218,7 @@ fn style_flush_ref(st: &mut StyleMatrix, is_ln: bool) {
 /// - `dashDotDot` → `"6 3 1 3 1 3"`；
 /// - `longDash` → `"12 3"`；`longDashDot` → `"12 3 1 3"`；
 /// - `longDashDotDot` → `"12 3 1 3 1 3"`；
-/// - 三數值自訂式 `"sd,sd,sd"`（VML 允許 `1 2 3` 形态）→ 直接透傳。
+/// - 三數值自訂式 `"sd,sd,sd"`（VML 允許 `1 2 3` 形態）→ 直接透傳。
 ///   不認識 → None（實線近似，不虛構花樣）。
 pub fn vml_dashstyle_to_dash(raw: Option<&str>) -> Option<String> {
     let s = raw?.trim();
@@ -1572,7 +1572,7 @@ struct Pending {
     pct_axis: Option<bool>,
     overlap: Option<bool>,
     rid: Option<String>,
-    /// K4c-image：本候選見過的全部 blip rId（文档序去重；`rid`＝首見）。
+    /// K4c-image：本候選見過的全部 blip rId（文檔序去重；`rid`＝首見）。
     /// Choice 走常規路徑收、Fallback 子樹破例只收 rId（幾何/段落一概不動）。
     rids: Vec<String>,
     /// 產出目標是儲存格（建立時 tc 深度 > 0）而非正文段落。
@@ -1604,12 +1604,12 @@ struct Pending {
     txbx_in_t: bool,
     /// 框內 `w:p` 開閉深度（完結時 flush txbx_cur）。
     txbx_para_depth: usize,
-    /// R35（卡 3 事實分流）：框內 blip 貢獻的 rId（文档序去重）——finalize
+    /// R35（卡 3 事實分流）：框內 blip 貢獻的 rId（文檔序去重）——finalize
     /// 據此把「只來自框內內嵌圖的 rId」從宿主 rid/rids 剔除（R31 事後猜測
     /// 整批清除的誤殺臂由逐 rId 事實判定取代）；`v:imagedata` 的 rId 另樹
     /// 事實（[`Pending::imagedata_rids`]），一律保留（消滅「群組圖消失」誤殺）。
     txbx_blip_rids: Vec<String>,
-    /// R35：`v:imagedata` 貢獻的 rId（文档序去重）——finalize 保留判定的
+    /// R35：`v:imagedata` 貢獻的 rId（文檔序去重）——finalize 保留判定的
     /// 獨立事實來源。
     imagedata_rids: Vec<String>,
     /// R35：框內進行中 `w:drawing` 幀（blip 開槽、extent 首見補值）。舊
@@ -1617,7 +1617,7 @@ struct Pending {
     /// 缺 extent 刷 0×0（卡 4）——本幀掛在宿主候補身上，隨候補生死，並由
     /// `</w:drawing>`／`</w:p>`／`</w:txbxContent>`／finalize 四處出幀點清空。
     txbx_frame: Option<TxbxFrame>,
-    /// R35：框內段落流內嵌 DrawingML 獨立清單（出幀點刷入；文档序）。
+    /// R35：框內段落流內嵌 DrawingML 獨立清單（出幀點刷入；文檔序）。
     txbx_drawings: Vec<TxbxDrawing>,
     /// R35 回塞態專用（`R35_TXBX_BUGGY=1`）：R31 舊單槽 `(rid, extent)`，
     /// blip／extent 臂無條件覆寫、`p|drawing` 閉合刷進 `group_shapes` 挪用
@@ -1645,13 +1645,13 @@ struct Pending {
     mapped_rect: Option<[f32; 4]>,
     /// K25-B：進行中的子件累積（`v:group` Start 清空、子件 End 落表）。
     vml_child: Option<PendingVmlChild>,
-    /// K25-B：釘定群組已完結的子件清單（文档序）。
+    /// K25-B：釘定群組已完結的子件清單（文檔序）。
     vml_children: Vec<VmlGroupChild>,
     // ---- D9b 欠債一：容器群組的「子件框內 w:drawing 圖片」累積。----
     /// 進行中的子件框內圖（子件 Start 開、子件 End 落表；群組外／宿主自身
     /// 有 imagedata 者不開栓／不落表，見 [`begin_group_pic`]／finalize 閂）。
     cur_group_pic: Option<PendingGroupPic>,
-    /// 已完結的子件框內圖清單（文档序；刷進 InlineImage.vml_group_pics）。
+    /// 已完結的子件框內圖清單（文檔序；刷進 InlineImage.vml_group_pics）。
     group_pics: Vec<VmlGroupPicture>,
     txbx_rect: Option<[f32; 4]>,
     txbx_inset: Option<[f32; 4]>,
@@ -1700,7 +1700,7 @@ struct Pending {
     w_from_group: Option<f32>,
     h_from_group: Option<f32>,
     /// K4c：v:group coord→extent 映射幀棧（None 項＝映射條件不足的毒化層，
-    /// 其子件老實不映射）。随 pict／裸 shape 建候補時清空。
+    /// 其子件老實不映射）。隨 pict／裸 shape 建候補時清空。
     coord_stack: Vec<Option<CoordFrame>>,
     // ---- DrawingML wps:spPr 樣式上下文（僅 graphic 候補用）----
     /// `wps:spPr` 深度（>0 時 solidFill/srgbClr 才歸本候選的填充）。
@@ -1756,7 +1756,7 @@ struct Pending {
     /// 259**——WC048 實據 LO 框內走單倍）。
     k17_line: Option<f32>,
     // ---- K19：`a:blip` 色彩效果（duotone）累積上下文 ----
-    /// 進行中 `a:duotone` 的顏色節點清單（文档序，≤2 有效；None＝不在 duotone
+    /// 進行中 `a:duotone` 的顏色節點清單（文檔序，≤2 有效；None＝不在 duotone
     /// 內）。`a:biLevel`／`a:grayscl` 命中＝識破但不折算（LO 真值＝灰階，本卡
     /// 未實裝→留 None，發射層原樣直出＝零假色）。
     duo_nodes: Option<Vec<DuoNode>>,
@@ -1795,7 +1795,7 @@ struct Pending {
     txbx_sdt_last: Option<crate::SdtBinding>,
     /// `wps:bodyPr/@anchor`（文字軸對齊 t/ctr/b；Start／Empty 兩流首見為準）。
     body_anchor: Option<String>,
-    // ---- F2：預設形状／翹曲名稱捕獲（語意見 [`InlineImage::geom_prst`]）----
+    // ---- F2：預設形狀／翹曲名稱捕獲（語意見 [`InlineImage::geom_prst`]）----
     /// `wps:spPr/a:prstGeom/@prst` 首見（候選本體＝首個 wsp 的 spPr；群組
     /// 候補取首見子件者由 `PendingChildShape.geom_prst` 各自承載）。
     geom_prst: Option<String>,
@@ -1885,7 +1885,7 @@ impl TxbxFrame {
     }
 }
 
-/// R35：幀出幀——合格圖刷進宿主候補的 `txbx_drawings`（文档序），幀歸零。
+/// R35：幀出幀——合格圖刷進宿主候補的 `txbx_drawings`（文檔序），幀歸零。
 /// 資格＝見過 blip＋rid 齊備（無 rid＝無像素來源，老實不入列，卡 2）＋
 /// extent 兩軸齊備且 >0／有限（缺 extent 不入列——R31
 /// `ext.unwrap_or([0.0, 0.0])` 刷 0×0 灰塊吞空段步進的根除點，卡 4）。
@@ -2192,7 +2192,7 @@ impl PendingChildShape {
 
 impl Pending {
     /// K4c-image：blip／imagedata rId 記錄——首見進 `rid`（既有語義逐位不
-    /// 變），全部進 `rids`（文档序去重）。`AlternateContent` 的 Choice 與
+    /// 變），全部進 `rids`（文檔序去重）。`AlternateContent` 的 Choice 與
     /// Fallback 各帶一份 blip（幾何同、像素異）時兩條都留，engine 層依
     /// 副檔名可渲染性擇優。
     fn note_rid(&mut self, rid: Option<String>) {
@@ -2396,8 +2396,8 @@ struct DrawingParser {
     cell_anchor_buggy: bool,
     /// E1-B：進行中 `w:sdt` 開閉棧（僅框內）——每層存該 `w:sdt` 折算完成的
     /// 綁定事實（None＝此 sdt 不構成可覆寫的綁定）。巢狀 sdt（sdtContent 內
-    /// 再掛 sdt）由棧自然表達；推入／弹出與 `w:sdt` 開閉一一配對，且**只在
-    /// 框內推入**（`</w:sdt>` 於框外照樣不弹出——框外棧恆空，零擾動）。
+    /// 再掛 sdt）由棧自然表達；推入／彈出與 `w:sdt` 開閉一一配對，且**只在
+    /// 框內推入**（`</w:sdt>` 於框外照樣不彈出——框外棧恆空，零擾動）。
     sdt_stack: Vec<Option<crate::SdtBinding>>,
     /// E1-B：進行中 `w:sdtPr` 的暫時捕獲（`</w:sdtPr>` 時折算蓋到 `sdt_stack` 頂）。
     sdt_pr: Option<SdtPrAcc>,
@@ -2414,7 +2414,7 @@ struct DrawingParser {
     /// F3 回塞鎖（`F3_TXBX_PIC_BUGGY=1`）：文字框內 DML 圖片整段跳過舊態（燈 3 鑑別力）。
     f3_buggy: bool,
     /// F2 回塞鎖（`F2_GEOM_BUGGY=1`）：`a:prstGeom`／`a:prstTxWarp`／`a:xfrm/@flip*`
-    /// 事實永不落地（＝「几何節點從未被讀取」的舊態；燈3 鑑別力）。
+    /// 事實永不落地（＝「幾何節點從未被讀取」的舊態；燈3 鑑別力）。
     /// 同款「只在 `with_theme()` 讀一次 env」先例。
     f2_buggy: bool,
 }
@@ -2561,7 +2561,7 @@ impl DrawingParser {
             txbx_align: p.txbx_align.clone(),
             // 卡片契約 2 優先序：v:fill/@color（p.fill）> shape 屬性
             // fillcolor/o:fillcolor（p.fill_attr）> docDefaults（未接＝不發）。
-            // K24：三者优先序全缺時退 `wps:style` 樣式矩陣 fillRef 折色
+            // K24：三者優先序全缺時退 `wps:style` 樣式矩陣 fillRef 折色
             //（ECMA：spPr 直接格式壓樣式矩陣；既有 spPr 檔零位移）。
             fill_argb: p.fill.or(p.fill_attr).or(p.style.fill),
             filled: if p.filled_f { Some(false) } else { None },
@@ -3155,7 +3155,7 @@ impl DrawingParser {
 
         // ---- E2c：框內 `w:sdt/w:sdtPr/w:dataBinding/@w:xpath` 事實捕獲。
         // 只在框內（txbx_depth>0）且 DrawingML 候選進行中才收（VML 臂屬鐵條
-        // 禁區，一概不動）；文档序首見為準，非法／缺值＝None 不冒充。----
+        // 禁區，一概不動）；文檔序首見為準，非法／缺值＝None 不冒充。----
         if self.txbx_depth > 0 && name == b"dataBinding" {
             if let Some(g) = self.graphic.as_mut() {
                 if g.txbx_databinding.is_none() {
@@ -3192,7 +3192,7 @@ impl DrawingParser {
             }
         }
         // ---- E1-B：框內 `w:sdt` 開棧（純事實；語意判定在 engine 發射層）。
-        // 巢狀 sdt 由棧表達；框外 sdt 不推入（`</w:sdt>` 於框外也不弹出）。----
+        // 巢狀 sdt 由棧表達；框外 sdt 不推入（`</w:sdt>` 於框外也不彈出）。----
         if self.txbx_depth > 0 && name == b"sdt" && !empty {
             self.sdt_stack.push(None);
         }
@@ -3493,7 +3493,7 @@ impl DrawingParser {
                     _ => {}
                 }
             }
-            // F2：預設形状／翹曲**名稱**捕獲（純事實，不做幾何判斷）。
+            // F2：預設形狀／翹曲**名稱**捕獲（純事實，不做幾何判斷）。
             // 掛點紀律同 E2/E2c：`sp_ctx > 0`（在 `wps:spPr` 內）才認
             // `prstGeom`，避免把 `pic:spPr` 圖片裁切框的名字竄給文字框候補；
             // 群組子件存在時名字歸子件自己（`cur_child` 臂），與填色／描邊
@@ -3509,7 +3509,7 @@ impl DrawingParser {
                         if let Some(child) = p.cur_child.as_mut() {
                             // 群組子件：名字只歸子件。宿主（wpg:wgp 根）若無
                             // 自己的 prstGeom 就留 None——竊取首見子件的名字會
-                            // 讓根框重畫一次子件形状（雙重墨跡）。
+                            // 讓根框重畫一次子件形狀（雙重墨跡）。
                             if child.geom_prst.is_none() {
                                 child.geom_prst = g;
                             }
@@ -3830,7 +3830,7 @@ impl DrawingParser {
         // "/ns0:Properties[1]/ns0:Company[1]" .../>`），只在 Start 分支收會全數
         // 漏收（K17 同坑：撐列事實因「自閉合只收 Start」全漏，PM 接手實測）。
         // 條件與 Start 分支同構：框內（txbx_depth>0）＋DrawingML 候選進行中，
-        // VML 臂（鐵條禁區）一概不動；文档序首見為準，非法／缺值＝None 不冒充。----
+        // VML 臂（鐵條禁區）一概不動；文檔序首見為準，非法／缺值＝None 不冒充。----
         if self.txbx_depth > 0 && name == b"dataBinding" {
             if let Some(g) = self.graphic.as_mut() {
                 if g.txbx_databinding.is_none() {
@@ -3977,7 +3977,7 @@ impl DrawingParser {
                     .map(|v| v.trim().to_string())
                     .filter(|v| !v.is_empty());
             }
-            // F2：預設形状／翹曲名稱——**自閉合同樣是常態**（`<a:prstGeom
+            // F2：預設形狀／翹曲名稱——**自閉合同樣是常態**（`<a:prstGeom
             // prst="rect"/>`、`<a:prstTxWarp prst="textNoShape"/>` 合法，E2c
             // K17 同坑：只收 Start 會全漏）。掛點閂與 Start 分支同構：
             // prstGeom 限 spPr 內（sp_ctx>0 或群組子件幀），xfrm flip 同。
@@ -3990,7 +3990,7 @@ impl DrawingParser {
                             .filter(|v| !v.is_empty());
                         if let Some(child) = p.cur_child.as_mut() {
                             // 群組子件：名字只歸子件（同 Start 分支紀律——
-                            // 宿主 wpg:wgp 根竊取子件名字會重畫一次子件形状）。
+                            // 宿主 wpg:wgp 根竊取子件名字會重畫一次子件形狀）。
                             if child.geom_prst.is_none() {
                                 child.geom_prst = g;
                             }
@@ -4295,7 +4295,7 @@ impl DrawingParser {
                             stroke_width_pt: None,
                             stroke_dash: Some(rid),
                             txbx_texts: Vec::new(),
-                            // F2：R35 回塞態挪用欄位＝非群組形状，無 prst 事實。
+                            // F2：R35 回塞態挪用欄位＝非群組形狀，無 prst 事實。
                             geom_prst: None,
                             flip_h: false,
                             flip_v: false,
@@ -4330,7 +4330,7 @@ impl DrawingParser {
             return;
         }
         // ---- E1-B：`</w:sdt>`＝出棧（與 Start 的推入一一配對；只吃框內推入的
-        // 那批——框外 sdt 從未推入，本處 pop 對齐同口徑）。----
+        // 那批——框外 sdt 從未推入，本處 pop 對齊同口徑）。----
         if self.txbx_depth > 0 && name == b"sdt" {
             self.sdt_stack.pop();
             return;
@@ -4736,7 +4736,7 @@ fn run_parser(xml: &[u8]) -> DrawingParser {
 
 /// 解析 document.xml 全文的圖片幾何（純函數；engine／測試入口）。
 ///
-/// 輸出依文档序；`para_index` 用扁平 Start 口徑（與 `parse_document_xml`
+/// 輸出依文檔序；`para_index` 用扁平 Start 口徑（與 `parse_document_xml`
 /// 逐檔一致，corpus 柵欄鎖死）。
 /// K17：錨定框撐列事實捕獲（規格 `docs/k18-lo-rowgrow-calibration.md` §6）。
 ///
@@ -4827,7 +4827,7 @@ fn k17_capture(
 
 /// 解析 document.xml 全文的圖片幾何（純函數；engine／測試入口）。
 ///
-/// 輸出依文档序；`para_index` 用扁平 Start 口徑（與 `parse_document_xml`
+/// 輸出依文檔序；`para_index` 用扁平 Start 口徑（與 `parse_document_xml`
 /// 逐檔一致，corpus 柵欄鎖死）。
 pub fn read_images_with_theme(xml: &[u8], theme: &crate::ThemeColors) -> Vec<InlineImage> {
     run_parser_with_theme(xml, theme.clone()).out
@@ -5850,7 +5850,7 @@ mod tests {
 
     /// 卡 5（狀態洩漏）：畸形閉合——`</w:txbxContent>` 先於 `</w:drawing>`，
     /// 同 pict 隨後再放純文字框（R31 單槽跨框殘留的觸發形）。
-    /// 正常態 drawing 閉合臂不深度閂＋txbxContent 歸零強制出幀 ⇒ 圖歸位、
+    /// 正常態 drawing 閉合臂不深度閂＋txbxContent 歸零強製出幀 ⇒ 圖歸位、
     /// 後續框零沾染；回塞態單槽被純文字框的 `</w:p>` 撿走 ⇒ 幽靈圖。
     #[test]
     fn r35_txbx_content_close_flushes_frame_no_leak() {

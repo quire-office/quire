@@ -496,7 +496,7 @@ mod user_fixture {
     const LO_FRAME_SM_X: f32 = 406.0;
     const LO_FRAME_MD_X: f32 = 359.0;
     const LO_FRAME_LG_X: f32 = 357.5;
-    /// 版心頂（section `margin_top`）；滯留症狀即所有錨點被釘在该線附近。
+    /// 版心頂（section `margin_top`）；滯留症狀即所有錨點被釘在該線附近。
     const BODY_TOP: f32 = 72.0;
 
     /// 找指定頁面上尺寸匹配的真檔錨點框線矩形 (x, y, w, h)。

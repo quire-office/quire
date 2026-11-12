@@ -11,7 +11,7 @@ fn corpus_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus-xlsx")
 }
 
-/// manifest 的 "file" 欄（與 shells/native/ooxml corpus 測試同款轻量抽取，
+/// manifest 的 "file" 欄（與 shells/native/ooxml corpus 測試同款輕量抽取，
 /// 避免為一個清單拉進 serde_json 依賴）。
 fn manifest_files() -> Vec<String> {
     let m = std::fs::read_to_string(corpus_root().join("manifest.json")).expect("manifest.json");
@@ -229,7 +229,7 @@ fn xlsm_vba_project_part_moves_untouched() {
 }
 
 /// round-trip 語義 2（未知 part）：Content_Types 沒登記的自訂 part 原樣保留。
-/// 真實 corpus 的形态：poi 檔常見 customXml／無 Override 的 part——掃全 corpus，
+/// 真實 corpus 的形態：poi 檔常見 customXml／無 Override 的 part——掃全 corpus，
 /// 找「不在任何 Override 且副檔名不在 Default」的 part，確認存回後仍在。
 #[test]
 fn unknown_parts_survive_round_trip() {

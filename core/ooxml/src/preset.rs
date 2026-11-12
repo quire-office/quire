@@ -1,4 +1,4 @@
-//! F2：DrawingML `a:prstGeom/@prst` 預設形状輪廓表（含 `a:prstTxWarp` 名稱識別）。
+//! F2：DrawingML `a:prstGeom/@prst` 預設形狀輪廓表（含 `a:prstTxWarp` 名稱識別）。
 //!
 //! # 為什麼是「名稱→歸一化點集」而不是「名稱→SVG 字串」
 //! 本模組只負責**幾何事實**（單位方格內的折線頂點），不碰任何輸出格式：
@@ -23,7 +23,7 @@
 //! - `roundRect`：ECMA-376 §20.1.10.49 預設 `adj=16667` ⇒ 圓角半徑
 //!   `r = adj × min(w,h)`。本表以**切角八邊形**近似圓角（對角弦承載
 //!   「不是直角」的事實），誤差同記帳。
-//! - `line`／`straightConnector1`：單一线段，端點由 `a:xfrm/@flipH`／`@flipV`
+//! - `line`／`straightConnector1`：單一線段，端點由 `a:xfrm/@flipH`／`@flipV`
 //!   決定（`docs/f2-survey/f2v13_flip.py` 實據：語料 connector 多數帶
 //!   `flipV="1"`，LO 真值 (92.2,266.2)→(272.8,236.3) 為對角線）。
 //! - `rightArrow`／`leftRightArrow`／`upArrow`：ECMA-376 §20.1.10 指引式
@@ -35,7 +35,7 @@
 //! 未列於本表的 `@prst`（含 `custGeom`、`star10`、語料外的 180 餘種 preset）
 //! 一律回 `None`：呼叫端**必須**退回既有外接矩形發射＝零回退守則。
 
-/// 一條預設形状輪廓：單位方格（0..1 × 0..1，原點＝外接框左上角、v 向下正，
+/// 一條預設形狀輪廓：單位方格（0..1 × 0..1，原點＝外接框左上角、v 向下正，
 /// 與顯示列表 y 軸同向）內的折線頂點。`closed=true` ⇒ 呼叫端補最後一點回
 /// 第一點的閉合邊。
 #[derive(Debug, Clone, PartialEq)]
@@ -154,7 +154,7 @@ const UP_ARROW: [(f32, f32); 8] = [
 /// `ellipse_outline()` 以實角函數生成）。起角 7.5°（半個步距的一半）是刻
 /// 意選的：整 30° 步距的對稱頂點對（如 75°/105°）必共 y 或共 x，會出現軸
 /// 對齊弦；7.5° 偏移後任一相鄰頂點對既不同 u 也不同 v ⇒ 12 條弦全部非軸
-/// 對齊（外接矩形退化態四邊恒軸對齊——考卷燈1b 判別力的幾何根因）。
+/// 對齊（外接矩形退化態四邊恆軸對齊——考卷燈1b 判別力的幾何根因）。
 /// 弓高誤差 `1−cos(15°) ≈ 3.4%` 相對半徑，記帳解剖報告。
 fn ellipse_outline() -> Outline {
     let pts = (0..12)
@@ -273,7 +273,7 @@ mod tests {
         assert!(!is_rect_like("ellipse"));
     }
 
-    /// 判別力根因：封閉形状的邊必須多數非軸對齊（外接矩形退化態四邊恒軸對齊）。
+    /// 判別力根因：封閉形狀的邊必須多數非軸對齊（外接矩形退化態四邊恆軸對齊）。
     #[test]
     fn outlines_are_observablely_not_axis_aligned() {
         let o = outline("star5", false, false).expect("star5");

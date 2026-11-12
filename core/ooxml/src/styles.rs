@@ -800,13 +800,13 @@ fn parse_tbl_style_pr(
     theme: &ThemeColors,
     tf: Option<&ThemeFonts>,
 ) -> (Option<CondShading>, Option<RunStyle>) {
-    // 深度不变式：`depth`＝相对 tblStylePr 的**当前嵌套层**（进入 tblStylePr
-    // 内容＝1；每个非自闭合 Start +1、其配對 End −1）。`tcpr_depth`＝进入
-    // tcPr 后的层（离开＝深度跌回该值以下）。
+    // 深度不變式：`depth`＝相對 tblStylePr 的**當前嵌套層**（進入 tblStylePr
+    // 內容＝1；每個非自閉合 Start +1、其配對 End −1）。`tcpr_depth`＝進入
+    // tcPr 後的層（離開＝深度跌回該值以下）。
     //
-    // 早期版本把 tcpr_depth 记成「进入 tcPr 前的深度」，于是 tcPr 的**兄弟
-    // 子女先关闭**（fdo68607 band1Horz 的 `<w:tcPr><w:tcBorders/>…<w:shd/>`
-    // ——tcBorders 先 End）就被当成 tcPr 结束，其后的 shd 全漏（實測
+    // 早期版本把 tcpr_depth 記成「進入 tcPr 前的深度」，於是 tcPr 的**兄弟
+    // 子女先關閉**（fdo68607 band1Horz 的 `<w:tcPr><w:tcBorders/>…<w:shd/>`
+    // ——tcBorders 先 End）就被當成 tcPr 結束，其後的 shd 全漏（實測
     // firstRow／band1Horz 解析 None、只有 band1Vert 命中）。
     let mut depth = 1usize;
     let mut tcpr_depth: Option<usize> = None;
@@ -2227,7 +2227,7 @@ mod tests {
 
     /// 直系 `w:rPr/w:color` 收進 `cond_color`（首見為準）；`w:color val="auto"`
     /// ＝color_set 真＋color None（明確黑三態）；只有 rPr 無 shd 的條件
-    /// （firstCol 族）不产生 cond_shading 條目。
+    /// （firstCol 族）不產生 cond_shading 條目。
     #[test]
     fn k22_cond_color_parses_direct_rpr() {
         let t = table(wrap(
@@ -2258,7 +2258,7 @@ mod tests {
         assert_eq!(auto.color, None, "auto＝color_set 真、color None");
         assert!(
             t.table_style_cond_color("K22T", "band1Horz").is_none(),
-            "未宣告 rPr 的條件＝無字色意見（None，續下一条）"
+            "未宣告 rPr 的條件＝無字色意見（None，續下一條）"
         );
         // cond_shading 零回退：同節點 shd 仍收、只有 rPr 的條件不入帳。
         assert_eq!(

@@ -1,4 +1,4 @@
-//! F2 紅燈：`a:prstGeom/@prst` 從未被消費——非矩形形状全畫成外接矩形。
+//! F2 紅燈：`a:prstGeom/@prst` 從未被消費——非矩形形狀全畫成外接矩形。
 //!
 //! # 卡面前提的實測更正（docs/f2-wordart-anatomy.md §0／§1，本卡接手再逐檔實拆覆證）
 //! `corpus/ooxmlexport/artistic_effects.docx` 的 drawing XML 實拆：`prstTxWarp`／
@@ -27,7 +27,7 @@
 //!    三角形／橢圓的斜邊）；現況非軸對齊 Rule ＝ 0 → 必紅。
 //! 3. 燈2（逐字比對源檔）：`shape_geom_facts()` 的 prst／warp 名稱與源檔 XML
 //!    實拆雙向一致（源檔每個名稱都要在、我方不得虛構源檔沒有的）。
-//! 4. 燈3（鑑別力）：`F2_GEOM_BUGGY=1` 回塞「几何節點整段跳過」舊行為——事實
+//! 4. 燈3（鑑別力）：`F2_GEOM_BUGGY=1` 回塞「幾何節點整段跳過」舊行為——事實
 //!    清空＋斜筆畫歸零；正常態二者必在。同一 suite 內前後兩態對照，紅燈由實作
 //!    驅動而非環境偶然。
 //! 5. 燈4（零擾動鎖）：artistic_effects（僅 rect prst）正常態與 buggy 態顯示
@@ -93,7 +93,7 @@ fn prst_sequence(xml: &[u8], tag: &[u8]) -> Vec<String> {
 }
 
 /// 星形／三角形／橢圓／連接線的邊是**非軸對齊**筆畫；外接矩形退化態的四條邊
-/// 恒軸對齊（x1==x2 或 y1==y2）。本函數＝該頁非軸對齊 Rule 數（容差 0.05pt）。
+/// 恆軸對齊（x1==x2 或 y1==y2）。本函數＝該頁非軸對齊 Rule 數（容差 0.05pt）。
 fn slanted_rules(eng: &Engine, page: usize) -> usize {
     let dl = eng.page_display_list(page).expect("頁存在");
     dl.items
@@ -257,7 +257,7 @@ fn f2_projection_suite() {
         }
     }
 
-    // ---- 燈3（回塞態）：F2_GEOM_BUGGY=1 整段跳過几何節點＝舊行為。 ----
+    // ---- 燈3（回塞態）：F2_GEOM_BUGGY=1 整段跳過幾何節點＝舊行為。 ----
     std::env::set_var("F2_GEOM_BUGGY", "1");
     {
         let eng = engine("ooxmlexport/tdf113183.docx");

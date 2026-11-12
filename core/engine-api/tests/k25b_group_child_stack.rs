@@ -7,7 +7,7 @@
 //! 群組的 12 個框內段落全堆在同一個起點（y≈153–166）——因為發射層只吃
 //! 「最近一個子件的矩形」（`txbx_rect`＝K4c `mapped_rect`），子件 top 被丟棄。
 //!
-//! # LO 真值（pymupdf p0 內容流 `Td` 換算 top-origin，見 §診斷档）
+//! # LO 真值（pymupdf p0 內容流 `Td` 換算 top-origin，見 §診斷檔）
 //! `docs/k25-empty-page-diag.md` §1.2／§2；探針＝scratch `k25_probe{2,5,7,8}.py`。
 //!
 //! | 標籤             | size | LO 基線 y | LO 基線 x |
@@ -81,7 +81,7 @@ fn k25b_pinned_group_children_stack_like_lo() {
         if (y - wy).abs() > 2.0 {
             bad.push(format!("{label} 基線 y={y:.2} 應 ∈ {wy}±2"));
         }
-        // x 只对「左內縮」與「右對齊」兩式發話：TEXT2 是 `w:jc=right`。
+        // x 只對「左內縮」與「右對齊」兩式發話：TEXT2 是 `w:jc=right`。
         if (x - wx).abs() > 2.0 {
             bad.push(format!("{label} 基線 x={x:.2} 應 ∈ {wx}±2"));
         }

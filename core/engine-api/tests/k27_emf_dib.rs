@@ -139,7 +139,7 @@ fn k27_lamp1b_fdo76591_emf_pixels_are_colorful() {
             }
             // **只量 EMF 兩張**（按 rclFrame 尺寸認圖）：本檔另有 image3.png
             // （背景圖）也是真彩色像素，若不篩尺寸，回塞鎖關掉 EMF 直讀後
-            // 本燈仍會因那張 PNG 而綠 ⇒ 假鎖（PM 實測 BUGGY 態确實如此）。
+            // 本燈仍會因那張 PNG 而綠 ⇒ 假鎖（PM 實測 BUGGY 態確實如此）。
             let (iw, ih) = (im["w"].as_f64(), im["h"].as_f64());
             let is_emf = matches!((iw, ih), (Some(w), Some(h))
                 if ((w - FRAME_IMG1_PT.0 as f64).abs() < 1.0

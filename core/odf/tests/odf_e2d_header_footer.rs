@@ -20,7 +20,7 @@
 //!   plain（LO 真值 tdf123705：p0/p2 頁尾 plain `Rev…Page 1 of 3`、p1/p3 頁尾
 //!   `-left` `…Page 2 of 2`、p1/p3 頁首 `-left` 空宣告⇒零發射）。全語料
 //!   `style:mirror` 宣告 0 檔而 LO 仍按偶數頁吃 `-left`⇒不以 mirror 宣告為前提。
-//!   宣告了卻該頁未消费的槽計帳 `skipped_left_slots`（空 `-left` 壓 plain 之形）。
+//!   宣告了卻該頁未消費的槽計帳 `skipped_left_slots`（空 `-left` 壓 plain 之形）。
 //!   空文字段不發（LO 不渲染），槽位存在性由 `slot_count` 保留。
 //! * **段序鐵律**：頁首段在該頁正文段**前**、頁尾段在該頁正文段**後**；
 //!   宿主流 `paragraphs`／`flatten()`／`total_text_len` **零變動**（E2e 同款

@@ -115,7 +115,7 @@ pub struct SectionSpec {
 }
 
 /// 一個 section 的頁首（或頁尾）三 slot 引用：rId 原字串，缺＝None。
-/// 解析 rId→part 與跨節繼承后的最終選用由 engine 層依
+/// 解析 rId→part 與跨節繼承後的最終選用由 engine 層依
 /// `(section_id, is_first_page, page % 2)` 決定。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotRefs {
@@ -535,7 +535,7 @@ fn scan_sections(xml: &[u8]) -> Scan {
                         }
                     }
                     // notePr 的子元素（numFmt／numRestart／num／pos／footnote）
-                    // 統一交给 notes 模組的分流口徑（不另造第二台狀態機）。
+                    // 統一交給 notes 模組的分流口徑（不另造第二台狀態機）。
                     _ if in_note_footnote => {
                         if let Some(p) = note_footnote.as_mut() {
                             crate::notes::apply_note_pr_child(p, &e, b"footnote");

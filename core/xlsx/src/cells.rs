@@ -10,7 +10,7 @@
 //! 型別語義以 ECMA-376 Part 1 §18.18.11（`t` 屬性別樹）為準。本卡型錄：
 //! `s`／`inlineStr`／`n`（缺省）／`b`／`e`／`str`（公式字串快取值——corpus 實掃
 //! 5002 格）／`d`（ISO 日期序列——ECMA 型錄成員但 corpus 零出現，raw 原樣不轉
-//! 日期）。**未見于型錄的 t 值 → [`CellValue::Unknown`] 保留 raw，不猜。**
+//! 日期）。**未見於型錄的 t 值 → [`CellValue::Unknown`] 保留 raw，不猜。**
 //!
 //! 數字/raw 紀律：數值一律以**原始字串**保存，不強轉 f64——corpus 57181 的
 //! `0.99829999999999997` 轉 f64 再印回就是精度謊言。
@@ -206,7 +206,7 @@ pub enum CellValue {
     FormulaString { raw: String },
     /// `t="d"`：ISO 日期序列字串（ECMA 型錄成員、corpus 零出現；不轉日期）。
     DateSerial { raw: String },
-    /// 未見于型錄的 t 值：型錄外宣告＋raw（`<v>` 缺席＝None）原樣保留，不猜。
+    /// 未見於型錄的 t 值：型錄外宣告＋raw（`<v>` 缺席＝None）原樣保留，不猜。
     Unknown { t: String, raw: Option<String> },
     /// 無值可投影：空 cell（`<c r="B2"/>`；或帶 t 但 `<v>` 缺席的「只有格式的
     /// 空白格」ECMA §18.3.1.4——`t="s"` 除外，索引存在即有意義）。

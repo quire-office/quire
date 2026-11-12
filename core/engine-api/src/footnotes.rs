@@ -448,7 +448,7 @@ pub struct PageInfo {
 /// 「表格內部段落流失權」契約），故 [`find_anchor_line`] 對格內錨點**必然**
 /// 找不到行——舊行為整條落「文件最後一頁」（form_footnotes 實測：註文壓在
 /// p4，LO 掛 p1 頁腳）。本函式補上「表格段→頁」這一段映射：
-/// - `slot_of_para[p]`＝段落 p 所属表格槽的下標（engine 由 `table_slots()` 的
+/// - `slot_of_para[p]`＝段落 p 所屬表格槽的下標（engine 由 `table_slots()` 的
 ///   `para_start..para_end` 反查；`usize::MAX`＝非表格段，走流行程原路徑）；
 /// - `header_of_slot[s]`＝槽 s 的錨點段 index（＝ `TableSlot::para_start`，
 ///   與 `TablePlacement::anchor_para` 蓋章同源）；
@@ -457,7 +457,7 @@ pub struct PageInfo {
 ///   該旗標標的是「切片起於表格首列首帶」，與「本槽在本頁首現」在首列
 ///   超頁高／跨節重排時可分離，段歸屬口徑（與 packer 排槽同源）才可靠。
 ///
-/// `R7_BUGGY=1` 回塞鎖（照 L2_BUGGY／R2_BUGGY／K4D_BUGGY 先例）：本函式恒回
+/// `R7_BUGGY=1` 回塞鎖（照 L2_BUGGY／R2_BUGGY／K4D_BUGGY 先例）：本函式恆回
 /// `None`，退回「格內註腳落末頁」舊態——紅燈必紅。
 pub fn table_anchor_page(
     pages: &[quire_layout::Page],
@@ -498,7 +498,7 @@ pub struct MarkStyle {
 /// 3. 同一則註腳被多頁引用 ⇒ 每頁各發一條（編號相同）；同頁重複引用 ⇒ 一條。
 ///
 /// `rounds` 由呼叫端（收斂迴圈）填；本函式純函數、不帶狀態。
-#[allow(clippy::too_many_arguments)] // 版面事實/錨點/條目/映射/樣式皆必要輸入，不塞結構體中转
+#[allow(clippy::too_many_arguments)] // 版面事實/錨點/條目/映射/樣式皆必要輸入，不塞結構體中轉
 pub fn layout_notes(
     pages: &[quire_layout::Page],
     info: &[PageInfo],
@@ -634,7 +634,7 @@ pub fn page_budget_bands(capacity: u32, min_body: u32, sep_bands: u32) -> u32 {
 /// - 放不下且本頁塞得下一行 ⇒ 切 `floor(room/每行帶)` 行（至少 1）作本頁段，
 ///   其餘成續排段（`continuation=true`，行區間天然不含編號前綴行）推往後頁。
 /// - 本頁連一行都塞不下 ⇒ 整段（前綴保留在原段）推往後頁。
-/// - 走到最後仍有余段 ⇒ 誠實溢出：全部掛末頁（寧可溢出重疊，不靜默吞字；
+/// - 走到最後仍有餘段 ⇒ 誠實溢出：全部掛末頁（寧可溢出重疊，不靜默吞字；
 ///   真·新增頁屬 F3 分頁回饋，本卡不做）。
 ///
 /// 收斂性論證（給 F2b-2 收斂迴圈用）：預算錨定在**未扣預留的固定容量**

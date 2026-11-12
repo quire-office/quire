@@ -7,7 +7,7 @@
 //! 樣式框線：`w:tblStyle` 查 `word/styles.xml` 的 `w:style[@w:type='table']`
 //! → `w:tblPr/w:tblBorders`，並沿 `w:basedOn` 鏈向上繼承（鏈環／斷鏈停住，
 //! 容錯不 panic）。這是 v1 的最小查表——條件框線（firstRow/band1Horz 等）
-//! 不實作，與 layout 層头注的取捨一致。
+//! 不實作，與 layout 層頭注的取捨一致。
 //!
 //! 條件**底紋**（K8-shd）：`tblStylePr/w:tcPr/w:shd` 經 `w:tblLook` 生效閘
 //! 逐屬性級聯消費（見 [`ShadingCtx`]），條件框線仍走 v1 最小查表不變。
@@ -135,7 +135,7 @@ fn compute_cond_gates(t: &Table) -> Vec<Vec<CellConds>> {
     rows
 }
 
-/// twip → pt。非法／缺＝None（容錯鐵律：不猜、不虚構）。
+/// twip → pt。非法／缺＝None（容錯鐵律：不猜、不虛構）。
 fn twip_pt(raw: Option<&str>) -> Option<f32> {
     raw.and_then(|s| s.trim().parse::<f32>().ok())
         .map(|v| v / 20.0)
@@ -161,7 +161,7 @@ enum ShdDecision {
     Color(u32),
     /// 明確不著色（`@w:val="nil"`／`@w:fill="auto"`）：壓掉更低優先條條件。
     Nil,
-    /// 本條無 fill 意見（續下一条／退回下層）。
+    /// 本條無 fill 意見（續下一條／退回下層）。
     Pass,
 }
 
@@ -182,7 +182,7 @@ fn parse_hex6(s: &str) -> Option<u32> {
 ///   cache 與 theme 現值分歧，LO 照讀 cache）。
 /// - theme 推導＝`themeFill` 查 clrScheme ＋ `themeFillTint/Shade` 變換
 ///   （`apply_shading_transform`，floor 非 round）。查無主題色＝Pass
-///   （不虚構）。
+///   （不虛構）。
 /// - `K8_SHD_BUGGY=1`：theme 推導**與條件帶全滅**（呼叫端另跳過條件迴圈），
 ///   只留 cache fill 舊路徑——紅燈 k8_shd 燈 1/2/3 必紅的機制分離鎖。
 fn shd_decision(
@@ -285,7 +285,7 @@ pub fn cond_run_colors(tables: &[BodyTable], ctx: &ShadingCtx) -> HashMap<usize,
 
 /// 一表（含巢狀）逐格條件字色 → 格內段落烘焙。樣式 id：自帶＞繼承外層
 /// （ECMA §17.4.65，同 `table_input` 巢狀口徑）；無任何樣式 id＝本表無
-/// 條件層，但巢狀子表仍可能自帶——續遞迴，不虚構。
+/// 條件層，但巢狀子表仍可能自帶——續遞迴，不虛構。
 fn collect_cond_color_table(
     t: &quire_ooxml::Table,
     inherit: Option<&str>,
@@ -332,7 +332,7 @@ fn collect_cond_color_table(
 }
 
 /// 一格命中的條件字色（`COND_PRIORITY` 序逐條查，首個宣告者定案——與
-/// [`cond_band_fill`] 的底色查表同口徑；未宣告＝續下一条，逐屬性級聯非
+/// [`cond_band_fill`] 的底色查表同口徑；未宣告＝續下一條，逐屬性級聯非
 /// 整條件覆蓋）。`w:color val="auto"`（color_set 真、color None）＝明確黑。
 fn cond_cell_color(style_id: &str, conds: &[(&str, bool)], ctx: &ShadingCtx) -> Option<u32> {
     for (cond, gate) in conds {
@@ -542,7 +542,7 @@ fn fill_missing_margins(dst: &mut CellMarginInput, src: &CellMarginInput) {
     }
 }
 
-/// 格內圖片投影表（t_a1397522）：錨定段落 → 依文档序的尺寸序列。
+/// 格內圖片投影表（t_a1397522）：錨定段落 → 依文檔序的尺寸序列。
 /// 同一段落多張圖＝逐張注入（CellBlock::Image 在格內垂直堆疊、帶高累加
 /// ——卡片語義；不合併，合併會虛構容量）。
 fn cell_image_map(images: &[quire_ooxml::InlineImage]) -> HashMap<usize, Vec<(f32, f32)>> {
@@ -769,7 +769,7 @@ pub fn table_input(
     // E1-C 卡 C：段落索引 → 標點覆寫臂（與 advs 同索引；呼叫端已濾空段與 0）。
     arms: &HashMap<usize, u8>,
     // K8-shd：條件底紋上下文（None＝頁首尾表格／診斷鏡像零擾動路徑；Some
-    // ＝正文表消费 tblStylePr 條件層）。`style_inherit`＝巢狀表未自帶
+    // ＝正文表消費 tblStylePr 條件層）。`style_inherit`＝巢狀表未自帶
     // `w:tblStyle` 時繼承的外層樣式 id（ECMA §17.4.65：子表無宣告沿父表）。
     cond: Option<&ShadingCtx<'_>>,
     style_inherit: Option<&str>,
@@ -1123,10 +1123,10 @@ pub fn find_cell_for_para(
 /// 浮動圖座標解析（t_1a79f1c5）：`wp:positionH/V` 的 posOffset 與 align 是
 /// **互斥兩式**（ECMA-376 §20.4.2.8）——OOXMLExport 對整頁封面圖（wrapNone
 /// ＋`<wp:align>center</wp:align>`）只寫 align 不寫 posOffset，舊口徑把缺
-/// posOffset 一律退化 inline，792pt 封面圖撐爆行網格（1 頁变 3 頁）。
+/// posOffset 一律退化 inline，792pt 封面圖撐爆行網格（1 頁變 3 頁）。
 /// 現行規則：兩軸 posOffset 齊備 → 直接用；缺軸補 `<wp:align>` 換算
 /// （frame 依 relativeFrom 分類取頁寬／版心寬／錨點段寬）；兩式皆無 →
-/// None（呼叫端退化 inline，誠實近似宁多撑帶不虚構空頁）。
+/// None（呼叫端退化 inline，誠實近似寧多撐帶不虛構空頁）。
 /// `page_w`／`page_h`＝頁寬高（page 系 frame）；`avail_w`＝版心寬（margin 系 frame）。
 fn resolved_anchor(
     im: &quire_ooxml::InlineImage,
@@ -1241,7 +1241,7 @@ fn resolved_anchor(
 /// - 浮動圖（anchor）且座標可解析（posOffset 或 align，t_1a79f1c5）→
 ///   **不佔帶**（bands=0），`anchor=Some(FloatingAnchor)`，各軸原點系由
 ///   relativeFrom 分類；
-/// - 鎖點兩式皆缺 → 退化 inline（佔帶，誠實近似宁多撑帶不虚構空頁）；
+/// - 鎖點兩式皆缺 → 退化 inline（佔帶，誠實近似寧多撐帶不虛構空頁）；
 /// - 帶高 ceil(h/line_h)（至少 1）；寬高老實原值（layout 端再鉗）。
 ///
 /// align 換算的 frame 尺寸逐段查 `sections`（缺項退回 params 基準），
@@ -1296,7 +1296,7 @@ pub fn build_images(
             // G1 返修（11-08 實測分流，見 docs/g1-anchor-relativity-anatomy.md §6）：
             // 三條律各自獨立閘控，依據全部是 LO 實抓反解，不是推測——
             // 1. **H 軸內容盒律對 `layoutInCell=1` 同樣成立**：用戶檔三枚 lic=1×column
-            //    錨點，main 原點系與 LO 真值恒差 +5.95pt（=½左框線＋格左內距），換內容盒
+            //    錨點，main 原點系與 LO 真值恆差 +5.95pt（=½左框線＋格左內距），換內容盒
             //    後 405.75/358.70/357.20 對 LO 406.0/359.0/357.5（誤差 ≤0.3pt）；
             //    bnc891663 同向 431.10→425.95 對 LO 426.2（誤差 +4.9→−0.25pt）。
             // 2. **V 軸框線＋上內距律對 `layoutInCell=1` 不成立**：用戶檔 LO 真值
@@ -1536,7 +1536,7 @@ pub fn build_slots(
 // ---------------------------------------------------------------------------
 
 /// 撐列模型的 ECMA 預設內邊距（`bodyPr` 缺 tIns/bIns＝45720EMU＝3.6pt；
-/// lIns/rIns＝91440EMU＝7.2pt）。出处 docs/k18-lo-rowgrow-calibration.md §3
+/// lIns/rIns＝91440EMU＝7.2pt）。出處 docs/k18-lo-rowgrow-calibration.md §3
 /// （WC048 實測口徑），非湊數常數。
 const K17_INS_TB_PT: f32 = 3.6;
 const K17_INS_LR_PT: f32 = 7.2;
@@ -1568,7 +1568,7 @@ struct K17GrowFacts {
 ///   n_lines 用 TextMeasurer 依框內寬（w−lIns−rIns）實斷行（LO 同款換行）。
 ///
 /// posV 三式退檔（比照 resolved_anchor，但只取 V 軸**列內偏移**）：
-/// posOffset → pct×(page 系用頁高／其余用版心高)；align 式撐列基準未校準
+/// posOffset → pct×(page 系用頁高／其餘用版心高)；align 式撐列基準未校準
 /// ＝老實跳過（不虛構撐列）。回塞鎖 `K17_ANCHOR_ROWGROW_BUGGY=1` 整支關閉。
 fn k17_grow_floors(
     table: &Table,
@@ -1664,7 +1664,7 @@ fn k17_grow_floors(
             let pitch = size * (f.line_declared.unwrap_or(240.0) / 240.0) * lh_face;
             let inner_w = (im.w_pt - f.lins - f.rins).max(1.0);
             // K20：斷行測量器必須帶 K7-cal 水平尺（`face_advance_scale`）。
-            // 用 `new`（1.0 尺）会把 Calibri 框內文字寬放大 ~13%：WC049-Mod
+            // 用 `new`（1.0 尺）會把 Calibri 框內文字寬放大 ~13%：WC049-Mod
             // 37 字被判 2 行（LO 真尺 1 行）→ 錨定列多撐一整行 13.4pt。
             // 族退檔鏈＝框內宣告 → doc_face → liberation serif（與 pitch 的
             // lh_face 同尺同鏈，行高/行寬一個模型）。BUGGY 總開關走
@@ -1681,7 +1681,7 @@ fn k17_grow_floors(
             };
             let m = quire_layout::TextMeasurer::with_advance_scale(size, adv);
             let mut h = f.tins + f.bins + f.spacing_sum_pt;
-            // 段落數：txbx_texts（框內段文字，文档序）。空 vector＝無段文字
+            // 段落數：txbx_texts（框內段文字，文檔序）。空 vector＝無段文字
             // 的事實（不虛構段落行；K18 盲測 pA 單段口徑由 len=1 自然覆蓋）。
             for text in &im.txbx_texts {
                 let n_lines = if text.trim().is_empty() {
@@ -1692,7 +1692,7 @@ fn k17_grow_floors(
                 h += n_lines * pitch;
             }
             // 段邊框（K12 txbx_borders 為真相：width_pt 已是 sz/8，space_pt
-            // 另計）：top＋bottom 各一条（K18 §3 藍線項 2×(3+8)）。
+            // 另計）：top＋bottom 各一條（K18 §3 藍線項 2×(3+8)）。
             for b in &im.txbx_borders {
                 if b.edge == "top" || b.edge == "bottom" {
                     h += b.width_pt + b.space_pt.unwrap_or(0.0);
@@ -2232,7 +2232,7 @@ mod tests {
             stroke_width_pt: None,
             stroke_dash: Some("rIdX".into()),
             txbx_texts: Vec::new(),
-            // F2：挪用欄位＝非群組形状，無 prst 事實。
+            // F2：挪用欄位＝非群組形狀，無 prst 事實。
             geom_prst: None,
             flip_h: false,
             flip_v: false,

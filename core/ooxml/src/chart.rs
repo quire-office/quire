@@ -241,7 +241,7 @@ impl ChartDoc {
     }
 }
 
-/// 由整份 docx 位元組取「掛載點＋已解析內容」成對清單（文档序、去重）。
+/// 由整份 docx 位元組取「掛載點＋已解析內容」成對清單（文檔序、去重）。
 ///
 /// 無圖表檔＝回空清單（發射層零擾動快路徑；round-trip 不受影響——本函數
 /// **只讀 parts**，絕不寫回）。
@@ -407,7 +407,7 @@ pub fn scan_chart_mounts(xml: &[u8]) -> Vec<ChartMount> {
                         }
                     }
                     b"chart" => {
-                        // `c:chart/@r:id`（local-name＝id／embed，前綴无关）。
+                        // `c:chart/@r:id`（local-name＝id／embed，前綴無關）。
                         if let Some(p) = cur.as_mut() {
                             if p.is_chart && p.rid.is_none() {
                                 p.rid = attr_str(&e, b"id").or_else(|| attr_str(&e, b"embed"));
@@ -540,7 +540,7 @@ struct WspFrame {
     mounts: Vec<usize>,
 }
 
-/// 掛載掃描的进行中候選（內部型別，不出口）。
+/// 掛載掃描的進行中候選（內部型別，不出口）。
 #[derive(Default)]
 struct PendingMount {
     para: usize,
@@ -584,7 +584,7 @@ fn emu_attr_opt(e: &BytesStart, key: &[u8]) -> Option<f32> {
         .filter(|v| v.is_finite() && *v >= 0.0)
 }
 
-/// 取屬性字串（local-name 比對，前綴无关——strict／transitional 共用）。
+/// 取屬性字串（local-name 比對，前綴無關——strict／transitional 共用）。
 fn attr_str(e: &BytesStart, key: &[u8]) -> Option<String> {
     for a in e.attributes().flatten() {
         if a.key.local_name().as_ref() == key {

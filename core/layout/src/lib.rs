@@ -937,7 +937,7 @@ pub struct FloatingAnchor {
     pub y_frame: OriginFrame,
 }
 
-/// 頁面上的圖片佔位放置（pack_run flush 時蓋章；座標＝版內相对，
+/// 頁面上的圖片佔位放置（pack_run flush 時蓋章；座標＝版內相對，
 /// y 已是行網格帶索引，繪製端 y_pt＝margin_top＋band×line_h）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PageImage {
@@ -1683,7 +1683,7 @@ pub fn build_flow_images(
             continue; // 表格內部段落：文字由表格切片繪製
         }
         flow.push(FlowItem::Text { para });
-        // 錨定在該段的圖片（文档序）；越界/表格區間內項老實略過。
+        // 錨定在該段的圖片（文檔序）；越界/表格區間內項老實略過。
         while gi < images.len() && images[gi].para == para {
             if images[gi].anchor.is_none() && !in_table_span(para) {
                 flow.push(FlowItem::Image { img: gi });
@@ -1997,7 +1997,7 @@ pub enum Invalidation {
     Page(usize),
     /// 增量重排尚有尾段未定案（預算制軟分頁）：此頁起的版面是**暫缺**狀態，
     /// 待 `LayoutEngine::reflow_step` 於空檔排完才會補齊。shell 收到此事件
-    /// 應在闲置時呼叫 `reflow_step`，並依其回傳的 `Page(_)` 事件重繪。
+    /// 應在閒置時呼叫 `reflow_step`，並依其回傳的 `Page(_)` 事件重繪。
     /// （P0-6 起 `Page(_)` 只覆蓋髒頁區間——舊骨架的 AllPages 已無生產者，
     /// 全版面重繪用「對每頁各發一個 Page」表達。）
     ReflowPending {
@@ -2253,7 +2253,7 @@ pub struct LayoutEngine {
     /// 正文流圖片佔位錨點（t_a1397522；engine 由 `w:drawing` 投影餵入，
     /// 生命期內不變——圖片不隨打字編輯變動）。
     images: Vec<ImageBand>,
-    /// 預算用盡時的待续掃描狀態＋已定案頁數（Some = 尾段是舊快照的軟分頁）。
+    /// 預算用盡時的待續掃描狀態＋已定案頁數（Some = 尾段是舊快照的軟分頁）。
     pending: Option<(PackState, usize)>,
     /// 同步路徑預算（頁）；`None`＝全速（預設：既有行為完全不變，只變快）。
     sync_budget: Option<usize>,
@@ -2274,7 +2274,7 @@ impl LayoutEngine {
     }
 
     /// Phase3-1b：帶表格槽的建構。`tables` 須依 para_start 排序且不重疊
-    /// （engine 層映射時整理；违约由 build_flow 的 debug_assert 抓）。
+    /// （engine 層映射時整理；違約由 build_flow 的 debug_assert 抓）。
     pub fn with_tables(
         texts: &[String],
         params: LayoutParams,
@@ -2426,7 +2426,7 @@ impl LayoutEngine {
         self.sync_budget = pages.map(|n| n.max(1));
     }
 
-    /// 版面是否已定案（無待排尾段）。shell 用于決定要不要排 `reflow_step`。
+    /// 版面是否已定案（無待排尾段）。shell 用於決定要不要排 `reflow_step`。
     pub fn is_settled(&self) -> bool {
         self.pending.is_none()
     }
@@ -2469,7 +2469,7 @@ impl LayoutEngine {
     /// 若上一筆編輯因預算未排完（軟分頁），先排完再接新編輯——保證每次重排
     /// 只有一個髒段落，且軟分頁的「暫缺尾頁」不會跨越兩筆編輯疊代累積。
     pub fn replace_paragraph_text(&mut self, para: usize, new_text: &str) -> Vec<Invalidation> {
-        // 軟分頁未定案 → 先同步排完；重繪事件并入本次回報（不然 shell 漏畫）。
+        // 軟分頁未定案 → 先同步排完；重繪事件並入本次回報（不然 shell 漏畫）。
         let mut evs: Vec<Invalidation> = Vec::new();
         while self.pending.is_some() {
             let (mut settle_evs, _) = self.reflow_bounded(None);
@@ -2719,7 +2719,7 @@ impl LayoutEngine {
         // y→帶→行陣列索引：有表格的頁 band ≠ 陣標（`line_bands` 才是映射，
         // caret_rect 正向走同一映射）。點在表格帶／空帶上命中不到文字行 →
         // None（表格內 caret 不在 v1 範圍）。無表格頁 line_bands＝0..n，
-        // position 命中恒等索引，舊行為逐位元組不變。
+        // position 命中恆等索引，舊行為逐位元組不變。
         let li = if p.line_bands.is_empty() {
             band as usize // 舊快照無 line_bands：退回陣標（與 caret_rect 同策）
         } else {
@@ -2942,7 +2942,7 @@ mod tests {
                 85..=89 => s.push_str(rng.pick(&CTRL)),
                 90..=94 => {
                     // Latin-1 高位區（é ÿ 等）：測試非 ASCII 非 CJK 的字寬路徑。
-                    // （舊寫法 `as u8 as char` 把 CJK 码位截斷成 Latin-1，是 bug。）
+                    // （舊寫法 `as u8 as char` 把 CJK 碼位截斷成 Latin-1，是 bug。）
                     if let Some(c) = char::from_u32(0xA0 + (rng.next() % 0x60) as u32) {
                         s.push(c);
                     }
@@ -2974,7 +2974,7 @@ mod tests {
     /// P2b 的孤兒標記豁免類別：UAX#14 規則優先序中 LB18「SP ÷」高於各條
     /// `×` 規則（LB6 × CM、LB21 × NS…），官方 LineBreakTest（Unicode 15.1）
     /// 明文 `SP ÷ CM1`（`0020 ÷ 0308` ×129）、`SP ÷ GL`（NBSP ×123）、`SP ÷ IN`
-    /// （`%` ×123）、`SP ÷ ZWJ`——空格之後的標記/黏著字元是「孤兒」形态
+    /// （`%` ×123）、`SP ÷ ZWJ`——空格之後的標記/黏著字元是「孤兒」形態
     /// （LB1 後無基字可附），LB18 把它與前文分開是合法斷點。真正禁的是
     /// **附著**序列被拆（基字+組合記號分家）：那類位置前無可斷空白，由
     /// P2a（斷點必須來自 UAX#14）＋P2b 雙重封鎖。
@@ -3009,7 +3009,7 @@ mod tests {
                 .filter(|c| !EOL_CONTROLS.contains(c))
                 .collect();
             assert_eq!(sp.line.text, expect, "行 {k} 顯示文字不符：{text:?}");
-            // P4 控制字元只准出现在行尾區（不進顯示文字）。
+            // P4 控製字元只准出現在行尾區（不進顯示文字）。
             assert!(
                 raw.chars()
                     .rev()

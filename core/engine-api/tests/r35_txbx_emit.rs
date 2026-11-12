@@ -276,7 +276,7 @@ fn r35_emits_all_textbox_embedded_drawings() {
 }
 
 /// 燈 6（卡 4 的排版面副產物鎖）：缺 extent 段落的**步進不被吞**——
-/// 「步进步照」與「无图段」的基線距在两態必須相同（BUGGY 態 0×0 Rect
+/// 「步進步照」與「無圖段」的基線距在兩態必須相同（BUGGY 態 0×0 Rect
 /// 走 has_image 分支跳過空段步進，本燈把該偏移量化留檔）。
 #[test]
 fn r35_missing_extent_paragraph_does_not_swallow_step() {

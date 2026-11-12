@@ -23,7 +23,7 @@
 //! 不靠猜測。
 //!
 //! ## 成立條件（三道閘，逐條有實據；任一不過 ⇒ None）
-//! 1. **無向量繪圖記錄**（[`vector_paint`]）：路徑／多邊形／圓弧／区域繪製系記錄
+//! 1. **無向量繪圖記錄**（[`vector_paint`]）：路徑／多邊形／圓弧／區域繪製系記錄
 //!    一旦出現，代表 EMF 還畫了 DIB 之外的東西，只貼 DIB 就是虛構。
 //!    實據：`n779834/image1.emf` 182 筆記錄含 `BEGINPATH×16`、`ENDPATH×16`、
 //!    `FILLPATH×11`、`MOVETOEX×21`、`POLYBEZIERTO16×16`、`POLYPOLYGON16×6`——
@@ -43,7 +43,7 @@
 //!    ——畫面框遠大於 DIB 即代表框內另有內容。
 //! 3. **可直讀的像素格式**：`BI_RGB`（16bpp＝X1R5G5B5）或 `BI_BITFIELDS`
 //!    （16bpp 5-6-5 系遮罩）；24／32bpp 一併支援。`BI_PNG`／`BI_JPEG`／RLE／
-//!    调色板（`biClrUsed>0` 或 bpp≤8）一律 `None`（老實退化：全語料 media EMF
+//!    調色板（`biClrUsed>0` 或 bpp≤8）一律 `None`（老實退化：全語料 media EMF
 //!    的 3 筆 DIB 皆 `BI_RGB`/`biClrUsed=0`，未實測分支不虛構）。ROP 必須是
 //!    `SRCCOPY 0xCC0020`——其他光柵運算我們無法重現。
 //!
@@ -95,7 +95,7 @@ pub enum EmfReject {
     VectorPaint,
     /// `rclFrame`／DIB 長寬比不合（閘 2）。
     AspectMismatch,
-    /// 格式不可直讀（閘 3：BI_PNG/BI_JPEG/RLE/调色板/未知 bpp）。
+    /// 格式不可直讀（閘 3：BI_PNG/BI_JPEG/RLE/調色板/未知 bpp）。
     UnsupportedFormat,
     /// ROP 非 SRCCOPY。
     UnsupportedRop,
@@ -234,7 +234,7 @@ fn records(emf: &[u8], start: usize) -> Option<Vec<Record>> {
 /// 納入：多邊形／曲線系（2..=8、85..=92 的 16 位元變體）、`SETPIXELV`(15)、
 /// 圖元系（42..=47 橢圓/矩形/圓角矩形/弧/弦/扇）、53..=57（EXTFLOODFILL/LINETO/
 /// ARCTO/POLYDRAW/SETARCDIRECTION）、路徑系（59..=68 含 `FILLPATH`/`STROKEPATH`/
-/// `STROKEANDFILLPATH`）、区域繪製（71..=74）。
+/// `STROKEANDFILLPATH`）、區域繪製（71..=74）。
 ///
 /// **不**納入（實據見檔頭 §成立條件 1）：`BITBLT`/`STRETCHBLT`/`MASKBLT`/`PLGBLT`
 /// （76..=79，同矩形雙緩衝複製）、文字系（82/83/84/96/97）、state／物件系
@@ -290,7 +290,7 @@ impl RecordLayout {
     ///
     /// **不實作** MS-EMF §2.3.3.31 的字面版式（固定區 108B、off* 以整筆記錄為
     /// 基準）：語料 0 實例，欄位偏移無實據可驗，憑規格表硬寫＝憑空猜測；
-    /// 真有該式檔案出現由後續卡帶實據補（届时自我一致性校驗仍是守門）。
+    /// 真有該式檔案出現由後續卡帶實據補（屆時自我一致性校驗仍是守門）。
     fn parse(body: &[u8]) -> Option<Self> {
         Self::try_layout(body, 80, 48, 68, 64)
     }
@@ -365,7 +365,7 @@ impl RecordLayout {
 type Masks = (u32, u32, u32);
 
 /// 解 `BI_RGB`／`BI_BITFIELDS` 的 16/24/32bpp DIB → top-down RGBA8。
-/// 其他（调色板、RLE、BI_PNG/BI_JPEG、1/4/8bpp）⇒ `None`（老實退化）。
+/// 其他（調色板、RLE、BI_PNG/BI_JPEG、1/4/8bpp）⇒ `None`（老實退化）。
 fn decode_dib(body: &[u8], layout: &RecordLayout) -> Option<DibPixels> {
     let bmi = body.get(layout.bmi..layout.bmi + layout.cb_bmi)?;
     let bi_size = u32::from_le_bytes(bmi[0..4].try_into().ok()?) as usize;
@@ -375,8 +375,8 @@ fn decode_dib(body: &[u8], layout: &RecordLayout) -> Option<DibPixels> {
         u16::from_le_bytes(bmi[14..16].try_into().ok()?) as usize,
         u32::from_le_bytes(bmi[16..20].try_into().ok()?),
     );
-    // 调色板（bpp<=8 或 biClrUsed>0）：本卡不支援（實據：corpus 三筆 DIB 的
-    // biClrUsed 皆 0、bpp>=16）——不虛構调色板展開。
+    // 調色板（bpp<=8 或 biClrUsed>0）：本卡不支援（實據：corpus 三筆 DIB 的
+    // biClrUsed 皆 0、bpp>=16）——不虛構調色板展開。
     let clr_used = bmi
         .get(32..36)
         .and_then(|b| Some(u32::from_le_bytes(b.try_into().ok()?) as usize))
@@ -645,7 +645,7 @@ mod tests {
         };
         // bottom-up ⇒ 頂列是像素區第二列。
         // 口徑＝X1R5G5B5（bit15 是 X 不是 R）＋ 5 位元滿值 *255/31（與 P5 探針
-        // `*255//31`、corpus 取證像素同一把尺；不是「取頂字节」——那會讓
+        // `*255//31`、corpus 取證像素同一把尺；不是「取頂字節」——那會讓
         // 0xF800 出 248 而 LO 出 246，色軸直接偏）。
         assert_eq!(px(0, 0), (246, 0, 0, 255), "0xF800：X=1、R=30 ⇒ 30*255/31");
         assert_eq!(px(1, 0), (255, 255, 255, 255), "0x7FFF ⇒ R/G/B 皆滿值 255");
@@ -824,13 +824,13 @@ mod tests {
                 "壓縮型別 {comp} 不得假解（P5-diag §5：BI_PNG/BI_JPEG 屬後續卡）"
             );
         }
-        // 调色板（biClrUsed>0）⇒ 不支援。
+        // 調色板（biClrUsed>0）⇒ 不支援。
         let mut rec = stretch_dib(2, 2, 16, BI_RGB, None, &dib16_555(), SRCCOPY, false);
         // 版式＝記錄相對：BIH 起點在 record+80；biClrUsed@BIH+32 ⇒ record+112。
         let clr_at = 80 + 32;
         rec[clr_at..clr_at + 4].copy_from_slice(&4u32.to_le_bytes());
         let emf = wrap((2000, 2000), &[rec]);
-        assert!(emf_embedded_dib(&emf).is_none(), "调色板 DIB 不得假解");
+        assert!(emf_embedded_dib(&emf).is_none(), "調色板 DIB 不得假解");
         // ROP 非 SRCCOPY ⇒ 無法忠實重現。
         let emf = wrap(
             (2000, 2000),

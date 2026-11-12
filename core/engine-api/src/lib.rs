@@ -47,7 +47,7 @@ pub use quire_layout::table::{Pen, RowFrag, TableFrag};
 // 頁底註腳層（F2b-2）：幾何與排布純函數（消費 F1 資料層＋F2a/F2b-1 預留機制）。
 pub mod footnotes;
 /// H2／F3b 共用的編號消費地基（純函式：numFmt 字面、numRestart 重啟、
-/// settings/sectPr 逐欄合併）。消費接线在註腳/尾註兩條鏈各自的卡。
+/// settings/sectPr 逐欄合併）。消費接線在註腳/尾註兩條鏈各自的卡。
 pub mod numbering;
 pub use footnotes::{AnchorMark, NoteLayout, NoteRun, PageFoot};
 
@@ -221,7 +221,7 @@ type PendingEmfCandidate = (String, EmfRasterPayload);
 
 /// K4c-image 像素池項（開檔期一次性解析；像素位元組本身**不複製**進
 /// 引擎——只記來源 part 路徑，發射時才從 `doc.parts` 取位元組編 base64，
-/// 開檔成本與檔案大小同尺、不雙倍佔内存）。
+/// 開檔成本與檔案大小同尺、不雙倍佔內存）。
 #[derive(Debug, Clone)]
 struct PixelSource {
     /// 宿主段落（扁平段落索引；配對鍵之一）。
@@ -970,7 +970,7 @@ impl Engine {
         self.compute_header_push();
     }
 
-    // ---------------- K7b：頁首推下层（Bug51170 尾部流動）----------------
+    // ---------------- K7b：頁首推下層（Bug51170 尾部流動）----------------
     //
     // LO 口徑（docs/k7-wrapwidth-diag.md §4）：頁首內容塊底端越過 top margin
     // 時，正文起點不再是 margin_top，而是被頁首推到「頁首底端＋一行清距」
@@ -995,7 +995,7 @@ impl Engine {
     // 由外部執行驗證）。
 
     /// 推下收斂主體：「設表→分頁→量頁首底端→新表」直至逐頁推下表穩定
-    /// （≤`MAX_CONVERGE_ROUNDS` 輪）。不变量：結束時版面就是按
+    /// （≤`MAX_CONVERGE_ROUNDS` 輪）。不變量：結束時版面就是按
     /// `self.params.header_pushes_pt` 分頁的結果（發射↔分頁自洽）。
     fn compute_header_push(&mut self) {
         if std::env::var_os("K7B_HDR_PUSH_BUGGY").is_some() {
@@ -1290,7 +1290,7 @@ impl Engine {
     /// **老實邊界（pos 未消費）**：`w:endnotePr/@w:pos` 的 `sectEnd`／`pageEnd`
     /// **不消費、不實裝分支**——corpus Saturn.docx 實見 `pos=sectEnd`（單節），
     /// 本卡仍按 F3 現行 `documentEnd`（文件末頁）渲染；節末尾註頁屬後續卡。
-    /// `pos` 只決定尾註頁摆放位置、與編號無關，故此處不讀 `pos`。分隔線註
+    /// `pos` 只決定尾註頁擺放位置、與編號無關，故此處不讀 `pos`。分隔線註
     /// （`separator`／`continuationSeparator`）的 id 亦**不解析不渲染**——其
     /// 圖形內容屬後續卡，H1 只存 id（見 [`footnotes::EndLayout`] 注）。
     fn assign_endnote_labels(&self, anchors: &[footnotes::Anchor]) -> HashMap<i64, String> {
@@ -2211,20 +2211,20 @@ impl Engine {
     /// F2：幾何事實展平——每個圖形框候選的 `a:prstGeom/@prst` 與
     /// `a:prstTxWarp/@prst` 名稱（根框層；None＝源檔未宣告）。
     ///
-    /// 紅燈佔位實作（ODF-C3 先例）：**F2 實作期本函數恒回全 None**——燈2／
+    /// 紅燈佔位實作（ODF-C3 先例）：**F2 實作期本函數恆回全 None**——燈2／
     /// 燈3a 因此拍紅（實作路徑從未讀 `@prst`，佔位態忠於現況），綠燈 commit
     /// 由 `InlineImage.geom_prst`／`warp_prst` 欄位落地後翻綠。
-    /// F2：本引擎全部形狀候補的**幾何事實**清單（文档序）：每項＝
+    /// F2：本引擎全部形狀候補的**幾何事實**清單（文檔序）：每項＝
     /// `(prstGeom/@prst 名稱, prstTxWarp/@prst 名稱)`，未宣告＝`None`。
     ///
-    /// 紅燈階段的佔位實作恒回全 `None`（忠於「`@prst` 從未被讀取」的舊現況）；
+    /// 紅燈階段的佔位實作恆回全 `None`（忠於「`@prst` 從未被讀取」的舊現況）；
     /// 綠燈實作＝原樣透傳採集層捕獲的 `InlineImage.geom_prst`／`warp_prst`
     /// （考卷燈2 與源檔 `ZipBundle` 直接解壓結果逐字雙向比對；燈3 的
     /// `F2_GEOM_BUGGY=1` 回塞態由採集層清空該欄，本函式零邏輯＝無第二個
     /// 可錯的地方）。
     pub fn shape_geom_facts(&self) -> Vec<(Option<String>, Option<String>)> {
         // 燈3（鑑別力）回塞鎖：`F2_GEOM_BUGGY=1` 時採集層（drawing.rs 的
-        // `f2_buggy`）整段不落地事實欄（忠於「几何節點從未被讀取」的舊行為），
+        // `f2_buggy`）整段不落地事實欄（忠於「幾何節點從未被讀取」的舊行為），
         // 發射層的 prst 分支同讀此 env——回塞態＝事實清空＋斜筆畫歸零，紅燈
         // 由實作驅動而非環境偶然；本函式自身零邏輯＝無第二個可錯的地方。
         self.shape_boxes
@@ -2260,7 +2260,7 @@ impl Engine {
         // 表格切片與正文流之間共用（同一框只允許一條路徑發射文字）。配對條件
         // 取「宿主段落＋同寬」——不取高度：正文流／格內佔位框的高都被帶高
         // 鉗過（tdf130120：14.2pt 框鉗到 7.1pt），拿原始 extent 高比對會永不
-        // 命中而吞字（實測：框內「7」整頁蒸發）。寬不经鉗制，是可靠鍵。
+        // 命中而吞字（實測：框內「7」整頁蒸發）。寬不經鉗製，是可靠鍵。
         let mut box_used = vec![false; self.shape_boxes.len()];
         // R6：`R6_CLIP_BUGGY=1` 回塞整組 R6 發射（裁切／z 序／宣告字級斷行）
         // ——紅燈 1-3 必回紅（回塞鎖）。
@@ -2830,7 +2830,7 @@ impl Engine {
 // （scripts/check-layering.sh）以 cargo tree 守住 quire-web 不得直接或傳遞
 // 依賴 quire-xlsx。
 //
-// X1 卡範圍＝容器級無損 round-trip ＋最小 workbook 投影（只讀）。型別经本
+// X1 卡範圍＝容器級無損 round-trip ＋最小 workbook 投影（只讀）。型別經本
 // crate pass-through re-export（分層鐵律：shells 只准 import engine）。
 
 /// XLSX/XLSM 容器句柄（zip 結構快照＋只讀 part 索引）。
@@ -4338,7 +4338,7 @@ fn emit_txbx_texts(
                         empty_step -= absorb;
                         header_y_excess -= absorb;
                     }
-                    // 全空白／空段：有 run 就照發（HC031：框內只有大字号空白 run，
+                    // 全空白／空段：有 run 就照發（HC031：框內只有大字號空白 run，
                     // 樣式宣告是實內容；KP 斷行會 trim_end 吞掉純空白行，故繞過
                     // break_lines 逐 run 直接發射一個佔位文字項），無 run＝純空白帶。
                     if !own_runs0.is_empty() {
@@ -4742,7 +4742,7 @@ pub(crate) const IMAGE_PLACEHOLDER_FILL: u32 = 0xFFF0_F0F0;
 pub(crate) const IMAGE_PLACEHOLDER_EDGE: u32 = 0xFFCC_CCCC;
 const IMAGE_PLACEHOLDER_RULE_PT: f32 = 0.75;
 
-/// K4c：VML 布林欄位「明确假」判讀（Some(false)＝宣告不發；None/Some(true)
+/// K4c：VML 布林欄位「明確假」判讀（Some(false)＝宣告不發；None/Some(true)
 /// ＝照發）。
 fn deco_off(flag: Option<bool>) -> bool {
     flag == Some(false)
@@ -4794,8 +4794,8 @@ fn mime_of_media_path(path: &str) -> Option<&'static str> {
     })
 }
 
-/// 像素候選 rId 序（文档序）：`embed_rids`（Choice＋Fallback 全備選）優先；
-/// 空退回 `embed_rid`（舊投影快照無 rids 欄＝單候選語義不变）。
+/// 像素候選 rId 序（文檔序）：`embed_rids`（Choice＋Fallback 全備選）優先；
+/// 空退回 `embed_rid`（舊投影快照無 rids 欄＝單候選語義不變）。
 fn image_rid_candidates(im: &quire_ooxml::InlineImage) -> Vec<&str> {
     if !im.embed_rids.is_empty() {
         im.embed_rids.iter().map(|s| s.as_str()).collect()
@@ -5054,7 +5054,7 @@ fn take_image_pixel_at(
 /// K19：發射期 duotone 像素變換。有宣告且 PNG 可解 → 回（變換後 base64,
 /// Some([c1,c2]))；無宣告 → （原樣 base64, None）＝舊位元組逐位不變；
 /// 有宣告但像素不可調色（EMF 已在解析層退佔位框；非 PNG／16bit／交錯／
-/// 调色板）→ 原樣直出**且不透傳欄位**（欄位語意＝「像素已變換」，不虛構）。
+/// 調色板）→ 原樣直出**且不透傳欄位**（欄位語意＝「像素已變換」，不虛構）。
 ///
 /// 回塞鎖在上游解析層（`DrawingParser::duotone_buggy`，`K19_DUOTONE_BUGGY=1`
 /// → `InlineImage.duotone` 永不落地 → 本函數收 None → 燈1/燈2 必紅；照
@@ -5660,7 +5660,7 @@ fn emit_image_shape(
     // - 表內有名字 → 折線輪廓取代四邊；表外名字（star10／custGeom／語料
     //   外的 180 餘種）回 None → 退回外接矩形＝不虛構能力。
     // - 純灰底佔位（fill 未宣告）時 preset 臂不發 bounding-box Rect：LO
-    //   依形状繪製，星形後面長灰方塊是虛構墨跡；宣告過 fill 的保留 Rect
+    //   依形狀繪製，星形後面長灰方塊是虛構墨跡；宣告過 fill 的保留 Rect
     //   （色是真值、矩形裁切是近似，誤差記帳解剖報告）。
     let geom = if f2_buggy {
         None
@@ -6412,7 +6412,7 @@ fn push_frag_items(
                     });
                     continue;
                 }
-                // 多樣式行：碼點→字节邊界表（平鋪段切片用）。
+                // 多樣式行：碼點→字節邊界表（平鋪段切片用）。
                 let char_idx: Vec<usize> = {
                     let mut v: Vec<usize> = t.text.char_indices().map(|(b, _)| b).collect();
                     v.push(t.text.len());
@@ -7991,7 +7991,7 @@ mod tests {
             let v: serde_json::Value = serde_json::from_str(&engine.reflow_step_json()).unwrap();
             assert!(v["events"].is_array(), "reflow JSON 契約：events 陣列");
             steps += 1;
-            assert!(steps < 500, "reflow 必須收敛（卡在 {steps} 步）");
+            assert!(steps < 500, "reflow 必須收斂（卡在 {steps} 步）");
         }
         // 定案後版面必須與「重開一份同內容文件」頁數一致（全速對照）。
         let full = Engine::from_docx_bytes(SAMPLE).unwrap();
@@ -9649,7 +9649,7 @@ mod tests {
         assert_eq!(dl.page, body - 1, "尾註接排在正文末頁");
         // 分隔線：版心左緣起、寬＝版心×1/3；y 在正文內容之後（不再是頁頂）。
         // K7-cal（t_919b8d54）：水平尺落地後 K6 pitch 不變但每頁少塞字，正文
-        // 末頁頂部改由表格開頭（表格框線也是橫線且同寬）——选择器不得取
+        // 末頁頂部改由表格開頭（表格框線也是橫線且同寬）——選擇器不得取
         // 「第一條 Rule」，改取**最底**那條左緣起橫線（＝接排在正文之後者）。
         let sep = dl
             .items
@@ -11094,7 +11094,7 @@ mod tests {
     //   （Exact 是硬值，K5 一個字不準動——本測試是防風暴樁）。
     // - k5_atleast_floor.docx：`line=480 atLeast`（24pt 下限）＋ 12pt run
     //   ⇒ LO 行距恰 24pt、1 頁（宣告主導，維持不變）。
-    // 架構實態（紅燈實測確立）：顯示層 y 步进＝文件帶尺 grid_line_h（無宣告
+    // 架構實態（紅燈實測確立）：顯示層 y 步進＝文件帶尺 grid_line_h（無宣告
     // ＝12×1.4＝16.8pt，本 fixtures 皆無 styles.xml），段行高只決定佔帶數
     // bands＝ceil(段行高/帶尺)。本引擎單倍尺＝字級×1.4（全引擎口徑，字型
     // metrics 表屬後續卡）：AtLeast 需求高＝段內最大有效 run 字級×1.4。
@@ -11238,7 +11238,7 @@ mod tests {
             resolve_pixel_source(&parts, &rels, &["rId1", "rId2"]),
             Some(("word/media/image2.png".into(), "image/png".into(), None))
         );
-        // 皆可渲染 ⇒ 取先見（文档序）。
+        // 皆可渲染 ⇒ 取先見（文檔序）。
         parts.insert("word/media/image1.pdf".to_string(), vec![1u8; 3]);
         let rels_png2 = read_rels(
             br#"<Relationships>

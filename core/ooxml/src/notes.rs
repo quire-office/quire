@@ -244,7 +244,7 @@ pub fn parse_note_settings(settings_xml: &[u8]) -> NoteSettings {
 /// 解析一個 `w:footnotePr`／`w:endnotePr` 元素（ECMA-376 §17.11.5/§17.11.17）。
 ///
 /// `pr_tag`＝`footnotePr`／`endnotePr`；`child_tag`＝`footnote`／`endnote`。
-/// 掃到第一个 `pr_tag` 元素（settings.xml 層恆唯一）；`<w:footnotePr/>`
+/// 掃到第一個 `pr_tag` 元素（settings.xml 層恆唯一）；`<w:footnotePr/>`
 /// 空組 → `Some(NotePr::default())`；元素不存在 → None；壞 XML → 停在已收
 /// 部分（同 [`crate::ThemeColors`] 容錯口徑）。
 fn parse_note_pr(xml: &[u8], pr_tag: &[u8], child_tag: &[u8]) -> Option<NotePr> {

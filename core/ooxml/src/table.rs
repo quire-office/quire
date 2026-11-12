@@ -411,7 +411,7 @@ pub struct TableRow {
 
 /// `w:tc`：tcPr＋block 內容序列（段落／巢狀表格）。
 /// 容錯：tc 內無任何 block 時老實回空 Vec——OOXML 合法表示要求至少一個
-/// `w:p`，真實畸形檔存在空 tc，此處不虚構段落。
+/// `w:p`，真實畸形檔存在空 tc，此處不虛構段落。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TableCell {
     pub props: CellProps,
@@ -423,7 +423,7 @@ pub struct TableCell {
 pub struct Table {
     pub props: TableProps,
     /// `w:tblGrid/w:gridCol` 序列。無 tblGrid 時為空 Vec——老實回報缺件，
-    /// 不虚構欄寬（corpus 的 selfgen/cjk_traditional_report.docx 即如此）。
+    /// 不虛構欄寬（corpus 的 selfgen/cjk_traditional_report.docx 即如此）。
     pub grid: Vec<GridCol>,
     pub rows: Vec<TableRow>,
 }
@@ -1082,7 +1082,7 @@ impl TableParser {
             }
             return;
         }
-        // 常規：顶端配對→彈出完結；未配對則向下找同名幀（畸形容忍：
+        // 常規：頂端配對→彈出完結；未配對則向下找同名幀（畸形容忍：
         // 彈掉其上所有幀——未閉合結構老實丟棄，明文仍在 parts）。
         // Skip 幀已被錯置標籤提前彈出時，</mc:Fallback> 在此兜底降計，
         // 避免 fb 卡死導致其後所有段落漏計（主解析器無幀、必然遞減）。

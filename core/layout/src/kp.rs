@@ -129,7 +129,7 @@ fn optimal_ranges(atoms: &[Atom], aw: &[AtomW], max_w: f32) -> Vec<(usize, usize
     #[derive(Clone, Copy)]
     struct St {
         from: usize, // 本行首 atom
-        w: f32,      // 本行已累计寬（含目前 atom）
+        w: f32,      // 本行已累計寬（含目前 atom）
         cost: f64,   // 本行之前各行總代價
         prev: usize, // 上一行的 state（usize::MAX＝文件開頭）
     }
@@ -267,7 +267,7 @@ pub(crate) fn kp_break_lines(text: &str, max_w: f32, m: &TextMeasurer) -> Vec<Li
 
 /// 在排序去重的位元組偏移集 `fb`（恆為字元邊界、嚴格介於段首/段尾之間）
 /// 處劈開 atom 並把左半標 `forced`（其後必收行）。切點若恰在 atom 邊界，
-/// 只給左邻 atom 補 forced 旗標、不產生零寬 atom。切點所在 atom 的
+/// 只給左鄰 atom 補 forced 旗標、不產生零寬 atom。切點所在 atom 的
 /// `trim_from` 收進切點左側（左半主體完整保留、不計寬區不吞字）。
 fn split_atoms_forced(atoms: Vec<Atom>, fb: &[usize]) -> Vec<Atom> {
     let mut out: Vec<Atom> = Vec::with_capacity(atoms.len() + fb.len());
@@ -297,7 +297,7 @@ fn split_atoms_forced(atoms: Vec<Atom>, fb: &[usize]) -> Vec<Atom> {
             };
             fi += 1;
         }
-        // 切點恰在 atom 右界：本 atom 標 forced（其後即斷點），零寬續段不产生。
+        // 切點恰在 atom 右界：本 atom 標 forced（其後即斷點），零寬續段不產生。
         if fi < fb.len() && fb[fi] == cur.end {
             out.push(Atom {
                 forced: true,

@@ -92,7 +92,7 @@ pub struct CellMarginInput {
 }
 
 /// 格內文字段的 run 級樣式片段（L2-cellruns／TODO(CardA) 清償）：
-/// `[from, to)` 為所屬段落文字的**碼點**半开区間（與正文 `Line::char_offset`
+/// `[from, to)` 為所屬段落文字的**碼點**半開區間（與正文 `Line::char_offset`
 /// 同尺），`flags`＝render-trait `FLAG_BOLD/ITALIC/UNDERLINE/STRIKE` 位元或
 /// （layout 層不知位元語義，只透傳——engine 端以 `run_style` 烘焙）。
 /// `size_pt`／`color_argb`＝`None`＝級聯未宣告（發射端退回格級／全域尺，
@@ -1070,7 +1070,7 @@ pub fn layout_table(
                         CellBlock::Image { w_pt, h_pt } => {
                             // 圖片＝atomic block：帶高 ceil(h/line_h)（至少 1，
                             // 鉗上限 S1-4）；寬只縮不放大（超出可用寬＝老實鉗進
-                            // 格寬，不虚構溢出）。
+                            // 格寬，不虛構溢出）。
                             let bands = quant_bands(*h_pt, line_h).max(1);
                             blocks.push(CellBlockGeom::Image {
                                 w_pt: w_pt.min(inner_w).max(1.0),
@@ -1257,7 +1257,7 @@ fn compute_row_heights(tl: &mut TableLayout, input: &TableInput) {
             // 首列（ECMA-376＋LO ground truth：tdf127814 首欄旋轉文字豎排
             // 滿全表，首列仍 15.75pt）；不足額由尾部的 vMerge 餘額補列邏輯
             // 平均分配。單行塊（block_end_row==block_head_row）無 continue
-            // 列可補，維持计入首列自然高（舊行為不變）。
+            // 列可補，維持計入首列自然高（舊行為不變）。
             .filter(|g| !matches!(g.merge, Some((_, true))) || g.block_end_row == g.block_head_row)
         {
             natural = natural.max(g.content_bands);
@@ -1289,7 +1289,7 @@ fn compute_row_heights(tl: &mut TableLayout, input: &TableInput) {
         }
         // K17：錨定框撐列地板（grow = posV + eff_h，規格 docs/k18-lo-rowgrow-
         // calibration.md §6；engine 層算好送入）。**地板不是天花板**：只在
-        // 高于自然高時抬升（比照 trHeight atLeast 紀律，絕不压低）。精確
+        // 高於自然高時抬升（比照 trHeight atLeast 紀律，絕不壓低）。精確
         // 口徑：bands/extra 同步換算（ceil 帶數＋負餘量，與垂直邊距同款），
         // 橫線 y＝bands×line_h＋extra 直接命中 posV+eff_h＋ε（ε≤0.6 由紅燈
         // ±1 容差吸收，勿把 ε 寫進實作——K18 §6 防過度擬合警示）。

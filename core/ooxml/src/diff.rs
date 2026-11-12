@@ -2,7 +2,7 @@
 //!
 //! 判定模型（任務規格：「zip 位元組級對照＋允許差異白名單」）：
 //! - 對照單位是「結構欄位」而非整檔 hash：每個 entry 的
-//!   name/method/crc/sizes/時間/属性/extra field/comment/gap，加上 archive comment。
+//!   name/method/crc/sizes/時間/屬性/extra field/comment/gap，加上 archive comment。
 //! - `ByteIdentical`：未觸碰存檔的理想結果——整檔完全相同。
 //! - `UntouchedZeroLoss`：**通過門檻**。所有「未觸碰 entry」（白名單未放行改寫的）
 //!   的壓縮位元組、extra、comment、gap 逐位元組相同，只有位移／尾端記錄／
