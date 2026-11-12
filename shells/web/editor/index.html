@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Microsoft Word 外觀編輯器外殼原型 - Quire</title>
+  <title>Quire 文書編輯器外殼原型（Ribbon 風格）</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -399,22 +399,22 @@
   <!-- 1. 快速存取工具列 (QAT) -->
   <header class="qword-qat" role="toolbar" aria-label="快速存取工具列">
     <div class="qword-qat-left">
-      <button type="button" class="qword-qat-btn" data-command="file:save" data-requirement="pending:K29f" aria-label="儲存 (Ctrl+S)">
+      <button type="button" class="qword-qat-btn" data-command="file:save" data-requirement="pending:K29f" aria-label="儲存 (Ctrl+S)" title="需要引擎 K29f 支援（開發中）">
         <svg class="qword-icon" style="width:16px;height:16px;"><use href="#icon-save"></use></svg>
       </button>
-      <button type="button" class="qword-qat-btn" data-command="edit:undo" data-requirement="pending:K29a" aria-label="復原 (Ctrl+Z)">
+      <button type="button" class="qword-qat-btn" data-command="edit:undo" data-requirement="pending:K29a" aria-label="復原 (Ctrl+Z)" title="需要引擎 K29a 支援（開發中）">
         <svg class="qword-icon" style="width:16px;height:16px;"><use href="#icon-undo"></use></svg>
       </button>
-      <button type="button" class="qword-qat-btn" data-command="edit:redo" data-requirement="pending:K29a" aria-label="重複 (Ctrl+Y)">
+      <button type="button" class="qword-qat-btn" data-command="edit:redo" data-requirement="pending:K29a" aria-label="重複 (Ctrl+Y)" title="需要引擎 K29a 支援（開發中）">
         <svg class="qword-icon" style="width:16px;height:16px;"><use href="#icon-redo"></use></svg>
       </button>
-      <button type="button" class="qword-qat-btn" data-command="review:quick-spelling" data-requirement="pending:K29d" aria-label="快速拼寫檢查 (F7)">
+      <button type="button" class="qword-qat-btn" data-command="review:quick-spelling" data-requirement="pending:K29d" aria-label="快速拼寫檢查 (F7)" title="需要引擎 K29d 支援（開發中）">
         <svg class="qword-icon" style="width:16px;height:16px;"><use href="#icon-spellcheck"></use></svg>
       </button>
-      <button type="button" class="qword-qat-btn" data-command="qat:customize" data-requirement="pending:K29u" aria-label="自訂快速存取工具列">
+      <button type="button" class="qword-qat-btn" data-command="qat:customize" data-requirement="pending:K29u" aria-label="自訂快速存取工具列" title="需要引擎 K29u 支援（開發中）">
         <svg class="qword-icon" style="width:12px;height:12px;"><use href="#icon-chevron-down"></use></svg>
       </button>
-      <span class="qword-qat-title">文件 1 - Quire Word 原型外殼</span>
+      <span class="qword-qat-title">文件 1 - Quire 編輯器原型外殼</span>
     </div>
 
     <div class="qword-qat-right">
@@ -422,7 +422,7 @@
         <span>編輯</span>
         <svg class="qword-icon" style="width:10px;height:10px;"><use href="#icon-chevron-down"></use></svg>
       </div>
-      <button type="button" class="qword-btn qword-btn-small" data-command="doc:share" data-requirement="pending:K29f" aria-label="共用">
+      <button type="button" class="qword-btn qword-btn-small" data-command="doc:share" data-requirement="pending:K29f" aria-label="共用" title="需要引擎 K29f 支援（開發中）">
         <svg class="qword-icon" style="width:14px;height:14px;"><use href="#icon-share"></use></svg>
         <span>共用</span>
       </button>
@@ -433,7 +433,7 @@
   <nav class="qword-ribbon" role="region" aria-label="功能區">
     <!-- 標籤列 -->
     <div class="qword-ribbon-tabs" role="tablist" aria-label="Ribbon 標籤頁">
-      <button type="button" class="qword-tab-btn is-file" data-command="file:menu" data-requirement="pending:K29f" aria-label="檔案">檔案</button>
+      <button type="button" class="qword-tab-btn is-file" data-command="file:menu" data-requirement="pending:K29f" aria-label="檔案" title="需要引擎 K29f 支援（開發中）">檔案</button>
       <button type="button" class="qword-tab-btn active" role="tab" aria-selected="true" data-tab-target="tab-home" data-command="tab:switch:tab-home" data-requirement="live" aria-controls="tab-home" aria-label="常用" id="tab-btn-home">常用</button>
       <button type="button" class="qword-tab-btn" role="tab" aria-selected="false" data-tab-target="tab-insert" data-command="tab:switch:tab-insert" data-requirement="live" aria-controls="tab-insert" aria-label="插入" id="tab-btn-insert">插入</button>
       <button type="button" class="qword-tab-btn" role="tab" aria-selected="false" data-tab-target="tab-design" data-command="tab:switch:tab-design" data-requirement="live" aria-controls="tab-design" aria-label="設計" id="tab-btn-design">設計</button>
@@ -453,24 +453,24 @@
         <div class="qword-group" data-group="clipboard">
           <div class="qword-group-body">
             <div class="qword-split-btn">
-              <button type="button" class="qword-btn qword-btn-large qword-split-main" data-command="clipboard:paste" data-requirement="pending:K29a" aria-label="貼上 (Ctrl+V)">
+              <button type="button" class="qword-btn qword-btn-large qword-split-main" data-command="clipboard:paste" data-requirement="pending:K29a" aria-label="貼上 (Ctrl+V)" title="需要引擎 K29a 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-paste"></use></svg>
                 <span class="qword-btn-label">貼上</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small qword-split-arrow" data-command="clipboard:paste-special" data-requirement="pending:K29a" aria-label="選擇性貼上">
+              <button type="button" class="qword-btn qword-btn-small qword-split-arrow" data-command="clipboard:paste-special" data-requirement="pending:K29a" aria-label="選擇性貼上" title="需要引擎 K29a 支援（開發中）">
                 <svg class="qword-icon" style="width:10px;height:10px;"><use href="#icon-chevron-down"></use></svg>
               </button>
             </div>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="clipboard:cut" data-requirement="pending:K29a" aria-label="剪下 (Ctrl+X)">
+              <button type="button" class="qword-btn qword-btn-small" data-command="clipboard:cut" data-requirement="pending:K29a" aria-label="剪下 (Ctrl+X)" title="需要引擎 K29a 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-cut"></use></svg>
                 <span>剪下</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="clipboard:copy" data-requirement="pending:K29a" aria-label="複製 (Ctrl+C)">
+              <button type="button" class="qword-btn qword-btn-small" data-command="clipboard:copy" data-requirement="pending:K29a" aria-label="複製 (Ctrl+C)" title="需要引擎 K29a 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-copy"></use></svg>
                 <span>複製</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="clipboard:format-painter" data-requirement="pending:K29a" aria-label="複製格式 (Ctrl+Shift+C)">
+              <button type="button" class="qword-btn qword-btn-small" data-command="clipboard:format-painter" data-requirement="pending:K29a" aria-label="複製格式 (Ctrl+Shift+C)" title="需要引擎 K29a 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-format-painter"></use></svg>
                 <span>複製格式</span>
               </button>
@@ -478,7 +478,7 @@
           </div>
           <div class="qword-group-footer">
             <span class="qword-group-title">剪貼簿</span>
-            <button type="button" class="qword-group-launcher" data-command="dialog:clipboard" data-requirement="pending:K29a" aria-label="剪貼簿對話方塊啟動器">
+            <button type="button" class="qword-group-launcher" data-command="dialog:clipboard" data-requirement="pending:K29a" aria-label="剪貼簿對話方塊啟動器" title="需要引擎 K29a 支援（開發中）">
               <svg class="qword-icon" style="width:10px;height:10px;"><use href="#icon-launcher"></use></svg>
             </button>
           </div>
@@ -516,57 +516,57 @@
                   <option value="48">48</option>
                   <option value="72">72</option>
                 </select>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="font:grow" data-requirement="pending:K29a" aria-label="增大字型 (Ctrl+Shift+>)">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="font:grow" data-requirement="pending:K29a" aria-label="增大字型 (Ctrl+Shift+ title="需要引擎 K29a 支援（開發中）">)">
                   <svg class="qword-icon"><use href="#icon-font-grow"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="font:shrink" data-requirement="pending:K29a" aria-label="縮小字型 (Ctrl+Shift+<)">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="font:shrink" data-requirement="pending:K29a" aria-label="縮小字型 (Ctrl+Shift+<)" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-font-shrink"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="font:clear-formatting" data-requirement="pending:K29a" aria-label="清除所有格式">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="font:clear-formatting" data-requirement="pending:K29a" aria-label="清除所有格式" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-clear-formatting"></use></svg>
                 </button>
               </div>
 
               <!-- 第二排：字型樣式、底線、色彩 -->
               <div class="qword-btn-row">
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="format:bold" data-requirement="pending:K29a" aria-label="粗體 (Ctrl+B)">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="format:bold" data-requirement="pending:K29a" aria-label="粗體 (Ctrl+B)" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-bold"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="format:italic" data-requirement="pending:K29a" aria-label="斜體 (Ctrl+I)">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="format:italic" data-requirement="pending:K29a" aria-label="斜體 (Ctrl+I)" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-italic"></use></svg>
                 </button>
                 <div class="qword-split-btn">
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="format:underline" data-requirement="pending:K29a" aria-label="底線 (Ctrl+U)">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="format:underline" data-requirement="pending:K29a" aria-label="底線 (Ctrl+U)" title="需要引擎 K29a 支援（開發中）">
                     <svg class="qword-icon"><use href="#icon-underline"></use></svg>
                   </button>
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-command="format:underline-style" data-requirement="pending:K29a" aria-label="底線樣式">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-command="format:underline-style" data-requirement="pending:K29a" aria-label="底線樣式" title="需要引擎 K29a 支援（開發中）">
                     <svg class="qword-icon" style="width:8px;height:8px;"><use href="#icon-chevron-down"></use></svg>
                   </button>
                 </div>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="format:strikethrough" data-requirement="pending:K29a" aria-label="刪除線">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="format:strikethrough" data-requirement="pending:K29a" aria-label="刪除線" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-strikethrough"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="format:subscript" data-requirement="pending:K29a" aria-label="下標 (Ctrl+=)">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="format:subscript" data-requirement="pending:K29a" aria-label="下標 (Ctrl+=)" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-subscript"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="format:superscript" data-requirement="pending:K29a" aria-label="上標 (Ctrl+Shift++)">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="format:superscript" data-requirement="pending:K29a" aria-label="上標 (Ctrl+Shift++)" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-superscript"></use></svg>
                 </button>
                 <!-- 文字醒目色 -->
                 <div class="qword-split-btn">
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="format:highlight" data-requirement="pending:K29a" aria-label="文字醒目提示色彩">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="format:highlight" data-requirement="pending:K29a" aria-label="文字醒目提示色彩" title="需要引擎 K29a 支援（開發中）">
                     <svg class="qword-icon"><use href="#icon-highlight-color"></use></svg>
                   </button>
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-popover-target="popover-color-highlight" data-command="format:highlight-palette" data-requirement="pending:K29a" aria-label="醒目色彩選擇">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-popover-target="popover-color-highlight" data-command="format:highlight-palette" data-requirement="pending:K29a" aria-label="醒目色彩選擇" title="需要引擎 K29a 支援（開發中）">
                     <svg class="qword-icon" style="width:8px;height:8px;"><use href="#icon-chevron-down"></use></svg>
                   </button>
                 </div>
                 <!-- 字型色彩 -->
                 <div class="qword-split-btn">
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="format:font-color" data-requirement="pending:K29a" aria-label="字型色彩">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="format:font-color" data-requirement="pending:K29a" aria-label="字型色彩" title="需要引擎 K29a 支援（開發中）">
                     <svg class="qword-icon"><use href="#icon-font-color"></use></svg>
                   </button>
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-popover-target="popover-color-font" data-command="format:font-color-palette" data-requirement="pending:K29a" aria-label="字型色彩盤">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-popover-target="popover-color-font" data-command="format:font-color-palette" data-requirement="pending:K29a" aria-label="字型色彩盤" title="需要引擎 K29a 支援（開發中）">
                     <svg class="qword-icon" style="width:8px;height:8px;"><use href="#icon-chevron-down"></use></svg>
                   </button>
                 </div>
@@ -575,7 +575,7 @@
           </div>
           <div class="qword-group-footer">
             <span class="qword-group-title">字型</span>
-            <button type="button" class="qword-group-launcher" data-command="dialog:font" data-requirement="pending:K29a" aria-label="字型對話方塊啟動器">
+            <button type="button" class="qword-group-launcher" data-command="dialog:font" data-requirement="pending:K29a" aria-label="字型對話方塊啟動器" title="需要引擎 K29a 支援（開發中）">
               <svg class="qword-icon" style="width:10px;height:10px;"><use href="#icon-launcher"></use></svg>
             </button>
           </div>
@@ -587,67 +587,67 @@
             <div class="qword-btn-column">
               <!-- 第一排：清單、縮排、排序、標記 -->
               <div class="qword-btn-row">
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:bullets" data-requirement="pending:K29a" aria-label="項目符號">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:bullets" data-requirement="pending:K29a" aria-label="項目符號" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-bullets"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:numbering" data-requirement="pending:K29a" aria-label="編號">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:numbering" data-requirement="pending:K29a" aria-label="編號" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-numbering"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:multilevel" data-requirement="pending:K29a" aria-label="清單階層">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:multilevel" data-requirement="pending:K29a" aria-label="清單階層" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-multilevel"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:decrease-indent" data-requirement="pending:K29a" aria-label="減少縮排">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:decrease-indent" data-requirement="pending:K29a" aria-label="減少縮排" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-decrease-indent"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:increase-indent" data-requirement="pending:K29a" aria-label="增加縮排">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:increase-indent" data-requirement="pending:K29a" aria-label="增加縮排" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-increase-indent"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:sort" data-requirement="pending:K29a" aria-label="排序">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:sort" data-requirement="pending:K29a" aria-label="排序" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-sort"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:marks" data-requirement="pending:K29a" aria-label="顯示/隱藏編輯標記 (¶)">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:marks" data-requirement="pending:K29a" aria-label="顯示/隱藏編輯標記 (¶)" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-paragraph-mark"></use></svg>
                 </button>
               </div>
 
               <!-- 第二排：對齊、行距、底紋、邊框 -->
               <div class="qword-btn-row">
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:align-left" data-requirement="pending:K29a" aria-label="靠左對齊 (Ctrl+L)">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:align-left" data-requirement="pending:K29a" aria-label="靠左對齊 (Ctrl+L)" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-align-left"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:align-center" data-requirement="pending:K29a" aria-label="置中對齊 (Ctrl+E)">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:align-center" data-requirement="pending:K29a" aria-label="置中對齊 (Ctrl+E)" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-align-center"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:align-right" data-requirement="pending:K29a" aria-label="靠右對齊 (Ctrl+R)">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:align-right" data-requirement="pending:K29a" aria-label="靠右對齊 (Ctrl+R)" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-align-right"></use></svg>
                 </button>
-                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:align-justify" data-requirement="pending:K29a" aria-label="左右對齊 / 兩端對齊 (Ctrl+J)">
+                <button type="button" class="qword-btn qword-btn-icon-only" data-command="paragraph:align-justify" data-requirement="pending:K29a" aria-label="左右對齊 / 兩端對齊 (Ctrl+J)" title="需要引擎 K29a 支援（開發中）">
                   <svg class="qword-icon"><use href="#icon-align-justify"></use></svg>
                 </button>
                 <!-- 行距下拉 -->
                 <div class="qword-split-btn">
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="paragraph:line-spacing" data-requirement="pending:K29a" aria-label="行距與段落間距">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="paragraph:line-spacing" data-requirement="pending:K29a" aria-label="行距與段落間距" title="需要引擎 K29a 支援（開發中）">
                     <svg class="qword-icon"><use href="#icon-line-spacing"></use></svg>
                   </button>
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-command="paragraph:line-spacing-menu" data-requirement="pending:K29a" aria-label="行距清單">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-command="paragraph:line-spacing-menu" data-requirement="pending:K29a" aria-label="行距清單" title="需要引擎 K29a 支援（開發中）">
                     <svg class="qword-icon" style="width:8px;height:8px;"><use href="#icon-chevron-down"></use></svg>
                   </button>
                 </div>
                 <!-- 底紋 -->
                 <div class="qword-split-btn">
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="paragraph:shading" data-requirement="pending:K29a" aria-label="底紋">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="paragraph:shading" data-requirement="pending:K29a" aria-label="底紋" title="需要引擎 K29a 支援（開發中）">
                     <svg class="qword-icon"><use href="#icon-shading"></use></svg>
                   </button>
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-command="paragraph:shading-palette" data-requirement="pending:K29a" aria-label="底紋色彩">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-command="paragraph:shading-palette" data-requirement="pending:K29a" aria-label="底紋色彩" title="需要引擎 K29a 支援（開發中）">
                     <svg class="qword-icon" style="width:8px;height:8px;"><use href="#icon-chevron-down"></use></svg>
                   </button>
                 </div>
                 <!-- 邊框 -->
                 <div class="qword-split-btn">
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="paragraph:borders" data-requirement="pending:K29a" aria-label="邊框">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="paragraph:borders" data-requirement="pending:K29a" aria-label="邊框" title="需要引擎 K29a 支援（開發中）">
                     <svg class="qword-icon"><use href="#icon-borders"></use></svg>
                   </button>
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-command="paragraph:borders-menu" data-requirement="pending:K29a" aria-label="邊框選單">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-command="paragraph:borders-menu" data-requirement="pending:K29a" aria-label="邊框選單" title="需要引擎 K29a 支援（開發中）">
                     <svg class="qword-icon" style="width:8px;height:8px;"><use href="#icon-chevron-down"></use></svg>
                   </button>
                 </div>
@@ -656,7 +656,7 @@
           </div>
           <div class="qword-group-footer">
             <span class="qword-group-title">段落</span>
-            <button type="button" class="qword-group-launcher" data-command="dialog:paragraph" data-requirement="pending:K29a" aria-label="段落對話方塊啟動器">
+            <button type="button" class="qword-group-launcher" data-command="dialog:paragraph" data-requirement="pending:K29a" aria-label="段落對話方塊啟動器" title="需要引擎 K29a 支援（開發中）">
               <svg class="qword-icon" style="width:10px;height:10px;"><use href="#icon-launcher"></use></svg>
             </button>
           </div>
@@ -666,34 +666,34 @@
         <div class="qword-group" data-group="styles">
           <div class="qword-group-body">
             <div class="qword-style-gallery">
-              <button type="button" class="qword-style-item" data-command="style:normal" data-requirement="pending:K29c" aria-label="樣式: 內文">
+              <button type="button" class="qword-style-item" data-command="style:normal" data-requirement="pending:K29c" aria-label="樣式: 內文" title="需要引擎 K29c 支援（開發中）">
                 <span class="qword-style-preview">AaBbCc</span>
                 <span class="qword-style-name">內文</span>
               </button>
-              <button type="button" class="qword-style-item" data-command="style:no-spacing" data-requirement="pending:K29c" aria-label="樣式: 無間距">
+              <button type="button" class="qword-style-item" data-command="style:no-spacing" data-requirement="pending:K29c" aria-label="樣式: 無間距" title="需要引擎 K29c 支援（開發中）">
                 <span class="qword-style-preview">AaBbCc</span>
                 <span class="qword-style-name">無間距</span>
               </button>
-              <button type="button" class="qword-style-item h1" data-command="style:h1" data-requirement="pending:K29c" aria-label="樣式: 標題 1">
+              <button type="button" class="qword-style-item h1" data-command="style:h1" data-requirement="pending:K29c" aria-label="樣式: 標題 1" title="需要引擎 K29c 支援（開發中）">
                 <span class="qword-style-preview">AaBbCc</span>
                 <span class="qword-style-name">標題 1</span>
               </button>
-              <button type="button" class="qword-style-item h2" data-command="style:h2" data-requirement="pending:K29c" aria-label="樣式: 標題 2">
+              <button type="button" class="qword-style-item h2" data-command="style:h2" data-requirement="pending:K29c" aria-label="樣式: 標題 2" title="需要引擎 K29c 支援（開發中）">
                 <span class="qword-style-preview">AaBbCc</span>
                 <span class="qword-style-name">標題 2</span>
               </button>
-              <button type="button" class="qword-style-item h3" data-command="style:h3" data-requirement="pending:K29c" aria-label="樣式: 標題 3">
+              <button type="button" class="qword-style-item h3" data-command="style:h3" data-requirement="pending:K29c" aria-label="樣式: 標題 3" title="需要引擎 K29c 支援（開發中）">
                 <span class="qword-style-preview">AaBbCc</span>
                 <span class="qword-style-name">標題 3</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-icon-only" data-command="style:more" data-requirement="pending:K29c" aria-label="其他樣式展開">
+              <button type="button" class="qword-btn qword-btn-icon-only" data-command="style:more" data-requirement="pending:K29c" aria-label="其他樣式展開" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon" style="width:12px;height:12px;"><use href="#icon-chevron-down"></use></svg>
               </button>
             </div>
           </div>
           <div class="qword-group-footer">
             <span class="qword-group-title">樣式</span>
-            <button type="button" class="qword-group-launcher" data-command="dialog:styles" data-requirement="pending:K29c" aria-label="樣式對話方塊啟動器">
+            <button type="button" class="qword-group-launcher" data-command="dialog:styles" data-requirement="pending:K29c" aria-label="樣式對話方塊啟動器" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon" style="width:10px;height:10px;"><use href="#icon-launcher"></use></svg>
             </button>
           </div>
@@ -703,15 +703,15 @@
         <div class="qword-group" data-group="editing">
           <div class="qword-group-body">
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="editing:find" data-requirement="pending:K29a" aria-label="尋找 (Ctrl+F)">
+              <button type="button" class="qword-btn qword-btn-small" data-command="editing:find" data-requirement="pending:K29a" aria-label="尋找 (Ctrl+F)" title="需要引擎 K29a 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-find"></use></svg>
                 <span>尋找</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="editing:replace" data-requirement="pending:K29a" aria-label="取代 (Ctrl+H)">
+              <button type="button" class="qword-btn qword-btn-small" data-command="editing:replace" data-requirement="pending:K29a" aria-label="取代 (Ctrl+H)" title="需要引擎 K29a 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-replace"></use></svg>
                 <span>取代</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="editing:select" data-requirement="pending:K29a" aria-label="選取 (全選/物件)">
+              <button type="button" class="qword-btn qword-btn-small" data-command="editing:select" data-requirement="pending:K29a" aria-label="選取 (全選/物件)" title="需要引擎 K29a 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-select"></use></svg>
                 <span>選取</span>
               </button>
@@ -728,15 +728,15 @@
         <!-- 頁面群組 -->
         <div class="qword-group" data-group="pages">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="insert:cover-page" data-requirement="pending:K29b" aria-label="封面頁">
+            <button type="button" class="qword-btn qword-btn-large" data-command="insert:cover-page" data-requirement="pending:K29b" aria-label="封面頁" title="需要引擎 K29b 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-cover-page"></use></svg>
               <span class="qword-btn-label">封面頁</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="insert:blank-page" data-requirement="pending:K29b" aria-label="空白頁">
+            <button type="button" class="qword-btn qword-btn-large" data-command="insert:blank-page" data-requirement="pending:K29b" aria-label="空白頁" title="需要引擎 K29b 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-blank-page"></use></svg>
               <span class="qword-btn-label">空白頁</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="insert:page-break" data-requirement="pending:K29b" aria-label="分頁符號 (Ctrl+Enter)">
+            <button type="button" class="qword-btn qword-btn-large" data-command="insert:page-break" data-requirement="pending:K29b" aria-label="分頁符號 (Ctrl+Enter)" title="需要引擎 K29b 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-page-break"></use></svg>
               <span class="qword-btn-label">分頁符號</span>
             </button>
@@ -762,34 +762,34 @@
         <!-- 圖例群組 -->
         <div class="qword-group" data-group="illustrations">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="insert:picture" data-requirement="pending:K29b" aria-label="圖片">
+            <button type="button" class="qword-btn qword-btn-large" data-command="insert:picture" data-requirement="pending:K29b" aria-label="圖片" title="需要引擎 K29b 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-pictures"></use></svg>
               <span class="qword-btn-label">圖片</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:online-pictures" data-requirement="pending:K29b" aria-label="線上圖片">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:online-pictures" data-requirement="pending:K29b" aria-label="線上圖片" title="需要引擎 K29b 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-pictures"></use></svg>
                 <span>線上圖片</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:shapes" data-requirement="pending:K29b" aria-label="圖形">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:shapes" data-requirement="pending:K29b" aria-label="圖形" title="需要引擎 K29b 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-shapes"></use></svg>
                 <span>圖形</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:icons" data-requirement="pending:K29b" aria-label="圖示">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:icons" data-requirement="pending:K29b" aria-label="圖示" title="需要引擎 K29b 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-icons"></use></svg>
                 <span>圖示</span>
               </button>
             </div>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:smartart" data-requirement="pending:K29b" aria-label="SmartArt (圖徵)">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:smartart" data-requirement="pending:K29b" aria-label="SmartArt (圖徵)" title="需要引擎 K29b 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-smartart"></use></svg>
                 <span>SmartArt</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:chart" data-requirement="pending:K29b" aria-label="圖表">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:chart" data-requirement="pending:K29b" aria-label="圖表" title="需要引擎 K29b 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-chart"></use></svg>
                 <span>圖表</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:screenshot" data-requirement="pending:K29b" aria-label="螢幕擷取畫面">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:screenshot" data-requirement="pending:K29b" aria-label="螢幕擷取畫面" title="需要引擎 K29b 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-pictures"></use></svg>
                 <span>螢幕擷取</span>
               </button>
@@ -803,7 +803,7 @@
         <!-- 符號群組 -->
         <div class="qword-group" data-group="symbols">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="insert:equation" data-requirement="pending:K29b" aria-label="方程式">
+            <button type="button" class="qword-btn qword-btn-large" data-command="insert:equation" data-requirement="pending:K29b" aria-label="方程式" title="需要引擎 K29b 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-equation"></use></svg>
               <span class="qword-btn-label">方程式</span>
             </button>
@@ -820,15 +820,15 @@
         <!-- 頁首與頁尾群組 -->
         <div class="qword-group" data-group="header_footer">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="insert:header" data-requirement="pending:K29b" aria-label="頁首">
+            <button type="button" class="qword-btn qword-btn-large" data-command="insert:header" data-requirement="pending:K29b" aria-label="頁首" title="需要引擎 K29b 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-header"></use></svg>
               <span class="qword-btn-label">頁首</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="insert:footer" data-requirement="pending:K29b" aria-label="頁尾">
+            <button type="button" class="qword-btn qword-btn-large" data-command="insert:footer" data-requirement="pending:K29b" aria-label="頁尾" title="需要引擎 K29b 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-footer"></use></svg>
               <span class="qword-btn-label">頁尾</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="insert:page-number" data-requirement="pending:K29b" aria-label="頁碼">
+            <button type="button" class="qword-btn qword-btn-large" data-command="insert:page-number" data-requirement="pending:K29b" aria-label="頁碼" title="需要引擎 K29b 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-page-number"></use></svg>
               <span class="qword-btn-label">頁碼</span>
             </button>
@@ -841,30 +841,30 @@
         <!-- 文字群組 -->
         <div class="qword-group" data-group="text">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="insert:textbox" data-requirement="pending:K29b" aria-label="文字方塊">
+            <button type="button" class="qword-btn qword-btn-large" data-command="insert:textbox" data-requirement="pending:K29b" aria-label="文字方塊" title="需要引擎 K29b 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-textbox"></use></svg>
               <span class="qword-btn-label">文字方塊</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:text-direction" data-requirement="pending:K29b" aria-label="文字方向 (橫排/豎排)">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:text-direction" data-requirement="pending:K29b" aria-label="文字方向 (橫排/豎排)" title="需要引擎 K29b 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-textbox"></use></svg>
                 <span>文字方向</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:wordart" data-requirement="pending:K29b" aria-label="文字藝術師">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:wordart" data-requirement="pending:K29b" aria-label="文字藝術師" title="需要引擎 K29b 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-textbox"></use></svg>
                 <span>文字藝術師</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:date-time" data-requirement="pending:K29b" aria-label="日期及時間">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:date-time" data-requirement="pending:K29b" aria-label="日期及時間" title="需要引擎 K29b 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-textbox"></use></svg>
                 <span>日期與時間</span>
               </button>
             </div>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:object" data-requirement="pending:K29b" aria-label="物件">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:object" data-requirement="pending:K29b" aria-label="物件" title="需要引擎 K29b 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-textbox"></use></svg>
                 <span>物件</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:signature" data-requirement="pending:K29b" aria-label="簽名行">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:signature" data-requirement="pending:K29b" aria-label="簽名行" title="需要引擎 K29b 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-textbox"></use></svg>
                 <span>簽名行</span>
               </button>
@@ -878,20 +878,20 @@
         <!-- 結構群組 -->
         <div class="qword-group" data-group="structure">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="insert:hyperlink" data-requirement="pending:K29b" aria-label="超連結 (Ctrl+K)">
+            <button type="button" class="qword-btn qword-btn-large" data-command="insert:hyperlink" data-requirement="pending:K29b" aria-label="超連結 (Ctrl+K)" title="需要引擎 K29b 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-hyperlink"></use></svg>
               <span class="qword-btn-label">超連結</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:bookmark" data-requirement="pending:K29e" aria-label="書籤">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:bookmark" data-requirement="pending:K29e" aria-label="書籤" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-hyperlink"></use></svg>
                 <span>書籤</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:cross-reference" data-requirement="pending:K29e" aria-label="交叉引用">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:cross-reference" data-requirement="pending:K29e" aria-label="交叉引用" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-hyperlink"></use></svg>
                 <span>交叉引用</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="insert:toc-part" data-requirement="pending:K29e" aria-label="目錄部件">
+              <button type="button" class="qword-btn qword-btn-small" data-command="insert:toc-part" data-requirement="pending:K29e" aria-label="目錄部件" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-toc"></use></svg>
                 <span>文件部件</span>
               </button>
@@ -908,11 +908,11 @@
         <!-- 主題群組 -->
         <div class="qword-group" data-group="themes">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="design:theme" data-requirement="pending:K29c" aria-label="主題">
+            <button type="button" class="qword-btn qword-btn-large" data-command="design:theme" data-requirement="pending:K29c" aria-label="主題" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-themes"></use></svg>
               <span class="qword-btn-label">主題</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="design:style-set" data-requirement="pending:K29c" aria-label="樣式集">
+            <button type="button" class="qword-btn qword-btn-large" data-command="design:style-set" data-requirement="pending:K29c" aria-label="樣式集" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-themes"></use></svg>
               <span class="qword-btn-label">樣式集</span>
             </button>
@@ -926,25 +926,25 @@
         <div class="qword-group" data-group="doc_formatting">
           <div class="qword-group-body">
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="design:colors" data-requirement="pending:K29c" aria-label="色彩主題">
+              <button type="button" class="qword-btn qword-btn-small" data-command="design:colors" data-requirement="pending:K29c" aria-label="色彩主題" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-themes"></use></svg>
                 <span>色彩</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="design:fonts" data-requirement="pending:K29c" aria-label="字型配置">
+              <button type="button" class="qword-btn qword-btn-small" data-command="design:fonts" data-requirement="pending:K29c" aria-label="字型配置" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-font-grow"></use></svg>
                 <span>字型</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="design:effects" data-requirement="pending:K29c" aria-label="效果">
+              <button type="button" class="qword-btn qword-btn-small" data-command="design:effects" data-requirement="pending:K29c" aria-label="效果" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-shapes"></use></svg>
                 <span>效果</span>
               </button>
             </div>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="design:paragraph-spacing" data-requirement="pending:K29c" aria-label="段落間距">
+              <button type="button" class="qword-btn qword-btn-small" data-command="design:paragraph-spacing" data-requirement="pending:K29c" aria-label="段落間距" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-line-spacing"></use></svg>
                 <span>段落間距</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="design:set-as-default" data-requirement="pending:K29c" aria-label="設為預設值">
+              <button type="button" class="qword-btn qword-btn-small" data-command="design:set-as-default" data-requirement="pending:K29c" aria-label="設為預設值" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-save"></use></svg>
                 <span>設為預設值</span>
               </button>
@@ -958,15 +958,15 @@
         <!-- 頁面背景群組 -->
         <div class="qword-group" data-group="page_background">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="design:watermark" data-requirement="pending:K29c" aria-label="浮水印">
+            <button type="button" class="qword-btn qword-btn-large" data-command="design:watermark" data-requirement="pending:K29c" aria-label="浮水印" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-watermark"></use></svg>
               <span class="qword-btn-label">浮水印</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="design:page-color" data-requirement="pending:K29c" aria-label="頁面色彩">
+            <button type="button" class="qword-btn qword-btn-large" data-command="design:page-color" data-requirement="pending:K29c" aria-label="頁面色彩" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-shading"></use></svg>
               <span class="qword-btn-label">頁面色彩</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="design:page-borders" data-requirement="pending:K29c" aria-label="頁面框線">
+            <button type="button" class="qword-btn qword-btn-large" data-command="design:page-borders" data-requirement="pending:K29c" aria-label="頁面框線" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-borders"></use></svg>
               <span class="qword-btn-label">頁面框線</span>
             </button>
@@ -980,29 +980,29 @@
         <div class="qword-group" data-group="page_layout_options">
           <div class="qword-group-body">
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="design:layout-direction" data-requirement="pending:K29c" aria-label="文字方向">
+              <button type="button" class="qword-btn qword-btn-small" data-command="design:layout-direction" data-requirement="pending:K29c" aria-label="文字方向" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-textbox"></use></svg>
                 <span>文字方向</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="design:layout-margins" data-requirement="pending:K29c" aria-label="邊界">
+              <button type="button" class="qword-btn qword-btn-small" data-command="design:layout-margins" data-requirement="pending:K29c" aria-label="邊界" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-margins"></use></svg>
                 <span>邊界</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="design:layout-gutter" data-requirement="pending:K29c" aria-label="裝訂線">
+              <button type="button" class="qword-btn qword-btn-small" data-command="design:layout-gutter" data-requirement="pending:K29c" aria-label="裝訂線" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-margins"></use></svg>
                 <span>裝訂線</span>
               </button>
             </div>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="design:layout-size" data-requirement="pending:K29c" aria-label="頁面大小">
+              <button type="button" class="qword-btn qword-btn-small" data-command="design:layout-size" data-requirement="pending:K29c" aria-label="頁面大小" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-size"></use></svg>
                 <span>頁面大小</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="design:layout-columns" data-requirement="pending:K29c" aria-label="欄位">
+              <button type="button" class="qword-btn qword-btn-small" data-command="design:layout-columns" data-requirement="pending:K29c" aria-label="欄位" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-columns"></use></svg>
                 <span>欄位</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="design:layout-breaks" data-requirement="pending:K29c" aria-label="分隔符號">
+              <button type="button" class="qword-btn qword-btn-small" data-command="design:layout-breaks" data-requirement="pending:K29c" aria-label="分隔符號" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-page-break"></use></svg>
                 <span>分隔符號</span>
               </button>
@@ -1019,32 +1019,32 @@
         <!-- 頁面設定群組 -->
         <div class="qword-group" data-group="page_setup">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="layout:margins" data-requirement="pending:K29c" aria-label="邊界">
+            <button type="button" class="qword-btn qword-btn-large" data-command="layout:margins" data-requirement="pending:K29c" aria-label="邊界" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-margins"></use></svg>
               <span class="qword-btn-label">邊界</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="layout:orientation" data-requirement="pending:K29c" aria-label="方向 (直向/橫向)">
+            <button type="button" class="qword-btn qword-btn-large" data-command="layout:orientation" data-requirement="pending:K29c" aria-label="方向 (直向/橫向)" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-orientation"></use></svg>
               <span class="qword-btn-label">方向</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="layout:size" data-requirement="pending:K29c" aria-label="大小 (A4 / Letter)">
+            <button type="button" class="qword-btn qword-btn-large" data-command="layout:size" data-requirement="pending:K29c" aria-label="大小 (A4 / Letter)" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-size"></use></svg>
               <span class="qword-btn-label">大小</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="layout:columns" data-requirement="pending:K29c" aria-label="欄 (單欄/多欄)">
+            <button type="button" class="qword-btn qword-btn-large" data-command="layout:columns" data-requirement="pending:K29c" aria-label="欄 (單欄/多欄)" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-columns"></use></svg>
               <span class="qword-btn-label">欄</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="layout:breaks" data-requirement="pending:K29c" aria-label="分隔符號">
+              <button type="button" class="qword-btn qword-btn-small" data-command="layout:breaks" data-requirement="pending:K29c" aria-label="分隔符號" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-page-break"></use></svg>
                 <span>分隔符號</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="layout:line-numbers" data-requirement="pending:K29c" aria-label="行號">
+              <button type="button" class="qword-btn qword-btn-small" data-command="layout:line-numbers" data-requirement="pending:K29c" aria-label="行號" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-numbering"></use></svg>
                 <span>行號</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="layout:hyphenation" data-requirement="pending:K29c" aria-label="連字號">
+              <button type="button" class="qword-btn qword-btn-small" data-command="layout:hyphenation" data-requirement="pending:K29c" aria-label="連字號" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-strikethrough"></use></svg>
                 <span>連字號</span>
               </button>
@@ -1052,7 +1052,7 @@
           </div>
           <div class="qword-group-footer">
             <span class="qword-group-title">頁面設定</span>
-            <button type="button" class="qword-group-launcher" data-command="dialog:page-setup" data-requirement="pending:K29c" aria-label="頁面設定對話方塊啟動器">
+            <button type="button" class="qword-group-launcher" data-command="dialog:page-setup" data-requirement="pending:K29c" aria-label="頁面設定對話方塊啟動器" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon" style="width:10px;height:10px;"><use href="#icon-launcher"></use></svg>
             </button>
           </div>
@@ -1061,38 +1061,38 @@
         <!-- 排列群組 -->
         <div class="qword-group" data-group="arrange">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="layout:position" data-requirement="pending:K29c" aria-label="位置">
+            <button type="button" class="qword-btn qword-btn-large" data-command="layout:position" data-requirement="pending:K29c" aria-label="位置" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-shapes"></use></svg>
               <span class="qword-btn-label">位置</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="layout:wrap-text" data-requirement="pending:K29c" aria-label="文繞圖">
+            <button type="button" class="qword-btn qword-btn-large" data-command="layout:wrap-text" data-requirement="pending:K29c" aria-label="文繞圖" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-align-left"></use></svg>
               <span class="qword-btn-label">文繞圖</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="layout:bring-forward" data-requirement="pending:K29c" aria-label="上移一層 / 置於文字上方">
+              <button type="button" class="qword-btn qword-btn-small" data-command="layout:bring-forward" data-requirement="pending:K29c" aria-label="上移一層 / 置於文字上方" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-copy"></use></svg>
                 <span>上移一層</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="layout:send-backward" data-requirement="pending:K29c" aria-label="下移一層 / 置於文字下方">
+              <button type="button" class="qword-btn qword-btn-small" data-command="layout:send-backward" data-requirement="pending:K29c" aria-label="下移一層 / 置於文字下方" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-copy"></use></svg>
                 <span>下移一層</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="layout:align" data-requirement="pending:K29c" aria-label="對齊">
+              <button type="button" class="qword-btn qword-btn-small" data-command="layout:align" data-requirement="pending:K29c" aria-label="對齊" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-align-center"></use></svg>
                 <span>對齊</span>
               </button>
             </div>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="layout:group" data-requirement="pending:K29c" aria-label="群組">
+              <button type="button" class="qword-btn qword-btn-small" data-command="layout:group" data-requirement="pending:K29c" aria-label="群組" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-shapes"></use></svg>
                 <span>群組</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="layout:rotate" data-requirement="pending:K29c" aria-label="旋轉">
+              <button type="button" class="qword-btn qword-btn-small" data-command="layout:rotate" data-requirement="pending:K29c" aria-label="旋轉" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-undo"></use></svg>
                 <span>旋轉</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="layout:edit-wrap-points" data-requirement="pending:K29c" aria-label="編輯文字繞排位置">
+              <button type="button" class="qword-btn qword-btn-small" data-command="layout:edit-wrap-points" data-requirement="pending:K29c" aria-label="編輯文字繞排位置" title="需要引擎 K29c 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-select"></use></svg>
                 <span>編輯繞排</span>
               </button>
@@ -1100,7 +1100,7 @@
           </div>
           <div class="qword-group-footer">
             <span class="qword-group-title">排列</span>
-            <button type="button" class="qword-group-launcher" data-command="dialog:arrange" data-requirement="pending:K29c" aria-label="排列對話方塊啟動器">
+            <button type="button" class="qword-group-launcher" data-command="dialog:arrange" data-requirement="pending:K29c" aria-label="排列對話方塊啟動器" title="需要引擎 K29c 支援（開發中）">
               <svg class="qword-icon" style="width:10px;height:10px;"><use href="#icon-launcher"></use></svg>
             </button>
           </div>
@@ -1112,16 +1112,16 @@
         <!-- 目錄群組 -->
         <div class="qword-group" data-group="toc">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="references:toc" data-requirement="pending:K29e" aria-label="目錄">
+            <button type="button" class="qword-btn qword-btn-large" data-command="references:toc" data-requirement="pending:K29e" aria-label="目錄" title="需要引擎 K29e 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-toc"></use></svg>
               <span class="qword-btn-label">目錄</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="references:add-text" data-requirement="pending:K29e" aria-label="新增文字">
+              <button type="button" class="qword-btn qword-btn-small" data-command="references:add-text" data-requirement="pending:K29e" aria-label="新增文字" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-toc"></use></svg>
                 <span>新增文字</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="references:update-toc" data-requirement="pending:K29e" aria-label="更新目錄">
+              <button type="button" class="qword-btn qword-btn-small" data-command="references:update-toc" data-requirement="pending:K29e" aria-label="更新目錄" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-toc"></use></svg>
                 <span>更新目錄</span>
               </button>
@@ -1135,16 +1135,16 @@
         <!-- 註腳群組 -->
         <div class="qword-group" data-group="footnotes">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="references:insert-footnote" data-requirement="pending:K29e" aria-label="插入註腳 (Alt+Ctrl+F)">
+            <button type="button" class="qword-btn qword-btn-large" data-command="references:insert-footnote" data-requirement="pending:K29e" aria-label="插入註腳 (Alt+Ctrl+F)" title="需要引擎 K29e 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-footnotes"></use></svg>
               <span class="qword-btn-label">插入註腳</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="references:insert-endnote" data-requirement="pending:K29e" aria-label="插入章節附註 (Alt+Ctrl+D)">
+              <button type="button" class="qword-btn qword-btn-small" data-command="references:insert-endnote" data-requirement="pending:K29e" aria-label="插入章節附註 (Alt+Ctrl+D)" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-footnotes"></use></svg>
                 <span>插入附註</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="references:next-footnote" data-requirement="pending:K29e" aria-label="下一個註腳">
+              <button type="button" class="qword-btn qword-btn-small" data-command="references:next-footnote" data-requirement="pending:K29e" aria-label="下一個註腳" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-footnotes"></use></svg>
                 <span>下一個註腳</span>
               </button>
@@ -1158,20 +1158,20 @@
         <!-- 引文與書目群組 -->
         <div class="qword-group" data-group="citations">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="references:insert-citation" data-requirement="pending:K29e" aria-label="插入引文">
+            <button type="button" class="qword-btn qword-btn-large" data-command="references:insert-citation" data-requirement="pending:K29e" aria-label="插入引文" title="需要引擎 K29e 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-toc"></use></svg>
               <span class="qword-btn-label">插入引文</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="references:manage-sources" data-requirement="pending:K29e" aria-label="管理來源">
+              <button type="button" class="qword-btn qword-btn-small" data-command="references:manage-sources" data-requirement="pending:K29e" aria-label="管理來源" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-toc"></use></svg>
                 <span>管理來源</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="references:citation-style" data-requirement="pending:K29e" aria-label="書目樣式 (APA / MLA)">
+              <button type="button" class="qword-btn qword-btn-small" data-command="references:citation-style" data-requirement="pending:K29e" aria-label="書目樣式 (APA / MLA)" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-toc"></use></svg>
                 <span>樣式: APA</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="references:bibliography" data-requirement="pending:K29e" aria-label="書目">
+              <button type="button" class="qword-btn qword-btn-small" data-command="references:bibliography" data-requirement="pending:K29e" aria-label="書目" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-toc"></use></svg>
                 <span>書目</span>
               </button>
@@ -1185,16 +1185,16 @@
         <!-- 題注群組 -->
         <div class="qword-group" data-group="captions">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="references:insert-caption" data-requirement="pending:K29e" aria-label="插入題注">
+            <button type="button" class="qword-btn qword-btn-large" data-command="references:insert-caption" data-requirement="pending:K29e" aria-label="插入題注" title="需要引擎 K29e 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-shapes"></use></svg>
               <span class="qword-btn-label">插入題注</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="references:insert-figures-table" data-requirement="pending:K29e" aria-label="插入圖表目錄">
+              <button type="button" class="qword-btn qword-btn-small" data-command="references:insert-figures-table" data-requirement="pending:K29e" aria-label="插入圖表目錄" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-chart"></use></svg>
                 <span>圖表目錄</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="references:update-figures-table" data-requirement="pending:K29e" aria-label="更新圖表目錄">
+              <button type="button" class="qword-btn qword-btn-small" data-command="references:update-figures-table" data-requirement="pending:K29e" aria-label="更新圖表目錄" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-chart"></use></svg>
                 <span>更新圖表</span>
               </button>
@@ -1208,16 +1208,16 @@
         <!-- 索引群組 -->
         <div class="qword-group" data-group="index">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="references:mark-entry" data-requirement="pending:K29e" aria-label="標記項目 (Alt+Shift+X)">
+            <button type="button" class="qword-btn qword-btn-large" data-command="references:mark-entry" data-requirement="pending:K29e" aria-label="標記項目 (Alt+Shift+X)" title="需要引擎 K29e 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-toc"></use></svg>
               <span class="qword-btn-label">標記項目</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="references:insert-index" data-requirement="pending:K29e" aria-label="插入索引">
+              <button type="button" class="qword-btn qword-btn-small" data-command="references:insert-index" data-requirement="pending:K29e" aria-label="插入索引" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-toc"></use></svg>
                 <span>插入索引</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="references:update-index" data-requirement="pending:K29e" aria-label="更新索引">
+              <button type="button" class="qword-btn qword-btn-small" data-command="references:update-index" data-requirement="pending:K29e" aria-label="更新索引" title="需要引擎 K29e 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-toc"></use></svg>
                 <span>更新索引</span>
               </button>
@@ -1231,11 +1231,11 @@
         <!-- 法律授權目錄群組 -->
         <div class="qword-group" data-group="authorities">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="references:mark-citation" data-requirement="pending:K29e" aria-label="標記引文 (Alt+Shift+I)">
+            <button type="button" class="qword-btn qword-btn-large" data-command="references:mark-citation" data-requirement="pending:K29e" aria-label="標記引文 (Alt+Shift+I)" title="需要引擎 K29e 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-toc"></use></svg>
               <span class="qword-btn-label">標記引文</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="references:insert-authorities" data-requirement="pending:K29e" aria-label="插入法律公文目錄">
+            <button type="button" class="qword-btn qword-btn-large" data-command="references:insert-authorities" data-requirement="pending:K29e" aria-label="插入法律公文目錄" title="需要引擎 K29e 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-toc"></use></svg>
               <span class="qword-btn-label">公文目錄</span>
             </button>
@@ -1251,20 +1251,20 @@
         <!-- 校對群組 -->
         <div class="qword-group" data-group="proofing">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="review:spelling-grammar" data-requirement="pending:K29d" aria-label="拼字及文法檢查 (F7)">
+            <button type="button" class="qword-btn qword-btn-large" data-command="review:spelling-grammar" data-requirement="pending:K29d" aria-label="拼字及文法檢查 (F7)" title="需要引擎 K29d 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-spellcheck"></use></svg>
               <span class="qword-btn-label">拼字檢查</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:thesaurus" data-requirement="pending:K29d" aria-label="同義字 (Shift+F7)">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:thesaurus" data-requirement="pending:K29d" aria-label="同義字 (Shift+F7)" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-spellcheck"></use></svg>
                 <span>同義字</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:word-count" data-requirement="pending:K29d" aria-label="字數統計">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:word-count" data-requirement="pending:K29d" aria-label="字數統計" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-spellcheck"></use></svg>
                 <span>字數統計</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:reverse-spellcheck" data-requirement="pending:K29d" aria-label="反向拼寫檢查">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:reverse-spellcheck" data-requirement="pending:K29d" aria-label="反向拼寫檢查" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-spellcheck"></use></svg>
                 <span>反向校對</span>
               </button>
@@ -1278,11 +1278,11 @@
         <!-- 語言群組 -->
         <div class="qword-group" data-group="language">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="review:translate" data-requirement="pending:K29d" aria-label="翻譯">
+            <button type="button" class="qword-btn qword-btn-large" data-command="review:translate" data-requirement="pending:K29d" aria-label="翻譯" title="需要引擎 K29d 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-view-web"></use></svg>
               <span class="qword-btn-label">翻譯</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="review:language" data-requirement="pending:K29d" aria-label="語言設定">
+            <button type="button" class="qword-btn qword-btn-large" data-command="review:language" data-requirement="pending:K29d" aria-label="語言設定" title="需要引擎 K29d 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-view-web"></use></svg>
               <span class="qword-btn-label">語言</span>
             </button>
@@ -1295,30 +1295,30 @@
         <!-- 註解群組 -->
         <div class="qword-group" data-group="comments">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="review:new-comment" data-requirement="pending:K29d" aria-label="新增註解">
+            <button type="button" class="qword-btn qword-btn-large" data-command="review:new-comment" data-requirement="pending:K29d" aria-label="新增註解" title="需要引擎 K29d 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-comment-new"></use></svg>
               <span class="qword-btn-label">新增註解</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:delete-comment" data-requirement="pending:K29d" aria-label="刪除註解">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:delete-comment" data-requirement="pending:K29d" aria-label="刪除註解" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-comment-new"></use></svg>
                 <span>刪除</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:resolve-comment" data-requirement="pending:K29d" aria-label="解決註解">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:resolve-comment" data-requirement="pending:K29d" aria-label="解決註解" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-comment-new"></use></svg>
                 <span>解決</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:show-comments" data-requirement="pending:K29d" aria-label="顯示註解">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:show-comments" data-requirement="pending:K29d" aria-label="顯示註解" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-comment-new"></use></svg>
                 <span>顯示註解</span>
               </button>
             </div>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:prev-comment" data-requirement="pending:K29d" aria-label="上一個註解">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:prev-comment" data-requirement="pending:K29d" aria-label="上一個註解" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-undo"></use></svg>
                 <span>上一個</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:next-comment" data-requirement="pending:K29d" aria-label="下一個註解">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:next-comment" data-requirement="pending:K29d" aria-label="下一個註解" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-redo"></use></svg>
                 <span>下一個</span>
               </button>
@@ -1332,26 +1332,26 @@
         <!-- 追蹤與修訂群組 -->
         <div class="qword-group" data-group="tracking">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="review:track-changes" data-requirement="pending:K29d" aria-label="追蹤修訂 (Ctrl+Shift+E)">
+            <button type="button" class="qword-btn qword-btn-large" data-command="review:track-changes" data-requirement="pending:K29d" aria-label="追蹤修訂 (Ctrl+Shift+E)" title="需要引擎 K29d 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-track-changes"></use></svg>
               <span class="qword-btn-label">追蹤修訂</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:display-markup" data-requirement="pending:K29d" aria-label="顯示標記">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:display-markup" data-requirement="pending:K29d" aria-label="顯示標記" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-track-changes"></use></svg>
                 <span>顯示標記</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:reviewing-pane" data-requirement="pending:K29d" aria-label="修訂窗格">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:reviewing-pane" data-requirement="pending:K29d" aria-label="修訂窗格" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-track-changes"></use></svg>
                 <span>修訂窗格</span>
               </button>
             </div>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:accept-change" data-requirement="pending:K29d" aria-label="接受修訂">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:accept-change" data-requirement="pending:K29d" aria-label="接受修訂" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-track-changes"></use></svg>
                 <span>接受</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:reject-change" data-requirement="pending:K29d" aria-label="拒絕修訂">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:reject-change" data-requirement="pending:K29d" aria-label="拒絕修訂" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-track-changes"></use></svg>
                 <span>拒絕</span>
               </button>
@@ -1365,20 +1365,20 @@
         <!-- 溝通與保護群組 -->
         <div class="qword-group" data-group="protect">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="review:restrict-editing" data-requirement="pending:K29d" aria-label="限制編輯">
+            <button type="button" class="qword-btn qword-btn-large" data-command="review:restrict-editing" data-requirement="pending:K29d" aria-label="限制編輯" title="需要引擎 K29d 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-protect"></use></svg>
               <span class="qword-btn-label">限制編輯</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:restrict-formatting" data-requirement="pending:K29d" aria-label="限制格式化">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:restrict-formatting" data-requirement="pending:K29d" aria-label="限制格式化" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-protect"></use></svg>
                 <span>限制格式</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:enforce-protect" data-requirement="pending:K29d" aria-label="開始強制保護">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:enforce-protect" data-requirement="pending:K29d" aria-label="開始強制保護" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-protect"></use></svg>
                 <span>強制保護</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="review:stop-protect" data-requirement="pending:K29d" aria-label="停止保護">
+              <button type="button" class="qword-btn qword-btn-small" data-command="review:stop-protect" data-requirement="pending:K29d" aria-label="停止保護" title="需要引擎 K29d 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-protect"></use></svg>
                 <span>停止保護</span>
               </button>
@@ -1484,20 +1484,20 @@
         <!-- 視窗群組 -->
         <div class="qword-group" data-group="window">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="window:new" data-requirement="pending:K29s" aria-label="開新視窗">
+            <button type="button" class="qword-btn qword-btn-large" data-command="window:new" data-requirement="pending:K29s" aria-label="開新視窗" title="需要引擎 K29s 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-copy"></use></svg>
               <span class="qword-btn-label">開新視窗</span>
             </button>
             <div class="qword-btn-column">
-              <button type="button" class="qword-btn qword-btn-small" data-command="window:arrange-all" data-requirement="pending:K29s" aria-label="整齊排列視窗">
+              <button type="button" class="qword-btn qword-btn-small" data-command="window:arrange-all" data-requirement="pending:K29s" aria-label="整齊排列視窗" title="需要引擎 K29s 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-shapes"></use></svg>
                 <span>整齊排列</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="window:split" data-requirement="pending:K29s" aria-label="分割視窗">
+              <button type="button" class="qword-btn qword-btn-small" data-command="window:split" data-requirement="pending:K29s" aria-label="分割視窗" title="需要引擎 K29s 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-page-break"></use></svg>
                 <span>分割</span>
               </button>
-              <button type="button" class="qword-btn qword-btn-small" data-command="window:switch" data-requirement="pending:K29s" aria-label="切換視窗">
+              <button type="button" class="qword-btn qword-btn-small" data-command="window:switch" data-requirement="pending:K29s" aria-label="切換視窗" title="需要引擎 K29s 支援（開發中）">
                 <svg class="qword-icon"><use href="#icon-copy"></use></svg>
                 <span>切換視窗</span>
               </button>
@@ -1511,7 +1511,7 @@
         <!-- 巨集群組 -->
         <div class="qword-group" data-group="macros">
           <div class="qword-group-body">
-            <button type="button" class="qword-btn qword-btn-large" data-command="macro:view" data-requirement="pending:K29m" aria-label="檢視巨集 (Alt+F8)">
+            <button type="button" class="qword-btn qword-btn-large" data-command="macro:view" data-requirement="pending:K29m" aria-label="檢視巨集 (Alt+F8)" title="需要引擎 K29m 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-shapes"></use></svg>
               <span class="qword-btn-label">巨集</span>
             </button>
@@ -1531,15 +1531,15 @@
               <svg class="qword-icon"><use href="#icon-help"></use></svg>
               <span class="qword-btn-label">說明</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="help:contact-support" data-requirement="pending:K29u" aria-label="連絡客戶支援">
+            <button type="button" class="qword-btn qword-btn-large" data-command="help:contact-support" data-requirement="pending:K29u" aria-label="連絡客戶支援" title="需要引擎 K29u 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-share"></use></svg>
               <span class="qword-btn-label">客戶支援</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="help:feedback" data-requirement="pending:K29u" aria-label="意見反應">
+            <button type="button" class="qword-btn qword-btn-large" data-command="help:feedback" data-requirement="pending:K29u" aria-label="意見反應" title="需要引擎 K29u 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-comment-new"></use></svg>
               <span class="qword-btn-label">意見反應</span>
             </button>
-            <button type="button" class="qword-btn qword-btn-large" data-command="help:show-training" data-requirement="pending:K29u" aria-label="顯示訓練課程">
+            <button type="button" class="qword-btn qword-btn-large" data-command="help:show-training" data-requirement="pending:K29u" aria-label="顯示訓練課程" title="需要引擎 K29u 支援（開發中）">
               <svg class="qword-icon"><use href="#icon-view-read"></use></svg>
               <span class="qword-btn-label">訓練課程</span>
             </button>
@@ -1623,9 +1623,9 @@
           </header>
 
           <div class="qword-page-content">
-            <h1 class="qword-doc-h1">Quire Word 外觀編輯器外殼原型（U1 窗體骨架）</h1>
+            <h1 class="qword-doc-h1">Quire 文書編輯器外殼原型（U1 窗體骨架）</h1>
             <p class="qword-doc-p">
-              歡迎使用 Quire Word 外觀編輯器外殼原型。本視窗完全依據 Microsoft Word 桌面版 Ribbon 規範構建，整合了完整八大標籤（常用、插入、設計、版面配置、參考資料、校閱、檢視、說明）、快速存取工具列（QAT）、標尺系統與狀態列。
+              歡迎使用 Quire 文書編輯器外殼原型。本視窗依據傳統桌上型文書處理器的 Ribbon 佈局慣例構建，整合了完整八大標籤（常用、插入、設計、版面配置、參考資料、校閱、檢視、說明）、快速存取工具列（QAT）、標尺系統與狀態列。
             </p>
             <p class="qword-doc-p">
               <strong>產品誠實紅線規範：</strong> 本外殼忠實反映 Quire 核心引擎能力。凡屬當前外殼與檢視既有能力者（如標籤切換、縮放滑桿 60%–180%、適合頁寬、閱讀/列印/Web 檢視模式、標尺切換與拖曳計算、8×5 表格選擇器與特殊符號面板），皆已實裝互動；其餘需要後續編輯、插入、樣式排版或校對引擎 API 支援的按鈕，皆嚴格標記為 <code>pending:&lt;依賴卡&gt;</code>，以置灰停用態呈現，游標帶有 not-allowed 並附 Tooltip 詳細提示，絕不粉飾或隱藏未完成功能。
@@ -1786,13 +1786,13 @@
   <div class="qword-modal-backdrop" id="modal-help" role="dialog" aria-modal="true" aria-labelledby="modal-help-title">
     <div class="qword-modal">
       <div class="qword-modal-header">
-        <span id="modal-help-title">Microsoft Word 原型外殼 - 系統說明</span>
+        <span id="modal-help-title">Quire 編輯器外殼 - 系統說明</span>
         <button type="button" class="qword-btn qword-btn-icon-only" data-command="help:close" data-requirement="live" onclick="document.getElementById('modal-help').classList.remove('open')" aria-label="關閉說明">
           ✕
         </button>
       </div>
       <div class="qword-modal-body">
-        <h4 style="margin-bottom:8px;">Quire Word 外觀編輯器 (U1 窗體骨架)</h4>
+        <h4 style="margin-bottom:8px;">Quire 文書編輯器外殼 (U1 窗體骨架)</h4>
         <p style="margin-bottom:8px;">
           本外殼原型完全採用標準 HTML5、CSS 與純 JavaScript 實現，零新依賴、零第三方字型或圖示庫。
         </p>
