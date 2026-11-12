@@ -1,7 +1,7 @@
 # AGY-ODTIND 交付報告：ODT 段落縮排與對齊消費（公文檔跑版修復鏈第三環）
 
 - 任務代號：AGY-ODTIND（軸 1：縮排與置中消費）
-- 執行工作區根路徑：`/home/jerry/projects/quire/.worktrees/agy-odtind`
+- 執行工作區根路徑：`<repo>/.worktrees/agy-odtind`
 - 規範標準：ODF 1.3 Part 3 §20.375（`fo:text-align`）、§20.219（`fo:margin-left`）、§20.220（`fo:margin-right`）、§20.376（`fo:text-indent`）
 - 報告日期：2026-11-12
 
@@ -12,7 +12,7 @@
 ### 1.1 工作路徑自證
 開工執行 `pwd` 輸出：
 ```
-/home/jerry/projects/quire/.worktrees/agy-odtind
+<repo>/.worktrees/agy-odtind
 ```
 自證完全位於指定 worktree 根目錄。
 
@@ -102,7 +102,7 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 ```
 [FLAG_ODT_INDENT_BUGGY] 成功回塞：略過段落縮排與置中計算（紅燈 1、2 驗證點）
 === 正在執行紅燈測試（預期燈 1、燈 2 必紅）===
-   Compiling quire-odf v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-odtind/core/odf)
+   Compiling quire-odf v0.1.0 (<repo>/.worktrees/agy-odtind/core/odf)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 1.03s
      Running tests/odf_paragraph_properties.rs (target/debug/deps/odf_paragraph_properties-467cd3f34fd387bf)
 
@@ -135,7 +135,7 @@ BUGGY 態測試結束，exit_code=101
 ```
 [FLAG_ODT_INDENT_GOOD] 成功還原：恢復段落縮排與置中計算
 === 正在執行正常測試（預期全綠）===
-   Compiling quire-odf v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-odtind/core/odf)
+   Compiling quire-odf v0.1.0 (<repo>/.worktrees/agy-odtind/core/odf)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.74s
      Running tests/odf_paragraph_properties.rs (target/debug/deps/odf_paragraph_properties-467cd3f34fd387bf)
 
