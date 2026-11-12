@@ -53,11 +53,14 @@ pub use footnotes::{AnchorMark, NoteLayout, NoteRun, PageFoot};
 
 // 編輯 API Mutation 型錄、Surgical XML Patch 與 Undo/Redo（Slice 1 / K29a）。
 pub mod mutation;
+// K29c（Slice 3）：M4 表格家族與 M5 圖片家族 Mutation 實作。
+mod mutation_k29c;
 pub use mutation::{
-    BreakKind, ByteSpan, DocPos, DocRange, HfSlotKind, InverseMutation, IrreversibleReason,
-    ListAction, Mutation, MutationError, MutationOutcome, ParaPropsPatch, PartLifecycleInverse,
-    ReversibilityLevel, RunDirectPatch, SemanticInverseOp, StyleType, SubDocTarget, UndoEntry,
-    XmlBytePatch, XmlReversePatch,
+    BreakKind, ByteSpan, CellPropsPatch, DocPos, DocRange, FloatingAxisSpec, HfSlotKind,
+    InsertSide, InverseMutation, IrreversibleReason, ListAction, Mutation, MutationError,
+    MutationOutcome, ParaPropsPatch, PartLifecycleInverse, ReversibilityLevel, RowPropsPatch,
+    RunDirectPatch, SemanticInverseOp, StyleType, SubDocTarget, TablePath, TablePropsPatch,
+    UndoEntry, VMergeState, WrapModeSpec, XmlBytePatch, XmlReversePatch,
 };
 pub use quire_ooxml::diff_untouched;
 #[derive(Error, Debug)]

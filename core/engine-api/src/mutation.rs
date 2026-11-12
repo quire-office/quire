@@ -128,6 +128,118 @@ pub enum ListAction {
     RemoveNumbering,
 }
 
+/// 列／欄插入方位（K29c／M4.3、M4.4）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InsertSide {
+    Before,
+    After,
+}
+
+/// 表格穩定路徑（K29c／M4）：根表序號＋逐層巢狀步進。
+///
+/// 每一步為 `(row_idx, cell_idx, sub_table_idx)`，指向該格內第幾個巢狀
+/// `<w:tbl>`。正文根表以 `root_slot` 定位（`OoxmlDoc::tables` 的序）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TablePath {
+    pub target: SubDocTarget,
+    pub root_slot: usize,
+    #[serde(default)]
+    pub nested_steps: Vec<(usize, usize, usize)>,
+}
+
+impl TablePath {
+    /// 正文第 `root_slot` 張根表（無巢狀步進）。
+    pub fn body(root_slot: usize) -> Self {
+        Self {
+            target: SubDocTarget::Body,
+            root_slot,
+            nested_steps: Vec::new(),
+        }
+    }
+}
+
+/// 表格屬性補丁（K29c／M4.6）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TablePropsPatch {
+    /// `w:tblW/@w:w`（pt，寫回 dxa twip）。
+    #[serde(default)]
+    pub width_pt: Option<f32>,
+    /// `w:jc/@w:val`（left／center／right）。
+    #[serde(default)]
+    pub alignment: Option<String>,
+    /// `w:shd/@w:fill`（RRGGBB）。
+    #[serde(default)]
+    pub shading_fill: Option<String>,
+}
+
+/// 列屬性補丁（K29c／M4.6）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RowPropsPatch {
+    /// `w:trHeight/@w:val`（pt，寫回 twip；`hRule="atLeast"`）。
+    #[serde(default)]
+    pub height_pt: Option<f32>,
+    /// `w:tblHeader`（跨頁重複表頭列）。
+    #[serde(default)]
+    pub header: Option<bool>,
+    /// `w:cantSplit`（整列不拆頁）。
+    #[serde(default)]
+    pub cant_split: Option<bool>,
+}
+
+/// 垂直合併狀態（K29c／M4.5、M4.6）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VMergeState {
+    /// 移除 `<w:vMerge>`。
+    None,
+    /// `<w:vMerge w:val="restart"/>`。
+    Restart,
+    /// `<w:vMerge/>`（延續）。
+    Continue,
+}
+
+/// 儲存格屬性補丁（K29c／M4.6）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CellPropsPatch {
+    /// `w:tcW/@w:w`（pt，寫回 dxa twip）。
+    #[serde(default)]
+    pub width_pt: Option<f32>,
+    /// `w:shd/@w:fill`（RRGGBB）。
+    #[serde(default)]
+    pub shading_fill: Option<String>,
+    /// `w:vAlign/@w:val`（top／center／bottom）。
+    #[serde(default)]
+    pub vertical_align: Option<String>,
+    /// `w:gridSpan/@w:val`（1＝移除元素）。
+    #[serde(default)]
+    pub grid_span: Option<u32>,
+    /// `w:vMerge` 狀態。
+    #[serde(default)]
+    pub v_merge: Option<VMergeState>,
+}
+
+/// 浮動圖單軸定位規格（K29c／M5.1、M5.2）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FloatingAxisSpec {
+    /// `wp:positionH|V/@relativeFrom`（page／margin／column／paragraph／line／character）。
+    pub relative_from: String,
+    /// `wp:posOffset`（pt；與 `align` 互斥）。
+    #[serde(default)]
+    pub offset_pt: Option<f32>,
+    /// `wp:align`（left／center／right／top／bottom）。
+    #[serde(default)]
+    pub align: Option<String>,
+}
+
+/// 文繞圖模式（K29c／M5.1、M5.2）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WrapModeSpec {
+    None,
+    Square,
+    Tight,
+    Through,
+    TopAndBottom,
+}
+
 /// Mutation 操作枚舉。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Mutation {
@@ -175,6 +287,116 @@ pub enum Mutation {
         para_range: std::ops::RangeInclusive<usize>,
         action: ListAction,
     },
+    /// M4.1 在指定段落之後插入 `rows × cols` 新表格。
+    InsertTable {
+        target: SubDocTarget,
+        after_para: Option<usize>,
+        rows: usize,
+        cols: usize,
+        col_widths_pt: Option<Vec<f32>>,
+    },
+    /// M4.2 刪除整張表格。
+    DeleteTable { table: TablePath },
+    /// M4.3 插入一列（Before／After）。
+    InsertTableRow {
+        table: TablePath,
+        at_row: usize,
+        position: InsertSide,
+    },
+    /// M4.3 刪除指定列（連帶處理 vMerge 頂格晉升）。
+    DeleteTableRow { table: TablePath, row: usize },
+    /// M4.4 插入一欄（同步修補 tblGrid 與各列）。
+    InsertTableColumn {
+        table: TablePath,
+        at_grid_col: usize,
+        position: InsertSide,
+        width_pt: f32,
+    },
+    /// M4.4 刪除指定網格欄。
+    DeleteTableColumn { table: TablePath, grid_col: usize },
+    /// M4.5 合併矩形儲存格區域。
+    MergeTableCells {
+        table: TablePath,
+        top_row: usize,
+        bottom_row: usize,
+        left_grid_col: usize,
+        right_grid_col: usize,
+    },
+    /// M4.5 分割已合併儲存格。
+    SplitTableCell {
+        table: TablePath,
+        row: usize,
+        cell: usize,
+        into_rows: usize,
+        into_cols: usize,
+    },
+    /// M4.6 修改表格屬性。
+    SetTableProps {
+        table: TablePath,
+        patch: TablePropsPatch,
+    },
+    /// M4.6 修改列屬性。
+    SetRowProps {
+        table: TablePath,
+        row: usize,
+        patch: RowPropsPatch,
+    },
+    /// M4.6 修改儲存格屬性。
+    SetCellProps {
+        table: TablePath,
+        row: usize,
+        cell: usize,
+        patch: CellPropsPatch,
+    },
+    /// M5.1 在游標位置插入行內圖片。
+    InsertInlineImage {
+        target: SubDocTarget,
+        pos: DocPos,
+        media_bytes: Vec<u8>,
+        mime_type: String,
+        width_pt: f32,
+        height_pt: f32,
+        alt_text: Option<String>,
+    },
+    /// M5.1 在宿主段落插入浮動圖片。
+    InsertFloatingImage {
+        target: SubDocTarget,
+        host_para: usize,
+        media_bytes: Vec<u8>,
+        mime_type: String,
+        width_pt: f32,
+        height_pt: f32,
+        pos_h: FloatingAxisSpec,
+        pos_v: FloatingAxisSpec,
+        wrap_mode: WrapModeSpec,
+        behind_doc: bool,
+    },
+    /// M5.2 調整既有圖片尺寸或浮動定位（零媒體觸碰）。
+    ResizeOrMoveImage {
+        target: SubDocTarget,
+        host_para: usize,
+        drawing_index: usize,
+        new_width_pt: Option<f32>,
+        new_height_pt: Option<f32>,
+        new_pos_h: Option<FloatingAxisSpec>,
+        new_pos_v: Option<FloatingAxisSpec>,
+        new_wrap_mode: Option<WrapModeSpec>,
+    },
+    /// M5.3 替換圖片媒體（預設 CoW；強制 GC 時不可逆）。
+    ReplaceImageMedia {
+        target: SubDocTarget,
+        host_para: usize,
+        drawing_index: usize,
+        new_media_bytes: Vec<u8>,
+        new_mime_type: String,
+    },
+    /// M5.3 刪除圖片（可選強制回收未引用媒體）。
+    DeleteImage {
+        target: SubDocTarget,
+        host_para: usize,
+        drawing_index: usize,
+        gc_unreferenced_media: bool,
+    },
 }
 
 /// 半開位元組區間。
@@ -219,6 +441,11 @@ pub struct InverseMutation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IrreversibleReason {
     MediaPoolExceeded,
+    /// 本會話新增之媒體被強制回收（K29c／M5.3）。
+    MediaPayloadEvicted {
+        part_name: String,
+        bytes_freed: usize,
+    },
     ExternalSetPart,
     Custom(String),
 }
@@ -240,6 +467,11 @@ pub struct UndoEntry {
     pub reversibility: ReversibilityLevel,
 }
 
+/// 反序列化預設：未帶可逆欄位的舊快照一律視為嚴格可逆。
+fn default_strict_reversible() -> ReversibilityLevel {
+    ReversibilityLevel::StrictByteReversible
+}
+
 /// Mutation 套用結果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MutationOutcome {
@@ -247,6 +479,9 @@ pub struct MutationOutcome {
     pub touched_parts: Vec<String>,
     pub inverse: Vec<InverseMutation>,
     pub caret_after: Option<DocPos>,
+    /// 本次操作的可逆性宣告（K29c：M5.3 強制 GC 時降級為不可逆）。
+    #[serde(default = "default_strict_reversible")]
+    pub reversibility: ReversibilityLevel,
 }
 
 /// 誠實拒絕不可應用操作的錯誤型別。
@@ -1305,6 +1540,11 @@ fn find_style_span(xml: &[u8], style_id: &str) -> Option<ByteSpan> {
 impl Engine {
     /// 依據 Mutation 規格套用單筆變更。
     pub fn apply_mutation(&mut self, op: Mutation) -> Result<MutationOutcome, MutationError> {
+        // K29c（M4＋M5）：表格與圖片家族走獨立實作檔，避免與 Slice 1/2 的
+        // 單段落外科手術主幹糾纏；兩者共用同一 Undo／touched／rebuild 紀律。
+        if crate::mutation_k29c::is_k29c_mutation(&op) {
+            return self.apply_k29c_mutation(op);
+        }
         let (
             part_name,
             applied_span,
@@ -1483,6 +1723,7 @@ impl Engine {
                             touched_parts: Vec::new(),
                             inverse: Vec::new(),
                             caret_after: Some(range.start),
+                            reversibility: ReversibilityLevel::StrictByteReversible,
                         });
                     }
                     // 先走 Slice 1 的單一 <w:t> 局部刪除（巢狀文字框段落安全）。
@@ -2187,6 +2428,9 @@ impl Engine {
                     true,
                 )
             }
+
+            // K29c 變體已於函式開頭前置分派（見 `apply_k29c_mutation`）。
+            _ => unreachable!("K29c Mutation 不應進入 Slice 1/2 主幹"),
         };
 
         // [K29A_BUGGY_POINT_1: PARTS_WRITEBACK]
@@ -2264,6 +2508,7 @@ impl Engine {
             touched_parts: vec![part_name],
             inverse: Vec::new(),
             caret_after,
+            reversibility: ReversibilityLevel::StrictByteReversible,
         })
     }
 
@@ -2307,6 +2552,22 @@ impl Engine {
 
                 affected_parts.push(patch.part_name.clone());
             }
+            // 容器層生命週期逆動作（K29c M5.1／M5.3）：本次會話新增的媒體
+            // part 在 Undo 時移除；新增 part 不進 part_baselines，移除後自然
+            // 回到開檔 part 集合。
+            for life in inv.part_lifecycle_inverse.iter().rev() {
+                match life {
+                    PartLifecycleInverse::RemoveSynthesizedPart(name) => {
+                        self.doc.remove_part(name);
+                        self.touched.remove(name);
+                    }
+                    PartLifecycleInverse::RestoreRemovedPart { name, bytes } => {
+                        self.doc.set_part(name, bytes.clone());
+                        self.touched.insert(name.clone(), ());
+                        affected_parts.push(name.clone());
+                    }
+                }
+            }
         }
 
         // touched 自動退場機制
@@ -2334,7 +2595,18 @@ impl Engine {
             touched_parts: affected_parts,
             inverse: Vec::new(),
             caret_after: None,
+            reversibility: ReversibilityLevel::StrictByteReversible,
         }))
+    }
+
+    /// 是否仍有可復原的歷史（K29c 不可逆降級會截斷堆疊）。
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    /// 是否仍有可重做的歷史。
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
     }
 
     /// 重做頂端操作。
@@ -2358,6 +2630,7 @@ impl Engine {
             touched_parts: vec!["word/document.xml".to_string()],
             inverse: Vec::new(),
             caret_after: entry.caret_after,
+            reversibility: ReversibilityLevel::StrictByteReversible,
         }))
     }
 }
