@@ -1547,17 +1547,30 @@ impl Engine {
 mod k29d_unit_probes {
     use super::*;
 
+    /// `locate_element` 回歸鎖：attempt 1 的根因修復（自閉合判準 off-by-one——
+    /// `text[start..=gt]` 尾元就是 `>`，舊寫法 `ends_with('/')` 恆假）必須守死，
+    /// 否則 pgSz／cols 全部定位失敗、燈 1 全紅。
     #[test]
     fn locate_element_self_closing_and_nested() {
         let seg = r#"<w:sectPr><w:pgSz w:w="11900" w:h="16840"/><w:pgMar w:top="1440"/><w:cols w:space="425"/></w:sectPr>"#;
-        let pg = locate_element(seg, "w:pgSz", 0);
-        println!("LOC_PGSZ={pg:?}");
-        assert!(pg.is_some(), "pgSz 必須定位成功");
-        let cols = locate_element(seg, "w:cols", 0);
-        println!("LOC_COLS={cols:?}");
-        assert!(cols.is_some());
-        let sect = locate_element(seg, "w:sectPr", 0);
-        println!("LOC_SECT={sect:?}");
-        assert_eq!(sect, Some((0, seg.len())));
+        assert!(
+            locate_element(seg, "w:pgSz", 0).is_some(),
+            "自閉合 pgSz 必須定位成功"
+        );
+        assert!(
+            locate_element(seg, "w:cols", 0).is_some(),
+            "自閉合 cols 必須定位成功"
+        );
+        assert_eq!(
+            locate_element(seg, "w:sectPr", 0),
+            Some((0, seg.len())),
+            "含嵌套子元素的 sectPr 必須回整元素半開區間"
+        );
+        // 前綴同名元素不得誤命中（邊界字元判準：`<w:col` 命中 `<w:cols` 須續掃）。
+        assert_eq!(
+            locate_element(seg, "w:col", 0),
+            None,
+            "前綴誤命中（w:col vs w:cols）必須回 None"
+        );
     }
 }
