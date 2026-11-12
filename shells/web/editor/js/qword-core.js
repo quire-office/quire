@@ -375,6 +375,67 @@ export class QWordCore {
       handled = true;
       req = 'live';
       this._notify('edit:enter', payload);
+    } else if (cmdId === 'format:bold') {
+      handled = true;
+      req = 'live';
+      this._notify('format:bold', payload);
+    } else if (cmdId === 'format:italic') {
+      handled = true;
+      req = 'live';
+      this._notify('format:italic', payload);
+    } else if (cmdId === 'format:font-color' || cmdId === 'format:font-color-palette' || cmdId === 'format:color:font') {
+      handled = true;
+      req = 'live';
+      this._notify('format:font-color', payload);
+    } else if (cmdId === 'font:grow') {
+      handled = true;
+      req = 'live';
+      this._notify('font:grow', payload);
+    } else if (cmdId === 'font:shrink') {
+      handled = true;
+      req = 'live';
+      this._notify('font:shrink', payload);
+    } else if (cmdId === 'font:size' || cmdId.startsWith('font:size:')) {
+      handled = true;
+      req = 'live';
+      const sizeVal = payload.size || (cmdId.startsWith('font:size:') ? cmdId.replace('font:size:', '') : null);
+      this._notify('font:size', { size: sizeVal, ...payload });
+    } else if (cmdId === 'paragraph:align-left' || cmdId === 'align:left') {
+      handled = true;
+      req = 'live';
+      this._notify('paragraph:align', { alignment: 'left', ...payload });
+    } else if (cmdId === 'paragraph:align-center' || cmdId === 'align:center') {
+      handled = true;
+      req = 'live';
+      this._notify('paragraph:align', { alignment: 'center', ...payload });
+    } else if (cmdId === 'paragraph:align-right' || cmdId === 'align:right') {
+      handled = true;
+      req = 'live';
+      this._notify('paragraph:align', { alignment: 'right', ...payload });
+    } else if (cmdId === 'paragraph:align-justify' || cmdId === 'align:justify') {
+      handled = true;
+      req = 'live';
+      this._notify('paragraph:align', { alignment: 'both', ...payload });
+    } else if (cmdId === 'style:normal') {
+      handled = true;
+      req = 'live';
+      this._notify('style:apply', { styleId: 'Normal', ...payload });
+    } else if (cmdId === 'style:no-spacing') {
+      handled = true;
+      req = 'live';
+      this._notify('style:apply', { styleId: 'NoSpacing', ...payload });
+    } else if (cmdId === 'style:h1') {
+      handled = true;
+      req = 'live';
+      this._notify('style:apply', { styleId: 'Heading1', ...payload });
+    } else if (cmdId === 'style:h2') {
+      handled = true;
+      req = 'live';
+      this._notify('style:apply', { styleId: 'Heading2', ...payload });
+    } else if (cmdId === 'style:h3') {
+      handled = true;
+      req = 'live';
+      this._notify('style:apply', { styleId: 'Heading3', ...payload });
     } else if (cmdId === 'page:next') {
       handled = true;
       req = 'live';

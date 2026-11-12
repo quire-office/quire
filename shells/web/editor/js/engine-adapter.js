@@ -103,7 +103,100 @@ export function buildInsertBreakMutation(para, cp, kind = 'LineWrapping') {
 }
 
 /**
- * U2 轉為 live 的指令清單與映射表
+ * 建立 M2.1 FormatTextRange 變更物件
+ * @param {Object} range - { start: { para, cp }, end: { para, cp }, target?: string }
+ * @param {Object} patch - { bold?: boolean, italic?: boolean, color_rgb?: number, size_pt?: number, char_style?: string }
+ */
+export function buildFormatTextRangeMutation(range, patch = {}) {
+  const normStart = range?.start || { para: 0, cp: 0 };
+  const normEnd = range?.end || normStart;
+
+  let pStart = { para: Number(normStart.para), cp: Number(normStart.cp) };
+  let pEnd = { para: Number(normEnd.para), cp: Number(normEnd.cp) };
+  if (pStart.para > pEnd.para || (pStart.para === pEnd.para && pStart.cp > pEnd.cp)) {
+    const tmp = pStart;
+    pStart = pEnd;
+    pEnd = tmp;
+  }
+
+  return {
+    FormatTextRange: {
+      range: {
+        target: range?.target || 'Body',
+        start: pStart,
+        end: pEnd
+      },
+      patch: {
+        bold: patch.bold !== undefined ? patch.bold : null,
+        italic: patch.italic !== undefined ? patch.italic : null,
+        color_rgb: patch.color_rgb !== undefined ? patch.color_rgb : null,
+        size_pt: patch.size_pt !== undefined ? patch.size_pt : null,
+        char_style: patch.char_style !== undefined ? patch.char_style : null
+      }
+    }
+  };
+}
+
+/**
+ * 建立 M2.2 SetParagraphStyle 變更物件
+ * @param {Object|number} paraRange - { start: number, end: number } 或單一數字
+ * @param {Object} patch - { alignment?: string, style_id?: string, page_break_before?: boolean, line_spacing?: number }
+ */
+export function buildSetParagraphStyleMutation(paraRange, patch = {}) {
+  let start = 0;
+  let end = 0;
+  if (typeof paraRange === 'number') {
+    start = paraRange;
+    end = paraRange;
+  } else if (paraRange) {
+    start = Number(paraRange.start || 0);
+    end = Number(paraRange.end !== undefined ? paraRange.end : start);
+  }
+  if (start > end) {
+    const tmp = start;
+    start = end;
+    end = tmp;
+  }
+
+  return {
+    SetParagraphStyle: {
+      target: 'Body',
+      para_range: { start, end },
+      patch: {
+        style_id: patch.style_id !== undefined ? patch.style_id : null,
+        page_break_before: patch.page_break_before !== undefined ? patch.page_break_before : null,
+        line_spacing: patch.line_spacing !== undefined ? patch.line_spacing : null,
+        alignment: patch.alignment !== undefined ? patch.alignment : null
+      }
+    }
+  };
+}
+
+/**
+ * U3 轉為 live 的指令清單與映射表
+ */
+export const U3_LIVE_COMMANDS = [
+  'format:bold',
+  'format:italic',
+  'format:font-color',
+  'format:font-color-palette',
+  'format:color:font',
+  'font:grow',
+  'font:shrink',
+  'font:size',
+  'paragraph:align-left',
+  'paragraph:align-center',
+  'paragraph:align-right',
+  'paragraph:align-justify',
+  'style:normal',
+  'style:no-spacing',
+  'style:h1',
+  'style:h2',
+  'style:h3'
+];
+
+/**
+ * U2 / U3 累積 live 指令清單與映射表
  */
 export const LIVE_COMMANDS = [
   // 檔案與儲存
@@ -116,6 +209,8 @@ export const LIVE_COMMANDS = [
   'edit:type',
   'edit:backspace',
   'edit:enter',
+  // U3 樣式與段落格式 live
+  ...U3_LIVE_COMMANDS,
   // 縮放控制
   'zoom:in',
   'zoom:out',
@@ -148,12 +243,13 @@ export const LIVE_COMMANDS = [
 ];
 
 /**
- * U2 自 U1 pending 清單晉升至 live 的按鈕指令集合
+ * 自 U1 pending 清單晉升至 live 的按鈕指令集合 (U2 + U3)
  */
 export const TRANSFERRED_LIVE_COMMANDS = [
   'file:save', // pending:K29f -> live (save_docx_bytes)
   'edit:undo', // pending:K29a -> live (undo_json)
-  'edit:redo'  // pending:K29a -> live (redo_json)
+  'edit:redo', // pending:K29a -> live (redo_json)
+  ...U3_LIVE_COMMANDS
 ];
 
 /**
@@ -164,6 +260,7 @@ export class EngineAdapter {
     this.engine = null;
     this.fileName = 'sample.docx';
     this.caret = { para: 0, cp: 0 };
+    this.selection = null; // { start: { para, cp }, end: { para, cp } }
     this.isInitialized = false;
     this.isDirty = false;
   }
@@ -453,5 +550,192 @@ export class EngineAdapter {
     }
     this.isDirty = false;
     return bytes;
+  }
+
+  /**
+   * 取得有效格式化文字範圍（優先使用 selection；未選取時降級至整段）
+   */
+  getEffectiveRange() {
+    if (this.selection && (this.selection.start.para !== this.selection.end.para || this.selection.start.cp !== this.selection.end.cp)) {
+      return this.selection;
+    }
+    const para = this.caret ? this.caret.para : 0;
+    const text = this.paragraphText(para) || '';
+    const cpEnd = Array.from(text).length;
+    return {
+      target: 'Body',
+      start: { para, cp: 0 },
+      end: { para, cp: cpEnd }
+    };
+  }
+
+  /**
+   * 取得有效段落範圍（優先使用 selection 所涵蓋段落；未選取時為目前段）
+   */
+  getEffectiveParaRange() {
+    if (this.selection) {
+      const start = Math.min(this.selection.start.para, this.selection.end.para);
+      const end = Math.max(this.selection.start.para, this.selection.end.para);
+      return { start, end };
+    }
+    const para = this.caret ? this.caret.para : 0;
+    return { start: para, end: para };
+  }
+
+  /**
+   * 套用字元級直接格式 (M2.1 FormatTextRange)
+   */
+  formatTextRange(range, patch = {}) {
+    if (!this.engine) throw new Error('尚未開啟文件，無法格式化文字');
+    const targetRange = range || this.getEffectiveRange();
+    const mutation = buildFormatTextRangeMutation(targetRange, patch);
+    const resStr = this.engine.apply_mutation_json(JSON.stringify(mutation));
+    const res = JSON.parse(resStr);
+
+    if (res.ok) {
+      this.isDirty = true;
+      if (res.outcome && res.outcome.caret_after) {
+        this.caret = { ...res.outcome.caret_after };
+      }
+    }
+    return res;
+  }
+
+  /**
+   * 套用段落級屬性或樣式 (M2.2 SetParagraphStyle)
+   */
+  setParagraphStyle(paraRange, patch = {}) {
+    if (!this.engine) throw new Error('尚未開啟文件，無法設定段落樣式');
+    const targetRange = paraRange || this.getEffectiveParaRange();
+    const mutation = buildSetParagraphStyleMutation(targetRange, patch);
+    const resStr = this.engine.apply_mutation_json(JSON.stringify(mutation));
+    const res = JSON.parse(resStr);
+
+    if (res.ok) {
+      this.isDirty = true;
+      if (res.outcome && res.outcome.caret_after) {
+        this.caret = { ...res.outcome.caret_after };
+      }
+    }
+    return res;
+  }
+
+  /**
+   * 取得目前游標所在處的樣式狀態
+   */
+  getCursorFormatState() {
+    if (!this.engine) return { bold: false, italic: false, size_pt: 12, color_argb: 0xFF000000 };
+    const para = this.caret ? this.caret.para : 0;
+    const rect = this.caretRect(para, this.caret ? this.caret.cp : 0);
+    const pageIdx = rect ? rect.page : 0;
+    const dl = this.getPageDisplayList(pageIdx);
+    if (!dl || !dl.items) return { bold: false, italic: false, size_pt: 12, color_argb: 0xFF000000 };
+
+    let matchedItem = null;
+    let minDist = Infinity;
+    const targetX = rect ? rect.x_pt : 72;
+    const targetY = rect ? rect.y_pt : 72;
+
+    for (const it of dl.items) {
+      if (it.Text) {
+        const dx = Math.abs(it.Text.x - targetX);
+        const dy = Math.abs(it.Text.y - targetY);
+        const dist = dx + dy * 2;
+        if (dist < minDist) {
+          minDist = dist;
+          matchedItem = it.Text;
+        }
+      }
+    }
+
+    if (matchedItem) {
+      return {
+        bold: (matchedItem.flags & 1) === 1,
+        italic: (matchedItem.flags & 2) === 2,
+        size_pt: matchedItem.size_pt || 12,
+        color_argb: matchedItem.color_argb || 0xFF000000
+      };
+    }
+    return { bold: false, italic: false, size_pt: 12, color_argb: 0xFF000000 };
+  }
+
+  /**
+   * 粗體切換 / 設定
+   */
+  formatBold(boldVal) {
+    const cur = this.getCursorFormatState();
+    const bold = boldVal !== undefined ? Boolean(boldVal) : !cur.bold;
+    return this.formatTextRange(null, { bold });
+  }
+
+  /**
+   * 斜體切換 / 設定
+   */
+  formatItalic(italicVal) {
+    const cur = this.getCursorFormatState();
+    const italic = italicVal !== undefined ? Boolean(italicVal) : !cur.italic;
+    return this.formatTextRange(null, { italic });
+  }
+
+  /**
+   * 字型色彩設定
+   */
+  formatColor(color) {
+    let colorU32 = 0xFFFF0000;
+    if (typeof color === 'number') {
+      colorU32 = color >>> 0;
+    } else if (typeof color === 'string') {
+      const cleanHex = color.replace('#', '').trim();
+      if (cleanHex.length === 6) {
+        colorU32 = (0xFF000000 | parseInt(cleanHex, 16)) >>> 0;
+      } else if (cleanHex.length === 8) {
+        colorU32 = parseInt(cleanHex, 16) >>> 0;
+      }
+    }
+    return this.formatTextRange(null, { color_rgb: colorU32 });
+  }
+
+  /**
+   * 字級設定
+   */
+  setFontSize(sizePt) {
+    const pt = parseFloat(sizePt) || 12.0;
+    return this.formatTextRange(null, { size_pt: pt });
+  }
+
+  /**
+   * 放大字型
+   */
+  growFont() {
+    const SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72];
+    const cur = this.getCursorFormatState();
+    const curSize = cur.size_pt || 12;
+    const nextSize = SIZES.find(s => s > curSize) || (curSize + 2);
+    return this.setFontSize(nextSize);
+  }
+
+  /**
+   * 縮小字型
+   */
+  shrinkFont() {
+    const SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72];
+    const cur = this.getCursorFormatState();
+    const curSize = cur.size_pt || 12;
+    const prevSize = [...SIZES].reverse().find(s => s < curSize) || Math.max(1, curSize - 2);
+    return this.setFontSize(prevSize);
+  }
+
+  /**
+   * 段落對齊 (left, center, right, both)
+   */
+  setAlignment(align) {
+    return this.setParagraphStyle(null, { alignment: align });
+  }
+
+  /**
+   * 段落樣式 (Normal, Heading1, Heading2, Heading3 等)
+   */
+  setStyle(styleId) {
+    return this.setParagraphStyle(null, { style_id: styleId });
   }
 }
