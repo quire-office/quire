@@ -4,11 +4,11 @@
 
 依據任務書第 0 條鐵律，開工第一步自證工作位置：
 
-- **工作目錄路徑**：`/home/jerry/projects/quire/.worktrees/agy-u2`
+- **工作目錄路徑**：`<repo>/.worktrees/agy-u2`
 - **自證指令**：`pwd`
 - **實測輸出**：
   ```
-  /home/jerry/projects/quire/.worktrees/agy-u2
+  <repo>/.worktrees/agy-u2
   ```
 - **工作分支**：`t/agy-u2`
 - **規範遵循**：全流程未跨出此 worktree，零網路依賴，所有註解、報告與 commit 訊息一律使用繁體中文，禁用 emoji 作為圖示。
@@ -144,7 +144,7 @@ $ cd shells/web && wasm-pack build --target web
 [INFO]: ⬇️  Installing wasm-bindgen...
 [INFO]: Optimizing wasm binaries with `wasm-opt`...
 [INFO]: ✨   Done in 21.87s
-[INFO]: 📦   Your wasm pkg is ready to publish at /home/jerry/projects/quire/.worktrees/agy-u2/shells/web/pkg.
+[INFO]: 📦   Your wasm pkg is ready to publish at <repo>/.worktrees/agy-u2/shells/web/pkg.
 ```
 
 ### 5.8 U2 自動化自檢腳本 (`node scripts/u2_selfcheck.mjs`)
