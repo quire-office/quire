@@ -84,6 +84,8 @@ pub struct OdfProjection {
     /// **本流永不含物件 part 文字**（ODF-E2e：宿主段不得被物件文字污染；
     /// `flatten()`／layout／斷頁口徑因此零變動）。
     pub paragraphs: Vec<OdfLayoutParagraph>,
+    /// 段落格式屬性（AGY-ODTIND：與 `paragraphs` 一一對位）。
+    pub paragraph_properties: Vec<ParagraphProperties>,
     /// 段落文字總碼點數（宿主段落流；物件段計入 `object_text_len` 另立帳）。
     pub total_text_len: usize,
     /// `<text:p>` 原始計數（Start＋Empty 皆計，同 body.rs／survey 口徑）。
@@ -237,7 +239,31 @@ pub fn page_break_positions(texts: &[String], params: &LayoutParams) -> Vec<usiz
 // 樣式簿與級聯
 // ---------------------------------------------------------------------------
 
-/// 樣式記錄（級聯用）：只保留字級/字重所需欄位。
+/// 段落對齊方式（ODF 1.3 Part 3 §20.375 fo:text-align）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Align {
+    #[default]
+    Start,
+    Center,
+    End,
+    Right,
+    Justify,
+}
+
+/// 段落格式屬性（AGY-ODTIND：縮排與對齊）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ParagraphProperties {
+    /// `fo:text-align`（center / end / right / start / left / justify）。
+    pub align: Option<Align>,
+    /// `fo:margin-left`（左邊距，pt）。
+    pub indent_left_pt: Option<f32>,
+    /// `fo:margin-right`（右邊距，pt）。
+    pub indent_right_pt: Option<f32>,
+    /// `fo:text-indent`（首行縮排，pt；負值為懸掛縮排）。
+    pub indent_first_line_pt: Option<f32>,
+}
+
+/// 樣式記錄（級聯用）：保留字級/字重與段落縮排對齊所需欄位。
 #[derive(Debug, Clone, Default)]
 struct StyleRecord {
     /// `style:name`（default-style 無名稱＝None）。
@@ -256,6 +282,14 @@ struct StyleRecord {
     weight_declared: bool,
     /// 字串 `"bold"` 或數值 ≥700 → true，其餘宣告 → false。
     bold: bool,
+    /// 段落對齊方式（`fo:text-align`）。
+    align: Option<Align>,
+    /// 段落左邊距（`fo:margin-left`，pt）。
+    indent_left_pt: Option<f32>,
+    /// 段落右邊距（`fo:margin-right`，pt）。
+    indent_right_pt: Option<f32>,
+    /// 段落首行縮排（`fo:text-indent`，pt，負值為懸掛縮排）。
+    indent_first_line_pt: Option<f32>,
 }
 
 impl StyleRecord {
@@ -277,41 +311,91 @@ pub(crate) struct StyleBook {
     default_text: Option<StyleRecord>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ResolvedStyle {
+    size_pt: Option<f32>,
+    bold: Option<bool>,
+    align: Option<Align>,
+    indent_left_pt: Option<f32>,
+    indent_right_pt: Option<f32>,
+    indent_first_line_pt: Option<f32>,
+}
+
+impl ResolvedStyle {
+    fn is_complete(&self) -> bool {
+        self.size_pt.is_some()
+            && self.bold.is_some()
+            && self.align.is_some()
+            && self.indent_left_pt.is_some()
+            && self.indent_right_pt.is_some()
+            && self.indent_first_line_pt.is_some()
+    }
+}
+
 impl StyleBook {
     /// 級聯解析（套用缺省後）：回傳 `(字級pt, 粗體)`——段落代表值用。
     /// ODF-E2d 頁首尾段落字級同層複用（`header_footer`）。
     pub(crate) fn resolve(&self, name: &str) -> (f32, bool) {
-        let (size, bold) = self.resolve_opt(name);
-        (size.unwrap_or(DEFAULT_FONT_SIZE_PT), bold.unwrap_or(false))
+        let res = self.resolve_opt(name);
+        (
+            res.size_pt.unwrap_or(DEFAULT_FONT_SIZE_PT),
+            res.bold.unwrap_or(false),
+        )
+    }
+
+    /// 級聯解析段落格式（含字級、粗體、對齊與縮排屬性）。
+    pub(crate) fn resolve_paragraph(&self, name: &str) -> (f32, bool, ParagraphProperties) {
+        let res = self.resolve_opt(name);
+        (
+            res.size_pt.unwrap_or(DEFAULT_FONT_SIZE_PT),
+            res.bold.unwrap_or(false),
+            ParagraphProperties {
+                align: res.align,
+                indent_left_pt: res.indent_left_pt,
+                indent_right_pt: res.indent_right_pt,
+                indent_first_line_pt: res.indent_first_line_pt,
+            },
+        )
     }
 
     /// 級聯解析（三態；**含** default-style 層，缺省層已套用，`None`＝全程
     /// 未宣告）——段落用：樣式鏈走完仍缺者落 default-style 層（paragraph 族
     /// 優先、text 族退路），仍缺＝呼叫端缺省。
-    fn resolve_opt(&self, name: &str) -> (Option<f32>, Option<bool>) {
-        let (mut size, mut bold) = self.resolve_chain(name);
+    fn resolve_opt(&self, name: &str) -> ResolvedStyle {
+        let mut res = self.resolve_chain(name);
         // default-style 層（paragraph 族優先，text 族退路）。
         let dflt = self
             .default_paragraph
             .as_ref()
             .or(self.default_text.as_ref());
         if let Some(d) = dflt {
-            if size.is_none() && d.size_declared {
-                size = Some(d.size_pt);
+            if res.size_pt.is_none() && d.size_declared {
+                res.size_pt = Some(d.size_pt);
             }
-            if bold.is_none() && d.weight_declared {
-                bold = Some(d.bold);
+            if res.bold.is_none() && d.weight_declared {
+                res.bold = Some(d.bold);
+            }
+            if res.align.is_none() && d.align.is_some() {
+                res.align = d.align;
+            }
+            if res.indent_left_pt.is_none() && d.indent_left_pt.is_some() {
+                res.indent_left_pt = d.indent_left_pt;
+            }
+            if res.indent_right_pt.is_none() && d.indent_right_pt.is_some() {
+                res.indent_right_pt = d.indent_right_pt;
+            }
+            if res.indent_first_line_pt.is_none() && d.indent_first_line_pt.is_some() {
+                res.indent_first_line_pt = d.indent_first_line_pt;
             }
         }
-        (size, bold)
+        res
     }
 
     /// 級聯解析（三態；**不含** default-style 層）——`text:span`／`text:a` 用：
     /// 片段缺宣告的屬性應沿承**所屬段落的級聯有效值**（比檔案 default-style
     /// 更具體，LO 實測同形），由呼叫端拿 parent 值補缺。
-    fn resolve_chain(&self, name: &str) -> (Option<f32>, Option<bool>) {
-        let mut size: Option<f32> = None;
-        let mut bold: Option<bool> = None;
+    fn resolve_chain(&self, name: &str) -> ResolvedStyle {
+        let mut res = ResolvedStyle::default();
         let mut cur: Option<String> = if name.is_empty() {
             None
         } else {
@@ -331,14 +415,26 @@ impl StyleBook {
                 None => break,
             };
             if rec.texty() {
-                if size.is_none() && rec.size_declared {
-                    size = Some(rec.size_pt);
+                if res.size_pt.is_none() && rec.size_declared {
+                    res.size_pt = Some(rec.size_pt);
                 }
-                if bold.is_none() && rec.weight_declared {
-                    bold = Some(rec.bold);
+                if res.bold.is_none() && rec.weight_declared {
+                    res.bold = Some(rec.bold);
                 }
-                if size.is_some() && bold.is_some() {
-                    break; // 兩屬性皆定案
+                if res.align.is_none() && rec.align.is_some() {
+                    res.align = rec.align;
+                }
+                if res.indent_left_pt.is_none() && rec.indent_left_pt.is_some() {
+                    res.indent_left_pt = rec.indent_left_pt;
+                }
+                if res.indent_right_pt.is_none() && rec.indent_right_pt.is_some() {
+                    res.indent_right_pt = rec.indent_right_pt;
+                }
+                if res.indent_first_line_pt.is_none() && rec.indent_first_line_pt.is_some() {
+                    res.indent_first_line_pt = rec.indent_first_line_pt;
+                }
+                if res.is_complete() {
+                    break; // 全屬性皆定案
                 }
             }
             // 續鏈：parent 優先；各鏈上限 MAX_STYLE_HOPS。
@@ -359,7 +455,7 @@ impl StyleBook {
             }
         }
 
-        (size, bold)
+        res
     }
 }
 
@@ -426,6 +522,12 @@ pub(crate) fn parse_style_file(
                     if let Some(rec) = pending.as_mut() {
                         apply_text_properties(&e, rec);
                     }
+                } else if (name == b"style:paragraph-properties" || name == b"paragraph-properties")
+                    && depth_style > 0
+                {
+                    if let Some(rec) = pending.as_mut() {
+                        apply_paragraph_properties(&e, rec);
+                    }
                 }
             }
             Ok(Event::End(e)) => {
@@ -470,6 +572,13 @@ pub(crate) fn parse_style_file(
                     // 自閉合 text-properties（語料常態：`<style:text-properties .../>`）。
                     if let Some(rec) = pending.as_mut() {
                         apply_text_properties(&e, rec);
+                    }
+                } else if (name == b"style:paragraph-properties" || name == b"paragraph-properties")
+                    && depth_style > 0
+                {
+                    // 自閉合 paragraph-properties（語料常態：`<style:paragraph-properties .../>`）。
+                    if let Some(rec) = pending.as_mut() {
+                        apply_paragraph_properties(&e, rec);
                     }
                 }
             }
@@ -557,6 +666,65 @@ fn apply_text_properties(e: &BytesStart<'_>, rec: &mut StyleRecord) {
             }
             _ => {}
         }
+    }
+}
+
+/// `style:paragraph-properties` 採集 `fo:text-align`／`fo:margin-left`／`fo:margin-right`／`fo:text-indent`。
+fn apply_paragraph_properties(e: &BytesStart<'_>, rec: &mut StyleRecord) {
+    for attr in e.attributes().flatten() {
+        let local = attr.key.local_name();
+        match local.as_ref() {
+            b"text-align" => {
+                let s = attr_value_str(&attr.value);
+                rec.align = parse_align(&s);
+            }
+            b"margin-left" => {
+                let s = attr_value_str(&attr.value);
+                rec.indent_left_pt = parse_length_signed(&s);
+            }
+            b"margin-right" => {
+                let s = attr_value_str(&attr.value);
+                rec.indent_right_pt = parse_length_signed(&s);
+            }
+            b"text-indent" => {
+                let s = attr_value_str(&attr.value);
+                rec.indent_first_line_pt = parse_length_signed(&s);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 解析 `fo:text-align` 屬性值（center / end / right / start / left / justify）。
+fn parse_align(s: &str) -> Option<Align> {
+    match s.trim() {
+        "start" | "left" => Some(Align::Start),
+        "center" => Some(Align::Center),
+        "end" => Some(Align::End),
+        "right" => Some(Align::Right),
+        "justify" => Some(Align::Justify),
+        _ => None,
+    }
+}
+
+/// 解析帶符號長度（支援負值懸掛縮排與 0 長度，複用 `odf_length_to_pt`）。
+fn parse_length_signed(s: &str) -> Option<f32> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix('-') {
+        crate::page_geometry::odf_length_to_pt(rest).map(|v| -v)
+    } else if let Some(rest) = s.strip_prefix('+') {
+        crate::page_geometry::odf_length_to_pt(rest)
+    } else if let Some(v) = crate::page_geometry::odf_length_to_pt(s) {
+        Some(v)
+    } else {
+        // 容錯 0 / 0cm / 0mm / 0in / 0pt / 0pc 等零長度
+        let trimmed = s.trim_end_matches(|c: char| c.is_alphabetic() || c == '%');
+        if let Ok(v) = trimmed.trim().parse::<f32>() {
+            if v == 0.0 {
+                return Some(0.0);
+            }
+        }
+        None
     }
 }
 
@@ -712,7 +880,9 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
 
     let default_style = (DEFAULT_FONT_SIZE_PT, false);
     let mut paragraphs: Vec<OdfLayoutParagraph> = Vec::new();
+    let mut paragraph_properties: Vec<ParagraphProperties> = Vec::new();
     let mut p_stack: Vec<ParaCtx> = Vec::new();
+    let mut p_prop_stack: Vec<ParagraphProperties> = Vec::new();
     // 巢裝文字樣式堆疊：段落起點推入段落樣式；span/a 再推其樣式（頂部＝
     // 當前文字片段該用的字級/字重）。
     let mut style_stack: Vec<(f32, bool)> = Vec::new();
@@ -754,14 +924,16 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     section_hidden_stack.push(is_section_hidden(&e));
                 } else if is_text_p(name) {
                     text_p_count += 1;
-                    let own = resolve_style_of(&e, book);
+                    let (own, p_props) = resolve_paragraph_style_of(&e, book);
                     style_stack.push(own);
                     p_stack.push(ParaCtx::new(own));
+                    p_prop_stack.push(p_props);
                 } else if is_text_h(name) {
                     text_h_count += 1;
-                    let own = resolve_style_of(&e, book);
+                    let (own, p_props) = resolve_paragraph_style_of(&e, book);
                     style_stack.push(own);
                     p_stack.push(ParaCtx::new(own));
+                    p_prop_stack.push(p_props);
                 } else if is_span_like(name) {
                     let inherit = *style_stack.last().unwrap_or(&default_style);
                     style_stack.push(span_style_of(&e, book, inherit));
@@ -796,11 +968,12 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                     } else {
                         text_h_count += 1;
                     }
-                    let own = resolve_style_of(&e, book);
+                    let (own, p_props) = resolve_paragraph_style_of(&e, book);
                     let ctx = ParaCtx::new(own);
                     let para = ctx.finish();
                     total_text_len += para.text.chars().count();
                     paragraphs.push(para);
+                    paragraph_properties.push(p_props);
                 } else if !p_stack.is_empty() && !in_hidden_section(&section_hidden_stack) {
                     let style = *style_stack.last().unwrap_or(&default_style);
                     let cur = p_stack.last_mut().expect("段落堆疊非空");
@@ -894,6 +1067,7 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
                         let para = ctx.finish();
                         total_text_len += para.text.chars().count();
                         paragraphs.push(para);
+                        paragraph_properties.push(p_prop_stack.pop().unwrap_or_default());
                     }
                 } else if is_span_like(name) && p_stack.len() < style_stack.len() {
                     style_stack.pop();
@@ -908,6 +1082,7 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
 
     Ok(OdfProjection {
         paragraphs,
+        paragraph_properties,
         total_text_len,
         text_p_count,
         text_h_count,
@@ -1018,12 +1193,20 @@ fn is_span_like(qname: &[u8]) -> bool {
     matches!(qname, b"text:span" | b"span" | b"text:a" | b"a")
 }
 
-/// 段落元素的 `text:style-name` → 級聯值；無宣告樣式名＝直接走 default-style
-/// 層（resolve 空名＝自動/具名簿皆不查）。
-fn resolve_style_of(e: &BytesStart<'_>, book: &StyleBook) -> (f32, bool) {
+/// 段落元素的 `text:style-name` → (字級, 粗體, 段落屬性) 級聯值。
+fn resolve_paragraph_style_of(
+    e: &BytesStart<'_>,
+    book: &StyleBook,
+) -> ((f32, bool), ParagraphProperties) {
     match attr_text_style_name(e) {
-        Some(name) if !name.is_empty() => book.resolve(&name),
-        _ => book.resolve(""),
+        Some(name) if !name.is_empty() => {
+            let (sz, b, props) = book.resolve_paragraph(&name);
+            ((sz, b), props)
+        }
+        _ => {
+            let (sz, b, props) = book.resolve_paragraph("");
+            ((sz, b), props)
+        }
     }
 }
 
@@ -1032,8 +1215,11 @@ fn resolve_style_of(e: &BytesStart<'_>, book: &StyleBook) -> (f32, bool) {
 fn span_style_of(e: &BytesStart<'_>, book: &StyleBook, inherit: (f32, bool)) -> (f32, bool) {
     match attr_text_style_name(e) {
         Some(name) if !name.is_empty() => {
-            let (size, bold) = book.resolve_chain(&name);
-            (size.unwrap_or(inherit.0), bold.unwrap_or(inherit.1))
+            let res = book.resolve_chain(&name);
+            (
+                res.size_pt.unwrap_or(inherit.0),
+                res.bold.unwrap_or(inherit.1),
+            )
         }
         _ => inherit,
     }

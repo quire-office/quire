@@ -59,10 +59,7 @@ fn lamp1_center_align_text_item_centered() {
         .iter()
         .find_map(|it| match it {
             DrawItem::Text {
-                x,
-                text,
-                size_pt,
-                ..
+                x, text, size_pt, ..
             } => Some((*x, text.clone(), *size_pt)),
             _ => None,
         })
@@ -225,7 +222,8 @@ fn probe_user_sample_x_distribution() {
     let mut total_unique_x = std::collections::BTreeSet::new();
 
     for (p_idx, page) in lists.iter().enumerate() {
-        let mut x_counts: std::collections::BTreeMap<i32, usize> = std::collections::BTreeMap::new();
+        let mut x_counts: std::collections::BTreeMap<i32, usize> =
+            std::collections::BTreeMap::new();
         for item in &page.items {
             if let DrawItem::Text { x, .. } = item {
                 // 以 0.1pt 為量化桶，避免浮點微小差異

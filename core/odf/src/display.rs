@@ -66,15 +66,26 @@ pub fn emit_display_lists(
     let pls = layout_projection(projection, params);
     let pages = quire_layout::paginate_per_section(&pls, params, &[]);
     let line_h = params.line_h_pt();
+    let margin_right = params.margins_pt[MARGIN_RIGHT];
     pages
         .iter()
         .map(|pg| {
             let mut items: Vec<DrawItem> = Vec::with_capacity(pg.lines.len());
+            let content_w = (pg.width_pt - pg.margin_left_pt - margin_right).max(0.0);
             for (i, line) in pg.lines.iter().enumerate() {
                 let band = pg.line_bands.get(i).copied().unwrap_or(i as u32) as f32;
                 let y = pg.margin_top_pt + band * line_h;
                 let para = projection.paragraphs.get(line.para_index);
-                push_line_items(&mut items, pg.margin_left_pt, y, line, para);
+                let props = projection.paragraph_properties.get(line.para_index);
+                // [ODT_INDENT_BUGGY_POINT: LINE_BASE_X]
+                let base_x = compute_line_x(
+                    pg.margin_left_pt,
+                    content_w,
+                    line.width_pt,
+                    line.char_offset,
+                    props,
+                );
+                push_line_items(&mut items, base_x, y, line, para);
             }
             PageDisplayList {
                 page: pg.index,
@@ -165,6 +176,49 @@ impl OdtView {
     /// 全頁 JSON（`dump` 同形）。
     pub fn dump_json(&self) -> String {
         dump_display_lists_json(&self.lists)
+    }
+}
+
+/// 計算單行起始 x 座標（消費段落對齊與縮排）。
+///
+/// 規格：
+/// - `align == Center`：`x = margin_left + max(0, (content_w − line_w)/2)`
+/// - `align == End/Right`：`x = margin_left + max(0, content_w − line_w)`
+/// - 首行：`margin_left + max(0, indent_left + indent_first_line)`；次行起：`margin_left + indent_left`
+///   （負 first-line 不得讓 x 小於版心左緣，夾到 `margin_left + min(indent_left, max(0, indent_left+indent_first))` 邊界）
+fn compute_line_x(
+    margin_left: f32,
+    content_w: f32,
+    line_w: f32,
+    char_offset: usize,
+    props: Option<&crate::layout_glue::ParagraphProperties>,
+) -> f32 {
+    let Some(p) = props else {
+        return margin_left;
+    };
+
+    match p.align {
+        Some(crate::layout_glue::Align::Center) => {
+            margin_left + (content_w - line_w).max(0.0) / 2.0
+        }
+        Some(crate::layout_glue::Align::End) | Some(crate::layout_glue::Align::Right) => {
+            margin_left + (content_w - line_w).max(0.0)
+        }
+        _ => {
+            let indent_left = p.indent_left_pt.unwrap_or(0.0);
+            let indent_first = p.indent_first_line_pt.unwrap_or(0.0);
+            if char_offset == 0 {
+                let offset = if indent_first < 0.0 {
+                    // 負 first-line（懸掛縮排）：不得小於版心左緣，夾到 min(indent_left, max(0, indent_left + indent_first))
+                    indent_left.min((indent_left + indent_first).max(0.0))
+                } else {
+                    (indent_left + indent_first).max(0.0)
+                };
+                margin_left + offset
+            } else {
+                margin_left + indent_left.max(0.0)
+            }
+        }
     }
 }
 
