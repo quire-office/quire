@@ -29,10 +29,10 @@
 
 ```
 === [BUGGY 態] 注入 ODF_TABLE_BUGGY=1（走訪器退回不攔表格邊界）===
-   Compiling quire-ooxml v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-odttbl/core/ooxml)
-   Compiling quire-render-trait v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-odttbl/core/render-trait)
-   Compiling quire-layout v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-odttbl/core/layout)
-   Compiling quire-odf v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-odttbl/core/odf)
+   Compiling quire-ooxml v0.1.0 (<repo>/.worktrees/agy-odttbl（本機工作樹，不在 repo 內）/core/ooxml)
+   Compiling quire-render-trait v0.1.0 (<repo>/.worktrees/agy-odttbl（本機工作樹，不在 repo 內）/core/render-trait)
+   Compiling quire-layout v0.1.0 (<repo>/.worktrees/agy-odttbl（本機工作樹，不在 repo 內）/core/layout)
+   Compiling quire-odf v0.1.0 (<repo>/.worktrees/agy-odttbl（本機工作樹，不在 repo 內）/core/odf)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 3.06s
      Running tests/odf_table_flow.rs (target/debug/deps/odf_table_flow-0d779e6886ba0f8b)
 
