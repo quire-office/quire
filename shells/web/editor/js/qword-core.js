@@ -75,7 +75,8 @@ export const GROUPS = {
  */
 export const DEPENDENCY_MAP = {
   'live': { name: '既有能力', desc: '外殼或當前引擎直接支援' },
-  'pending:K29a': { name: 'K29a 基礎編輯與格式化', desc: '文字輸入、字型、粗斜底線、色彩、段落對齊、清單與剪貼簿' },
+  'pending:K29b': { name: 'K29b 段落拆併與樣式', desc: '字型、粗斜底線、色彩、段落對齊、清單編號（引擎切片開發中）' },
+  'pending:shell': { name: '外殼功能待接線', desc: '剪貼簿、尋找取代等外殼自身功能（開發中）' },
   'pending:K29b': { name: 'K29b 物件與插入引擎', desc: '表格、圖片、圖形、SmartArt、文字方塊、頁首頁尾與符號' },
   'pending:K29c': { name: 'K29c 版面與樣式系統', desc: '主題、樣式庫、邊界、紙張方向、分欄、背景浮水印與繞排' },
   'pending:K29d': { name: 'K29d 校對與審閱協同', desc: '拼寫檢查、同義字、字數統計、翻譯、批註、修訂追蹤與保護' },
@@ -102,6 +103,13 @@ export class QWordCore {
       left: 0,
       right: 15.5
     };
+
+    // 真引擎文件狀態
+    this.currentPage = 1;
+    this.pageCount = 1;
+    this.wordCount = 0;
+    this.isSettled = true;
+    this.fileName = '文件 1 - Quire 編輯器原型外殼';
 
     // 命令歷史紀錄
     this.commandLog = [];
@@ -135,8 +143,60 @@ export class QWordCore {
       gridlinesVisible: this.gridlinesVisible,
       navPaneVisible: this.navPaneVisible,
       indents: { ...this.indents },
-      logCount: this.commandLog.length
+      logCount: this.commandLog.length,
+      currentPage: this.currentPage,
+      pageCount: this.pageCount,
+      wordCount: this.wordCount,
+      isSettled: this.isSettled,
+      fileName: this.fileName
     };
+  }
+
+  /**
+   * 更新文件統計資訊與定案狀態
+   */
+  setDocStats({ pageCount, currentPage, wordCount, isSettled, fileName } = {}) {
+    if (pageCount !== undefined) this.pageCount = Math.max(1, pageCount);
+    if (currentPage !== undefined) this.currentPage = Math.max(1, Math.min(this.pageCount, currentPage));
+    if (wordCount !== undefined) this.wordCount = Math.max(0, wordCount);
+    if (isSettled !== undefined) this.isSettled = Boolean(isSettled);
+    if (fileName !== undefined) this.fileName = String(fileName);
+    this._notify('doc:stats', this.getDocStats());
+  }
+
+  getDocStats() {
+    return {
+      currentPage: this.currentPage,
+      pageCount: this.pageCount,
+      wordCount: this.wordCount,
+      isSettled: this.isSettled,
+      fileName: this.fileName
+    };
+  }
+
+  nextPage() {
+    if (this.currentPage < this.pageCount) {
+      this.currentPage++;
+      this._notify('page:change', { currentPage: this.currentPage, pageCount: this.pageCount });
+      return true;
+    }
+    return false;
+  }
+
+  prevPage() {
+    if (this.currentPage > 1) {
+      this.currentPage--;
+      this._notify('page:change', { currentPage: this.currentPage, pageCount: this.pageCount });
+      return true;
+    }
+    return false;
+  }
+
+  gotoPage(p) {
+    const clamped = Math.max(1, Math.min(this.pageCount, p));
+    this.currentPage = clamped;
+    this._notify('page:change', { currentPage: this.currentPage, pageCount: this.pageCount });
+    return clamped;
   }
 
   /**
@@ -258,6 +318,17 @@ export class QWordCore {
       this.fitPageWidth();
       handled = true;
       req = 'live';
+    } else if (cmdId === 'zoom:one-page') {
+      this.setZoom(100);
+      handled = true;
+      req = 'live';
+    } else if (cmdId === 'zoom:multiple-pages') {
+      this.setZoom(75);
+      handled = true;
+      req = 'live';
+    } else if (cmdId === 'zoom:dialog') {
+      handled = true;
+      req = 'live';
     } else if (cmdId.startsWith('zoom:set:')) {
       const val = parseInt(cmdId.replace('zoom:set:', ''), 10);
       if (!isNaN(val)) {
@@ -268,6 +339,67 @@ export class QWordCore {
     } else if (cmdId.startsWith('view:mode:')) {
       const mode = cmdId.replace('view:mode:', '');
       handled = this.setViewMode(mode);
+      req = 'live';
+    } else if (cmdId === 'view:outline' || cmdId === 'view:focus' || cmdId === 'view:draft') {
+      handled = true;
+      req = 'live';
+    } else if (cmdId === 'file:save') {
+      handled = true;
+      req = 'live';
+      this._notify('file:save', payload);
+    } else if (cmdId === 'file:open') {
+      handled = true;
+      req = 'live';
+      this._notify('file:open', payload);
+    } else if (cmdId === 'file:open-sample') {
+      handled = true;
+      req = 'live';
+      this._notify('file:open-sample', payload);
+    } else if (cmdId === 'edit:undo') {
+      handled = true;
+      req = 'live';
+      this._notify('edit:undo', payload);
+    } else if (cmdId === 'edit:redo') {
+      handled = true;
+      req = 'live';
+      this._notify('edit:redo', payload);
+    } else if (cmdId === 'edit:type' || cmdId === 'type') {
+      handled = true;
+      req = 'live';
+      this._notify('edit:type', payload);
+    } else if (cmdId === 'edit:backspace' || cmdId === 'backspace') {
+      handled = true;
+      req = 'live';
+      this._notify('edit:backspace', payload);
+    } else if (cmdId === 'edit:enter' || cmdId === 'enter') {
+      handled = true;
+      req = 'live';
+      this._notify('edit:enter', payload);
+    } else if (cmdId === 'page:next') {
+      handled = true;
+      req = 'live';
+      this.nextPage();
+    } else if (cmdId === 'page:prev') {
+      handled = true;
+      req = 'live';
+      this.prevPage();
+    } else if (cmdId.startsWith('page:goto:')) {
+      const p = parseInt(cmdId.replace('page:goto:', ''), 10);
+      if (!isNaN(p)) {
+        this.gotoPage(p);
+        handled = true;
+        req = 'live';
+      }
+    } else if (cmdId === 'status:page') {
+      handled = true;
+      req = 'live';
+      this._notify('status:page', payload);
+    } else if (cmdId === 'status:word-count') {
+      handled = true;
+      req = 'live';
+      this._notify('status:word-count', payload);
+    } else if (cmdId === 'status:collab') {
+      handled = true;
       req = 'live';
     } else if (cmdId === 'ruler:toggle') {
       handled = true;

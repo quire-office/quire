@@ -1052,3 +1052,61 @@ body, html {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* ==========================================================================
+   AGY-U2: 真分頁渲染、Canvas 疊層、游標動畫與拖放反饋
+   ========================================================================== */
+
+.qword-real-page {
+  position: relative;
+  background: var(--qw-bg-page);
+  box-shadow: var(--qw-shadow-page);
+  margin-bottom: 24px;
+  cursor: text;
+  box-sizing: border-box;
+}
+
+.qword-real-page:last-child {
+  margin-bottom: 96px;
+}
+
+.qword-page-canvas {
+  display: block;
+}
+
+.qword-caret-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.qword-caret {
+  position: absolute;
+  width: 1.5px;
+  background: #000000;
+  display: none;
+  animation: qword-blink 1.06s steps(1) infinite;
+  z-index: 5;
+}
+
+@keyframes qword-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.qword-workspace-viewport.drag-over {
+  outline: 2px dashed var(--qw-primary);
+  outline-offset: -8px;
+  background-color: rgba(0, 95, 184, 0.05);
+}
+
+.qword-input-sink {
+  position: fixed;
+  left: -9999px;
+  top: -9999px;
+  opacity: 0;
+  pointer-events: none;
+  width: 1px;
+  height: 1px;
+}
+
