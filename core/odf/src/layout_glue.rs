@@ -106,9 +106,18 @@ pub struct OdfProjection {
     /// 流會把多頁檔的重複發射算成宿主段落，斷頁與計數口徑全亂）。發射面見
     /// [`crate::header_footer::hf_assignment`]。
     pub hf_masters: Vec<crate::header_footer::MasterHf>,
+    /// ODF-TABLE-MODEL：正文流二維表格模型（依頂層表格文件序排列）。
+    /// 既有 D1 純文字發射時此欄可為空；接入表格排版時由 `with_tables` 填充。
+    pub tables: Vec<crate::table::OdfBodyTable>,
 }
 
 impl OdfProjection {
+    /// 附加正文表格清單（路線 B 建造者模式）。
+    pub fn with_tables(mut self, tables: Vec<crate::table::OdfBodyTable>) -> Self {
+        self.tables = tables;
+        self
+    }
+
     /// 投影段落總數（text:p＋text:h 入列後的段落數）。
     pub fn paragraph_count(&self) -> usize {
         self.paragraphs.len()
@@ -1092,6 +1101,7 @@ fn walk_paragraphs(content_xml: &[u8], book: &StyleBook) -> Result<OdfProjection
         object_paragraphs: Vec::new(),
         object_text_len: 0,
         hf_masters: Vec::new(),
+        tables: Vec::new(),
     })
 }
 
@@ -1153,14 +1163,14 @@ fn is_section_hidden(e: &BytesStart<'_>) -> bool {
 
 /// ODF-E2c：是否為圖形替代文字元素（svg:desc／svg:title）。
 #[inline]
-fn is_alt_text(qname: &[u8]) -> bool {
+pub(crate) fn is_alt_text(qname: &[u8]) -> bool {
     matches!(qname, b"svg:desc" | b"desc" | b"svg:title" | b"title")
 }
 
 /// ODF-E2c：是否為繪圖容器（用於追蹤替代文字歸屬）。所有 draw:* 元素都算，
 /// 另接受無前綴的常見容器名（與本檔 p/h/span 的無前綴容忍口徑一致）。
 #[inline]
-fn is_draw_container(qname: &[u8]) -> bool {
+pub(crate) fn is_draw_container(qname: &[u8]) -> bool {
     qname.starts_with(b"draw:")
         || matches!(
             qname,
@@ -1171,7 +1181,7 @@ fn is_draw_container(qname: &[u8]) -> bool {
 /// ODF-E2c：draw:text-box 直屬的替代文字屬正文（LO 會渲染），其餘繪圖容器的屬替代文字。
 /// 以最近一個繪圖容器判定：text-box 內巢裝 frame 的替代文字仍歸 frame，故照跳。
 #[inline]
-fn alt_text_is_metadata(draw_stack: &[Vec<u8>]) -> bool {
+pub(crate) fn alt_text_is_metadata(draw_stack: &[Vec<u8>]) -> bool {
     match draw_stack.last() {
         Some(name) => !matches!(name.as_slice(), b"draw:text-box" | b"text-box"),
         None => false,
