@@ -55,8 +55,9 @@ pub use footnotes::{AnchorMark, NoteLayout, NoteRun, PageFoot};
 pub mod mutation;
 pub use mutation::{
     BreakKind, ByteSpan, DocPos, DocRange, HfSlotKind, InverseMutation, IrreversibleReason,
-    Mutation, MutationError, MutationOutcome, PartLifecycleInverse, ReversibilityLevel,
-    RunDirectPatch, SemanticInverseOp, SubDocTarget, UndoEntry, XmlBytePatch, XmlReversePatch,
+    ListAction, Mutation, MutationError, MutationOutcome, ParaPropsPatch, PartLifecycleInverse,
+    ReversibilityLevel, RunDirectPatch, SemanticInverseOp, StyleType, SubDocTarget, UndoEntry,
+    XmlBytePatch, XmlReversePatch,
 };
 pub use quire_ooxml::diff_untouched;
 #[derive(Error, Debug)]
@@ -2777,6 +2778,26 @@ impl Engine {
         } else {
             Ok(diff_zip_structure(&self.original, &saved, &self.touched)?)
         }
+    }
+
+    /// K29b：結構編輯（Δp≠0）或跨 part 樣式修補後，以當前 parts 重建全部
+    /// 派生層（版面、級聯投影、`para_sec`、`shape_boxes`、`image_pixels`、
+    /// 表格索引、清單 marker 等）。Undo／Redo 書籤與開檔基線原樣保留。
+    pub(crate) fn rebuild_derived(&mut self) -> Result<(), EngineError> {
+        let saved = self.doc.save()?;
+        let fresh = Self::from_docx_bytes(&saved)?;
+        let original = std::mem::take(&mut self.original);
+        let part_baselines = std::mem::take(&mut self.part_baselines);
+        let touched = std::mem::take(&mut self.touched);
+        let undo_stack = std::mem::take(&mut self.undo_stack);
+        let redo_stack = std::mem::take(&mut self.redo_stack);
+        *self = fresh;
+        self.original = original;
+        self.part_baselines = part_baselines;
+        self.touched = touched;
+        self.undo_stack = undo_stack;
+        self.redo_stack = redo_stack;
+        Ok(())
     }
 
     /// 編輯 part 明文（標記白名單）。

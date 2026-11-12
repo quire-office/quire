@@ -1128,6 +1128,27 @@ impl StyleTable {
         self.styles.get(id).map(|s| s.kind)
     }
 
+    /// styleId 的型別名（`"paragraph"`／`"character"`；查無或非兩型＝None）。
+    /// K29b：mutation 層的型別守衛用（`w:pStyle` 只收段落型、`w:rStyle` 只收
+    /// 字元型，ECMA-376 §17.7.2.32／§17.7.2.29）。
+    pub fn style_type(&self, id: &str) -> Option<&'static str> {
+        match self.style_kind(id)? {
+            StyleKind::Paragraph => Some("paragraph"),
+            StyleKind::Character => Some("character"),
+            StyleKind::Other => None,
+        }
+    }
+
+    /// 是否為段落型樣式（`w:type="paragraph"`）。
+    pub fn is_paragraph_style(&self, id: &str) -> bool {
+        self.style_kind(id) == Some(StyleKind::Paragraph)
+    }
+
+    /// 是否為字元型樣式（`w:type="character"`）。
+    pub fn is_character_style(&self, id: &str) -> bool {
+        self.style_kind(id) == Some(StyleKind::Character)
+    }
+
     /// docDefaults 自身的段前／段後距（pt；未宣告＝None）。K1 舊 gate 的
     /// 判定值；K4b 保留它，讓「docDefaults 有宣告」的檔案維持原行為，
     /// 只有「純靠預設段落樣式鏈」的檔案才走放寬後的新判定。
