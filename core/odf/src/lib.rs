@@ -18,14 +18,15 @@ mod manifest;
 mod objects;
 pub mod page_geometry;
 mod skeleton;
+pub mod table;
 /// 兩文字走查器（`body.rs`／`layout_glue.rs`）共用的空白正規化＋gap 狀態機
 /// （卡 t_4006056b：口徑對齊的單一實作處）。
 pub mod ws;
 
 pub use body::{BodyModel, OdfParagraph};
 pub use display::{
-    display_list_json, dump_display_lists_json, emit_display_lists, OdtView,
-    DEFAULT_TEXT_COLOR_ARGB,
+    display_list_json, dump_display_lists_json, emit_display_lists, emit_display_lists_with_tables,
+    layout_odf_with_tables, OdtView, DEFAULT_TEXT_COLOR_ARGB,
 };
 pub use header_footer::{
     buggy_single_master, hf_assignment, hf_masters, master_page_switches, HfAssignment, HfPage,
@@ -43,6 +44,11 @@ pub use page_geometry::{
     LO_DEFAULT_MARGIN_PT, LO_DEFAULT_PAGE_H_PT, LO_DEFAULT_PAGE_W_PT,
 };
 pub use skeleton::OdfSkeleton;
+pub use table::{
+    build_table_slots, extract_tables, odf_table_to_table_input, read_body_tables, OdfBodyTable,
+    OdfBorder, OdfCellMerge, OdfCellProps, OdfGridCol, OdfRowProps, OdfTable, OdfTableCell,
+    OdfTableProps, OdfTableRow,
+};
 
 use std::collections::BTreeMap;
 use thiserror::Error;

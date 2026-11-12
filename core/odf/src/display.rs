@@ -34,6 +34,7 @@
 use serde_json::Value;
 
 use crate::layout_glue::{layout_projection, project, LayoutParams, OdfProjection};
+use crate::table::OdfBodyTable;
 use crate::{OdfBundle, OdfError};
 
 // 契約型別再匯出：殼層（quire-cli / shells/web）經本 crate 取用，不直接
@@ -62,6 +63,11 @@ pub fn emit_display_lists(
     // 正常路徑（未設該變數）零影響。
     if std::env::var("ODF_D1_BUGGY").is_ok() {
         return Vec::new();
+    }
+    if !projection.tables.is_empty() && std::env::var("ODF_TABLE_BUGGY").is_err() {
+        if let Ok(lists) = layout_odf_with_tables(projection, &projection.tables, params) {
+            return lists;
+        }
     }
     let pls = layout_projection(projection, params);
     let pages = quire_layout::paginate_per_section(&pls, params, &[]);
@@ -95,6 +101,173 @@ pub fn emit_display_lists(
             }
         })
         .collect()
+}
+
+/// 發射單個 TableFrag 的圖元至 items。
+///
+/// 繪製順序：底色 Rect → 邊框 Rule → 儲存格 Text（防止文字被底色遮蓋）。
+pub fn push_frag_items(
+    items: &mut Vec<DrawItem>,
+    frag: &quire_layout::table::TableFrag,
+    default_size_pt: f32,
+) {
+    let base_x = frag.x_pt;
+    let base_y = frag.y_pt;
+    let mut rects = Vec::new();
+    let mut rules = Vec::new();
+    let mut texts = Vec::new();
+
+    let mut ry = 0.0f32;
+    for row in &frag.rows {
+        let h = row.height_pt;
+        for cell in &row.cells {
+            let x = base_x + cell.x_pt;
+            let y = base_y + ry;
+            if let Some(argb) = cell.fill_argb {
+                rects.push(DrawItem::Rect {
+                    x,
+                    y,
+                    w: cell.w_pt,
+                    h,
+                    fill_argb: argb,
+                });
+            }
+            let line = |pen: &quire_layout::table::Pen,
+                        x1: f32,
+                        y1: f32,
+                        x2: f32,
+                        y2: f32,
+                        out: &mut Vec<DrawItem>| {
+                if (x2 - x1).abs() <= 1e-3 && (y2 - y1).abs() <= 1e-3 {
+                    return;
+                }
+                out.push(DrawItem::Rule {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    width_pt: pen.width_pt.max(0.25),
+                    color_argb: pen.color_argb,
+                    dash: pen.dash.clone(),
+                });
+            };
+            if let Some(p) = &cell.edges[quire_layout::table::EDGE_TOP] {
+                line(p, x, y, x + cell.w_pt, y, &mut rules);
+            }
+            if let Some(p) = &cell.edges[quire_layout::table::EDGE_BOTTOM] {
+                line(p, x, y + h, x + cell.w_pt, y + h, &mut rules);
+            }
+            if let Some(p) = &cell.edges[quire_layout::table::EDGE_LEFT] {
+                line(p, x, y, x, y + h, &mut rules);
+            }
+            if let Some(p) = &cell.edges[quire_layout::table::EDGE_RIGHT] {
+                line(p, x + cell.w_pt, y, x + cell.w_pt, y + h, &mut rules);
+            }
+            for t in &cell.texts {
+                if t.runs.is_empty() {
+                    texts.push(DrawItem::Text {
+                        x: base_x + t.x_pt,
+                        y: y + t.y_pt,
+                        size_pt: t.size_pt.unwrap_or(default_size_pt),
+                        flags: 0,
+                        color_argb: DEFAULT_TEXT_COLOR_ARGB,
+                        family: None,
+                        text: t.text.clone(),
+                    });
+                    continue;
+                }
+                let char_idx: Vec<usize> = {
+                    let mut v: Vec<usize> = t.text.char_indices().map(|(b, _)| b).collect();
+                    v.push(t.text.len());
+                    v
+                };
+                let base_size = t.size_pt.unwrap_or(default_size_pt);
+                let mut x_off = 0.0f32;
+                for r in &t.runs {
+                    let s = r.from.min(char_idx.len() - 1);
+                    let e = r.to.max(s).min(char_idx.len() - 1);
+                    if s >= e {
+                        continue;
+                    }
+                    let seg = &t.text[char_idx[s]..char_idx[e]];
+                    let seg_size = r.size_pt.unwrap_or(base_size).max(1.0);
+                    texts.push(DrawItem::Text {
+                        x: base_x + t.x_pt + x_off,
+                        y: y + t.y_pt,
+                        size_pt: seg_size,
+                        flags: r.flags,
+                        color_argb: r.color_argb.unwrap_or(DEFAULT_TEXT_COLOR_ARGB),
+                        family: None,
+                        text: seg.to_string(),
+                    });
+                    x_off += quire_layout::TextMeasurer::new(seg_size).text_width(seg);
+                }
+            }
+            for (_nested_y, nested_frag) in &cell.nested {
+                push_frag_items(items, nested_frag, default_size_pt);
+            }
+        }
+        ry += h;
+    }
+
+    items.extend(rects);
+    items.extend(rules);
+    items.extend(texts);
+}
+
+/// 發射含表格切片的顯示列表。
+pub fn emit_display_lists_with_tables(
+    projection: &OdfProjection,
+    params: &LayoutParams,
+    pages: &[quire_layout::Page],
+) -> Vec<PageDisplayList> {
+    let line_h = params.line_h_pt();
+    let margin_right = params.margins_pt[MARGIN_RIGHT];
+    pages
+        .iter()
+        .map(|pg| {
+            let mut items: Vec<DrawItem> = Vec::new();
+            for tp in &pg.tables {
+                push_frag_items(&mut items, &tp.frag, params.font_size_pt);
+            }
+            let content_w = (pg.width_pt - pg.margin_left_pt - margin_right).max(0.0);
+            for (i, line) in pg.lines.iter().enumerate() {
+                let band = pg.line_bands.get(i).copied().unwrap_or(i as u32) as f32;
+                let y = pg.margin_top_pt + band * line_h;
+                let para = projection.paragraphs.get(line.para_index);
+                let props = projection.paragraph_properties.get(line.para_index);
+                let base_x = compute_line_x(
+                    pg.margin_left_pt,
+                    content_w,
+                    line.width_pt,
+                    line.char_offset,
+                    props,
+                );
+                push_line_items(&mut items, base_x, y, line, para);
+            }
+            PageDisplayList {
+                page: pg.index,
+                width_pt: pg.width_pt,
+                height_pt: pg.height_pt,
+                items,
+            }
+        })
+        .collect()
+}
+
+/// 帶表格的正文流排版入口：將 ODF 投影與表格模型排版並發射顯示列表。
+pub fn layout_odf_with_tables(
+    projection: &OdfProjection,
+    tables: &[OdfBodyTable],
+    params: &LayoutParams,
+) -> Result<Vec<PageDisplayList>, OdfError> {
+    if std::env::var("ODF_TABLE_BUGGY").is_ok() || tables.is_empty() {
+        return Ok(emit_display_lists(projection, params));
+    }
+    let slots = crate::table::build_table_slots(tables, projection, params);
+    let pls = layout_projection(projection, params);
+    let (pages, _) = quire_layout::paginate_tables(&pls, params, &[], &slots);
+    Ok(emit_display_lists_with_tables(projection, params, &pages))
 }
 
 /// 單頁顯示列表 JSON（與 DOCX 線 `Engine::page_display_list_json` 同形：
