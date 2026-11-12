@@ -250,3 +250,76 @@ impl WasmOdtView {
         "{\"settled\":true,\"events\":[]}".to_string()
     }
 }
+
+// ============================ K29a / U2：編輯與存檔綁定 ============================
+
+#[wasm_bindgen]
+impl WasmEngine {
+    /// 依據 Mutation 規格套用單筆變更（JSON 進 JSON 出，錯誤亦序列化）。
+    pub fn apply_mutation_json(&mut self, mutation_json: &str) -> String {
+        let op: quire_engine::Mutation = match serde_json::from_str(mutation_json) {
+            Ok(op) => op,
+            Err(e) => {
+                return serde_json::to_string(&serde_json::json!({
+                    "ok": false,
+                    "error": format!("Mutation JSON 反序列化失敗: {e}"),
+                }))
+                .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"反序列化失敗\"}".to_string());
+            }
+        };
+
+        match self.inner.apply_mutation(op) {
+            Ok(outcome) => serde_json::to_string(&serde_json::json!({
+                "ok": true,
+                "outcome": outcome,
+            }))
+            .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"結果序列化失敗\"}".to_string()),
+            Err(e) => serde_json::to_string(&serde_json::json!({
+                "ok": false,
+                "error": e.to_string(),
+            }))
+            .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"錯誤序列化失敗\"}".to_string()),
+        }
+    }
+
+    /// 復原頂端操作。
+    pub fn undo_json(&mut self) -> String {
+        match self.inner.undo() {
+            Ok(outcome_opt) => serde_json::to_string(&serde_json::json!({
+                "ok": true,
+                "undone": outcome_opt.is_some(),
+                "outcome": outcome_opt,
+            }))
+            .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"序列化失敗\"}".to_string()),
+            Err(e) => serde_json::to_string(&serde_json::json!({
+                "ok": false,
+                "undone": false,
+                "error": e.to_string(),
+            }))
+            .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"序列化失敗\"}".to_string()),
+        }
+    }
+
+    /// 重做頂端操作。
+    pub fn redo_json(&mut self) -> String {
+        match self.inner.redo() {
+            Ok(outcome_opt) => serde_json::to_string(&serde_json::json!({
+                "ok": true,
+                "redone": outcome_opt.is_some(),
+                "outcome": outcome_opt,
+            }))
+            .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"序列化失敗\"}".to_string()),
+            Err(e) => serde_json::to_string(&serde_json::json!({
+                "ok": false,
+                "redone": false,
+                "error": e.to_string(),
+            }))
+            .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"序列化失敗\"}".to_string()),
+        }
+    }
+
+    /// 存檔為 DOCX 位元組陣列。
+    pub fn save_docx_bytes(&self) -> Vec<u8> {
+        self.inner.save_docx().unwrap_or_default()
+    }
+}
