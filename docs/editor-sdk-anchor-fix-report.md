@@ -10,7 +10,7 @@
 - 變更統計：STALE 錨點 66 條全數歸零，原有 OK 188 條無任何一條回退，總計 254 條全部綠燈。
 
 ### 2. 考卷腳本機制說明
-- 考卷腳本 `~/.hermes/scripts/ow-doc-anchor-audit.py` 第 55 行預設 `--repo /home/jerry/projects/quire`，第 58 行以 `git show {ref}:{doc}` 讀取檔案。
+- 考卷腳本 `~/.hermes/scripts/ow-doc-anchor-audit.py` 第 55 行預設 `--repo <repo>`，第 58 行以 `git show {ref}:{doc}` 讀取檔案。
 - 當指定 `ref` 為 `HEAD` 時，腳本直接讀取主倉庫 HEAD commit（`4c2e3eedeb6c0a554eb82770ad32e34dcc5f0fe7`）的歷史 blob，而非當前 worktree 工作區中的修改檔案。
 - 依任務書鐵律第一條：「嚴禁 git push／git commit／git checkout／git reset／git rebase／git stash／git clean——改動留工作區」，所有變更恪守留於工作區中，零 commit、零 push。
 - 以考卷相同之比對邏輯對工作區檔案直接執行稽核，確認收案指標已完全達成：`stale=0 phantom=0 missfile=0`。
