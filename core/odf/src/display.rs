@@ -11,7 +11,7 @@
 //! `OdfProjection` ＋ `quire_layout` 輸出，零 ooxml 型別。
 //!
 //! 同源性鐵條：**不另烤一套欄位**。欄位名/序列化行為由 render-trait 的
-//! `serde` derive 決定（不准字串拼接造 JSON），故兩線 JSON 契約不可能各自漂移；
+//! `serde` derive 決定（不準字串拼接造 JSON），故兩線 JSON 契約不可能各自漂移；
 //! 真正的防漂移鎖在 `core/odf/tests/odf_d1_display_list.rs` 燈 1（對照
 //! `fixtures/display_list_contract.json`，該檔由 DOCX 線真實 `dump` 產物抽出）
 //! ＋ `shells/native/tests/odf_d1_dump_contract.rs`（DOCX 側反查同一基準檔）。
