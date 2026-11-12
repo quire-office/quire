@@ -1047,7 +1047,7 @@ fn k29d_lamp4_insert_section_break_keeps_four_index_sets_in_sync() {
     );
 
     // 節數 1→2：para_sec 出現第 1 節 id；段落數 base+1（PM 裁決 11-12：插分節符
-    // 採「新增宿主页」口徑——python-docx add_section() 生態慣例即新增承載段，
+    // 採「新增宿主頁」口徑——python-docx add_section() 生態慣例即新增承載段，
     // 掛既有段會讓無辜段落悄然變成節收束點，編輯 API 非破壞性優先。斷言口徑
     // 同步改為「插入後 para_sec 長度＝插入後段落數＝base+1」，實作零讓步）。
     let ids = sec_ids(&e);

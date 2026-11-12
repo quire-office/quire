@@ -22,7 +22,7 @@
 
 ## 先紅後綠實跑
 
-### 實作前紅燈（考卷先行，`0e0bb4f` WIP1 態，同一 commit 實跑两次一致）
+### 實作前紅燈（考卷先行，`0e0bb4f` WIP1 態，同一 commit 實跑兩次一致）
 
 ```
 failures:
@@ -41,7 +41,7 @@ error: test failed, to rerun pass `-p quire-engine --test k29d_section_hf_notes`
 七條 FAILED 的原始斷言訊息（逐條留檔，非追述）：
 
 1. `lamp1_orientation…`（考卷線 322）：`橫向必須寫回 pgSz w/h 互換（twip＝pt×20），實得  w:w="16840" w:h="11900" w:orient="landscape"/`
-   ＝實作已寫出 16840/11900、斷言钉的是 16838/11906（PM 裁決 1：斷言錯）。
+   ＝實作已寫出 16840/11900、斷言釘的是 16838/11906（PM 裁決 1：斷言錯）。
 2. `lamp1_section_type…`（線 434）：`未知節 id 的拒絕型別必須是 SubDocNotFound，實得 XmlPatchRejected { detail: "本檔無任何 <w:sectPr>，查無 section_id=99" }`
    ＝實作偏航（PM 裁決 4：改實作）。
 3. `lamp2_configure_slots…`（線 125）：`紅燈 2 停 titlePg：whitelisted_changed 必須恰為 ["word/document.xml"]  left: []`。
@@ -124,7 +124,7 @@ GOOD 態測試結束，exit_code=0
 2. **燈 2 頁數基準：`page_count()==2` → 釘死 `3`（編輯前 3、頁首路由編輯後仍 3）**（PM 裁決 2）。
    金燈 `k9_hf_align.rs` 的 `>=2` 是寬鬆基準、不敵對；本卡要鎖「編輯零擾動」，釘死實測基線 3
    比 `>=2` 強。燈內座標斷言一律只盯第 0／第 1 頁，不受頁數影響。嚴禁反改引擎湊 2 頁。
-3. **燈 4 `para_sec` 長度：`== base(13)` → `== base+1(14)`**（PM 裁決 3，採「新增宿主页」口徑）。
+3. **燈 4 `para_sec` 長度：`== base(13)` → `== base+1(14)`**（PM 裁決 3，採「新增宿主頁」口徑）。
    `InsertSectionBreak` 插入自帶 `pPr/sectPr` 的新承載段，段落數 base+1 為正確行為
    （python-docx `add_section()` 生態慣例；掛既有段會讓無辜段落悄然變成節收束點，違反編輯
    API 非破壞性優先）。ECMA §17.2.3 只要求宿主為真實段落，兩口徑皆合規。斷言口徑同步改為
@@ -150,11 +150,11 @@ GOOD 態測試結束，exit_code=0
    k7b 金燈的 Bug51170 頁首是圖才無此誤撞）。推下鎖必須盯正文行本身——實測基準態 p1 正文首行
    72.0pt、頁首插字增高後 324.0pt（下推 252pt），k7b 口徑成立。
 
-## 底座修正（必須动 `lib.rs` 的取捨，白名單內「僅必要欄位同步面」的從寬解釋，老實標記）
+## 底座修正（必須動 `lib.rs` 的取捨，白名單內「僅必要欄位同步面」的從寬解釋，老實標記）
 
 `rebuild_derived()` 於派生重建後把 `fresh.doc.bundle` 換回開檔基準 bundle。根因（探針實據，
 非猜測）：`from_docx_bytes(&saved)` 的 bundle 是「編輯中途存檔件」，被編輯過的 entry 在裡頭是
-引擎**重新 deflate** 的壓縮流；一旦覆蓋进来，`undo()` 把 parts 還原成開檔基線後，`OoxmlDoc::save()`
+引擎**重新 deflate** 的壓縮流；一旦覆蓋進來，`undo()` 把 parts 還原成開檔基線後，`OoxmlDoc::save()`
 仍判該 entry「與 entry 明文不同」而再次重建壓縮流 ⇒ 全檔 `byte_identical` **假性失敗**
 （實測：`mem_eq_orig=true`、`saved_eq_orig=true`、`touched` 已退場，`byte_identical=false`）。
 此路徑是 K29b 起就存在的底座缺陷，只是 K29b/K29c 的考卷未把「跨 rebuild 的 undo → byte_identical」
@@ -176,7 +176,7 @@ fldChar 複雜欄（`begin→instrText→separate→結果 run→end`）段內�
 1. **`SubDocTarget::TextBox` 仍未開放寫入**：`resolve_subdoc_part` 對 TextBox 回
    `SubDocNotFound`（誠實拒絕）。卡面「把 Header/Footer/Footnote/Endnote/TextBox 補齊成完整可寫
    子樹路由」中的 **TextBox 一項未達成**——`<w:txbxContent>` 的段落座標系與宿主段索引映射需要
-   獨立的子樹段落點設計，塞進本片會超出可動面（要动發射層的框內投影）。建議另卡。
+   獨立的子樹段落點設計，塞進本片會超出可動面（要動發射層的框內投影）。建議另卡。
 2. **頁首頁尾 slot 解析只走 body 級末節 `sectPr`**：`resolve_hf_part_exact` 取
    `all_sectprs().last()`（body 級），**未走節級 `headerReference` 繼承鏈**（ECMA §17.2 的
    「前節未宣告即繼承前前節」）。單節檔與「末節自宣告」檔完全正確（本卡考卷全在此態）；多節檔
