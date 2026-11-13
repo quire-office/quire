@@ -695,7 +695,7 @@ pub enum ReversibilityLevel {
 2. **紅燈定義（先紅後綠驗收判準）**【設計提案】：
    - **紅燈 1（文字編輯持久化閉環鎖）**：
      - 開啟 `fixtures/style_cascade.docx`（`core/engine-api/src/lib.rs:6209`），對第 0 段（原文字 `"段落級自閉合粗體"`）執行 `apply_mutation(M1.1 InsertText { target: Body, pos: DocPos { para: 0, cp: 8 }, text: "（已存檔）", style_override: None })`，呼叫 `let saved = engine.save_docx().unwrap()`（`core/engine-api/src/lib.rs:2870`），再以 `let reopened = Engine::from_docx_bytes(&saved).unwrap()` 重新開檔。
-     - **斷言**：`reopened.paragraph_text(0)` 必須等於 `Some("段落級自閉合粗體（已存檔）")`；且 `reopened.page_display_list(0)` 中該文字項仍帶有 `FLAG_BOLD`（`core/engine-api/src/lib.rs:8633`）。（**現況必紅**：現況 `replace_paragraph_text` 存檔後文字完全不進 `word/document.xml`，見 `core/engine-api/src/lib.rs:6683-6684`）。
+     - **斷言**：`reopened.paragraph_text(0)` 必須等於 `Some("段落級自閉合粗體（已存檔）")`；且 `reopened.page_display_list(0)` 中該文字項仍帶有 `FLAG_BOLD`（`core/engine-api/src/lib.rs:8633-8633`）。（**現況必紅**：現況 `replace_paragraph_text` 存檔後文字完全不進 `word/document.xml`，見 `core/engine-api/src/lib.rs:6683-6684`）。
    - **紅燈 2（未觸碰 Part 原位元組零失真與同 Part 鄰段不擾動鎖）**：
      - 對上述編輯後的 `engine` 呼叫 `let diff = engine.roundtrip_check().unwrap()`（`core/engine-api/src/lib.rs:2876`），並同時在多 part 複雜考卷 `corpus/ooxmlexport/style-inheritance.docx`（`core/engine-api/src/lib.rs:8622`）與 `corpus/ooxmlexport/mce-nested.docx`（`core/engine-api/src/lib.rs:8698`）上執行單段 `M1.1 InsertText` 與單段 `M1.2 DeleteRange` 後存檔。
      - **斷言**：

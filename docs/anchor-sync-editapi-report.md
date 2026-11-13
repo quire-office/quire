@@ -79,7 +79,7 @@ exit code = 1
 | L693 `roundtrip_check` | `core/engine-api/src/lib.rs:2816-2823` | `core/engine-api/src/lib.rs:2876-2883` | `pub fn roundtrip_check(&self) -> Result<ZipDiff, EngineError> {` |
 | L693(2) `roundtrip_diff` | `core/engine-api/src/lib.rs:2871-2878` | `core/engine-api/src/lib.rs:2931-2938` | `pub fn roundtrip_diff(` |
 | L697 `save_docx` | `core/engine-api/src/lib.rs:2810` | `core/engine-api/src/lib.rs:2870` | `pub fn save_docx(&self) -> Result<Vec<u8>, EngineError> {` |
-| L698 `FLAG_BOLD` | `core/engine-api/src/lib.rs:8561-8565` | `core/engine-api/src/lib.rs:8633` | `assert_eq!(texts[0].1, FLAG_BOLD);` |
+| L698 `FLAG_BOLD` | `core/engine-api/src/lib.rs:8561-8565` | `core/engine-api/src/lib.rs:8633-8633` | `assert_eq!(texts[0].1, FLAG_BOLD);` |
 | L700 `roundtrip_check` | `core/engine-api/src/lib.rs:2816` | `core/engine-api/src/lib.rs:2876` | `pub fn roundtrip_check(&self) -> Result<ZipDiff, EngineError> {` |
 | L722 `tables` | `core/ooxml/src/table.rs:459` | `core/ooxml/src/table.rs:460` | `pub para_start: usize,` |
 | L722(2) `shape_boxes` | `core/engine-api/src/lib.rs:94` | `core/engine-api/src/lib.rs:157` | `shape_boxes: Vec<(usize, quire_ooxml::InlineImage)>,` |
