@@ -247,8 +247,8 @@ pub enum MutationError {
 
 2. **套用模型層級**【設計提案】：
    - **語義層（`OoxmlDoc`）**：定位目標段落 `Paragraph`（`core/ooxml/src/lib.rs:242`），按碼點偏移尋址目標 `Run`（`core/ooxml/src/lib.rs:89`）。若目標 `Run` 帶有動態頁碼欄位 `r.field: Some(FieldKind)`（`core/ooxml/src/lib.rs:106`），在其內部直接修改文字時依 `core/engine-api/src/lib.rs:2189-2191` 現有紀律撤除 `r.field = None`（或拒絕在未展開欄位中拆裂，見失敗語義）。同時更新 `Paragraph::page_breaks`（平移 `pos.cp` 之後的硬分頁偏移，對齊 `core/layout/src/lib.rs:981-997` 的 `shift_breaks` 契約）。
-   - **結構索引同步（當 `SplitParagraph`、`MergeParagraphWithNext` 或跨段 `DeleteRange` 增減扁平段落數 $\Delta p$ 時）**：必須同步平移目標點之後所有 `OoxmlDoc::tables[..].para_start`（`core/ooxml/src/table.rs:459`）與格內 `Block::Paragraph(idx)`（`core/ooxml/src/table.rs:400`）、`Engine::shape_boxes` 的宿主段落索引（`core/engine-api/src/lib.rs:116`）、`Engine::image_pixels` 的 `PixelSource::para`（`core/engine-api/src/lib.rs:233`）、以及 `Engine::para_sec`（`core/engine-api/src/lib.rs:94`）。
-   - **投影與版面層（`Engine` ＋ `LayoutEngine`）**：局部重跑受影響段落的樣式級聯與清單 marker 計算，更新 `paras_eff`，並呼叫 `LayoutEngine` 的單段重排或段落增刪方法，最後呼叫 `self.recompute_notes()`（`core/engine-api/src/lib.rs:969-974`）。
+   - **結構索引同步（當 `SplitParagraph`、`MergeParagraphWithNext` 或跨段 `DeleteRange` 增減扁平段落數 $\Delta p$ 時）**：必須同步平移目標點之後所有 `OoxmlDoc::tables[..].para_start`（`core/ooxml/src/table.rs:460`）與格內 `Block::Paragraph(idx)`（`core/ooxml/src/table.rs:400`）、`Engine::shape_boxes` 的宿主段落索引（`core/engine-api/src/lib.rs:116`）、`Engine::image_pixels` 的 `PixelSource::para`（`core/engine-api/src/lib.rs:238`）、以及 `Engine::para_sec`（`core/engine-api/src/lib.rs:154`）。
+   - **投影與版面層（`Engine` ＋ `LayoutEngine`）**：局部重跑受影響段落的樣式級聯與清單 marker 計算，更新 `paras_eff`，並呼叫 `LayoutEngine` 的單段重排或段落增刪方法，最後呼叫 `self.recompute_notes()`（`core/engine-api/src/lib.rs:976-981`）。
 
 3. **對 DOCX Part 的最小影響面**【設計提案】：
    - 僅修改 `target` 對應之單一 XML part（例如 `SubDocTarget::Body` 僅修改 `word/document.xml`）：
@@ -291,7 +291,7 @@ pub enum MutationError {
 2. **套用模型層級**【設計提案】：
    - `FormatTextRange`：若 `range` 切在既有 `Run` 中間，先將邊界 `Run` 拆分為「前段（原樣）、選取段（套用 `patch` 到 `Run::direct`，`core/ooxml/src/lib.rs:89`）、後段（原樣）」。注意：若 `StyleTable` 的段落樣式鏈或 `docDefaults` 已宣告粗體（`bold == true`），而使用者對該區間執行 `bold: Set(false)`，則在 XML 中必須寫出 `<w:b w:val="0"/>`（或 `w:val="false"`，對齊 `core/ooxml/src/styles.rs:1852` 的明確關閉語義），而非單純刪除 `<w:b/>`。
    - `SetParagraphStyle`：更新 `OoxmlDoc::paragraphs[p]` 的對應欄位，重算該段的級聯 `paras_eff[p]` 與 `ParaGrid`（`size_pt`、`bands`、`break_before`、`before_bands`、`after_bands`、`advance_scale`，定義於 `core/layout/src/lib.rs:771-804`，由 `LayoutEngine::grid` 欄位持有於 `core/layout/src/lib.rs:1965`），並觸發重排。
-   - `UpsertNamedStyle`：更新 `Engine::style_table`，重跑全文件 `cascade_paragraphs`（`core/engine-api/src/lib.rs:529-541`）與頁首頁尾／註腳級聯，重算 `LayoutEngine`。
+   - `UpsertNamedStyle`：更新 `Engine::style_table`，重跑全文件 `cascade_paragraphs`（`core/engine-api/src/lib.rs:542-554`）與頁首頁尾／註腳級聯，重算 `LayoutEngine`。
 
 3. **對 DOCX Part 的最小影響面與無損保證**【設計提案】：
    - `FormatTextRange` 與 `SetParagraphStyle` **絕不觸碰 `word/styles.xml`**，僅對目標內容 part（如 `word/document.xml`）內受影響的 `<w:r>` 或 `<w:pPr>` 做局部替換；且 `<w:rPr>`／`<w:pPr>` 內引擎未認識的子元素（如 `w:rPrChange`、`w:cnfStyle`、`w:shd`、`w:lang` 等）保留原始 XML 片段不動。
