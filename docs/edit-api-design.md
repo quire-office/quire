@@ -475,7 +475,7 @@ flowchart TD
 ### 4.1 現況介面檢討與 `CrdtBackend` 擴充契約【設計提案】
 
 1. **現況瓶頸回顧**【已實測】：
-   - `core/crdt/src/lib.rs:9-22` 的 `EditOp` 僅有 `ReplaceRunText { para: usize, run: usize, text: String }`，且以極易因前段增刪而失效的位置索引 `(para, run)` 為鍵；`Engine` 與 `CollabSession` 之間（`core/engine-api/src/lib.rs:2945-2987`）因為雙 WASM 模組不共享線性記憶體，只能透過 JSON 字串傳遞操作。
+   - `core/crdt/src/lib.rs:9-22` 的 `EditOp` 僅有 `ReplaceRunText { para: usize, run: usize, text: String }`，且以極易因前段增刪而失效的位置索引 `(para, run)` 為鍵；`Engine` 與 `CollabSession` 之間（`core/engine-api/src/lib.rs:3033-3069`）因為雙 WASM 模組不共享線性記憶體，只能透過 JSON 字串傳遞操作。
 2. **雙層操作模型：本地意圖（`CollabIntent`）vs 落地效果（`Mutation`）**【設計提案】：
    - 為保持 `shells/web` 首包不鏈入 `quire-crdt` 的拆包鐵律（`core/engine-api/src/lib.rs:2354-2361`），主引擎 `Engine` 與協作會話 `CollabSession` 的職責邊界定義如下：
      - **本地發送路徑（Local Commit）**：當使用者在本地編輯器操作時，主引擎先執行 `Engine::apply_mutation(op)` 取得即時視覺回饋，並同時將該操作（連同其綁定的穩定邏輯 ID，見 §4.2）轉譯為高階協作意圖 `CollabIntent`，經 JS 橋交給 `CollabSession::commit_local_intent(intent_json: &str) -> Vec<u8>` 編碼為網路廣播封包。
@@ -604,8 +604,8 @@ pub enum ReversibilityLevel {
 
 2. **第二層可逆：`Engine::touched` 白名單自動退場與 `Planned::untouched` 原壓縮流回歸**【已實測＋設計提案】：
    - 【已實測】在現有 `core/ooxml` 實作中，`OoxmlDoc::save`（`core/ooxml/src/lib.rs:321-350`）於 `core/ooxml/src/lib.rs:336-339` 逐一檢查每個原始 ZIP entry：`if bytes != &e.decoded()? { changes.insert(e.name.clone(), Change::Replace(bytes.clone())); }`。這意味著**只要 `self.parts["word/document.xml"]` 的明文位元組還原到與 `e.decoded()?`（`core/ooxml/src/zip_struct.rs:129-138`）完全相同，`OoxmlDoc::save` 就不會將 `"word/document.xml"` 放進 `changes`**，而 `ZipBundle::serialize`（`core/ooxml/src/zip_struct.rs:453-460`）便會自動對 `"word/document.xml"` 走 `Planned::untouched(e)`（`core/ooxml/src/zip_struct.rs:654-666`），直接借用開檔凍結的 `e.local_raw`、`e.data_raw`（原始 Deflate 壓縮流）、`e.gap_raw` 與 `e.central_raw` 原封不動寫回！
-   - 【已實測】然而，現況 `Engine::touched: BTreeMap<String, ()>`（`core/engine-api/src/lib.rs:94`）在 `set_part`（`core/engine-api/src/lib.rs:2854`）插入後沒有移除機制。
-   - 【設計提案】在 `Engine::undo()` 完成對 `part_name` 的 `XmlReversePatch` 後，引擎計算 `doc.parts[part_name]` 的長度與 `crc32fast::hash` 並與開檔基準 `part_baseline_digests[part_name]`（及原始 `ZipEntry::decoded`）比對：一旦確認明文已回到開檔初始狀態，**立即執行 `self.touched.remove(part_name)`**；若某 part 是在本次會話中新增的 `extras`（如新插入圖片 `word/media/imageN.png` 或新建 `word/numbering.xml`），`undo()` 則執行 `self.doc.remove_part(part_name)`（`core/ooxml/src/lib.rs:341-343`）並執行 `self.touched.remove(part_name)`。如此一來，全部 Undo 後呼叫 `Engine::roundtrip_check()`（`core/engine-api/src/lib.rs:2816-2823`）或 `diff_untouched`（`core/ooxml/src/diff.rs:243-245`）時，必得 `ZipDiff { byte_identical: true, pass: true, whitelisted_changed: [], violations: [] }`。
+   - 【已實測】然而，現況 `Engine::touched: BTreeMap<String, ()>`（`core/engine-api/src/lib.rs:109`）在 `set_part`（`core/engine-api/src/lib.rs:2914`）插入後沒有移除機制。
+   - 【設計提案】在 `Engine::undo()` 完成對 `part_name` 的 `XmlReversePatch` 後，引擎計算 `doc.parts[part_name]` 的長度與 `crc32fast::hash` 並與開檔基準 `part_baseline_digests[part_name]`（及原始 `ZipEntry::decoded`）比對：一旦確認明文已回到開檔初始狀態，**立即執行 `self.touched.remove(part_name)`**；若某 part 是在本次會話中新增的 `extras`（如新插入圖片 `word/media/imageN.png` 或新建 `word/numbering.xml`），`undo()` 則執行 `self.doc.remove_part(part_name)`（`core/ooxml/src/lib.rs:341-343`）並執行 `self.touched.remove(part_name)`。如此一來，全部 Undo 後呼叫 `Engine::roundtrip_check()`（`core/engine-api/src/lib.rs:2876-2883`）或 `diff_untouched`（`core/ooxml/src/diff.rs:243-245`）時，必得 `ZipDiff { byte_identical: true, pass: true, whitelisted_changed: [], violations: [] }`。
 
 ---
 
@@ -651,7 +651,7 @@ pub enum ReversibilityLevel {
      - 若呼叫端明確指定 `gc_unreferenced_media: true` 強制立即釋放記憶體，或單張被淘汰之新增圖檔超過 `32 MiB` 預算上限導致 `undo_media_pool` 無法收留，則該次 `M5.3` 操作的回傳結果 `MutationOutcome::reversibility` **必須誠實回傳 `ReversibilityLevel::Irreversible { reason: IrreversibleReason::MediaPayloadEvicted { part_name, bytes_freed } }`**。
      - 同時，引擎自動清空（或截斷）`undo_stack` 中依賴該已釋放媒體位元組的歷史項目，使 `Engine::can_undo()` 對已淘汰媒體的操作回傳 `false`，並在 UI 層透過 `MutationOutcome` 明確告知使用者「此大型媒體替換已釋放原圖快取，無法復原至替換前圖片」。
 
-2. **底層 `Engine::set_part`（`core/engine-api/src/lib.rs:2854-2857`）原始位元組覆寫——立即清空對應 Part 之 Undo 堆疊**【已實測＋設計提案】：
+2. **底層 `Engine::set_part`（`core/engine-api/src/lib.rs:2914-2917`）原始位元組覆寫——立即清空對應 Part 之 Undo 堆疊**【已實測＋設計提案】：
    - 【已實測】`Engine::set_part(&mut self, name: &str, bytes: Vec<u8>)` 允許外部直接以任意位元組流覆寫 `self.doc.parts`。
    - 【設計提案】因為外部直接覆寫繞過了語義解析與 `XmlSpanIndex`，舊 `undo_stack` 中記錄的所有 `ByteSpan` 偏移量與段落索引立即失效。為守住誠實紅線，只要呼叫 `Engine::set_part(name, bytes)`，引擎必須**立即清空 `undo_stack` 與 `redo_stack`**，將當前狀態重置為不可回退的新基準，絕不允許在 `set_part` 之後執行舊的 `InverseMutation` 造成 XML 錯位損毀。
 
@@ -689,8 +689,8 @@ pub enum ReversibilityLevel {
 
 1. **切片範圍與最小化原則**【設計提案】：
    - 本片刻意鎖定**不改變扁平段落總數（$\Delta p = 0$）**的段內文字級操作：`M1.1 InsertText`、單段範圍內的 `M1.2 DeleteRange`、`M1.5 InsertBreak`（軟換行 `<w:br/>`、硬分頁 `<w:br w:type="page"/>`、分欄 `<w:br w:type="column"/>`、製表符 `<w:tab/>`），以及對應的 `InverseMutation` 與 `Engine::undo()` / `Engine::redo()`。
-   - 同步提供既有 `Engine::insert_text_at_caret`（`core/engine-api/src/lib.rs:2219-2234`）與 `Engine::replace_paragraph_text`（`core/engine-api/src/lib.rs:2208-2252`）往 `apply_mutation` 的橋接（或將舊測試 `edit_syncs_paras_eff_styles_and_round_trip` 於 `core/engine-api/src/lib.rs:8920-8946` 升級為驗證持久化寫回與 Undo 後無損往返）。
-   - **為何能直接在現有考卷體系驗收**【已實測＋設計提案】：現有考卷體系已具備完整的結構級對照器 `diff_zip_structure`（`core/ooxml/src/diff.rs:161-240`）、`Engine::roundtrip_check`（`core/engine-api/src/lib.rs:2816-2823`）、`Engine::roundtrip_diff`（`core/engine-api/src/lib.rs:2871-2878`）以及 CLI 閘門 `quire-cli roundtrip <file|dir> --check --allow word/document.xml`（`shells/native/src/main.rs:201-397`）。Slice 1 落地後，無須新建任何外部測試框架，即可直接對 `fixtures/` 與 `corpus/` 全量考卷執行「文字編輯 → 存回 → 驗證未觸碰 part 100% byte-identical（`EntryDiff::zero_loss`）＋ 重開驗證文字持久化」的自動化閘門。
+   - 同步提供既有 `Engine::insert_text_at_caret`（`core/engine-api/src/lib.rs:2279-2293`）與 `Engine::replace_paragraph_text`（`core/engine-api/src/lib.rs:2799-2843`）往 `apply_mutation` 的橋接（或將舊測試 `edit_syncs_paras_eff_styles_and_round_trip` 於 `core/engine-api/src/lib.rs:9003-9029` 升級為驗證持久化寫回與 Undo 後無損往返）。
+   - **為何能直接在現有考卷體系驗收**【已實測＋設計提案】：現有考卷體系已具備完整的結構級對照器 `diff_zip_structure`（`core/ooxml/src/diff.rs:161-240`）、`Engine::roundtrip_check`（`core/engine-api/src/lib.rs:2876-2883`）、`Engine::roundtrip_diff`（`core/engine-api/src/lib.rs:2931-2938`）以及 CLI 閘門 `quire-cli roundtrip <file|dir> --check --allow word/document.xml`（`shells/native/src/main.rs:201-397`）。Slice 1 落地後，無須新建任何外部測試框架，即可直接對 `fixtures/` 與 `corpus/` 全量考卷執行「文字編輯 → 存回 → 驗證未觸碰 part 100% byte-identical（`EntryDiff::zero_loss`）＋ 重開驗證文字持久化」的自動化閘門。
 
 2. **紅燈定義（先紅後綠驗收判準）**【設計提案】：
    - **紅燈 1（文字編輯持久化閉環鎖）**：
