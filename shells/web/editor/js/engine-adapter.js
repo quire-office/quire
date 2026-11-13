@@ -3,7 +3,7 @@
  * 負責：
  * 1. 載入並初始化 WebAssembly 產物 (quire_web.js + quire_web_bg.wasm)
  * 2. 封裝 WasmEngine 開檔 (openFile)、多頁 Canvas 繪製 (renderPage)
- * 3. 封裝 Mutation 操作 (InsertText, DeleteRange, InsertBreak) 與打字閉環 (typeAt, backspace, enter)
+ * 3. 封裝 Mutation 操作 (InsertText, DeleteRange, InsertBreak, InsertTable) 與打字閉環 (typeAt, backspace, enter)
  * 4. 封裝復原／重做 (undo, redo) 與存檔下載 (save)
  * 5. 游標與座標反查 (caretAt, caretRect) 及版面定案狀態 (isSettled, reflowStep)
  */
@@ -168,6 +168,27 @@ export function buildSetParagraphStyleMutation(paraRange, patch = {}) {
         line_spacing: patch.line_spacing !== undefined ? patch.line_spacing : null,
         alignment: patch.alignment !== undefined ? patch.alignment : null
       }
+    }
+  };
+}
+
+/**
+ * 建立 M4.1 InsertTable 變更物件（K29c 切片，引擎側 mutation.rs 的
+ * `Mutation::InsertTable` 宣告為準：target／after_para／rows／cols／
+ * col_widths_pt 五欄，逐欄對應，未帶欄位以 null 明確缺席）。
+ * @param {number|null} afterPara - 插入錨點段落序（null＝body 尾段之後）
+ * @param {number} rows - 列數（引擎要求 > 0）
+ * @param {number} cols - 欄數（引擎要求 > 0）
+ * @param {Array<number>|null} colWidthsPt - 各欄寬（pt）；null＝引擎預設 100pt
+ */
+export function buildInsertTableMutation(afterPara, rows, cols, colWidthsPt = null) {
+  return {
+    InsertTable: {
+      target: 'Body',
+      after_para: afterPara === null || afterPara === undefined ? null : Number(afterPara),
+      rows: Number(rows),
+      cols: Number(cols),
+      col_widths_pt: colWidthsPt || null
     }
   };
 }
@@ -608,6 +629,30 @@ export class EngineAdapter {
     if (!this.engine) throw new Error('尚未開啟文件，無法設定段落樣式');
     const targetRange = paraRange || this.getEffectiveParaRange();
     const mutation = buildSetParagraphStyleMutation(targetRange, patch);
+    const resStr = this.engine.apply_mutation_json(JSON.stringify(mutation));
+    const res = JSON.parse(resStr);
+
+    if (res.ok) {
+      this.isDirty = true;
+      if (res.outcome && res.outcome.caret_after) {
+        this.caret = { ...res.outcome.caret_after };
+      }
+    }
+    return res;
+  }
+
+  /**
+   * 插入表格 (M4.1 InsertTable，K29c 引擎能力)
+   * @param {number} rows - 列數
+   * @param {number} cols - 欄數
+   * @param {Object} options - { afterPara?: number|null, colWidthsPt?: number[]|null }
+   */
+  insertTable(rows, cols, options = {}) {
+    if (!this.engine) throw new Error('尚未開啟文件，無法插入表格');
+    const afterPara = options.afterPara !== undefined
+      ? options.afterPara
+      : (this.caret ? this.caret.para : 0);
+    const mutation = buildInsertTableMutation(afterPara, rows, cols, options.colWidthsPt || null);
     const resStr = this.engine.apply_mutation_json(JSON.stringify(mutation));
     const res = JSON.parse(resStr);
 

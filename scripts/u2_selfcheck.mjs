@@ -126,6 +126,7 @@ const {
   buildInsertTextMutation,
   buildDeleteRangeMutation,
   buildInsertBreakMutation,
+  buildInsertTableMutation,
   LIVE_COMMANDS,
   TRANSFERRED_LIVE_COMMANDS,
   getDefaultSampleBytes
@@ -154,6 +155,31 @@ assert(breakOp.InsertBreak.target === 'Body', 'InsertBreak 目標為 Body');
 assert(breakOp.InsertBreak.pos.para === 0 && breakOp.InsertBreak.pos.cp === 8, 'InsertBreak 座標正確');
 assert(breakOp.InsertBreak.kind === 'LineWrapping', 'InsertBreak kind 正確');
 console.log('  ✓ M1.5 InsertBreak Mutation JSON 符合引擎 serde 契約');
+
+// 測試 M4.1 InsertTable 結構（t_57b7b089 誠實性修正：insert:table 真接線）
+const tableOp = buildInsertTableMutation(0, 3, 2, null);
+assert(tableOp.InsertTable !== undefined, 'InsertTable 頂層鍵存在');
+assert(tableOp.InsertTable.target === 'Body', 'InsertTable 目標為 Body');
+assert(tableOp.InsertTable.after_para === 0, 'InsertTable after_para 正確');
+assert(tableOp.InsertTable.rows === 3 && tableOp.InsertTable.cols === 2, 'InsertTable 行列數正確');
+assert(tableOp.InsertTable.col_widths_pt === null, 'InsertTable col_widths_pt 未帶時為 null');
+const tableOpTail = buildInsertTableMutation(null, 2, 2, [120.5, 90.0]);
+assert(tableOpTail.InsertTable.after_para === null, 'InsertTable after_para=null 表 body 尾段後插入');
+assert(Array.isArray(tableOpTail.InsertTable.col_widths_pt) && tableOpTail.InsertTable.col_widths_pt[0] === 120.5, 'InsertTable col_widths_pt 填裝正確');
+console.log('  ✓ M4.1 InsertTable Mutation JSON 符合引擎 serde 契約（五欄逐欄對應 mutation.rs:292）');
+
+// 誠實紅線鎖：insert:table 掛 live 的前提＝引擎 Mutation 真的被外殼呼叫。
+// 任何一側退回首輪（只 dispatch 事件 / 藏按鈕）都必須讓本鎖變紅。
+const adapterSrc = fs.readFileSync(ADAPTER_JS_PATH, 'utf-8');
+const uiSrc = fs.readFileSync(UI_JS_PATH, 'utf-8');
+assert(/apply_mutation_json\(JSON\.stringify\(mutation\)\)/.test(adapterSrc) && /buildInsertTableMutation\(/.test(adapterSrc),
+  '紅線違規：engine-adapter.js 未真的以 buildInsertTableMutation 產件並呼叫 apply_mutation_json');
+assert(/insertTable\s*\(/.test(uiSrc) && /table:grid-insert/.test(uiSrc),
+  '紅線違規：qword-ui.js 未把 table:grid-select 接到 adapter.insertTable（假 live）');
+const tableBtnMatch = htmlContent.match(/<button[^>]+data-command="insert:table"[^>]*>/i);
+assert(tableBtnMatch && /data-requirement="live"/i.test(tableBtnMatch[0]),
+  'insert:table 應為 live（已真接 M4.1）');
+console.log('  ✓ 按鈕 [insert:table] live 且有真引擎接線（非僅 dispatch 事件）');
 
 // 4. 指令映射表與 pending -> live 審查
 console.log('\n[檢查 4] 審查 pending -> live 轉移清單與按鈕標記誠實性...');
