@@ -2141,6 +2141,63 @@ impl Engine {
         serde_json::to_string(&self.doc.tables).unwrap_or_else(|_| "[]".to_string())
     }
 
+    /// 表格索引摘要 JSON 陣列（E 卡 t_f91e5773）。每項＝一張 body 級根表的
+    /// 輕量事實（`root_slot`／含巢狀表數／列數／網格欄數／格內段落數／段落
+    /// 錨點區間）——外殼列「表格清單」不需整棵 `tables_json`（多表文件可達
+    /// 數 MB）。欄位序＝`TablePath::root_slot` 基準，直接可餵 M4 家族。
+    pub fn tables_summary_json(&self) -> String {
+        let rows: Vec<_> = table_map::table_summaries(&self.doc.tables)
+            .into_iter()
+            .map(|s| {
+                serde_json::json!({
+                    "root_slot": s.root_slot,
+                    "table_count": s.table_count,
+                    "rows": s.rows,
+                    "grid_cols": s.grid_cols,
+                    "para_cells": s.para_cells,
+                    "para_start": s.para_start,
+                    "para_end": s.para_end,
+                })
+            })
+            .collect();
+        serde_json::to_string(&rows).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// 段落 → 表格路徑反查 JSON（E 卡 t_f91e5773：多表文件「點哪張改哪張」）。
+    ///
+    /// 命中回 `{"para":p,"table_path":{"target":"Body","root_slot":n,
+    /// "nested_steps":[[r,c,s],...]},"cell_path":{"row":r,"cell":c,
+    /// "grid_col_start":g,"grid_span":n,"grid_cols":n,"rows":n,"depth":d}}`；
+    /// 段落不在任何表內（body 級正文段）回 `None`——**回 None 不是錯誤**，
+    /// 外殼據此走正文編輯路徑，不得當成失敗。
+    ///
+    /// `table_path` 的欄位名／語義與 `mutation::TablePath` 逐字對齊（外殼
+    /// `JSON.parse` 後可直接塞進 `SetCellProps.table`／`DeleteTable.table`
+    /// 等 M4 變體，零第二輪翻譯）。最深命中優先：段落掛在最內層表的格內時
+    /// 回那張最內的表（編輯語義＝改哪張以最深為準）。
+    pub fn table_locator_json(&self, para: usize) -> Option<String> {
+        let hit = table_map::locate_table_for_para(&self.doc.tables, para)?;
+        let out = serde_json::json!({
+            "para": para,
+            "table_path": {
+                "target": "Body",
+                "root_slot": hit.root_slot,
+                "nested_steps": hit.nested_steps,
+            },
+            "cell_path": {
+                "row": hit.row,
+                "cell": hit.cell?,
+                "cell_row": hit.cell_row,
+                "grid_col_start": hit.grid_col_start,
+                "grid_span": hit.grid_span,
+                "grid_cols": hit.grid_cols,
+                "rows": hit.rows,
+                "depth": hit.nested_steps.len(),
+            },
+        });
+        serde_json::to_string(&out).ok()
+    }
+
     pub fn page_lines(&self, page: usize) -> Option<Vec<String>> {
         self.layout
             .pages()

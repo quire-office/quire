@@ -115,6 +115,52 @@ impl WasmEngine {
     pub fn reflow_step_json(&mut self) -> String {
         self.inner.reflow_step_json()
     }
+
+    // ---------------- E（卡 t_f91e5773）：表格索引與游標反查綁定 ----------------
+    //
+    // 引擎側符號早已存在（`table_count`／`tables_json`＝Phase3-1a；摘要與
+    // 反查＝本卡在 engine-api 補的**純函數**），本節只做零業務邏輯透傳。
+    // 存在意義（U4 報告 §3）：外殼此前拿不到表格索引，只能對越界 root_slot
+    // 發「必然被拒的 Mutation」從錯誤訊息反推張數（零副作用探針降級序）——
+    // 那是把引擎的真值藏起來後的考古，不是介面。真索引落地後外殼得以
+    // 「點哪張改哪張」（換算規則見 `table_locator_json` 文件；移除 adapter
+    // 降級序屬另卡，本卡嚴禁碰 shells/web/editor/）。
+
+    /// body 級表格張數（canonical 投影；只讀，不參與存檔）。
+    pub fn table_count(&self) -> usize {
+        self.inner.table_count()
+    }
+
+    /// body 級表格樹 JSON（含巢狀；與 `Engine::tables_json` 逐字同形——
+    /// 序列化的 `Vec<BodyTable>`，`rows[r].cells[c].blocks` 樹）。
+    pub fn tables_json(&self) -> String {
+        self.inner.tables_json()
+    }
+
+    /// 表格索引摘要 JSON 陣列：每項 `{root_slot, table_count, rows,
+    /// grid_cols, para_cells, para_start, para_end}`——列「表格清單」的輕量
+    /// 面，不需整棵 `tables_json`（多表文件可達數 MB）。`root_slot` 即
+    /// `TablePath::root_slot`，直接可餵 M4 家族 Mutation。
+    pub fn tables_summary_json(&self) -> String {
+        self.inner.tables_summary_json()
+    }
+
+    /// 段落（游標所在段）→ 表格路徑反查 JSON。回 `Some(字串)`＝該段在某張
+    /// 表（含巢狀表）的格內，`JSON.parse` 後形如：
+    /// ```json
+    /// {"para":5,
+    ///  "table_path":{"target":"Body","root_slot":1,"nested_steps":[[0,2,0]]},
+    ///  "cell_path":{"row":0,"cell":2,"cell_row":0,"grid_col_start":2,
+    ///              "grid_span":1,"grid_cols":3,"rows":2,"depth":1}}
+    /// ```
+    /// `table_path` 欄位名／語義與 `Mutation` 的 `TablePath` 逐字對齊——
+    /// 直接塞進 `SetCellProps.table`／`DeleteTable.table` 等即可，零第二輪
+    /// 翻譯。巢狀步三元組＝(列, 格, 該格內第幾張巢狀表)。**回 `None` 不是
+    /// 錯誤**：該段是表外正文段，外殼走正文編輯路徑即可（越界索引同 None，
+    /// 全路徑零 panic——wasm 邊 panic＝瀏覽器 abort）。
+    pub fn table_locator_json(&self, para: usize) -> Option<String> {
+        self.inner.table_locator_json(para)
+    }
 }
 
 // ============================ ODF-D2：ODT 入口 ============================
