@@ -23,8 +23,8 @@
 //!   直接層高亮後**樣式級高亮會重新顯形**——燈 6 照此實斷，不虛構第四態。
 
 use quire_engine::{
-    DocPos, DocRange, DrawItem, Engine, FLAG_BOLD, FLAG_STRIKE, FLAG_UNDERLINE, Mutation,
-    RunDirectPatch, StrikeKind, SubDocTarget, UnderlineKind, VertAlign,
+    DocPos, DocRange, DrawItem, Engine, Mutation, RunDirectPatch, StrikeKind, SubDocTarget,
+    UnderlineKind, VertAlign, FLAG_BOLD, FLAG_STRIKE, FLAG_UNDERLINE,
 };
 
 #[path = "../../../shells/native/src/render_svg.rs"]
@@ -139,7 +139,9 @@ fn k29e_lamp1_six_fields_roundtrip_closed_loop() {
     // (b) 重開件渲染端（SVG＋顯示列表）消費斷言——發射層真吃旗標。
     let mut reopened = Engine::from_docx_bytes(&saved).expect("重開失敗");
     settle(&mut reopened);
-    let dl = reopened.page_display_list(0).expect("第 0 頁顯示列表必須存在");
+    let dl = reopened
+        .page_display_list(0)
+        .expect("第 0 頁顯示列表必須存在");
     let (tx, ty, t_size, t_flags, t_family) = first_text_with(&dl.items, "六欄目標段");
     assert_ne!(t_flags & FLAG_UNDERLINE, 0, "底線旗標必須進發射段 flags");
     assert_ne!(t_flags & FLAG_STRIKE, 0, "刪除線旗標必須進發射段 flags");
@@ -205,54 +207,45 @@ fn k29e_lamp1_six_fields_roundtrip_closed_loop() {
     );
 }
 
-/// 燈 2：`None`＝保持原宣告——全 None patch 的寫入路徑零注入＋既有 rPr
-/// 逐字元保留（寫入路徑紀律：patch_rpr 只在 patch 明確指定時才動 XML；
-/// 既有未知屬性如 w:rsid 由 body 原樣承載的紀律由 k29a 紅燈 2 守衛，
-/// 本燈只鎖「六欄不憑空冒出」與「選取段 rPr 原封不動」）。
+/// 燈 2：`None`＝保持原宣告——全 None patch 後 **document.xml part 逐位元組
+/// 原樣**（寫入路徑紀律的硬鎖：patch 無任何明確指定時，連空 `<w:rPr/>` 都
+/// 不得材料化、既有 rPr 不得重排；破鎖＝未編輯路徑被編輯層代碼洩入）。
 #[test]
-fn k29e_lamp2_all_none_patch_injects_nothing() {
-    let mut engine = fixture_engine();
-    fmt_para(&mut engine, 2, RunDirectPatch::default());
-    let saved = engine.save_docx().expect("存檔失敗");
-    let reopened = Engine::from_docx_bytes(&saved).expect("重開失敗");
-    let xml = String::from_utf8(
-        reopened
+fn k29e_lamp2_all_none_patch_keeps_part_byte_identical() {
+    let pristine = fixture_engine();
+    let original_xml = pristine
+        .part("word/document.xml")
+        .expect("fixture 必須有 document.xml")
+        .to_vec();
+
+    // 零宣告 run 段與帶 rPr（rStyle）段兩處都做**整段全選**（cp 0..全长）：
+    // 整段全選時選取後段為空、不產生 run 裂解（k29a 中段裂解紀律不在本燈
+    // 範圍），全 None patch 的合法產物就是 part 逐位元組原樣。破鎖形態＝
+    // 空 <w:rPr></w:rPr> 被材料化或既有 rPr 被重排。
+    for (para, len) in [(2usize, 15usize), (1usize, 15usize)] {
+        let mut engine = fixture_engine();
+        engine
+            .apply_mutation(Mutation::FormatTextRange {
+                range: DocRange {
+                    target: SubDocTarget::Body,
+                    start: DocPos { para, cp: 0 },
+                    end: DocPos { para, cp: len },
+                },
+                patch: RunDirectPatch::default(),
+            })
+            .expect("套用 M2.1 FormatTextRange 失敗");
+        let saved = engine.save_docx().expect("存檔失敗");
+        let reopened = Engine::from_docx_bytes(&saved).expect("重開失敗");
+        let xml = reopened
             .part("word/document.xml")
             .expect("重開件必須有 document.xml")
-            .to_vec(),
-    )
-    .expect("UTF-8");
-    for tag in [
-        "<w:u",
-        "<w:strike",
-        "<w:dstrike",
-        "<w:vertAlign",
-        "<w:highlight",
-        "<w:shd",
-        "<w:rFonts",
-    ] {
-        assert!(
-            !xml.contains(tag),
-            "全 None patch 後 document.xml 不得冒出 {tag}（寫入路徑只在明確指定時動 XML）；實得：{}",
-            &xml[..xml.len().min(800)]
+            .to_vec();
+        assert_eq!(
+            xml, original_xml,
+            "第 {para} 段全 None patch 後 document.xml 必須逐位元組原樣\
+             （寫入路徑只在明確指定時動 XML）"
         );
     }
-    // 選取段 rPr 原封不動：第 1 段 run 的 <w:rStyle w:val="K29eMark"/> 仍逐字元在。
-    let mut engine2 = fixture_engine();
-    fmt_para(&mut engine2, 1, RunDirectPatch::default());
-    let saved2 = engine2.save_docx().expect("存檔失敗");
-    let reopened2 = Engine::from_docx_bytes(&saved2).expect("重開失敗");
-    let xml2 = String::from_utf8(
-        reopened2
-            .part("word/document.xml")
-            .expect("重開件必須有 document.xml")
-            .to_vec(),
-    )
-    .expect("UTF-8");
-    assert!(
-        xml2.contains(r#"<w:rStyle w:val="K29eMark"/>"#),
-        "全 None patch 必須原樣保留既有 rPr 內容（級聯引用不動）"
-    );
 }
 
 /// 燈 3：底線五形態與刪除線雙線——存檔件 XML 逐值對應；渲染端設定刪除線
@@ -300,7 +293,10 @@ fn k29e_lamp3_underline_kinds_and_double_strike() {
     let saved = engine.save_docx().expect("存檔失敗");
     let reopened = Engine::from_docx_bytes(&saved).expect("重開失敗");
     let xml = String::from_utf8(
-        reopened.part("word/document.xml").expect("document.xml").to_vec(),
+        reopened
+            .part("word/document.xml")
+            .expect("document.xml")
+            .to_vec(),
     )
     .expect("UTF-8");
     assert!(
@@ -320,7 +316,10 @@ fn k29e_lamp3_underline_kinds_and_double_strike() {
     let saved = engine.save_docx().expect("存檔失敗");
     let reopened = Engine::from_docx_bytes(&saved).expect("重開失敗");
     let xml = String::from_utf8(
-        reopened.part("word/document.xml").expect("document.xml").to_vec(),
+        reopened
+            .part("word/document.xml")
+            .expect("document.xml")
+            .to_vec(),
     )
     .expect("UTF-8");
     assert!(
@@ -375,9 +374,7 @@ fn k29e_lamp4_super_sub_baseline_and_size() {
         let (_, ty, t_size, ..) = first_text_with(&dl.items, "六欄目標段");
         // 基準態＝未編輯同檔：同段選取段基線 y（該段首行行頂）。
         let base_engine = fixture_engine();
-        let base_dl = base_engine
-            .page_display_list(0)
-            .expect("第 0 頁必須存在");
+        let base_dl = base_engine.page_display_list(0).expect("第 0 頁必須存在");
         let (_, base_y, plain_size, ..) = first_text_with(&base_dl.items, "六欄目標段");
         assert!(
             (t_size - plain_size * 0.58).abs() < 0.01,
@@ -433,7 +430,10 @@ fn k29e_lamp5_highlight_named_shd_and_width_match() {
     let saved = engine.save_docx().expect("存檔失敗");
     let reopened = Engine::from_docx_bytes(&saved).expect("重開失敗");
     let xml = String::from_utf8(
-        reopened.part("word/document.xml").expect("document.xml").to_vec(),
+        reopened
+            .part("word/document.xml")
+            .expect("document.xml")
+            .to_vec(),
     )
     .expect("UTF-8");
     assert!(
@@ -455,7 +455,10 @@ fn k29e_lamp5_highlight_named_shd_and_width_match() {
     {
         let probe = Engine::from_docx_bytes(&bytes).expect("重開失敗");
         let xml = String::from_utf8(
-            probe.part("word/document.xml").expect("document.xml").to_vec(),
+            probe
+                .part("word/document.xml")
+                .expect("document.xml")
+                .to_vec(),
         )
         .expect("UTF-8");
         assert!(
@@ -549,22 +552,22 @@ fn k29e_lamp6_removal_falls_back_to_style_cascade() {
     );
     settle(&mut engine);
     let dl = engine.page_display_list(0).expect("第 0 頁必須存在");
-    let (flags, bold_visible) = dl.items.iter().find_map(|it| match it {
-        DrawItem::Text { text, flags, .. } if text.contains("六欄目標段") => {
-            Some((*flags, (*flags & FLAG_BOLD) != 0))
-        }
-        _ => None,
-    }).expect("第 2 段必須在顯示列表");
+    let (flags, bold_visible) = dl
+        .items
+        .iter()
+        .find_map(|it| match it {
+            DrawItem::Text { text, flags, .. } if text.contains("六欄目標段") => {
+                Some((*flags, (*flags & FLAG_BOLD) != 0))
+            }
+            _ => None,
+        })
+        .expect("第 2 段必須在顯示列表");
     assert_eq!(
         flags & FLAG_UNDERLINE,
         0,
         "顯式移除底線後旗標必須熄滅（直接層顯式關閉贏過 docDefaults）"
     );
-    assert_eq!(
-        flags & FLAG_STRIKE,
-        0,
-        "顯式移除刪除線後旗標必須熄滅"
-    );
+    assert_eq!(flags & FLAG_STRIKE, 0, "顯式移除刪除線後旗標必須熄滅");
     assert!(
         bold_visible,
         "bold 未被觸碰：必須仍從 docDefaults 級聯顯形（級聯鏈零破壞）"

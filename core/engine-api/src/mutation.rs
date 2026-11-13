@@ -1498,10 +1498,26 @@ fn patch_rpr(rpr: &str, patch: &RunDirectPatch) -> String {
     if buggy_rpr {
         return rpr.to_string();
     }
+    // [K29E_BUGGY_POINT: SIX_FIELDS]——BUGGY 回塞總開關（scripts/k29e_buggy_replay.sh
+    // 以字串置換翻轉本旗標）：true＝六欄寫入路徑整體退回「舊五欄版」——remove
+    // 不碰六族、add 不寫六欄，且全 None 硬閂失效（空 rPr 被材料化）。同款於
+    // buggy_rpr 的先例紀律：單行翻轉、可完全逆轉、good 態以 git diff 對照 HEAD。
+    let buggy_k29e_fields = false;
     // 卡面紀律「寫入路徑只在 patch 明確指定時才動 XML」的硬閂：全 None patch
     // ＝零意圖，連既有 rPr 都不重排（原字串原樣返回，零注入、零位元組位移）。
-    if patch == &RunDirectPatch::default() {
+    if !buggy_k29e_fields && patch == &RunDirectPatch::default() {
         return rpr.to_string();
+    }
+    // BUGGY 態把六欄澆成 None＝六族 remove/add 臂全部不觸發（舊五欄版行為）；
+    // 硬閂已在上一行被 buggy 態繞過，零 rPr 段將被材料化空 <w:rPr></w:rPr>
+    // ——燈 2（byte-identity）與燈 1/3/5/6（六欄讀回）據此鑑別回紅。
+    let mut patch = patch.clone();
+    if buggy_k29e_fields {
+        patch.underline = None;
+        patch.strike = None;
+        patch.vert_align = None;
+        patch.highlight = None;
+        patch.font_family = None;
     }
     let inner = if rpr.is_empty() {
         String::new()
