@@ -466,9 +466,9 @@ fn table_props_xml(patch: &TablePropsPatch) -> String {
 /// `BorderSpec` → 單邊框元素 `<w:{tag} w:val=… w:sz=… w:space=… w:color=…/>`。
 /// 缺欄不寫屬性（全缺＝`<w:top/>` 空元素形態，語義＝宣告該邊但零值）；
 /// `w:sz` 換算＝`round(width_pt × 8)`（ECMA-376 §17.18.86 八分之一點，解析側
-/// `solve_pen` 的 `sz/8` 反函數）；`w:space` 換算＝`round(space_pt)`（ECMA-376
-/// §17.4.10 註：框線 space 單位即 pt，非 twip——本庫既有 `txbx_borders.space_pt`
-/// 同款 pt 口徑）。
+/// `solve_pen` 的 `sz/8` 反函數）；`w:space` 換算＝`round(space_pt)`——pt 口徑
+/// 透傳（LO 25.8 探針實測渲染端不消費 table border space，見 docs §5；本欄
+/// 只負責存檔保真）。
 fn border_edge_xml(tag: &str, b: &BorderSpec) -> String {
     let mut s = format!("<w:{tag}");
     if let Some(v) = &b.style {
@@ -478,10 +478,7 @@ fn border_edge_xml(tag: &str, b: &BorderSpec) -> String {
         s.push_str(&format!(r#" w:sz="{}""#, (w * 8.0).round().max(0.0) as i64));
     }
     if let Some(sp) = b.space_pt.filter(|v| v.is_finite()) {
-        s.push_str(&format!(
-            r#" w:space="{}""#,
-            sp.round().max(0.0) as i64
-        ));
+        s.push_str(&format!(r#" w:space="{}""#, sp.round().max(0.0) as i64));
     }
     if let Some(c) = &b.color {
         s.push_str(&format!(r#" w:color="{}""#, xml_attr_escape(c)));

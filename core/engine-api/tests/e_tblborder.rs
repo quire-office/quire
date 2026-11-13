@@ -22,17 +22,19 @@
 //! - 虛線：LO dashes `[8 2.5]`（dashed）；我方 `dash="3 2"`（SVG stroke-dasharray
 //!   口徑，非同一字串但同為虛線語義）——本卡只鎖「虛線與實線可區分」，
 //!   不鎖 dash 字串逐字（既有 d6 考卷同款取捨，記 docs）。
-//! - LO 表格起點 y 與我方差 1.6–2.5pt（本 fixture 無宣告列高，LO/我方列高由
-//!   各自字體度量推得，屬既有行高度量差，非邊框缺陷）；故座標斷言採 ±2.5pt
-//!   容差，容差值與逐條實測差記 docs §2，不虛構「完全吻合」。
+//! - LO 表格起點 y 與我方差（LO 25.8 探針實測，本卡不修既有行高度量差）：
+//!   表 0 頂邊 1.6pt（LO 87.20／我方 88.80）、表 0 insideH 2.45pt（LO 103.15／
+//!   我方 105.60）、表 1 頂邊 5.4pt（LO 133.80／我方 139.20，跨表累積）——皆屬
+//!   無宣告列高時各自字體度量推得的既有行高差，非邊框缺陷；燈 3 對 insideH
+//!   採 ±2.5pt 容差，容差值與逐條實測差記 docs §2，不虛構「完全吻合」。
 //!
 //! # 鑑別力證明
 //! `E_TBLBORDER_BUGGY=1` 把燈 1／燈 2 的期望常數換成錯誤值 ⇒ 該燈必紅，
 //! 證明斷言真在比對寫入結果而非恆真（實跑兩態記 docs §4）。
 
 use quire_engine::{
-    BorderSpec, CellPropsPatch, DrawItem, Engine, Mutation, ReversibilityLevel,
-    TableBordersPatch, TablePath, TablePropsPatch,
+    BorderSpec, CellPropsPatch, DrawItem, Engine, Mutation, ReversibilityLevel, TableBordersPatch,
+    TablePath, TablePropsPatch,
 };
 
 const PROBE: &str = "fixtures/e_tblborder_probe.docx";
@@ -116,7 +118,10 @@ fn e_lamp1_table_borders_write_to_xml_and_emit_rules() {
         .iter()
         .filter(|r| r.2 > 130.0) // 表 1 在本頁 y>130（表 0 於 y<130）
         .count();
-    assert_eq!(before_table1, 1, "表 1 前提：僅一格 tcBorders 覆寫（綠 3pt top）");
+    assert_eq!(
+        before_table1, 1,
+        "表 1 前提：僅一格 tcBorders 覆寫（綠 3pt top）"
+    );
 
     e.apply_mutation(Mutation::SetTableProps {
         table: TablePath::body(1),
@@ -206,14 +211,16 @@ fn e_lamp1_table_borders_write_to_xml_and_emit_rules() {
     // (a′) 表 1 容器（第二顆）逐方位嚴格斷言：新值全在、原 six-none 被逐位
     // 覆寫（none 零殘留）、未觸碰方位零扰动——防「表 0 同名字串假綠」。
     {
-        let first = xml.find("<w:tblBorders>").expect("第一顆 tblBorders 必須存在");
+        let first = xml
+            .find("<w:tblBorders>")
+            .expect("第一顆 tblBorders 必須存在");
         let second = xml[first + 1..]
             .find("<w:tblBorders>")
             .map(|i| i + first + 1)
             .expect("第二顆 tblBorders 必須存在");
-        let second_seg =
-            xml[second..second + xml[second..].find("</w:tblBorders>").expect("閉合必須存在")]
-                .to_string();
+        let second_seg = xml
+            [second..second + xml[second..].find("</w:tblBorders>").expect("閉合必須存在")]
+            .to_string();
         for want in [
             r#"<w:top w:val="single" w:sz="24" w:space="1" w:color="FF0000"/>"#,
             r#"<w:left w:val="single" w:sz="8" w:space="0" w:color="auto"/>"#,
@@ -247,12 +254,18 @@ fn e_lamp1_table_borders_write_to_xml_and_emit_rules() {
         .iter()
         .filter(|it| it.0 && (it.5 - 3.0).abs() < 1e-3 && it.6 == 0xFFFF_0000)
         .count();
-    assert_eq!(red3, 1, "表 1 頂邊 red 3pt 實線恰 1 條（cell(0,0) 走 tcBorders 綠）：{t1:?}");
+    assert_eq!(
+        red3, 1,
+        "表 1 頂邊 red 3pt 實線恰 1 條（cell(0,0) 走 tcBorders 綠）：{t1:?}"
+    );
     let green25 = t1
         .iter()
         .filter(|it| it.0 && (it.5 - 2.5).abs() < 1e-3 && it.6 == 0xFF00_B050)
         .count();
-    assert_eq!(green25, 1, "表 1 底邊 green 2.5pt 恰 1 條（cell(0,0) tcBorders=none 蓋掉）：{t1:?}");
+    assert_eq!(
+        green25, 1,
+        "表 1 底邊 green 2.5pt 恰 1 條（cell(0,0) tcBorders=none 蓋掉）：{t1:?}"
+    );
     let dashed_v = t1
         .iter()
         .filter(|it| !it.0 && it.7 && (it.5 - 1.0).abs() < 1e-3)
@@ -266,7 +279,10 @@ fn e_lamp1_table_borders_write_to_xml_and_emit_rules() {
         .iter()
         .filter(|it| !it.0 && (it.5 - 1.0).abs() < 1e-3 && !it.7 && it.6 == 0xFF00_0000)
         .count();
-    assert_eq!(black1, 0, "tcBorders left=nil 必須贏過表格級 left 宣告（零實線）：{t1:?}");
+    assert_eq!(
+        black1, 0,
+        "tcBorders left=nil 必須贏過表格級 left 宣告（零實線）：{t1:?}"
+    );
 }
 
 /// 燈 2：儲存格級邊框寫入閉環——`w:tcBorders` 四方位；insideH／insideV 在
@@ -387,9 +403,13 @@ fn e_lamp3_read_side_matches_lo_truth() {
     // right none／insideH dashed sz12 藍／insideV none）＋表 1（全 none＋
     // cell(0,0) tcBorders top single sz24 綠）⇒ 共 9 條。
     assert_eq!(all.len(), 9, "探針件 Rule 總數基準：{all:?}");
-    let w = |v: f32| (v - 0.25).abs() < 1e-3 || (v - 1.0).abs() < 1e-3 || (v - 1.5).abs() < 1e-3
-        || (v - 2.0).abs() < 1e-3
-        || (v - 3.0).abs() < 1e-3;
+    let w = |v: f32| {
+        (v - 0.25).abs() < 1e-3
+            || (v - 1.0).abs() < 1e-3
+            || (v - 1.5).abs() < 1e-3
+            || (v - 2.0).abs() < 1e-3
+            || (v - 3.0).abs() < 1e-3
+    };
     assert!(
         all.iter().all(|it| w(it.5)),
         "寬度必落在 sz/8 換算離散值：{all:?}"
@@ -400,10 +420,26 @@ fn e_lamp3_read_side_matches_lo_truth() {
             .filter(|it| (it.5 - wd).abs() < 1e-3 && it.6 == argb)
             .count()
     };
-    assert_eq!(at(2.0, 0xFFFF_0000), 2, "sz=16→2.0pt 紅頂邊 2 條（列 0 兩格）");
-    assert_eq!(at(1.0, 0xFF00_0000), 2, "sz=8→1.0pt 黑左邊 2 條（第 0 欄兩列）");
-    assert_eq!(at(1.5, 0xFF00_00FF), 4, "sz=12→1.5pt 藍虛內橫 4 條（列交界兩格×兩側）");
-    assert_eq!(at(3.0, 0xFF00_B050), 1, "sz=24→3.0pt 綠（tcBorders 覆寫）1 條");
+    assert_eq!(
+        at(2.0, 0xFFFF_0000),
+        2,
+        "sz=16→2.0pt 紅頂邊 2 條（列 0 兩格）"
+    );
+    assert_eq!(
+        at(1.0, 0xFF00_0000),
+        2,
+        "sz=8→1.0pt 黑左邊 2 條（第 0 欄兩列）"
+    );
+    assert_eq!(
+        at(1.5, 0xFF00_00FF),
+        4,
+        "sz=12→1.5pt 藍虛內橫 4 條（列交界兩格×兩側）"
+    );
+    assert_eq!(
+        at(3.0, 0xFF00_B050),
+        1,
+        "sz=24→3.0pt 綠（tcBorders 覆寫）1 條"
+    );
     assert!(
         all.iter()
             .filter(|it| (it.5 - 1.5).abs() < 1e-3)
@@ -417,12 +453,18 @@ fn e_lamp3_read_side_matches_lo_truth() {
         .iter()
         .filter(|it| !it.0 && (it.1 - 288.0).abs() < 0.6)
         .count();
-    assert_eq!(right_edge_v, 0, "right=none 不得發射（表右界 x=288 垂直線 0 條）");
+    assert_eq!(
+        right_edge_v, 0,
+        "right=none 不得發射（表右界 x=288 垂直線 0 條）"
+    );
     let t1_black_h = all
         .iter()
         .filter(|it| it.0 && it.2 > 130.0 - 2.5 && it.6 == 0xFF00_0000)
         .count();
-    assert_eq!(t1_black_h, 0, "表 1 全 none＋nil／hidden：y>130 不得有黑色水平線");
+    assert_eq!(
+        t1_black_h, 0,
+        "表 1 全 none＋nil／hidden：y>130 不得有黑色水平線"
+    );
     // inside 只畫內部：表 0 內橫線只出现在列交界（y≈105.6），不在表外框外。
     let inside_h = all
         .iter()
@@ -472,19 +514,48 @@ fn e_lamp4_untouched_entries_stay_byte_identical() {
     })
     .expect("單方位 SetTableProps 失敗");
     let xml = doc_xml(&e2);
+    // 逐方位斷言一律**限縮在表 0 容器段**內比對：表 1 另有 six-none 容器，
+    // 整檔 `contains` 會讓「表 0 沒保留、表 1 同名字串頂過」變成假綠（燈 1(a′)
+    // 同款取捨，這裡把口徑補齊到燈 4）。
+    let seg0 = container_segment(&xml, "w:tblBorders", 0);
     assert!(
-        xml.contains(r#"<w:top w:val="double" w:sz="12" w:space="0" w:color="808080"/>"#),
-        "top 覆寫未落地；實際 xml={}",
-        xml_snippet(&xml, "w:tblBorders")
+        seg0.contains(r#"<w:top w:val="double" w:sz="12" w:space="0" w:color="808080"/>"#),
+        "top 覆寫未落地；實際 seg0={seg0}"
     );
     for keep in [
-        r#"<w:insideV w:val="dotted" w:sz="4" w:space="0" w:color="auto"/>"#,
-        r#"<w:bottom w:val="single" w:sz="4" w:space="0" w:color="auto"/>"#,
-        r#"<w:left w:val="single" w:sz="4" w:space="0" w:color="auto"/>"#,
+        // 以下四條逐字取自 fixtures/e_tblborder_probe.docx 表 0 原宣告
+        // （scripts/gen_e_tblborder_fixture.py TBL0）——未列方位零擾動。
+        r#"<w:left w:val="single" w:sz="8" w:space="0" w:color="auto"/>"#,
+        r#"<w:bottom w:val="none" w:sz="0" w:space="0" w:color="auto"/>"#,
+        r#"<w:insideH w:val="dashed" w:sz="12" w:space="0" w:color="0000FF"/>"#,
+        r#"<w:insideV w:val="none" w:sz="0" w:space="0" w:color="auto"/>"#,
     ] {
         assert!(
-            xml.contains(keep),
-            "未列方位必須原樣保留（容器重建零遺失）：缺 {keep}"
+            seg0.contains(keep),
+            "未列方位必須原樣保留（容器重建零遺失）：缺 {keep}；實際 seg0={seg0}"
+        );
+    }
+    // 被覆寫方位不得雙發（remove-then-append 的 remove 真生效），且原 top 宣告
+    // （紅 sz=16）在表 0 容器內零殘留。
+    assert_eq!(
+        seg0.matches("<w:top ").count(),
+        1,
+        "top 覆寫必為「取代」而非「附加」（容器內 top 恰 1 條）；seg0={seg0}"
+    );
+    assert!(
+        !seg0.contains(r#"<w:top w:val="single" w:sz="16""#),
+        "原 top 宣告（single sz=16）必須被取代、零殘留；seg0={seg0}"
+    );
+    // 表 1（未被本補丁觸碰）容器段必須逐字元原樣——防「全檔重建容器」擴散。
+    let seg1 = container_segment(&xml, "w:tblBorders", 1);
+    for keep in [
+        r#"<w:top w:val="none" w:sz="0" w:space="0" w:color="auto"/>"#,
+        r#"<w:insideH w:val="none" w:sz="0" w:space="0" w:color="auto"/>"#,
+        r#"<w:insideV w:val="none" w:sz="0" w:space="0" w:color="auto"/>"#,
+    ] {
+        assert!(
+            seg1.contains(keep),
+            "未觸碰的表 1 容器必須原樣；缺 {keep}；實際 seg1={seg1}"
         );
     }
     let diff = e2.roundtrip_check().expect("roundtrip_check 失敗");
@@ -555,11 +626,16 @@ fn e_lamp6_real_field_drives_rules_not_invented_ones() {
             "patch": {"border_pt": 3, "border_style": "single", "border_color": "FF0000"}
         }
     });
-    let op: Mutation = serde_json::from_value(json)
-        .expect("臆造欄 Mutation 必須可解析（serde 吞未知欄）");
-    e.apply_mutation(op).expect("臆造欄必須回 ok（serde 靜默吞）");
+    let op: Mutation =
+        serde_json::from_value(json).expect("臆造欄 Mutation 必須可解析（serde 吞未知欄）");
+    e.apply_mutation(op)
+        .expect("臆造欄必須回 ok（serde 靜默吞）");
     settle(&mut e);
-    assert_eq!(rules(&e, 0).len(), before, "臆造欄位必須零發射（U4 探針前提）");
+    assert_eq!(
+        rules(&e, 0).len(),
+        before,
+        "臆造欄位必須零發射（U4 探針前提）"
+    );
 
     // 真欄位：同一引擎實例送真補丁 ⇒ Rule 數必增（表 1 從 1 條變多條）。
     e.apply_mutation(Mutation::SetTableProps {
@@ -594,4 +670,30 @@ fn xml_snippet(xml: &str, tag: &str) -> String {
         }
         None => format!("<查無 {tag} 標籤>"),
     }
+}
+
+/// 抓第 `nth`（0-based）顆 `<tag>…</tag>` 容器段的**逐字元原文**（含標籤本體）。
+/// 限縮比對範圍用：整檔 `contains` 會被另一顆同名容器頂過＝假綠。
+fn container_segment(xml: &str, tag: &str, nth: usize) -> String {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    // 每次命中後游標必須越過整枚開標籤（`+ open.len()`）：只前移 1 字元會讓
+    // 下一輪在同一位置再命中同一顆 ⇒ 第 2 顆實得第 1 顆（本卡實跑踩過）。
+    let mut from = 0usize;
+    let mut start = 0usize;
+    for _ in 0..=nth {
+        let rel = xml[from..].find(&open).unwrap_or_else(|| {
+            panic!(
+                "第 {} 顆 {tag} 容器必須存在；xml_len={}",
+                nth + 1,
+                xml.len()
+            )
+        });
+        start = from + rel;
+        from = start + open.len();
+    }
+    let rel = xml[start..]
+        .find(close.as_str())
+        .unwrap_or_else(|| panic!("{tag} 容器必須閉合；start={start}"));
+    xml[start..start + rel + close.len()].to_string()
 }
