@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
-quire-odf = { path = "/home/jerry/projects/quire/.worktrees/t_72dc8bc8/core/odf" }
+quire-odf = { path = "<repo>/.worktrees/t_72dc8bc8/core/odf" }
 serde_json = "1"
 
 [profile.release]

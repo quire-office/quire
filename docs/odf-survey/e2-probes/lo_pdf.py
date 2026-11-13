@@ -3,7 +3,7 @@
 import pathlib, subprocess, sys, shutil, time, tempfile
 
 SOFFICE = pathlib.Path("/mnt/c/Program Files/LibreOffice/program/soffice.exe")
-REPO = pathlib.Path("/home/jerry/projects/quire/.worktrees/t_72dc8bc8")
+REPO = pathlib.Path("<repo>/.worktrees/t_72dc8bc8")
 OUT = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else pathlib.Path("lo_pdf")
 OUT.mkdir(parents=True, exist_ok=True)
 

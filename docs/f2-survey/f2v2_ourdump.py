@@ -3,7 +3,7 @@ import json
 import subprocess
 import sys
 
-CLI = "/home/jerry/projects/quire/.worktrees/t_ab254070/target/debug/quire-cli"
+CLI = "<repo>/.worktrees/t_ab254070/target/debug/quire-cli"
 ROOT = __import__("os").path.dirname(__file__).rsplit("/docs",1)[0] + "/"
 
 for rel in sys.argv[1:]:

@@ -3,7 +3,7 @@
 scripts/odt1129_axis_probe.py
 
 ODT 投影層多軸缺陷診斷探針（冪等，report-only）。
-依據 /home/jerry/projects/quire/.task-cards/agy-odt1129-diag-card.md 規格：
+依據 .task-cards/agy-odt1129-diag-card.md 規格：
 - 檔路徑一律由環境變數 ODT_SAMPLE_PATH 讀取；未設定即印出提示並正常結束。
 - 嚴格隱私保護：本腳本輸出絕不包含任何文件內文段落文字，僅輸出度量值（座標、計數、分數、樣式名）。
 - LibreOffice PDF 逐字座標一律使用 pymupdf rawdict。
@@ -28,7 +28,7 @@ def main():
         print(f"[錯誤] 檔案不存在: {odt_path}")
         sys.exit(1)
 
-    lo_pdf_path = os.environ.get("LO_PDF_PATH", "/tmp/odt1129-lo/user-odt-1120901.pdf")
+    lo_pdf_path = os.environ.get("LO_PDF_PATH", "/tmp/odt1129-lo/lo-export.pdf")
     has_lo_pdf = os.path.isfile(lo_pdf_path)
 
     print("================================================================================")

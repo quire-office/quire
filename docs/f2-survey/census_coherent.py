@@ -2,7 +2,7 @@
 # F2：單一口徑語料普查（同一片 part 集合同時算「a: 前綴」與「任意前綴」兩種計數）
 import os, re, zipfile, collections, json
 
-ROOT = "/home/jerry/projects/quire/corpus"
+ROOT = "<repo>/corpus"
 BODY = re.compile(r"^word/(document|header\d*|footer\d*|footnotes|endnotes|comments)\.xml$")
 NAMES = ["prstTxWarp", "wordArt", "prstGeom", "custGeom", "solidFill", "gradFill", "pattFill",
          "blipFill", "noFill", "ln", "effectLst", "effectDag", "glow", "softEdge", "reflection",
@@ -42,5 +42,5 @@ for dirpath, _d, files in os.walk(ROOT):
 out = {"docx_files": nfiles, "body_parts": nparts,
        "a_prefixed": dict(a_c), "any_prefixed": dict(any_c)}
 print(json.dumps(out, ensure_ascii=False, indent=1))
-with open("/home/jerry/.hermes/profiles/ow-render/cache/scratch/f2_census_coherent.json", "w") as f:
+with open("<hermes>/profiles/ow-render/cache/scratch/f2_census_coherent.json", "w") as f:
     json.dump(out, f, ensure_ascii=False, indent=1)

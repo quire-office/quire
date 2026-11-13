@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # F2 LO 真值：artistic_effects.docx 的 LO PDF 逐頁事實（繪製圖形/圖片/文字/非白像素）
 import sys, os, subprocess, glob
-sys.path.insert(0, "/home/jerry/projects/quire/.worktrees/t_ab254070/scripts")
+sys.path.insert(0, "<repo>/.worktrees/t_ab254070/scripts")
 import pymupdf
 
 PDF = "/mnt/c/Users/me/AppData/Local/Temp/quire-render-lab/ooxmlexport__artistic_effects.pdf"

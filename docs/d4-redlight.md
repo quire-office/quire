@@ -28,7 +28,7 @@
 
 ```text
 $ cargo test -p quire-engine --test d4_duotone_schemecolor
-   Compiling quire-engine v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-d4/core/engine-api)
+   Compiling quire-engine v0.1.0 (<repo>/.worktrees/agy-d4/core/engine-api)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
      Running tests/d4_duotone_schemecolor.rs (target/debug/deps/d4_duotone_schemecolor-967bb196b7e2a937)
 

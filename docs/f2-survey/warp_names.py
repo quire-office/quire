@@ -2,7 +2,7 @@
 # F2：全 corpus prstTxWarp/@prst 名稱分佈＋效果節點×檔案類型（warp 是否真變形）
 import os, re, zipfile, collections, json
 
-ROOT = "/home/jerry/projects/quire/corpus"
+ROOT = "<repo>/corpus"
 WARP = re.compile(r"<a:prstTxWarp[^>]*\bprst=\"([^\"]+)\"")
 GEOM = re.compile(r"<a:prstGeom[^>]*\bprst=\"([^\"]+)\"")
 BODY = re.compile(r"^word/(document|header\d*|footer\d*|footnotes|endnotes|comments)\.xml$")
@@ -48,7 +48,7 @@ out = {"body_parts_scanned": n,
        "geom_top": {k: {"count": v, "files": len(geom_files[k])} for k, v in geom_c.most_common(20)},
        "effect_body": dict(eff_c),
        "warp_nontriv_files": sorted(warp_nontriv_files)}
-with open("/home/jerry/.hermes/profiles/ow-render/cache/scratch/f2_warp_names.json", "w") as f:
+with open("<hermes>/profiles/ow-render/cache/scratch/f2_warp_names.json", "w") as f:
     json.dump(out, f, ensure_ascii=False, indent=1)
 print("本體 part 掃描數", n)
 print("\n== prstTxWarp/@prst 分佈（名稱: 次數/檔案數）==")

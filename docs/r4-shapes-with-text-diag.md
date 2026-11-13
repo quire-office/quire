@@ -252,7 +252,7 @@ git -C ~/projects/quire worktree add --detach $S/worktrees/cur  75d3648
 git -C ~/projects/quire worktree add --detach $S/worktrees/base fb06767
 ```
 
-`/home/jerry/.hermes/profiles/ow-qa/cache/scratch/r4/`
+`<hermes>/profiles/ow-qa/cache/scratch/r4/`
 - `step1_lo.py` — LO PDF 生成＋快取（`lo.pdf`/`lo_facts.json`）
 - `step3_sweep.py` — 全 commits 掃描（雙 lane，產 `scores/sweep.jsonl`）
 - `step5_backbisect.py` — 前追 bisect（`scores/back.jsonl`）

@@ -2,7 +2,7 @@
 # F2：找 corpus 內含非 rect prstGeom 的檔案清單（供零發射證據取樣）
 import os, re, zipfile, collections, json, subprocess
 
-ROOT = "/home/jerry/projects/quire/corpus"
+ROOT = "<repo>/corpus"
 GEOM = re.compile(r"<a:prstGeom[^>]*\bprst=\"([^\"]+)\"")
 BODY = re.compile(r"^word/(document|header\d*|footer\d*|footnotes|endnotes|comments)\.xml$")
 NONRECT = collections.defaultdict(list)

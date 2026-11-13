@@ -3,8 +3,8 @@
 > 卡：J11（色彩/圖片雙 0.0 歸因與面擴散診斷卡，report-only）。  
 > 執行分支：`agy/k11-colorimg-diag`（worktree 隔離環境，零碰引擎代碼）。  
 > LO 真值工具鏈：Windows `soffice.exe`（LibreOffice 25.8 基準，透過 WSL 暫存安全橋接）。  
-> 可重跑掃描腳本：[`scripts/j11_scan.py`](file:///home/jerry/projects/quire/.worktrees/agy-k11/scripts/j11_scan.py)（支援 `--seed 20261030 --n 30`）。  
-> 掃描原始數據：[`docs/j11-scan-results.json`](file:///home/jerry/projects/quire/.worktrees/agy-k11/docs/j11-scan-results.json) 與 [`docs/j11-scan-results.md`](file:///home/jerry/projects/quire/.worktrees/agy-k11/docs/j11-scan-results.md)。
+> 可重跑掃描腳本：[`scripts/j11_scan.py`](file://<repo>/.worktrees/agy-k11/scripts/j11_scan.py)（支援 `--seed 20261030 --n 30`）。  
+> 掃描原始數據：[`docs/j11-scan-results.json`](file://<repo>/.worktrees/agy-k11/docs/j11-scan-results.json) 與 [`docs/j11-scan-results.md`](file://<repo>/.worktrees/agy-k11/docs/j11-scan-results.md)。
 
 ---
 
@@ -226,7 +226,7 @@ flowchart TD
 
 ## 3. 面擴散掃描（n=30，seed 20261030）
 
-依抽樣口徑對 corpus 抽取 30 檔執行三軸度量（色分、圖分、真缺字），掃描工具為 [`scripts/j11_scan.py`](file:///home/jerry/projects/quire/.worktrees/agy-k11/scripts/j11_scan.py)，輸出結果儲存於 [`docs/j11-scan-results.json`](file:///home/jerry/projects/quire/.worktrees/agy-k11/docs/j11-scan-results.json)。
+依抽樣口徑對 corpus 抽取 30 檔執行三軸度量（色分、圖分、真缺字），掃描工具為 [`scripts/j11_scan.py`](file://<repo>/.worktrees/agy-k11/scripts/j11_scan.py)，輸出結果儲存於 [`docs/j11-scan-results.json`](file://<repo>/.worktrees/agy-k11/docs/j11-scan-results.json)。
 
 ### 3.1 異常判準定義
 - **真缺陷候選（True Defect Candidate）**：

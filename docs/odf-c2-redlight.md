@@ -2,7 +2,7 @@
 
 ## 測試環境
 - 執行指令：`cargo test -p quire-odf --test odf_container`
-- 工作目錄：`/home/jerry/projects/quire/.worktrees/agy-odfc2`
+- 工作目錄：`<repo>/.worktrees/agy-odfc2`
 - 分支：`agy/odf-c2`
 - 日期：2026-11-04
 

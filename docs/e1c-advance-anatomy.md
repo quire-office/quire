@@ -234,7 +234,7 @@ LO 兩環境抽出的行 **0 行含雙空格**（LO 折疊空白）。3 處共 6
 ## 8. 重現指令（全部本 run 實跑過）
 
 ```bash
-S=/home/jerry/.hermes/kanban/boards/quire/workspaces/t_ab6c5319
+S=<hermes>/kanban/boards/quire/workspaces/t_ab6c5319
 SCRATCH=$S /usr/bin/python3 $S/verify_e1c.py        # 三環境頁數/段行數/末頁行數
 SCRATCH=$S /usr/bin/python3 $S/anchor_env.py        # fontconfig 注入真 face ⇒ 定錨
 SCRATCH=$S /usr/bin/python3 $S/verify_band.py       # 逐行需求帶交集（三口徑）

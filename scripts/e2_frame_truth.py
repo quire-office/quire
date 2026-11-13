@@ -45,7 +45,7 @@ def main() -> int:
         d.close()
         out[docx] = recs
         print(docx, json.dumps(recs, ensure_ascii=False), flush=True)
-    pathlib.Path("/home/jerry/.hermes/profiles/ow-render/cache/scratch/e2_lo_frames.json").write_text(
+    pathlib.Path("<hermes>/profiles/ow-render/cache/scratch/e2_lo_frames.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     return 0
 

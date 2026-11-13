@@ -8,7 +8,7 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path("/home/jerry/projects/quire/.worktrees/t_f3acd271")
+ROOT = Path("<repo>/.worktrees/t_f3acd271")
 CHART_URI = "drawingml/2006/chart"
 KINDS = ["barChart", "lineChart", "pieChart", "areaChart", "scatterChart",
          "bubbleChart", "doughnutChart", "radarChart", "ofPieChart", "pie3DChart",

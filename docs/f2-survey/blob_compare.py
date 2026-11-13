@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # F2：我方彩色像素落點 vs LO 彩色連通域（同一 150dpi 網格），定 EMF icon 渲染色差
 import sys
-sys.path.insert(0, "/home/jerry/projects/quire/.worktrees/t_ab254070/scripts")
+sys.path.insert(0, "<repo>/.worktrees/t_ab254070/scripts")
 import numpy as np, pymupdf, collections
 import render_lab as RL
 
 PDF = "/mnt/c/Users/me/AppData/Local/Temp/quire-render-lab/ooxmlexport__artistic_effects.pdf"
-SVG = "/home/jerry/.hermes/profiles/ow-render/cache/scratch/f2_cur/artistic_effects-p0.svg"
+SVG = "<hermes>/profiles/ow-render/cache/scratch/f2_cur/artistic_effects-p0.svg"
 S = 150.0 / 72.0
 
 def blobs_pt(path):

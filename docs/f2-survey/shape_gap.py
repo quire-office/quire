@@ -2,7 +2,7 @@
 # F2：非 rect prstGeom 檔案的我方發射實況（是否退化為 rect／是否零發射）
 import subprocess, json, sys, os, re, zipfile
 
-WT = "/home/jerry/projects/quire/.worktrees/t_ab254070"
+WT = "<repo>/.worktrees/t_ab254070"
 CLI = os.path.join(WT, "target/debug/quire-cli")
 FILES = ["ooxmlexport/tdf113258.docx",              # ellipse
          "ooxmlimport/groupshape-fontname.docx",     # line
@@ -13,7 +13,7 @@ FILES = ["ooxmlexport/tdf113258.docx",              # ellipse
          "ooxmlexport/fdo80897.docx"]                # 唯一非 textNoShape warp（textTriangle）
 GEOM = re.compile(r'<a:prstGeom[^>]*\bprst="([^"]+)"')
 for rel in FILES:
-    p = "/home/jerry/projects/quire/corpus/" + rel
+    p = "<repo>/corpus/" + rel
     with zipfile.ZipFile(p) as z:
         geoms = []
         for nm in z.namelist():

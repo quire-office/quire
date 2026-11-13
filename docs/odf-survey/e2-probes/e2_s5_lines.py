@@ -3,8 +3,8 @@ import json, pathlib, re, subprocess
 from collections import Counter
 import pymupdf
 
-SCRATCH = pathlib.Path("/home/jerry/.hermes/profiles/ow-qa/cache/scratch/e2_odt")
-REPO = pathlib.Path("/home/jerry/projects/quire/.worktrees/t_72dc8bc8")
+SCRATCH = pathlib.Path("<hermes>/profiles/ow-qa/cache/scratch/e2_odt")
+REPO = pathlib.Path("<repo>/.worktrees/t_72dc8bc8")
 WS = re.compile(r"\s+")
 rel = "corpus-odt/lo_out/lo__ooxmlexport__tdf124637_sectionMargin.odt"
 rows = json.loads(subprocess.run([str(SCRATCH / "probe_target/release/odtflow"), str(REPO / rel)],

@@ -22,7 +22,7 @@
 
 ```text
 $ cargo test -p quire-engine --test d8_bottom_flow
-   Compiling quire-engine v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-d8/core/engine-api)
+   Compiling quire-engine v0.1.0 (<repo>/.worktrees/agy-d8/core/engine-api)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.93s
      Running tests/d8_bottom_flow.rs (target/debug/deps/d8_bottom_flow-bd6647046a47bf42)
 

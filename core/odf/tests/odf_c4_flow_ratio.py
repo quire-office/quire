@@ -14,7 +14,7 @@ LO PDF 真值＝c4_lo_pdf/index.json（LO 24.8 --convert-to pdf）。
 import json, pathlib, re, statistics, subprocess
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
-SCR = pathlib.Path("/home/jerry/.hermes/profiles/ow-core/cache/scratch")
+SCR = pathlib.Path("<hermes>/profiles/ow-core/cache/scratch")
 CLI = REPO / "target/debug/quire-cli"
 WS = re.compile(r"\s+")
 

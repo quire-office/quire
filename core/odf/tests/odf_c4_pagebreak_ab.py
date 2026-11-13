@@ -4,15 +4,15 @@
 
 我方 page_breaks[i]＝第 i 個斷點前的段落索引，頁數＝len(page_breaks)+1。
 口徑：逐檔比 LO PDF 頁數；計「|我方頁數 − LO 頁數| ≤ 1」的檔數（頁首頁尾未渲染，
-容 1 頁誤差）。main 態用 /home/jerry/projects/quire/target/debug/quire-cli。
+容 1 頁誤差）。main 態用 <repo>/target/debug/quire-cli。
 """
 import json, pathlib, subprocess, pymupdf
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
-MAIN = pathlib.Path("/home/jerry/projects/quire/target/debug/quire-cli")
+MAIN = pathlib.Path("<repo>/target/debug/quire-cli")
 C4 = REPO / "target/debug/quire-cli"
 idx = json.loads(pathlib.Path(
-    "/home/jerry/.hermes/profiles/ow-core/cache/scratch/c4_lo_pdf/index.json").read_text())
+    "<hermes>/profiles/ow-core/cache/scratch/c4_lo_pdf/index.json").read_text())
 manifest = json.loads((REPO / "corpus-odt/manifest.json").read_text())
 
 rows = []

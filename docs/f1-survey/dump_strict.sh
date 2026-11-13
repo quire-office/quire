@@ -1,7 +1,7 @@
 #!/bin/sh
 # F1 發射對照：strict.docx 我方刻度 vs LO 真值（LO: 0,0.5,1,...,3.5 共 8 支）。
 set -e
-cd /home/jerry/projects/quire/.worktrees/t_f3acd271
+cd <repo>/.worktrees/t_f3acd271
 cargo run -q -p quire-cli -- dump corpus/ooxmlexport/strict.docx \
   | /usr/bin/python3 -c '
 import sys, json

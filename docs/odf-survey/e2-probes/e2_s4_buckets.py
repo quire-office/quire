@@ -4,8 +4,8 @@ from collections import Counter
 import xml.etree.ElementTree as ET
 import pymupdf
 
-SCRATCH = pathlib.Path("/home/jerry/.hermes/profiles/ow-qa/cache/scratch/e2_odt")
-REPO = pathlib.Path("/home/jerry/projects/quire/.worktrees/t_72dc8bc8")
+SCRATCH = pathlib.Path("<hermes>/profiles/ow-qa/cache/scratch/e2_odt")
+REPO = pathlib.Path("<repo>/.worktrees/t_72dc8bc8")
 MATH = "{http://www.w3.org/1998/Math/MathML}"
 WS = re.compile(r"\s+")
 rel = "corpus-odt/lo_out/lo__ooxmlexport__strict.odt"

@@ -11,8 +11,8 @@ $ cargo fmt --all --check
 ### 2. `cargo clippy --workspace --all-targets -- -D warnings`
 ```
 $ cargo clippy --workspace --all-targets -- -D warnings
-    Checking quire-engine v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-r31/core/engine-api)
-    Checking quire-cli v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-r31/shells/native)
+    Checking quire-engine v0.1.0 (<repo>/.worktrees/agy-r31/core/engine-api)
+    Checking quire-cli v0.1.0 (<repo>/.worktrees/agy-r31/shells/native)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.20s
 （零警告，通過）
 ```
@@ -49,8 +49,8 @@ roundtrip --check: 399 檔（另有 1 檔隔離不計紅），byte-identical 399
 ### 6. `cargo check --target wasm32-unknown-unknown -p quire-ooxml -p quire-layout -p quire-render-trait -p quire-crdt -p quire-engine`
 ```
 $ cargo check --target wasm32-unknown-unknown -p quire-ooxml -p quire-layout -p quire-render-trait -p quire-crdt -p quire-engine
-    Checking quire-ooxml v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-r31/core/ooxml)
-    Checking quire-engine v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-r31/core/engine-api)
+    Checking quire-ooxml v0.1.0 (<repo>/.worktrees/agy-r31/core/ooxml)
+    Checking quire-engine v0.1.0 (<repo>/.worktrees/agy-r31/core/engine-api)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.64s
 ```
 

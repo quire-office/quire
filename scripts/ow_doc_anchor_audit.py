@@ -70,7 +70,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('ref')
     ap.add_argument('doc')
-    ap.add_argument('--repo', default='/home/jerry/projects/quire')
+    ap.add_argument('--repo', default='.',
+                    help='要被稽核的 git repo 路徑（預設目前目錄；評 worktree 交付時帶 --repo <worktree>）')
     a = ap.parse_args()
 
     doc = sh(a.repo, 'show', f'{a.ref}:{a.doc}')

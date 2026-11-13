@@ -23,7 +23,7 @@
 
 ```text
 $ cargo test -p quire-engine --test d9_frame_overlap
-   Compiling quire-engine v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-d9/core/engine-api)
+   Compiling quire-engine v0.1.0 (<repo>/.worktrees/agy-d9/core/engine-api)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
      Running tests/d9_frame_overlap.rs (target/debug/deps/d9_frame_overlap-31abdb4ae07d7b11)
 

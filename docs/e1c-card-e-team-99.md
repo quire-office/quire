@@ -126,7 +126,7 @@ scratch 側同口徑復算（`selfcheck_breaks.py`，y-bucket 0.5pt 聚行＝考
 ## 7. 重現指令（本 run 全部實跑）
 
 ```bash
-S=/home/jerry/.hermes/kanban/boards/quire/workspaces/t_0e390551
+S=<hermes>/kanban/boards/quire/workspaces/t_0e390551
 SCRATCH=$S /usr/bin/python3 $S/selfcheck_breaks.py     # 我方斷行 vs 考卷常數（--CLI 可換 binary）
 SCRATCH=$S /usr/bin/python3 $S/verify_vs_lo.py          # 定錨 LO 重轉 + rawdict 9/9 復驗
 SCRATCH=$S /usr/bin/python3 $S/probe_mechanism.py       # 逐行覆寫碼點 + 需求帶

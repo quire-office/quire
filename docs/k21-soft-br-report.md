@@ -2,7 +2,7 @@
 
 - **分支**：`agy/k21-soft-br`
 - **基線**：main `23e98d9`
-- **工作目錄**：`/home/jerry/projects/quire/.worktrees/agy-k21`
+- **工作目錄**：`<repo>/.worktrees/agy-k21`
 - **時間**：2026-10-31
 
 ---
@@ -164,7 +164,7 @@ python3 scripts/render_lab.py corpus/ooxmlexport/fdo68607.docx --out /tmp/k21-la
 
 ## 7. 完整閘門逐條執行結果
 
-在 `/home/jerry/projects/quire/.worktrees/agy-k21` 執行完整閘門：
+在 `<repo>/.worktrees/agy-k21` 執行完整閘門：
 
 1. `cargo fmt --all --check`：
    - 結果：通過（代碼格式完全合規）。

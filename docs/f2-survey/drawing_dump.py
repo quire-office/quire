@@ -2,7 +2,7 @@
 # F2 解剖：artistic_effects.docx 四個 w:drawing 區塊原始 XML dump
 import re, os
 
-D = "/home/jerry/.hermes/profiles/ow-render/cache/scratch/f2ae3"
+D = "<hermes>/profiles/ow-render/cache/scratch/f2ae3"
 x = open(os.path.join(D, "word/document.xml"), encoding="utf-8").read()
 
 print("== media ==")

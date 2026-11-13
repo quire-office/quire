@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # F2：tdf108545（OLE icon 候選檔）LO 真值——確認是否「LO 真有圖形、我方零發射」
 import sys, glob
-sys.path.insert(0, "/home/jerry/projects/quire/.worktrees/t_ab254070/scripts")
+sys.path.insert(0, "<repo>/.worktrees/t_ab254070/scripts")
 import pymupdf
 
 cands = glob.glob("/mnt/c/Users/me/AppData/Local/Temp/quire-render-lab/*tdf108545*.pdf")

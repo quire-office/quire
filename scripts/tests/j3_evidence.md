@@ -59,10 +59,10 @@ SELFTEST ALL-PASS
   PASS test_kill_own_lo_safe_without_powershell_or_on_error
 （收場：清掉本輪殘留 LibreOffice 進程 3 個）
   PASS test_kill_own_lo_targets_only_own_profile
-→ /home/jerry/.hermes/cache/scratch/tmpqmx09abp/a.docx
+→ <hermes>/cache/scratch/tmpqmx09abp/a.docx
    ✗ LO 轉換失敗（記 lo_fail，繼續）
 
-報告 → /home/jerry/.hermes/cache/scratch/tmpqmx09abp/out/report.md
+報告 → <hermes>/cache/scratch/tmpqmx09abp/out/report.md
   PASS test_main_registers_kill_own_lo_before_first_lo_call
   PASS test_report_has_j3_columns_and_header_total
   PASS test_tokens_cjk_char_level_and_bullets

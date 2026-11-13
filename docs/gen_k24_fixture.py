@@ -77,7 +77,7 @@ THEME = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst>
 </a:fmtScheme></a:themeElements></a:theme>"""
 
-out = "/home/jerry/projects/quire/.worktrees/t_02d9e0d8/core/engine-api/tests/fixtures/k24_minimal_style_fill.docx"
+out = "<repo>/.worktrees/t_02d9e0d8/core/engine-api/tests/fixtures/k24_minimal_style_fill.docx"
 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     z.writestr("[Content_Types].xml", CT)
     z.writestr("_rels/.rels", RELS)

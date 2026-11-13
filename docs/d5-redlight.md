@@ -18,7 +18,7 @@
 
 ```text
 $ cargo test --package quire-engine --test d5_tabs_runs
-   Compiling quire-engine v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-d5/core/engine-api)
+   Compiling quire-engine v0.1.0 (<repo>/.worktrees/agy-d5/core/engine-api)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
      Running tests/d5_tabs_runs.rs (target/debug/deps/d5_tabs_runs-48b3ff214e0f85c0)
 
@@ -182,8 +182,8 @@ test result: FAILED. 5 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; 
 
 ```text
 $ cargo test --package quire-engine --test d5_tabs_runs
-   Compiling quire-ooxml v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-d5/core/ooxml)
-   Compiling quire-engine v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-d5/core/engine-api)
+   Compiling quire-ooxml v0.1.0 (<repo>/.worktrees/agy-d5/core/ooxml)
+   Compiling quire-engine v0.1.0 (<repo>/.worktrees/agy-d5/core/engine-api)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 1.47s
      Running tests/d5_tabs_runs.rs (target/debug/deps/d5_tabs_runs-48b3ff214e0f85c0)
 

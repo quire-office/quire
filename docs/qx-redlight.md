@@ -45,7 +45,7 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 編譯輸出快照：
 ```
    Compiling quick-xml v0.41.0
-   Compiling quire-ooxml v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-qx/core/ooxml)
+   Compiling quire-ooxml v0.1.0 (<repo>/.worktrees/agy-qx/core/ooxml)
 warning: use of deprecated method `quick_xml::events::attributes::Attribute::<'a>::unescape_value`: use `Self::normalized_value()`
     --> core/ooxml/src/drawing.rs:3270:15
      |

@@ -22,7 +22,7 @@
 
 ```text
 $ cargo test --test d7_residual
-   Compiling quire-engine v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-d7/core/engine-api)
+   Compiling quire-engine v0.1.0 (<repo>/.worktrees/agy-d7/core/engine-api)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
      Running tests/d7_residual.rs (target/debug/deps/d7_residual-9be8a407c45bc668)
 

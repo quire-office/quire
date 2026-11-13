@@ -8,7 +8,7 @@
 執行命令：`cargo test -p quire-engine --test f3_txbx_picture`
 
 ```text
-   Compiling quire-engine v0.1.0 (/home/jerry/projects/quire/.worktrees/agy-f3-txbx-picture/core/engine-api)
+   Compiling quire-engine v0.1.0 (<repo>/.worktrees/agy-f3-txbx-picture/core/engine-api)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
      Running tests/f3_txbx_picture.rs (target/debug/deps/f3_txbx_picture-a957826eba950ec3)
 

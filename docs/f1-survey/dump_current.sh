@@ -1,7 +1,7 @@
 #!/bin/sh
 # F1 現況實抓：chart-size 我方發射清單逐項（定位口徑的判讀依據）。
 set -e
-cd /home/jerry/projects/quire/.worktrees/t_f3acd271
+cd <repo>/.worktrees/t_f3acd271
 cargo run -q -p quire-cli -- dump corpus/ooxmlexport/chart-size.docx \
   | /usr/bin/python3 -c '
 import sys, json

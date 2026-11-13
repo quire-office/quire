@@ -23,7 +23,7 @@
 
 ### 色分口徑聲明（重要，先讀）
 
-10/23 基線**沒有色軸**——`score_color` 是 10/29 c52f9da（J3）才問世的度量。本報告的「色分舊值」不是 10/23 儀表板數字（當時不存在），而是**同一支本輪 LO PDF × 10/23 我方 SVG**（`/home/jerry/projects/quire/out/lo-scoreboard/quire/`，目錄時間戳 2026-10-23 原物）用現行 `score_color` 重測（探針 `scripts/p2_scoreboard_color_probe.py`，直接 import render_lab，零引擎/零 render_lab.py 觸碰）。這是在「LO 端與度量端逐位元組同尺」前提下能做到的最大可比重構：**A/B 差值純粹是我方引擎漂移**，不含度量與 LO 干擾項。內容/版面兩軸舊值直接取 10/23 `scores.jsonl` 原值；其間口徑改動（10/25 M2 雙空臂）對本樣本 `changed 0/25` 已有 m2-scorecard-recount §1 同 facts 雙跑實證，J4（10/30）只動色/圖/真缺字軸不觸 content/layout key——兩軸 A/B 口徑穩定。
+10/23 基線**沒有色軸**——`score_color` 是 10/29 c52f9da（J3）才問世的度量。本報告的「色分舊值」不是 10/23 儀表板數字（當時不存在），而是**同一支本輪 LO PDF × 10/23 我方 SVG**（`<repo>/out/lo-scoreboard/quire/`，目錄時間戳 2026-10-23 原物）用現行 `score_color` 重測（探針 `scripts/p2_scoreboard_color_probe.py`，直接 import render_lab，零引擎/零 render_lab.py 觸碰）。這是在「LO 端與度量端逐位元組同尺」前提下能做到的最大可比重構：**A/B 差值純粹是我方引擎漂移**，不含度量與 LO 干擾項。內容/版面兩軸舊值直接取 10/23 `scores.jsonl` 原值；其間口徑改動（10/25 M2 雙空臂）對本樣本 `changed 0/25` 已有 m2-scorecard-recount §1 同 facts 雙跑實證，J4（10/30）只動色/圖/真缺字軸不觸 content/layout key——兩軸 A/B 口徑穩定。
 
 ## 1. 分層三軸：新值 vs 10/23 舊值
 

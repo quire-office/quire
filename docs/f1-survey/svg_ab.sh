@@ -3,7 +3,7 @@
 # （＝本卡前的舊行為）。只有含圖表的檔案允許產生位元組差異。
 # 用法：sh docs/f1-survey/svg_ab.sh
 set -e
-cd /home/jerry/projects/quire/.worktrees/t_f3acd271
+cd <repo>/.worktrees/t_f3acd271
 # 清單來自 corpus_survey.py 實抓（docx 是 zip，grep 對 compressed stream 無效）
 FILES=$(/usr/bin/python3 -c "
 import json

@@ -6,7 +6,7 @@
 import re
 import zipfile
 
-ROOT = "/home/jerry/projects/quire/.worktrees/t_ab254070/corpus/"
+ROOT = "<repo>/.worktrees/t_ab254070/corpus/"
 BODY = re.compile(r"word/(document|header\d*|footer\d*|footnotes|endnotes|comments)\.xml$")
 
 TARGETS = [

@@ -10,7 +10,7 @@ import os, sys, subprocess, json, re, pathlib, time, shutil
 try:
     import pymupdf
 except ImportError:
-    _cand = "/home/jerry/.hermes/tools/python-3.14.7+20260901-linux-x64/bin/python3"
+    _cand = "<hermes>/tools/python-3.14.7+20260901-linux-x64/bin/python3"
     if os.path.exists(_cand) and sys.executable != _cand:
         os.execv(_cand, [_cand] + sys.argv)
     sys.exit("需要 pymupdf")

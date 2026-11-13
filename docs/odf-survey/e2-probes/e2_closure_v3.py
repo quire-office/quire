@@ -9,8 +9,8 @@ from collections import Counter
 import xml.etree.ElementTree as ET
 import pymupdf
 
-SCRATCH = pathlib.Path("/home/jerry/.hermes/profiles/ow-qa/cache/scratch/e2_odt")
-REPO = pathlib.Path("/home/jerry/projects/quire/.worktrees/t_72dc8bc8")
+SCRATCH = pathlib.Path("<hermes>/profiles/ow-qa/cache/scratch/e2_odt")
+REPO = pathlib.Path("<repo>/.worktrees/t_72dc8bc8")
 TXT = "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}"
 SVG = "{urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0}"
 MATH = "{http://www.w3.org/1998/Math/MathML}"

@@ -19,7 +19,7 @@
 
 ## 1. 目標檔解剖（實拆 `word/document.xml`，7,204 bytes）
 
-來源：`/home/jerry/.hermes/profiles/ow-render/cache/scratch/f2_drawing_dump.py`（zipfile 解包後逐區塊 dump）。
+來源：`<hermes>/profiles/ow-render/cache/scratch/f2_drawing_dump.py`（zipfile 解包後逐區塊 dump）。
 
 | 節點 | 實測計數 | 卡面假設 |
 |---|---|---|
@@ -219,7 +219,7 @@ x 軸逐位對齊、寬高逐位對齊，唯 y 單向偏低，且與 E2b/E2c 直
 - J3 逐項復算：`f2_img_axis_cause.py`（import `render_lab` 直呼 `_sat_hue`/`_label`/`image_blobs`/`score_image`/`score_color`）
 - 語料普查：`f2_census_coherent.py`（雙口徑）、`f2_warp_names.py`（warp/geom 名稱分佈）、`f2_geom_files.py`（非 rect 形狀檔案清單）、`f2_shape_gap.py`（非 rect 檔我方發射實況）
 - EMF 記錄流：`f2_emf_hex.py`（記錄型別清單 ＋ type 114 欄位實拆）
-- 所有探針在 `/home/jerry/.hermes/profiles/ow-render/cache/scratch/`（scratch 24h 回收，關鍵數據已固化進本報告）
+- 所有探針在 `<hermes>/profiles/ow-render/cache/scratch/`（scratch 24h 回收，關鍵數據已固化進本報告）
 
 ## 8. 鐵律遵事
 
