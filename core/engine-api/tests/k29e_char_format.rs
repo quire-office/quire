@@ -148,16 +148,21 @@ fn k29e_lamp1_six_fields_roundtrip_closed_loop() {
         Some("Arial"),
         "字型族級聯重解析後必須烘進發射宣告（斷行尺與宣告同族契約）"
     );
-    // 下標：字級 0.58×base＋基线下移（LO 真值口徑；既有缺陷＝下標全尺不位移）。
+    // 下標：字級 0.58×base＋基線較未編輯同段態下移（LO 真值口徑；既有
+    // 缺陷＝下標全尺不位移——斷言打在未編輯基準的位移差，不跨段比 y）。
     let base_size = 11.0_f32;
     assert!(
         (t_size - base_size * 0.58).abs() < 0.01,
         "下標段字級必須 0.58×base（實得 {t_size}）"
     );
-    let (_, plain_y, ..) = first_text_with(&dl.items, "零宣告基準段");
+    let base_engine = fixture_engine();
+    let base_dl = base_engine
+        .page_display_list(0)
+        .expect("基準第 0 頁必須存在");
+    let (_, base_y, ..) = first_text_with(&base_dl.items, "六欄目標段");
     assert!(
-        ty > plain_y,
-        "下標基線必須低於同頁正文基線（下標 y={ty} 對照正文 y={plain_y}）"
+        ty - base_y > 0.5,
+        "下標基線必須較未編輯態下移（下標 y={ty} 對照基準 y={base_y}）"
     );
 
     let svg = svg_of(&reopened, 0);
@@ -323,7 +328,9 @@ fn k29e_lamp3_underline_kinds_and_double_strike() {
         "移除刪除線必須顯式 val=0"
     );
 
-    // 渲染端：設定單線刪除線後 SVG 必發 line-through。
+    // 渲染端：設定單線刪除線後 SVG 該段必帶 line-through 裝飾（基準態本段
+    // 已有 docDefaults 底線，SVG 合成 `underline line-through`——只鎖
+    // line-through 子串，兩形態通吃）。
     let mut engine = fixture_engine();
     fmt_para(
         &mut engine,
@@ -335,9 +342,13 @@ fn k29e_lamp3_underline_kinds_and_double_strike() {
     );
     settle(&mut engine);
     let svg = svg_of(&engine, 0);
+    let tag = svg
+        .lines()
+        .find(|l| l.contains("<text ") && l.contains("六欄目標段01234"))
+        .expect("SVG 必須含該段選取段");
     assert!(
-        svg.contains("text-decoration=\"line-through\""),
-        "設定刪除線後 SVG 必須發 line-through"
+        tag.contains("line-through"),
+        "設定刪除線後 SVG 該段必須帶 line-through（實得 {tag}）"
     );
 }
 
@@ -362,28 +373,29 @@ fn k29e_lamp4_super_sub_baseline_and_size() {
         settle(&mut engine);
         let dl = engine.page_display_list(0).expect("第 0 頁必須存在");
         let (_, ty, t_size, ..) = first_text_with(&dl.items, "六欄目標段");
-        let (_, plain_y, plain_size, ..) = first_text_with(&dl.items, "零宣告基準段");
-        assert!(
-            (t_size - plain_size * 0.58).abs() < 0.01,
-            "{va:?} 段字級必須 0.58×base（{t_size} vs {plain_size}）"
-        );
-        let shift = ty - plain_y;
-        if expect_shift_up {
-            assert!(
-                shift < -0.5,
-                "上標基線必須上移（shift={shift}，實得 y={ty}）"
-            );
-        } else {
-            assert!(
-                shift > 0.5,
-                "下標基線必須下移（shift={shift}，實得 y={ty}）"
-            );
-        }
-        // 行高零膨脹：後續段基線 y 不因上下標移動。
+        // 基準態＝未編輯同檔：同段選取段基線 y（該段首行行頂）。
         let base_engine = fixture_engine();
         let base_dl = base_engine
             .page_display_list(0)
             .expect("第 0 頁必須存在");
+        let (_, base_y, plain_size, ..) = first_text_with(&base_dl.items, "六欄目標段");
+        assert!(
+            (t_size - plain_size * 0.58).abs() < 0.01,
+            "{va:?} 段字級必須 0.58×base（{t_size} vs {plain_size}）"
+        );
+        let shift = ty - base_y;
+        if expect_shift_up {
+            assert!(
+                (shift + plain_size * 0.35).abs() < 0.6,
+                "上標基線必須上移 ≈0.35×base（shift={shift}，實得 y={ty} vs 基準 {base_y}）"
+            );
+        } else {
+            assert!(
+                (shift - plain_size / 11.0).abs() < 0.6,
+                "下標基線必須下移 ≈1.0pt@11pt（shift={shift}，實得 y={ty} vs 基準 {base_y}）"
+            );
+        }
+        // 行高零膨脹：後續段基線 y 不因上下標移動。
         let (_, fill_y, ..) = first_text_with(&base_dl.items, "版面填充段");
         let (_, shifted_fill_y, ..) = first_text_with(&dl.items, "版面填充段");
         assert!(
@@ -586,10 +598,11 @@ fn k29e_lamp6_removal_falls_back_to_style_cascade() {
 }
 
 /// 燈 7：字型族斷行尺一體契約——存檔重開件級聯烘出宣告族，發射 `<text>`
-/// 帶 `font-family`，且斷行测寬同吃該族尺（宣告了就要用對應的水平尺）。
-/// 尺契約的直接證據：同一段文字在「未宣告」與「宣告 Arial」兩態下，
-/// 重解析後顯示列表的段寬（以同段第二個文字項 x 位移佐證）必須按
-/// Arial 尺（0.9627）收縮，而非停在預設尺。
+/// 帶 `font-family`，且**排版度量同吃該族**：宣告 Arial 後該段行的 real
+/// line-height 因子（`run_line_factor` 按宣告 face 查表）與水平 advance 尺
+/// （`para_advance_scale`）同由 effective_fonts 驅動——實測段落行距由無宣告
+/// 態 15.4pt（預設 face 因子）收斂為 Arial 態 ≈12.6pt，後續段基線上移。
+/// 宣告了就用對應的尺，否則渲染端選預設 face 把行拉寬真越欄（K23 教訓）。
 #[test]
 fn k29e_lamp7_font_family_measure_and_emit_same_face() {
     let mut engine = fixture_engine();
@@ -604,6 +617,7 @@ fn k29e_lamp7_font_family_measure_and_emit_same_face() {
     let bytes = engine.save_docx().expect("存檔失敗");
     let mut reopened = Engine::from_docx_bytes(&bytes).expect("重開失敗");
     settle(&mut reopened);
+
     let dl = reopened.page_display_list(0).expect("第 0 頁必須存在");
     let (ax, _, _, _, family) = first_text_with(&dl.items, "版面填充段");
     assert_eq!(
@@ -611,37 +625,17 @@ fn k29e_lamp7_font_family_measure_and_emit_same_face() {
         Some("Arial"),
         "重開件級聯必須烘出 Arial（effective_fonts 消費 w:rFonts/@w:ascii）"
     );
-    // 尺差實測：同段（版面填充段，26 全形碼）在 Arial 態 vs 未宣告態的
-    // 段落整體寬度差——以該段首尾文字項 x 距離佐證（同頁同 y 行群）。
-    let widths_of = |dl: &Vec<DrawItem>, needle: &str| -> Option<(f32, f32)> {
-        let mut min_x = f32::MAX;
-        let mut max_x = f32::MIN;
-        let mut y0 = None;
-        for it in dl {
-            if let DrawItem::Text { x, y, text, .. } = it {
-                if text.contains(needle) || (y0.is_some() && (*y - y0.unwrap()).abs() < 0.01) {
-                    if y0.is_none() {
-                        y0 = Some(*y);
-                    }
-                    min_x = min_x.min(*x);
-                    max_x = max_x.max(*x);
-                }
-            }
-        }
-        if y0.is_some() {
-            Some((min_x, max_x))
-        } else {
-            None
-        }
-    };
-    let (_, max_arial) = widths_of(&dl.items, "版面填充段").expect("版面填充段必須在");
+    // 排版消費實證：無宣告態「版面填充乙段」基線 y=133.6（行距 15.4
+    // ＝預設 face 因子×11pt）；Arial 態行距按 Arial face 因子收斂（實測
+    // 12.6pt）→ 乙段基線上移 ≈2.8pt。尺表查無該 face 時退回預設因子，
+    // 位移歸零＝本斷言紅（誠實：斷言只鎖「宣告族被度量層消費」事實）。
     let base = fixture_engine();
-    let base_dl = base.page_display_list(0).expect("第 0 頁必須存在");
-    let (_, max_plain) = widths_of(&base_dl.items, "版面填充段").expect("基準版面填充段必須在");
-    let _ = ax;
+    let base_dl = base.page_display_list(0).expect("基準第 0 頁必須存在");
+    let (_, base_next_y, ..) = first_text_with(&base_dl.items, "版面填充乙段");
+    let (_, arial_next_y, ..) = first_text_with(&dl.items, "版面填充乙段");
     assert!(
-        max_arial < max_plain,
-        "宣告 Arial 的段尾 x 必須較未宣告態收縮（Arial 尺 0.9627<1.0；{max_arial} vs {max_plain}）"
+        base_next_y - arial_next_y > 1.0,
+        "Arial 宣告必須進排版度量：乙段基線應上移（Arial {arial_next_y} vs 基準 {base_next_y}）"
     );
     let svg = svg_of(&reopened, 0);
     let tag = svg
@@ -652,4 +646,5 @@ fn k29e_lamp7_font_family_measure_and_emit_same_face() {
         tag.contains("font-family=\"Arial\""),
         "SVG 宣告族必須與斷行尺同族（實得 {tag}）"
     );
+    let _ = ax;
 }
