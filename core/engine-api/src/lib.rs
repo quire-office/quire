@@ -62,11 +62,14 @@ pub use mutation::{
     HfSlotKind, InsertSide, InverseMutation, IrreversibleReason, ListAction, Mutation,
     MutationError, MutationOutcome, NotePropsPatch, PageOrientation, ParaPropsPatch,
     PartLifecycleInverse, ReversibilityLevel, RowPropsPatch, RunDirectPatch, SectionColsPatch,
-    SectionPropsPatch, SectionStartKind, SemanticInverseOp, StyleType, SubDocTarget, TablePath,
-    TablePropsPatch, UndoEntry, VMergeState, WrapModeSpec, XmlBytePatch, XmlReversePatch,
+    SectionPropsPatch, SectionStartKind, SemanticInverseOp, StrikeKind, StyleType, SubDocTarget,
+    TablePath, TablePropsPatch, UnderlineKind, UndoEntry, VMergeState, WrapModeSpec, XmlBytePatch,
+    XmlReversePatch,
 };
 pub use quire_ooxml::diff_untouched;
-pub use quire_ooxml::{NoteKind2, NoteNumberFormat, NotePos, NoteRestart};
+// K29e：上下標型別 re-export——`RunDirectPatch::vert_align` 直接沿用級聯層
+// [`quire_ooxml::VertAlign`]（單一真值源），外殼與考卷經本 crate 取用。
+pub use quire_ooxml::{NoteKind2, NoteNumberFormat, NotePos, NoteRestart, VertAlign};
 #[derive(Error, Debug)]
 pub enum EngineError {
     #[error(transparent)]
@@ -6196,14 +6199,25 @@ fn emit_line_run_items(
     {
         let seg_text = &line.text[byte_of(rel_s)..byte_of(rel_e)];
         let base_seg_size = run_size.unwrap_or(size_pt);
-        let is_superscript = matches!(vert_align, Some(quire_ooxml::VertAlign::Superscript));
-        let seg_size = if is_superscript {
+        // K29e 上下標發射契約（LO 25.8 Linux 真值探針 2026-11-13，
+        // docs/k29e-redlight.md §2）：上/下標字級 0.582×base（11pt→6.4pt
+        // 實測 0.5818，與既有上標常數 0.58 同尺，不动上標臂保零回退）；
+        // 位移只動基線 y——上標 −0.35×base（既有臂）、下標 +1.0pt@11pt
+        // （實測基線 107.55→108.55＝+0.0909×base，新臂）。**行高不膨脹**：
+        // LO 真值下 sup/sub 行的 auto 行距 pitch 與純正文行逐行全等
+        // （12.65pt），layout 側 run_pitch 吃 base 字級即正確；卡面
+        // 「上下標改行高」前提經 LO 實測推翻，更正記考卷檔頭與 redlight 文。
+        let is_super = matches!(vert_align, Some(quire_ooxml::VertAlign::Superscript));
+        let is_sub = matches!(vert_align, Some(quire_ooxml::VertAlign::Subscript));
+        let seg_size = if is_super || is_sub {
             base_seg_size * 0.58
         } else {
             base_seg_size
         };
-        let seg_y = if is_superscript {
+        let seg_y = if is_super {
             y - base_seg_size * 0.35
+        } else if is_sub {
+            y + base_seg_size * (1.0 / 11.0)
         } else {
             y
         };

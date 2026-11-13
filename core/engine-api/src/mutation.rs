@@ -65,7 +65,59 @@ pub enum BreakKind {
     Tab,
 }
 
-/// 字元級直接格式覆寫（K29b／M2.1）：`None`＝保持原宣告，`Some`＝明確設定。
+/// 底線樣式（K29e；ECMA-376 §17.3.2.41 `w:u/@w:val` 之 ST_UnderlineValues 子集）。
+/// `None` 變體＝明確關閉底線（寫出 `<w:u w:val="none"/>`——不是「不碰」；
+/// 「不碰」是欄位級 `Option::None`，見 [`RunDirectPatch::underline`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UnderlineKind {
+    /// `single`：單條底線。
+    Single,
+    /// `double`：雙條底線。
+    Double,
+    /// `dotted`：點狀底線。
+    Dotted,
+    /// `dashed`：虛線底線（ECMA 枚舉名 `dashed`；Word 相容讀取端也吃 `dash`）。
+    Dashed,
+    /// `none`：明確關閉（級聯兜底不得再補上底線）。
+    None,
+}
+
+impl UnderlineKind {
+    /// `w:u/@w:val` 字面值（ECMA-376 ST_UnderlineValues）。
+    fn as_u_val(self) -> &'static str {
+        match self {
+            UnderlineKind::Single => "single",
+            UnderlineKind::Double => "double",
+            UnderlineKind::Dotted => "dotted",
+            UnderlineKind::Dashed => "dashed",
+            UnderlineKind::None => "none",
+        }
+    }
+}
+
+/// 刪除線樣式（K29e；ECMA-376 §17.3.2.21 `w:strike` ＋ §17.3.2.11 `w:dstrike`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StrikeKind {
+    /// 單線刪除線（`<w:strike/>`）。
+    Single,
+    /// 雙線刪除線。取捨：同時寫出 `<w:strike/>`＋`<w:dstrike/>`——Word/LO
+    /// 以 `dstrike` 為準繪雙線，而本引擎發射層目前只消費 `w:strike`
+    /// （`w:dstrike` 的解析層消費會動到既有 corpus 三檔的渲染，與本編輯卡
+    /// 「全庫 A/B 零 DIFF」口徑衝突，另立卡處理）；保留 `w:strike` 使
+    /// 「設定→存檔→重解析→讀回」閉環在現行解析器下真實成立，不虛構讀回。
+    Double,
+    /// 明確關閉（`<w:strike w:val="0"/>`）。
+    None,
+}
+
+/// 字元級直接格式覆寫（K29b／M2.1；K29e 補齊底線／刪除線／上下標／
+/// highlight／字型族六欄）。語意紀律（全欄統一）：
+/// - `None`＝保持原宣告（patch 不碰該欄，XML 原樣保留）；
+/// - `Some(值)`＝明確設定；
+/// - 移除類值（`Some(false)`／`UnderlineKind::None`／`StrikeKind::None`／
+///   `VertAlign::Baseline`／highlight alpha=0／空字串族名）＝明確移除，
+///   寫出顯式關閉形態（如 `<w:b w:val="0"/>`），使級聯兜底不得再補回。
+///   不引入未文件的第三態。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunDirectPatch {
     /// 粗體（`w:b`；`Some(false)` 寫出 `<w:b w:val="0"/>`）。
@@ -83,6 +135,42 @@ pub struct RunDirectPatch {
     /// 字元樣式 id（`w:rStyle/@w:val`）。
     #[serde(default)]
     pub char_style: Option<String>,
+    /// 底線（K29e；`w:u/@w:val`）。`Some(UnderlineKind::None)`＝明確移除
+    /// （寫 `<w:u w:val="none"/>`，級聯層 `toggle_attr_on` 讀為 `Some(false)`）。
+    #[serde(default)]
+    pub underline: Option<UnderlineKind>,
+    /// 刪除線（K29e；`w:strike`＋`w:dstrike`）。`Some(StrikeKind::None)`＝
+    /// 明確移除（寫 `<w:strike w:val="0"/>`）。
+    #[serde(default)]
+    pub strike: Option<StrikeKind>,
+    /// 上標／下標（K29e；`w:vertAlign/@w:val`）。型別直接沿用級聯層的
+    /// [`quire_ooxml::VertAlign`]（單一真值源，不另造鏡像枚舉）。
+    /// `Some(Baseline)`＝明確移除（寫 `<w:vertAlign w:val="baseline"/>`，
+    /// 熄滅字元樣式鏈宣告的上/下標）。
+    #[serde(default)]
+    pub vert_align: Option<quire_ooxml::VertAlign>,
+    /// 文字背景高亮（K29e）。取捨（ECMA-376 §17.3.2.15）：`w:highlight/@w:val`
+    /// 只能表達 16 個**命名色**枚舉；`Some(c)` 命中命名色表時寫
+    /// `<w:highlight w:val="yellow"/>`（Word 高亮 UI 的互通形態），
+    /// 非命名色走 `<w:shd w:val="clear" w:fill="RRGGBB"/>` 路徑（底紋承載
+    /// 任意 RGB；LO/Word 兩者都繪成文字底方塊，本引擎解析層亦同欄消費）。
+    /// 移除口徑：`Some(0x00RRGGBB)`（alpha=0）＝明確移除，寫
+    /// `<w:highlight w:val="none"/>`——注意解析層既有口徑（styles.rs
+    /// `apply_run_tag` highlight 臂）把 `none` 老實退回「未宣告」而非第四態
+    /// 「明確關閉」：直接層移除後若**樣式鏈**另宣告高亮，樣式級高亮會重新
+    /// 顯形（corpus 無此疊加實例，引擎不虛構第四態）。
+    #[serde(default)]
+    pub highlight: Option<u32>,
+    /// 字型族（K29e；`w:rFonts`）。同步策略：`w:ascii`／`w:hAnsi`／`w:cs`／
+    /// `w:eastAsia` 四欄一律寫同一族名——編輯器字型選取是「整包選族」語義
+    /// （Word 字體對話框對 Latin＋Complex 整套生效）；逐欄精修混合腳本宣告
+    /// 留給後續卡。空字串＝明確移除直接層宣告（`w:rFonts` 各欄寫空值＝
+    /// 解析層不材料化，文字落回樣式級聯的字型宣告）。
+    /// 斷行測寬與發射宣告是一體契約：寫入的是 `w:rFonts` 真宣告，重解析後
+    /// 級聯烘進 `effective_fonts`，斷行測寬（`face_advance_scale`）與 SVG
+    /// `font-family` 宣告同吃同一族——宣告了就用對應的水平尺，不會拉寬越欄。
+    #[serde(default)]
+    pub font_family: Option<String>,
 }
 
 /// 段落級屬性覆寫（K29b／M2.2）：`None`＝保持原宣告，`Some`＝明確設定。
@@ -1410,6 +1498,11 @@ fn patch_rpr(rpr: &str, patch: &RunDirectPatch) -> String {
     if buggy_rpr {
         return rpr.to_string();
     }
+    // 卡面紀律「寫入路徑只在 patch 明確指定時才動 XML」的硬閂：全 None patch
+    // ＝零意圖，連既有 rPr 都不重排（原字串原樣返回，零注入、零位元組位移）。
+    if patch == &RunDirectPatch::default() {
+        return rpr.to_string();
+    }
     let inner = if rpr.is_empty() {
         String::new()
     } else {
@@ -1431,10 +1524,46 @@ fn patch_rpr(rpr: &str, patch: &RunDirectPatch) -> String {
     if patch.char_style.is_some() {
         body = remove_element(&body, "w:rStyle");
     }
+    // K29e 六欄：紀律與既有五欄完全一致——欄位 Some＝先移除同族既有宣告
+    // （含 w:dstrike 成對清理），再按明確值寫回；欄位 None＝不碰 XML。
+    if patch.underline.is_some() {
+        body = remove_element(&body, "w:u");
+    }
+    if patch.strike.is_some() {
+        body = remove_element(&body, "w:strike");
+        body = remove_element(&body, "w:dstrike");
+    }
+    if patch.vert_align.is_some() {
+        body = remove_element(&body, "w:vertAlign");
+    }
+    if patch.highlight.is_some() {
+        // highlight 與 shd 共用解析層同一落點（styles.rs 兩臂都寫
+        // RunStyle.highlight），移除直格式時必須兩族一起清，否則殘留
+        // w:shd 會在重解析後贏過新的 highlight 宣告。
+        body = remove_element(&body, "w:highlight");
+        body = remove_element(&body, "w:shd");
+    }
+    if patch.font_family.is_some() {
+        body = remove_element(&body, "w:rFonts");
+    }
 
     let mut add = String::new();
     if let Some(style) = &patch.char_style {
         add.push_str(&format!(r#"<w:rStyle w:val="{}"/>"#, xml_escape(style)));
+    }
+    // K29e：`w:rFonts` 緊接 rStyle（CT_RPr 宣告序）。空字串＝明確移除：
+    // 各欄寫空值 → `rfonts_of` 逐欄 filter 空字串 → 全欄 None 且無 theme
+    // 引用 → 不材料化直接宣告（不虛構空 RunFonts 遮罩樣式級聯）。
+    if let Some(family) = &patch.font_family {
+        if family.is_empty() {
+            add.push_str(r#"<w:rFonts w:ascii="" w:hAnsi="" w:cs="" w:eastAsia=""/>"#);
+        } else {
+            let esc_family = xml_escape(family);
+            add.push_str(&format!(
+                r#"<w:rFonts w:ascii="{f}" w:hAnsi="{f}" w:cs="{f}" w:eastAsia="{f}"/>"#,
+                f = esc_family
+            ));
+        }
     }
     if let Some(bold) = patch.bold {
         add.push_str(if bold {
@@ -1450,6 +1579,16 @@ fn patch_rpr(rpr: &str, patch: &RunDirectPatch) -> String {
             r#"<w:i w:val="0"/>"#
         });
     }
+    // K29e：刪除線（CT_RPr 序：strike 在 i 之後、color 之前）。
+    if let Some(strike) = patch.strike {
+        match strike {
+            StrikeKind::Single => add.push_str("<w:strike/>"),
+            // 雙線成對宣告（見 StrikeKind::Double 取捨註解）：strike 供現行
+            // 解析器讀回，dstrike 供 Word/LO 繪雙線。
+            StrikeKind::Double => add.push_str("<w:strike/><w:dstrike/>"),
+            StrikeKind::None => add.push_str(r#"<w:strike w:val="0"/>"#),
+        }
+    }
     if let Some(color) = patch.color_rgb {
         add.push_str(&format!(
             r#"<w:color w:val="{:06X}"/>"#,
@@ -1460,7 +1599,63 @@ fn patch_rpr(rpr: &str, patch: &RunDirectPatch) -> String {
         let half = (size * 2.0).round().max(1.0) as i64;
         add.push_str(&format!(r#"<w:sz w:val="{half}"/>"#));
     }
+    // K29e：highlight（CT_RPr 序：sz 之後、u 之前）。alpha=0＝明確移除。
+    if let Some(bg) = patch.highlight {
+        if (bg >> 24) == 0 {
+            add.push_str(r#"<w:highlight w:val="none"/>"#);
+        } else if let Some(name) = highlight_named_color(bg & 0x00FF_FFFF) {
+            add.push_str(&format!(r#"<w:highlight w:val="{name}"/>"#));
+        } else {
+            // 非命名色走 w:shd 底紋路徑（任意 RGB 承載；解析層 shd 臂與
+            // highlight 臂同落 RunStyle.highlight，發射同為文字底方塊）。
+            add.push_str(&format!(
+                r#"<w:shd w:val="clear" w:color="auto" w:fill="{:06X}"/>"#,
+                bg & 0x00FF_FFFF
+            ));
+        }
+    }
+    // K29e：底線（CT_RPr 序：highlight 之後）。
+    if let Some(u) = patch.underline {
+        add.push_str(&format!(r#"<w:u w:val="{}"/>"#, u.as_u_val()));
+    }
+    // K29e：上下標（CT_RPr 末位；EG_RPrBase 尾段 vertAlign 在 lang 之前）。
+    if let Some(va) = patch.vert_align {
+        add.push_str(&format!(
+            r#"<w:vertAlign w:val="{}"/>"#,
+            match va {
+                quire_ooxml::VertAlign::Superscript => "superscript",
+                quire_ooxml::VertAlign::Subscript => "subscript",
+                quire_ooxml::VertAlign::Baseline => "baseline",
+            }
+        ));
+    }
     format!("<w:rPr>{body}{add}</w:rPr>")
+}
+
+/// K29e：0xRRGGBB → ECMA-376 §17.3.2.15 十六命名色反查（命中寫
+/// `<w:highlight w:val="名稱"/>` 與 Word 高亮 UI 互通；未命中回 None 走
+/// `w:shd` 底紋路徑）。色表與 `quire_ooxml::styles::highlight_color_of`
+/// 正向表逐色對齊（新增命名色時兩處都要動——命名色是封閉枚舉，漂移風險低）。
+fn highlight_named_color(rgb: u32) -> Option<&'static str> {
+    Some(match rgb {
+        0x0000_00 => "black",
+        0x0000_FF => "blue",
+        0x00FF_FF => "cyan",
+        0x0000_80 => "darkblue",
+        0x0080_80 => "darkcyan",
+        0x8080_80 => "darkgray",
+        0x0080_00 => "darkgreen",
+        0x8000_80 => "darkmagenta",
+        0x8000_00 => "darkred",
+        0x8080_00 => "darkyellow",
+        0x00FF_00 => "green",
+        0xD3D3_D3 => "lightgray",
+        0xFF00_FF => "magenta",
+        0xFF00_00 => "red",
+        0xFFFF_FF => "white",
+        0xFFFF_00 => "yellow",
+        _ => return None,
+    })
 }
 
 fn patch_ppr(ppr: &str, patch: &ParaPropsPatch) -> String {
