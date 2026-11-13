@@ -27,10 +27,10 @@
 | 讀取面（游標雙向定位） | `caret_rect_json(&self, para: usize, cp: usize) -> Option<String>`、`caret_at_json(&self, page: usize, x_pt: f32, y_pt: f32) -> Option<String>` | `core/engine-api/src/lib.rs:1870-1884` | 【已實測】委派 `self.layout.caret_rect` 與 `self.layout.caret_at`；只認正文頁，尾註頁回傳 `None`（`core/engine-api/src/lib.rs:1867-1869`, `core/engine-api/src/lib.rs:8647-8648`）。 |
 | 讀取面（顯示列表與斷點） | `page_display_list(&self, page: usize) -> Option<PageDisplayList>`、`page_display_list_json(&self, page: usize) -> Option<String>`、`page_breaks_json(&self) -> String` | `core/engine-api/src/lib.rs:2766-2771`, `core/engine-api/src/lib.rs:2194-2205` | 【已實測】合成單頁 `DrawItem` 序列（頁首頁尾、表格框線填色與格內文字、正文流與浮動圖片／圖形／文字框、正文行 run、註腳與尾註）並以 `sort_display_items` 排序（`core/engine-api/src/lib.rs:7616`）。 |
 | 控制面（增量重排） | `set_sync_budget(&mut self, pages: Option<usize>)`、`is_settled(&self) -> bool`、`reflow_step_json(&mut self) -> String` | `core/engine-api/src/lib.rs:2849-2865` | 【已實測】控制 `LayoutEngine` 的預算制軟分頁與背景單步續排（`core/layout/src/lib.rs:2272-2381`）。 |
-| 現有記憶體編輯面 | `insert_text_at_caret(&mut self, para: usize, cp: usize, text: &str) -> Vec<String>`、`replace_paragraph_text(&mut self, para: usize, text: &str) -> Vec<String>` | `core/engine-api/src/lib.rs:1887-1902`, `core/engine-api/src/lib.rs:2208-2252` | 【已實測】**僅修改版面層 `self.layout` 與發射投影 `self.paras_eff`，完全未寫回 `self.doc.paragraphs` 或 `self.doc.parts`**（詳見 §1.3）。 |
-| 存檔與原始 Part 覆寫面 | `save_docx(&self) -> Result<Vec<u8>, EngineError>`、`set_part(&mut self, name: &str, bytes: Vec<u8>)`、`roundtrip_check(&self) -> Result<ZipDiff, EngineError>`、`roundtrip_diff(...)` | `core/engine-api/src/lib.rs:2871-2878` | 【已實測】`save_docx` 委派 `self.doc.save()`；`set_part` 直接覆寫 `self.doc.parts` 並記入 `self.touched` 白名單，但**不會重新解析模型或觸發排版**（詳見 §1.3）。 |
-| XLSX 容器面（`feature = "xlsx"`） | `XlsxDoc`、`xlsx_roundtrip_diff` | `core/engine-api/src/lib.rs:2892-2958` | 【已實測】僅提供容器級無損往返與唯讀 workbook 投影。 |
-| 協作面（`feature = "collab"`） | `CollabSession::new`、`commit_local`、`apply_remote` | `core/engine-api/src/lib.rs:2972-3009` | 【已實測】包裝 `quire_crdt::InMemoryBackend` 佔位實作，與 `Engine` 物理分離（詳見 §1.6）。 |
+| 現有記憶體編輯面 | `insert_text_at_caret(&mut self, para: usize, cp: usize, text: &str) -> Vec<String>`、`replace_paragraph_text(&mut self, para: usize, text: &str) -> Vec<String>` | `core/engine-api/src/lib.rs:2279-2293`, `core/engine-api/src/lib.rs:2208-2252` | 【已實測】**僅修改版面層 `self.layout` 與發射投影 `self.paras_eff`，完全未寫回 `self.doc.paragraphs` 或 `self.doc.parts`**（詳見 §1.3）。 |
+| 存檔與原始 Part 覆寫面 | `save_docx(&self) -> Result<Vec<u8>, EngineError>`、`set_part(&mut self, name: &str, bytes: Vec<u8>)`、`roundtrip_check(&self) -> Result<ZipDiff, EngineError>`、`roundtrip_diff(...)` | `core/engine-api/src/lib.rs:2931-2938` | 【已實測】`save_docx` 委派 `self.doc.save()`；`set_part` 直接覆寫 `self.doc.parts` 並記入 `self.touched` 白名單，但**不會重新解析模型或觸發排版**（詳見 §1.3）。 |
+| XLSX 容器面（`feature = "xlsx"`） | `XlsxDoc`、`xlsx_roundtrip_diff` | `core/engine-api/src/lib.rs:2953-3011` | 【已實測】僅提供容器級無損往返與唯讀 workbook 投影。 |
+| 協作面（`feature = "collab"`） | `CollabSession::new`、`commit_local`、`apply_remote` | `core/engine-api/src/lib.rs:3033-3069` | 【已實測】包裝 `quire_crdt::InMemoryBackend` 佔位實作，與 `Engine` 物理分離（詳見 §1.6）。 |
 
 此外，三種外殼（shells）對上述 API 的接線現況如下【已實測】：
 - `shells/web/src/lib.rs:8-77`（`WasmEngine`）：暴露 `new`、`page_count`、`paragraph_count`、`page_display_list_json`、`replace_paragraph_text`、`paragraph_text`、`caret_rect_json`、`caret_at_json`、`insert_text_at_caret`、`set_sync_budget`、`is_settled`、`reflow_step_json` 共 12 個方法。其中 `WasmEngine` 未暴露 `save_docx`、`set_part`、`roundtrip_check`、`preserved_part_count` 與 `page_lines`，故網頁端目前做完文字編輯後**根本無存檔入口**，文字變更只存活於記憶體。
@@ -42,8 +42,8 @@
 實測當下 worktree 的程式碼與單元測試，**目前引擎不存在「從語義編輯更新 XML part 並無損存檔」的閉環寫回路徑**，兩條現有路徑各自獨立且互不相通：
 
 1. **記憶體文字編輯路徑（有排版與投影更新，無持久化寫回）**【已實測】：
-   - `Engine::insert_text_at_caret`（`core/engine-api/src/lib.rs:2219-2234`）將碼點偏移 `cp` 轉為 UTF-8 位元組切口後拼出新字串，轉呼 `self.replace_paragraph_text(para, &next)`（`core/engine-api/src/lib.rs:2233`）。
-   - `Engine::replace_paragraph_text`（`core/engine-api/src/lib.rs:2208-2252`）只做三件事：
+   - `Engine::insert_text_at_caret`（`core/engine-api/src/lib.rs:2279-2293`）將碼點偏移 `cp` 轉為 UTF-8 位元組切口後拼出新字串，轉呼 `self.replace_paragraph_text(para, &next)`（`core/engine-api/src/lib.rs:2293`）。
+   - `Engine::replace_paragraph_text`（`core/engine-api/src/lib.rs:2799-2843`）只做三件事：
      1. 呼叫 `self.layout.replace_paragraph_text(para, text)`（`core/engine-api/src/lib.rs:2602`；定義於 `core/layout/src/lib.rs:2191-2321`），重排該段落斷行、透過 `shift_breaks`（`core/layout/src/lib.rs:1152-1168`, `core/layout/src/lib.rs:2218-2222`）平移段內硬分頁斷點、更新 `self.pages` 並回傳 `Invalidation`（變體僅 `Paragraph(usize)`、`Page(usize)`、`ReflowPending { from_page }` 三種，定義於 `core/layout/src/lib.rs:1720-1731`）。
      2. 同步發射投影 `self.paras_eff`（`core/engine-api/src/lib.rs:2180-2208`）：把新文字塞進該段第一個非空 `Run`，撤除其 `r.field = None`（`core/engine-api/src/lib.rs:2191`），並將同段其餘非空 `Run` 的 `r.text` 清空為 `String::new()`（`core/engine-api/src/lib.rs:2764`）。
      3. 呼叫 `self.recompute_notes()`（`core/engine-api/src/lib.rs:961`；定義於 `core/engine-api/src/lib.rs:6632-6637`）重算頁首推下、註腳與尾註排布。
