@@ -310,7 +310,7 @@ pub enum MutationError {
      - `AttachExisting { num_id: u32, ilvl: u8 }`：將段落掛上既有 `<w:num w:numId="...">`（ECMA-376 §17.9.16，見 `core/ooxml/src/numbering.rs:12`）與層級 `ilvl`（`0..=8`，ECMA-376 §17.9.6，見 `core/ooxml/src/numbering.rs:11`）。
      - `CreateAndAttach { kind: PresetListKind, ilvl: u8 }`：建立一組新的 `<w:abstractNum>`（ECMA-376 §17.9.1）與 `<w:num>`（項目符號 `Bullet` 或十進位編號 `Decimal` 等，`NumFmt` 見 `core/ooxml/src/numbering.rs:68-96`），並掛載至目標段落。
      - `ChangeLevel { delta: i8 }`：將已掛載清單的段落層級 `ilvl` 調整 `delta`（鉗制或驗證在 `0..=8`）。
-     - `RemoveNumbering`：移除段落的清單編號（若段落樣式本身未綁定 `numPr`，直接移除段內 `<w:pPr><w:numPr>`；若段落樣式本身帶有 `numPr`，則寫入 `<w:numPr><w:numId w:val="0"/></w:numPr>`，利用 ECMA-376 §17.3.1.19「`numId=0` 代表取消繼承編號」語義，見 `core/ooxml/src/numbering.rs:240`, `core/ooxml/src/numbering.rs:547`）。
+     - `RemoveNumbering`：移除段落的清單編號（若段落樣式本身未綁定 `numPr`，直接移除段內 `<w:pPr><w:numPr>`；若段落樣式本身帶有 `numPr`，則寫入 `<w:numPr><w:numId w:val="0"/></w:numPr>`，利用 ECMA-376 §17.3.1.19「`numId=0` 代表取消繼承編號」語義，見 `core/ooxml/src/numbering.rs:240`, `core/ooxml/src/numbering.rs:548`）。
 
 2. **套用模型層級與最小 Part 影響面**【設計提案】：
    - `AttachExisting`、`ChangeLevel`、`RemoveNumbering`：僅修補目標內容 part（如 `word/document.xml`）中目標段落的 `<w:pPr><w:numPr>`（ECMA-376 §17.3.1.19，見 `core/ooxml/src/numbering.rs:14`），**完全不觸碰 `word/numbering.xml`**。
