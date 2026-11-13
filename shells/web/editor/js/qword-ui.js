@@ -129,6 +129,8 @@ export class QWordUI {
         this.handleAlign(data);
       } else if (type === 'style:apply') {
         this.handleApplyStyle(data);
+      } else if (type === 'table:grid-insert') {
+        this.handleInsertTable(data);
       } else if (type === 'page:change') {
         this.scrollToPage(data.currentPage - 1);
       }
@@ -827,6 +829,31 @@ export class QWordUI {
     }
   }
 
+  async handleInsertTable(payload = {}) {
+    const rows = Number(payload?.rows);
+    const cols = Number(payload?.cols);
+    if (!Number.isInteger(rows) || !Number.isInteger(cols) || rows <= 0 || cols <= 0) {
+      this.showErrorModal('表格尺寸不合法', `需要列數與欄數皆為正整數，收到 ${payload?.rows} × ${payload?.cols}。`);
+      return;
+    }
+    if (!this.adapter.engine) {
+      // 誠實回報：引擎尚未載入文件時不得讓使用者以為表格已插入。
+      this.showErrorModal('尚未開啟文件', '目前尚未載入任何 DOCX 文件，無法插入表格。');
+      return;
+    }
+    const res = this.adapter.insertTable(rows, cols);
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+      console.log(`[QWordUI] M4.1 InsertTable 成功：${rows} × ${cols}（段落數=${this.adapter.paragraphCount()}）`);
+    } else {
+      console.warn('[QWordUI] M4.1 InsertTable 引擎拒絕:', res.error);
+      this.showErrorModal('表格插入失敗', String(res.error || '引擎拒絕了本次插入操作。'));
+    }
+  }
+
   async refreshPages() {
     const count = this.adapter.pageCount();
     if (!this.pageWrappers || this.pageWrappers.length !== count) {
@@ -925,7 +952,13 @@ export class QWordUI {
     if (req && req.startsWith('pending:')) {
       const cardId = req.replace('pending:', '');
       const depInfo = DEPENDENCY_MAP[req] || { name: cardId, desc: '開發中' };
-      html += `<span class="qword-tooltip-req">⚠️ 需要編輯 API（開發中: ${depInfo.name}）</span>`;
+      if (req === 'pending:shell') {
+        // 誠實措辭：引擎側 Mutation 欄位已真實存在，缺口是瀏覽器外殼接線，
+        // 不可再對使用者宣稱「需要編輯 API（開發中）」。
+        html += `<span class="qword-tooltip-req">⚠️ 編輯 API 已支援，外殼接線中（${depInfo.name}）</span>`;
+      } else {
+        html += `<span class="qword-tooltip-req">⚠️ 需要編輯 API（開發中: ${depInfo.name}）</span>`;
+      }
     } else if (req === 'live') {
       html += `<span style="display:block;font-size:9px;color:#85e085;margin-top:2px;">● 現已可用（真引擎/檢視能力）</span>`;
     }
