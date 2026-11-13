@@ -1345,9 +1345,15 @@ fn compute_row_heights(tl: &mut TableLayout, input: &TableInput) {
             let k = (last - head) as u32;
             let share = extra / k;
             let rem = extra % k;
-            for rr in head + 1..=last {
-                tl.rows[rr].bands += share + if rr == last { rem } else { 0 };
+            // 等價改寫（clippy 1.100 needless_range_loop）：逐列補 share，末列再補餘數 rem。
+            // 原式 `for rr in head + 1..=last { tl.rows[rr].bands += share + if rr == last { rem } }`
+            // 語意完全保留：skip(head+1).take(last - head) 涵蓋索引 head+1..=last（含末列，
+            // 末列因此拿到 share＋rem，與原式同值）。k == 0 時上方 `extra / k` 先 panic，
+            // 故能走到本迴圈即 k >= 1（原式同此前提，空區間分支不可達）。
+            for row in tl.rows.iter_mut().skip(head + 1).take(last - head) {
+                row.bands += share;
             }
+            tl.rows[last].bands += rem;
         }
     }
 }

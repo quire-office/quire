@@ -218,8 +218,8 @@ pub fn col_layout(geo: &SectionGeometry) -> Option<ColLayout> {
         col_w: [w; 4],
         col_x: [0.0; 4],
     };
-    for i in 0..n {
-        out.col_x[i] = i as f32 * (w + gap);
+    for (i, x) in out.col_x.iter_mut().enumerate().take(n) {
+        *x = i as f32 * (w + gap);
     }
     Some(out)
 }
