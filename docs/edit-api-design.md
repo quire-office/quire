@@ -361,8 +361,8 @@ pub enum MutationError {
    - `DeleteImage { target: SubDocTarget, host_para: usize, drawing_index: usize, gc_unreferenced_media: bool }`：刪除指定 `<w:drawing>` 或 `<w:pict>` 節點。
 
 2. **套用模型層級與配對鍵同步**【設計提案】：
-   - 【已實測】`Engine::page_display_list`（`core/engine-api/src/lib.rs:8601`, `core/engine-api/src/lib.rs:8505`, `core/engine-api/src/lib.rs:8545`, `core/engine-api/src/lib.rs:7947`）以 `(para, w_pt)`（寬度誤差 `< 0.01` pt）作為 `image_pixels` 與 `shape_boxes` 的消費式配對鍵。
-   - 【設計提案】當執行 `ResizeOrMoveImage` 修改 `new_width_pt` 時，除了更新 `LayoutEngine` 的 `ImageBand`／`FloatingImage`（`table_map::build_images`，`core/engine-api/src/table_map.rs:1250-1352`）外，**必須同步更新 `Engine::image_pixels`（`PixelSource::w_pt`，`core/engine-api/src/lib.rs:233`）與 `Engine::shape_boxes`（`InlineImage::w_pt`，`core/ooxml/src/drawing.rs:386`）**，否則縮放後 `w_pt` 不再相等，圖片會在下一幀退化為灰底佔位框！
+   - 【已實測】`Engine::page_display_list`（`core/engine-api/src/lib.rs:8617`, `core/engine-api/src/lib.rs:8505`, `core/engine-api/src/lib.rs:8545`, `core/engine-api/src/lib.rs:7947`）以 `(para, w_pt)`（寬度誤差 `< 0.01` pt）作為 `image_pixels` 與 `shape_boxes` 的消費式配對鍵。
+   - 【設計提案】當執行 `ResizeOrMoveImage` 修改 `new_width_pt` 時，除了更新 `LayoutEngine` 的 `ImageBand`／`FloatingImage`（`table_map::build_images`，`core/engine-api/src/table_map.rs:1250-1352`）外，**必須同步更新 `Engine::image_pixels`（`PixelSource::w_pt`，`core/engine-api/src/lib.rs:240`）與 `Engine::shape_boxes`（`InlineImage::w_pt`，`core/ooxml/src/drawing.rs:386`）**，否則縮放後 `w_pt` 不再相等，圖片會在下一幀退化為灰底佔位框！
 
 3. **對 DOCX Part 的最小影響面與無損保證**【設計提案】：
    - `ResizeOrMoveImage`：**只修補目標內容 XML part（如 `word/document.xml`）** 內該 `<w:drawing>` 的 `<wp:extent cx="..." cy="..."/>`、`<a:xfrm><a:ext cx="..." cy="..."/></a:xfrm>` 與 `<wp:positionH>`／`<wp:positionV>`；`word/media/*`、`.rels` 與 `[Content_Types].xml` **完全不觸碰**。
@@ -392,7 +392,7 @@ pub enum MutationError {
      - `SetNoteProperties` 修改文件級 `word/settings.xml` 或節級 `<w:sectPr>` 下的 `<w:footnotePr>`／`<w:endnotePr>`（ECMA-376 §17.11.4、§17.11.5、§17.11.11、§17.11.14、§17.11.17～§17.11.21，見 `core/ooxml/src/notes.rs:48-127`, `core/ooxml/src/sectpr.rs:160-163`）。
 
 2. **套用模型層級與最小 Part 影響面**【設計提案】：
-   - `SetSectionProperties`、`InsertSectionBreak`、`DeleteSectionBreak` 僅修補 `word/document.xml` 的 `<w:sectPr>`，更新 `Engine::sec_geo_all`、`para_sec`、`sec_geo` 與 `LayoutEngine` 的 `sections: Vec<SectionSpec>`，並重跑版面與 `recompute_notes()`（`core/engine-api/src/lib.rs:969-974`）。
+   - `SetSectionProperties`、`InsertSectionBreak`、`DeleteSectionBreak` 僅修補 `word/document.xml` 的 `<w:sectPr>`，更新 `Engine::sec_geo_all`、`para_sec`、`sec_geo` 與 `LayoutEngine` 的 `sections: Vec<SectionSpec>`，並重跑版面與 `recompute_notes()`（`core/engine-api/src/lib.rs:976-981`）。
    - 修改頁首／頁尾內容時（`SubDocTarget::Header`／`Footer`），僅修補對應的 `word/header{K}.xml` 或 `word/footer{K}.xml`，更新 `Engine::hf_parts` 快取並重跑 `recompute_notes()`（因為頁首高度變化可能透過 `compute_header_push` 推下正文首行，見 `core/engine-api/src/lib.rs:720-735`），**完全不觸碰 `word/document.xml`**！
 
 3. **失敗語義（誠實拒絕）**【設計提案】：
@@ -455,7 +455,7 @@ flowchart TD
      - 於 `core/ooxml/src/zip_struct.rs:475-478`：即使進入 `Change::Replace(plain)`，若原 entry 為 `METHOD_STORE` 且重算 CRC 與位元組流與 `e.data_raw` 相同，仍自動退回 `Planned::untouched(e)`。
      - 於 `core/ooxml/src/zip_struct.rs:517-549`：按原始 `local_header_offset` 物理順序輸出本地標頭、壓縮流與 `gap_raw`。
      - 於 `core/ooxml/src/zip_struct.rs:552-576` 與 `patch_central_offset`（`core/ooxml/src/zip_struct.rs:815-879`）：按原始中央目錄順序輸出中央目錄，對未觸碰 entry 僅原位修補因前方已修改 part 壓縮長度改變而平移的 `local_header_offset`（4-byte 欄位或 ZIP64 `0x0001` extra block 內偏移槽），絕不改動其壓縮流、CRC、旗標、extra field 或註解。
-   - `diff_zip_structure`（`core/ooxml/src/diff.rs:161-240`）：作為 `Engine::roundtrip_check`（`core/engine-api/src/lib.rs:2816-2823`）的守門員，自動驗證所有不在 `self.touched` 白名單內的 entry 滿足 `EntryDiff::zero_loss`（`core/ooxml/src/diff.rs:51-60`）。
+   - `diff_zip_structure`（`core/ooxml/src/diff.rs:161-240`）：作為 `Engine::roundtrip_check`（`core/engine-api/src/lib.rs:2876-2883`）的守門員，自動驗證所有不在 `self.touched` 白名單內的 entry 滿足 `EntryDiff::zero_loss`（`core/ooxml/src/diff.rs:51-60`）。
 
 ### 3.3 何時局部修補（Surgical Patch）、何時全 Part 合成、何時原樣保 Raw 決策表【設計提案】
 
