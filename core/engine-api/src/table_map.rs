@@ -1956,8 +1956,8 @@ pub struct TableHit {
     /// 目標表列數（`rows.len()`）。
     pub rows: usize,
     /// 宿主格索引（目標表宿主列內 `cells` 的下標；段落直接落於**根表本體外**
-    /// ＝`None`——本結構只在「段落确在該表某格內」時產生，故恆 Some，
-    /// 欄位仍留 Option 供未来 body 級命中（若有）相容）。
+    /// ＝`None`——本結構只在「段落確在該表某格內」時產生，故恆 Some，
+    /// 欄位仍留 Option 供未來 body 級命中（若有）相容）。
     pub cell: Option<usize>,
     /// 宿主列索引。
     pub row: usize,

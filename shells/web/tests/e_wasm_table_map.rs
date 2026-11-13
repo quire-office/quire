@@ -6,7 +6,7 @@
 //! （`core/engine-api`），但殼層零綁定（U4 報告 §3）→ 外殼只能靠
 //! 「越界探針讀拒絕訊息」反推張數。本卡把真索引交回 JS。
 //!
-//! 目标檔：`fixtures/table_multi.docx`（本卡新產，gen_multi_table_fixture.py）——
+//! 目標檔：`fixtures/table_multi.docx`（本卡新產，gen_multi_table_fixture.py）——
 //! **三張 body 級根表**（T0 四列含 gridSpan/vMerge/巢狀表、T1 一列、T2 兩列）。
 //! 單表檔（table_mixed.docx）測不到「點哪張改哪張」，只作零回退對照。
 //!
