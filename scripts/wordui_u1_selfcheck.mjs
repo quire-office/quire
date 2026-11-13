@@ -253,13 +253,23 @@ try {
   core.setIndent('firstLine', 1.5);
   assert(core.getState().indents.firstLine === 1.5, 'setIndent 首行縮排計算');
 
-  // 測試 pending 命令日誌紀錄
-  core.onCommand('clipboard:cut', {}, 'pending:K29a');
-  core.onCommand('insert:picture', {}, 'pending:K29b');
+  // 測試 pending 命令日誌紀錄（標籤與 index.html 現行真實缺口同步：
+  // insert:picture 的引擎 M5.1 已入 main，真實缺口是外殼接線＝pending:shell）
+  core.onCommand('clipboard:cut', {}, 'pending:shell');
+  core.onCommand('insert:picture', {}, 'pending:shell');
   const log = core.getLog();
   assert(log.length >= 10, 'commandLog 完整記錄指令流');
   const lastLog = log[log.length - 1];
-  assert(lastLog.cmdId === 'insert:picture' && lastLog.requirement === 'pending:K29b', 'pending 指令正確保留 requirement 標記');
+  assert(lastLog.cmdId === 'insert:picture' && lastLog.requirement === 'pending:shell', 'pending 指令正確保留 requirement 標記');
+
+  // 誠實紅線鎖（t_57b7b089）：insert:table 已真接 M4.1 InsertTable，
+  // 無合法尺寸參數時不得自稱 live。
+  const badTable = core.onCommand('table:grid-select', { rows: 0, cols: 0 }, 'live');
+  assert(badTable.handled === false && badTable.requirement !== 'live',
+    `table:grid-select 非法尺寸不得掛 live（實得 handled=${badTable.handled}, req=${badTable.requirement}）`);
+  const goodTable = core.onCommand('table:grid-select', { rows: 3, cols: 2 }, 'live');
+  assert(goodTable.handled === true && goodTable.requirement === 'live',
+    `table:grid-select 合法尺寸應標記 live（實得 handled=${goodTable.handled}, req=${goodTable.requirement}）`);
 
   console.log(`  ✓ QWordCore 無 DOM 模組在 Node.js 中載入並通過所有指令探針測試`);
 } catch (err) {
