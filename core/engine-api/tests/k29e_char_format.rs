@@ -5,7 +5,7 @@
 //! （`shells/native/src/render_svg.rs` 的 `page_to_svg`，與 `quire-cli render`
 //! 同一支發射器）——底線/刪除線是 `<text>` 的 `text-decoration`、highlight
 //! 是 `<rect>`、上下標是 baseline y 與 `font-size`；display list 斷言只當
-//! 輔助證據（「斷言打在 page_display_list 而發射層未消費旗標照样全綠」有前例）。
+//! 輔助證據（「斷言打在 page_display_list 而發射層未消費旗標照樣全綠」有前例）。
 //!
 //! LO 真值口徑（2026-11-13 Linux LO 25.8 探針，docs/k29e-redlight.md §2）：
 //! - 上/下標字級 = 0.582×base（11pt→6.4pt 實測）；上標基線上移 0.35×base、
@@ -218,7 +218,7 @@ fn k29e_lamp2_all_none_patch_keeps_part_byte_identical() {
         .expect("fixture 必須有 document.xml")
         .to_vec();
 
-    // 零宣告 run 段與帶 rPr（rStyle）段兩處都做**整段全選**（cp 0..全长）：
+    // 零宣告 run 段與帶 rPr（rStyle）段兩處都做**整段全選**（cp 0..全長）：
     // 整段全選時選取後段為空、不產生 run 裂解（k29a 中段裂解紀律不在本燈
     // 範圍），全 None patch 的合法產物就是 part 逐位元組原樣。破鎖形態＝
     // 空 <w:rPr></w:rPr> 被材料化或既有 rPr 被重排。
