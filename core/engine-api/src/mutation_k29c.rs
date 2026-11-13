@@ -10,10 +10,10 @@
 //! - 所有可逆操作只保存「整份 part 的舊明文」作為逆補丁（Undo 時完整還原）。
 
 use crate::mutation::{
-    ByteSpan, DocPos, FloatingAxisSpec, InsertSide, InverseMutation, IrreversibleReason, Mutation,
-    MutationError, MutationOutcome, PartLifecycleInverse, ReversibilityLevel, SemanticInverseOp,
-    SubDocTarget, TablePath, TablePropsPatch, UndoEntry, VMergeState, WrapModeSpec,
-    XmlReversePatch,
+    BorderSpec, ByteSpan, DocPos, FloatingAxisSpec, InsertSide, InverseMutation,
+    IrreversibleReason, Mutation, MutationError, MutationOutcome, PartLifecycleInverse,
+    ReversibilityLevel, SemanticInverseOp, SubDocTarget, TableBordersPatch, TablePath,
+    TablePropsPatch, UndoEntry, VMergeState, WrapModeSpec, XmlReversePatch,
 };
 use crate::Engine;
 use std::collections::BTreeMap;
@@ -461,6 +461,134 @@ fn table_props_xml(patch: &TablePropsPatch) -> String {
     add
 }
 
+// ------------------------- E 卡：邊框序列化＋逐方位併入 -------------------------
+
+/// `BorderSpec` → 單邊框元素 `<w:{tag} w:val=… w:sz=… w:space=… w:color=…/>`。
+/// 缺欄不寫屬性（全缺＝`<w:top/>` 空元素形態，語義＝宣告該邊但零值）；
+/// `w:sz` 換算＝`round(width_pt × 8)`（ECMA-376 §17.18.86 八分之一點，解析側
+/// `solve_pen` 的 `sz/8` 反函數）；`w:space` 換算＝`round(space_pt)`（ECMA-376
+/// §17.4.10 註：框線 space 單位即 pt，非 twip——本庫既有 `txbx_borders.space_pt`
+/// 同款 pt 口徑）。
+fn border_edge_xml(tag: &str, b: &BorderSpec) -> String {
+    let mut s = format!("<w:{tag}");
+    if let Some(v) = &b.style {
+        s.push_str(&format!(r#" w:val="{}""#, xml_attr_escape(v)));
+    }
+    if let Some(w) = b.width_pt.filter(|v| v.is_finite()) {
+        s.push_str(&format!(r#" w:sz="{}""#, (w * 8.0).round().max(0.0) as i64));
+    }
+    if let Some(sp) = b.space_pt.filter(|v| v.is_finite()) {
+        s.push_str(&format!(
+            r#" w:space="{}""#,
+            sp.round().max(0.0) as i64
+        ));
+    }
+    if let Some(c) = &b.color {
+        s.push_str(&format!(r#" w:color="{}""#, xml_attr_escape(c)));
+    }
+    s.push_str("/>");
+    s
+}
+
+/// 補丁 → 序列化的方位清單（OOXML 正則序 top→left→bottom→right→insideH→insideV；
+/// 呼叫端已保證非空）。儲存格級傳 `cell_scope()` 後的補丁（inside 兩方位已被
+/// 丟棄——`w:tcBorders` 無該兩方位，ECMA-376 §17.4.10）。
+fn borders_edges(patch: &TableBordersPatch) -> Vec<(&'static str, String)> {
+    [
+        ("top", &patch.top),
+        ("left", &patch.left),
+        ("bottom", &patch.bottom),
+        ("right", &patch.right),
+        ("insideH", &patch.inside_h),
+        ("insideV", &patch.inside_v),
+    ]
+    .into_iter()
+    .filter_map(|(tag, spec)| spec.as_ref().map(|b| (tag, border_edge_xml(tag, b))))
+    .collect()
+}
+
+/// 在 `body` 明文裡找元素 `<{name}` 的起點（屬性邊界檢查同
+/// `remove_named_element`：名稱後必須是空白／`>`／`/`，防 `w:tcBorders`
+/// 誤配 `w:tcBordersFoo`）。
+fn element_start(body: &str, name: &str) -> Option<usize> {
+    let open = format!("<{name}");
+    let mut from = 0usize;
+    while let Some(rel) = body[from..].find(&open) {
+        let at = from + rel;
+        let after_ok = body[at + open.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_whitespace() || c == '>' || c == '/');
+        if after_ok {
+            return Some(at);
+        }
+        from = at + open.len();
+    }
+    None
+}
+
+/// E 卡核心併入器：把 `edges` 逐方位寫進 `body`（tblPr／tcPr 的內文明文）。
+///
+/// 語義（逐方位獨立＝卡面「None＝該邊不動」的實作落點）：
+/// - 既有容器（`w:tblBorders`／`w:tcBorders`）存在 → 只移除**被補丁觸碰**的
+///   方位元素，其餘子元素（含 `w:tl2br`／`w:tr2bl`／未知自訂元素）逐字元
+///   原樣保留，補丁方位以正則序附加於容器尾；
+/// - 容器不存在 → 以補丁方位新建容器，附加於 `body` 尾；
+/// - `edges` 空 → `body` 原樣回傳（零擾動）。
+///
+/// 已知取捨（記 docs/e-tblborder-redlight.md §3）：(a) 被覆寫方位移到容器尾
+/// → 容器內方位序偏離 schema 正則序（LO／Word 讀取端方位序無關，實測 LO 25.8
+/// 正常渲染；本庫 K29c 既有「remove-then-append」同款口徑）；(b) `w:start`／
+/// `w:end` 別名方位不被本併入器辨識為 left／right 的既有宣告（語料直接格式層
+/// 未見 start／end 寫法；補丁覆寫 left 時若容器另有 `w:start`，兩者並存、
+/// 後者語義由解析端 `apply_border` 後寫贏前決定）。
+fn merge_borders_body(body: &str, container: &str, edges: &[(&'static str, String)]) -> String {
+    if edges.is_empty() {
+        return body.to_string();
+    }
+    let frag: String = edges.iter().map(|(_, x)| x.as_str()).collect();
+    // 新建／重建容器用的開標籤**必須含閉角括號**（`<w:tblBorders>`）：少了 `>`
+    // 會產出 `<w:tblBorders<w:top …/>` 形態的 ill-formed XML（attempt-2 實跑
+    // 紅在 `expected </w:tblPr>, but </w:tblBorders> was found`）。
+    let open_tag = format!("<{container}>");
+    let Some(start) = element_start(body, container) else {
+        return format!("{body}{open_tag}{frag}</{container}>");
+    };
+    let Some(gt_rel) = body[start..].find('>') else {
+        return format!("{body}{open_tag}{frag}</{container}>");
+    };
+    let gt = start + gt_rel;
+    // 空元素容器 `<w:tblBorders/>`：整顆換成新建容器（原容器零內容，無保留義務）。
+    if body[start..=gt].trim_end().ends_with('/') {
+        return format!(
+            "{}{}{frag}</{container}>{}",
+            &body[..start],
+            open_tag,
+            &body[gt + 1..]
+        );
+    }
+    let close_tag = format!("</{container}>");
+    let Some(close_rel) = body[start..].find(close_tag.as_str()) else {
+        // 病態容器（無閉合）：不動原文明文，新容器附加於 body 尾（老實妥協，記 docs）。
+        return format!("{body}{}{frag}</{container}>", open_tag);
+    };
+    let inner_start = gt + 1;
+    let inner_end = start + close_rel;
+    let mut inner = body[inner_start..inner_end].to_string();
+    for (tag, xml) in edges {
+        inner = remove_named_element(&inner, &format!("w:{tag}"));
+        inner.push_str(xml);
+    }
+    format!(
+        "{}{}{}</{}>{}",
+        &body[..start],
+        open_tag,
+        inner,
+        container,
+        &body[inner_end + close_tag.len()..]
+    )
+}
+
 fn row_props_xml(patch: &crate::mutation::RowPropsPatch) -> String {
     let mut add = String::new();
     if let Some(h) = patch.height_pt {
@@ -523,7 +651,18 @@ fn replace_tcpr_reps(
                 detail: "w:tc 開標籤解析失敗".to_string(),
             });
         };
-        let new_tcpr = format!("<w:tcPr>{}</w:tcPr>", cell_props_xml(patch));
+        let new_tcpr = format!(
+            "<w:tcPr>{}{}</w:tcPr>",
+            cell_props_xml(patch),
+            patch
+                .borders
+                .clone()
+                .map(|b| borders_edges(&b.cell_scope()))
+                .unwrap_or_default()
+                .iter()
+                .map(|(_, x)| x.as_str())
+                .collect::<String>()
+        );
         return Ok((
             ByteSpan {
                 start: tc.end,
@@ -551,6 +690,14 @@ fn replace_tcpr_reps(
     if patch.vertical_align.is_some() {
         body = remove_named_element(&body, "w:vAlign");
     }
+    // E 卡：tcBorders 逐方位併入（insideH／insideV 在 w:tcBorders 非法，
+    // cell_scope() 先丟棄＝傳了視為未宣告、零擾動）。
+    let edges = patch
+        .borders
+        .clone()
+        .map(|b| borders_edges(&b.cell_scope()))
+        .unwrap_or_default();
+    body = merge_borders_body(&body, "w:tcBorders", &edges);
     let new_tcpr = format!("<w:tcPr>{body}{}</w:tcPr>", cell_props_xml(patch));
     Ok((ByteSpan { start, end }, new_tcpr.into_bytes()))
 }
@@ -1855,6 +2002,14 @@ impl Engine {
         let text = text_of(&xml)?;
         let (table_start, _) = locate_table(text, &table)?;
         let add = table_props_xml(&patch);
+        // E 卡：tblBorders 逐方位併入（六方位全合法；補丁 None／全缺＝空
+        // edges＝零擾動，既有容器與整檔逐位元組不變）。
+        let edges = patch
+            .borders
+            .clone()
+            .map(|b| borders_edges(&b))
+            .unwrap_or_default();
+        let edges_frag: String = edges.iter().map(|(_, x)| x.as_str()).collect();
         let reps = vec![match first_child(text, table_start, "tblPr") {
             Some((s, e)) => {
                 let old = &text[s..e];
@@ -1869,6 +2024,8 @@ impl Engine {
                 if patch.shading_fill.is_some() {
                     body = remove_named_element(&body, "w:shd");
                 }
+                // 觸碰方位併入既有容器（原位改寫，未觸碰子元素零擾動）。
+                body = merge_borders_body(&body, "w:tblBorders", &edges);
                 (
                     ByteSpan { start: s, end: e },
                     format!("<w:tblPr>{body}{add}</w:tblPr>").into_bytes(),
@@ -1883,7 +2040,8 @@ impl Engine {
                         start: open_end,
                         end: open_end,
                     },
-                    format!("<w:tblPr>{add}</w:tblPr>").into_bytes(),
+                    // 無 tblPr 的新建件：邊框容器直接進新建 tblPr（無既有容器可併）。
+                    format!("<w:tblPr>{add}{edges_frag}</w:tblPr>").into_bytes(),
                 )
             }
         }];

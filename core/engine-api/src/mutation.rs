@@ -247,6 +247,101 @@ impl TablePath {
     }
 }
 
+/// 表格邊框單邊描述（E 卡／M4.6；語義對齊 OOXML `w:tblBorders`／`w:tcBorders`
+/// 的子元素 `w:top`／`w:left`／…，ECMA-376 §17.4.10）。
+///
+/// 欄位口徑（與 [`quire_ooxml::Border`] 一一對應，原字串保留＝無損）：
+/// - `style`＝`@w:val`（single／dashed／dotted／thick／double／none／nil／hidden…）；
+/// - `width_pt`＝**渲染語義寬（pt）**，寫回換算 `@w:sz = width_pt × 8`（八分之一點）
+///   並四捨五入取整；解析側既有口徑（`quire_layout::table::solve_pen`）即
+///   `sz/8`、下限 0.25pt，本欄取其反函數，寫入→讀回零位移；
+/// - `space_pt`＝`@w:space`（**pt**，寫回整數 twip 語義的原點單位：OOXML 此處
+///   單位即 pt，直接取整寫回；解析側目前不消費，照實寫入保真）；
+/// - `color`＝`@w:color`（RRGGBB／auto／theme 色名，原字串透傳）。
+///
+/// 移除語意（照 K29c 既有「宣告即贏」紀律）：`style = Some("none"|"nil"|"hidden")`
+/// ＝顯式關閉該邊（寫出元素、解析層 `solve_pen` 回 None 不發射，直接層贏過
+/// 樣式級聯）；`style = None`（整個 `BorderSpec` 傳 None）＝該邊未宣告、零擾動。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BorderSpec {
+    /// `@w:val`：框線樣式；`none`／`nil`／`hidden`＝顯式關閉。
+    #[serde(default)]
+    pub style: Option<String>,
+    /// 線寬（pt）；寫回 `@w:sz = round(width_pt × 8)`。
+    #[serde(default)]
+    pub width_pt: Option<f32>,
+    /// 距文字間距（pt）；寫回 `@w:space`。
+    #[serde(default)]
+    pub space_pt: Option<f32>,
+    /// `@w:color`：RRGGBB／auto／theme 色名（原字串）。
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+impl BorderSpec {
+    /// 全欄位皆缺（=`<w:top/>` 形態：宣告了邊框元素但沒有任何值）。
+    pub fn is_empty(&self) -> bool {
+        self.style.is_none()
+            && self.width_pt.is_none()
+            && self.space_pt.is_none()
+            && self.color.is_none()
+    }
+}
+
+/// 一組表格邊框（E 卡／M4.6）。表格級對齊 `w:tblBorders` 六方位；儲存格級
+/// （[`CellPropsPatch::borders`]）只用四方位——insideH／insideV 在 `w:tcBorders`
+/// 非法（ECMA-376 §17.4.10 僅列 top/left/bottom/right/tl2br/tr2bl/start/end），
+/// 傳了視為未宣告、零擾動。
+///
+/// 逐方位獨立：`Some(spec)`＝覆寫該邊；`None`＝該邊不動（保留原宣告／繼承）。
+/// 只要任一方位為 `Some`，寫入層就重建整個 `w:tblBorders`／`w:tcBorders` 容器
+/// （既有邊框元素整顆替換，未列方位＝缺位＝回到繼承），與 K29c 既有
+/// 「欄位有值才動、remove-then-append」口徑一致。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TableBordersPatch {
+    /// `w:top`。
+    #[serde(default)]
+    pub top: Option<BorderSpec>,
+    /// `w:left`。
+    #[serde(default)]
+    pub left: Option<BorderSpec>,
+    /// `w:bottom`。
+    #[serde(default)]
+    pub bottom: Option<BorderSpec>,
+    /// `w:right`。
+    #[serde(default)]
+    pub right: Option<BorderSpec>,
+    /// `w:insideH`（僅表格級）。
+    #[serde(default)]
+    pub inside_h: Option<BorderSpec>,
+    /// `w:insideV`（僅表格級）。
+    #[serde(default)]
+    pub inside_v: Option<BorderSpec>,
+}
+
+impl TableBordersPatch {
+    /// 六方位全缺＝整組未宣告（零擾動；序列化側可據此跳過欄位）。
+    pub fn is_empty(&self) -> bool {
+        [
+            self.top.as_ref(),
+            self.left.as_ref(),
+            self.bottom.as_ref(),
+            self.right.as_ref(),
+            self.inside_h.as_ref(),
+            self.inside_v.as_ref(),
+        ]
+        .into_iter()
+        .all(|b| b.is_none())
+    }
+
+    /// 只保留四方位（儲存格級用：`w:tcBorders` 無 insideH／insideV）。
+    pub(crate) fn cell_scope(mut self) -> Self {
+        self.inside_h = None;
+        self.inside_v = None;
+        self
+    }
+}
+
 /// 表格屬性補丁（K29c／M4.6）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TablePropsPatch {
@@ -259,6 +354,10 @@ pub struct TablePropsPatch {
     /// `w:shd/@w:fill`（RRGGBB）。
     #[serde(default)]
     pub shading_fill: Option<String>,
+    /// E 卡：`w:tblBorders` 六方位（四邊＋insideH／insideV）。
+    /// `None`＝零擾動（既有檔案逐位元組不變）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub borders: Option<TableBordersPatch>,
 }
 
 /// 列屬性補丁（K29c／M4.6）。
@@ -304,6 +403,10 @@ pub struct CellPropsPatch {
     /// `w:vMerge` 狀態。
     #[serde(default)]
     pub v_merge: Option<VMergeState>,
+    /// E 卡：`w:tcBorders` 四方位（top／left／bottom／right；insideH／insideV
+    /// 在 tcBorders 非法，傳了＝未宣告、零擾動）。`None`＝零擾動。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub borders: Option<TableBordersPatch>,
 }
 
 /// 浮動圖單軸定位規格（K29c／M5.1、M5.2）。
