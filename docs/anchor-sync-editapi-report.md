@@ -1,7 +1,8 @@
 # docs/edit-api-design.md 錨點同步報告（K29e 合併後行號漂移）
 
 - 分支：`oc/anchor-sync-editapi`
-- 基線：`main`（`db865bf`）
+- 起始基線：`main`（`db865bf`）
+- 交付時 `main` 已前進至 `090ab1b`（opencc 純度補正，僅 core/scripts/shells 註解與檔頭文字）；已以 `git merge --no-edit main` 非破壞性整合，使 `main..HEAD` diff 僅剩白名單檔
 - 白名單：僅 `docs/edit-api-design.md`；本報告為新建檔
 - 稽核器：`scripts/ow_doc_anchor_audit.py`（v3，未修改本體）
 
@@ -134,6 +135,8 @@ exit code = 1
 ## Commit 批次
 
 ```
+b900aee Merge branch 'main' into oc/anchor-sync-editapi
+03ea4bb 文件(錨點同步): 新增 oc/anchor-sync-editapi 交付報告（61 條真值對照＋2 條誤判列證）
 aac5651 文件(錨點同步): 7 條
 0eb139e 文件(錨點同步): 7 條
 463b5b8 文件(錨點同步): 10 條
@@ -144,3 +147,5 @@ f3171f4 文件(錨點同步): 6 條
 74ff660 文件(錨點同步): 7 條
 5134564 文件(錨點同步): 9 條
 ```
+
+註：`03ea4bb` 之後的 `b900aee` 僅整合交付時已前進的 `main`；本報告內容於整合前後相同。
