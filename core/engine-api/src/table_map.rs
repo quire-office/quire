@@ -1935,13 +1935,179 @@ pub fn apply_txbx_databinding(
 }
 
 // ---------------------------------------------------------------------------
-// 測試
+// E（卡 t_f91e5773）：段落 → 表格路徑反查（多表文件「點哪張改哪張」的地基）
 // ---------------------------------------------------------------------------
+
+/// 段落的表格歸屬查詢結果——**座標語義逐字對齊 `mutation::TablePath`**
+/// （`(row_idx, cell_idx, sub_table_idx)` 巢狀步，ECMA 樹路徑而非幾何），
+/// 外殼拿到即可直接餵 M4 家族 Mutation，不需第二輪翻譯。
+///
+/// 「巢狀步」第 3 項 `sub_table_idx`：宿主格內第幾個 `w:tbl`（本查詢產出的
+/// 路徑中，該步必為目標表本身在宿主格 `Block::Table` 序列的序）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableHit {
+    /// `TablePath::root_slot`：body 級根表序（`OoxmlDoc::tables` 的下標）。
+    pub root_slot: usize,
+    /// `TablePath::nested_steps`：自根表下行至目標表的巢狀步（根表本身＝空）。
+    pub nested_steps: Vec<(usize, usize, usize)>,
+    /// 目標表在 canonical 樹中的**網格欄數**（`grid_col_count`，外殼渲染欄
+    /// 數下限用；gridCol 缺件＝0，老實回報缺件）。
+    pub grid_cols: usize,
+    /// 目標表列數（`rows.len()`）。
+    pub rows: usize,
+    /// 宿主格索引（目標表宿主列內 `cells` 的下標；段落直接落於**根表本體外**
+    /// ＝`None`——本結構只在「段落确在該表某格內」時產生，故恆 Some，
+    /// 欄位仍留 Option 供未来 body 級命中（若有）相容）。
+    pub cell: Option<usize>,
+    /// 宿主列索引。
+    pub row: usize,
+    /// 宿主格的網格起點欄（gridSpan 累算：前面各格 `grid_span` 之和）——
+    /// 「游標落在第幾**網格**欄」與「第幾個 tc」是兩件事（gridSpan／畸形
+    /// 表兩者不等，PM 補正 2 同款口徑）。
+    pub grid_col_start: usize,
+    /// 宿主格跨欄數（`gridSpan` 有效值，缺＝1）。
+    pub grid_span: usize,
+    /// 宿主格在**巢狀序列最深表**中的列（＝`row` 的別名，保留顯名字段供
+    /// JSON 直讀）。
+    pub cell_row: usize,
+}
+
+/// 表格索引摘要（`tables_json` 的輕量伴跑面：外殼列「表格清單」不需整棵樹）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableSummary {
+    pub root_slot: usize,
+    /// 含巢狀在內的表總數（本根表經 `walk` 計數；根表本身計 1）。
+    pub table_count: usize,
+    /// 根表網格欄數（巢狀表不計）。
+    pub grid_cols: usize,
+    /// 根表列數。
+    pub rows: usize,
+    /// 根表格內（含巢狀）段落總數。
+    pub para_cells: usize,
+    /// 段落錨點起點（`para_start`）。
+    pub para_start: usize,
+    /// 段落錨點終點（半開；`table_para_end`）。
+    pub para_end: usize,
+}
+
+/// 查段落 `para_index` 落在哪張表（含巢狀表）。命中＝回**最深**（最貼近
+/// 段落）那張表的路徑；段落不在任何表內（body 級正文段）＝`None`。
+///
+/// 純函數：只讀 canonical 樹，零可變狀態、零 I/O、零 panic 路徑（全程
+/// `iter`，無 index 運算）。段落索引由主解析器按文件序編號且恰被**一格**
+/// 擁有（`Block::Paragraph { index }` 唯一性），故「最深」即唯一解，無需
+/// 候選仲裁。
+pub fn locate_table_for_para(tables: &[BodyTable], para_index: usize) -> Option<TableHit> {
+    for (root_slot, bt) in tables.iter().enumerate() {
+        // 表內段落的索引必落在 [para_start, para_end)——先以區間粗篩快速
+        // 否決不相干根表（單調性由 parser 保證，find_cell_for_para 同款用法）。
+        if para_index < bt.para_start || para_index >= table_para_end(&bt.table, bt.para_start) {
+            continue;
+        }
+        if let Some(hit) = locate_in_table(root_slot, &[], &bt.table, para_index) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+/// 單表遞迴：先掃本表各格（段落直接掛此格＝命中），再按文件序下鑽巢狀表
+/// （深度優先——巢狀表命中時其格直接擁有段落，外層不可能同時擁有）。
+fn locate_in_table(
+    root_slot: usize,
+    steps: &[(usize, usize, usize)],
+    t: &Table,
+    para_index: usize,
+) -> Option<TableHit> {
+    for (r_idx, row) in t.rows.iter().enumerate() {
+        let mut col_cursor = 0usize;
+        for (c_idx, cell) in row.cells.iter().enumerate() {
+            let span = cell.props.grid_span() as usize;
+            let owns = cell
+                .blocks
+                .iter()
+                .any(|b| matches!(b, Block::Paragraph { index } if *index == para_index));
+            if owns {
+                return Some(TableHit {
+                    root_slot,
+                    nested_steps: steps.to_vec(),
+                    grid_cols: t.grid_col_count(),
+                    rows: t.rows.len(),
+                    cell: Some(c_idx),
+                    row: r_idx,
+                    grid_col_start: col_cursor,
+                    grid_span: span,
+                    cell_row: r_idx,
+                });
+            }
+            col_cursor += span;
+        }
+    }
+    // 本表無直接命中→依文件序下鑽每格內巢狀表（深度優先，最深者勝）。
+    // `sub_table_idx` 口徑＝該格**巢狀表序列**（只數 `Block::Table`，跳過
+    // 段落 block）的下標——與 mutation_k29c::locate_table 的
+    // `direct_children(cell, "tbl")` 對齊，否則外殼拿本路徑餵 M4 會錯位。
+    // 已知殘差（誠實記帳）：canonical 把 `w:sdt`／`w:ins` 透明包裝**內**的
+    // 巢狀表也掛進 blocks（parser 透明包裝規則），而 locate_table 走 raw XML
+    // 只看直接子節點——此類檔案兩者序可能錯位；corpus 實測此形態未見於表內
+    // 巢狀（sdt 多在 body 級），外殼端 M4 呼叫本就有誠實拒絕兜底。
+    for (r_idx, row) in t.rows.iter().enumerate() {
+        for (c_idx, cell) in row.cells.iter().enumerate() {
+            let mut sub_idx = 0usize;
+            for b in cell.blocks.iter() {
+                if let Block::Table(inner) = b {
+                    let mut deeper = steps.to_vec();
+                    deeper.push((r_idx, c_idx, sub_idx));
+                    sub_idx += 1;
+                    if let Some(hit) = locate_in_table(root_slot, &deeper, inner, para_index) {
+                        return Some(hit);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 建 body 級根表的索引摘要序列（序＝`root_slot`，與 `TablePath::root_slot`
+/// 同基準）。純函數：只讀 canonical 樹——外殼列「表格清單」時不必吃整棵
+/// `tables_json`（多表文件那棵樹可達數 MB）。
+pub fn table_summaries(tables: &[BodyTable]) -> Vec<TableSummary> {
+    tables
+        .iter()
+        .enumerate()
+        .map(|(root_slot, bt)| {
+            let mut table_count = 0usize;
+            let mut para_cells = 0usize;
+            bt.walk(&mut |t| {
+                table_count += 1;
+                for row in &t.rows {
+                    for cell in &row.cells {
+                        para_cells += cell
+                            .blocks
+                            .iter()
+                            .filter(|b| matches!(b, Block::Paragraph { .. }))
+                            .count();
+                    }
+                }
+            });
+            TableSummary {
+                root_slot,
+                table_count,
+                grid_cols: bt.table.grid_col_count(),
+                rows: bt.table.rows.len(),
+                para_cells,
+                para_start: bt.para_start,
+                para_end: table_para_end(&bt.table, bt.para_start),
+            }
+        })
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quire_ooxml::{parse, InlineImage};
+    use quire_ooxml::{parse, CellProps, GridCol, InlineImage};
 
     /// 最小 InlineImage（只填測試有意義的欄位）。
     fn img(para: usize, h_pt: f32) -> InlineImage {
@@ -2348,5 +2514,212 @@ mod tests {
             typ: Some("dxa".into()),
         };
         assert_eq!(width_spec(&ok), Some(WidthSpec::Pt(10.0)));
+    }
+
+    // ---------------- E（卡 t_f91e5773）：段落 → 表格路徑反查考卷 ----------------
+
+    /// 手刻最小 cell（段落引用＋可選巢狀表；props 只填 grid_span 有意義欄）。
+    fn e_cell(blocks: Vec<Block>, grid_span_raw: Option<&str>) -> TableCell {
+        TableCell {
+            props: CellProps {
+                grid_span_raw: grid_span_raw.map(str::to_owned),
+                ..Default::default()
+            },
+            blocks,
+        }
+    }
+
+    fn e_row(cells: Vec<TableCell>) -> quire_ooxml::TableRow {
+        quire_ooxml::TableRow {
+            props: Default::default(),
+            cells,
+        }
+    }
+
+    fn e_table(grid_cols: usize, rows: Vec<quire_ooxml::TableRow>) -> Table {
+        Table {
+            props: Default::default(),
+            grid: (0..grid_cols)
+                .map(|_| GridCol {
+                    w_pt: Some(10.0),
+                    raw: None,
+                })
+                .collect(),
+            rows,
+        }
+    }
+
+    /// 燈 E-純 1：根表命中——段落掛根表格內，`nested_steps` 空、座標直指
+    /// (row, cell)；網格起點欄按 gridSpan 累算（跨欄格之後的格起點右移）。
+    #[test]
+    fn e1_locate_root_table_hit_with_gridspan_cursor() {
+        // T0: r0 = [c0(段0), c1(gridSpan=2, 段1)]；r1 = [c0(段2), c1(段3)]
+        let t = e_table(
+            3,
+            vec![
+                e_row(vec![
+                    e_cell(vec![Block::Paragraph { index: 0 }], None),
+                    e_cell(vec![Block::Paragraph { index: 1 }], Some("2")),
+                ]),
+                e_row(vec![
+                    e_cell(vec![Block::Paragraph { index: 2 }], None),
+                    e_cell(vec![Block::Paragraph { index: 3 }], None),
+                ]),
+            ],
+        );
+        let roots = vec![BodyTable {
+            para_start: 0,
+            table: t,
+        }];
+        let h = locate_table_for_para(&roots, 1).expect("段 1 在 r0c1（跨欄格）");
+        assert_eq!(h.root_slot, 0);
+        assert!(h.nested_steps.is_empty(), "根表命中＝零巢狀步");
+        assert_eq!((h.row, h.cell), (0, Some(1)));
+        assert_eq!(h.grid_col_start, 1, "c1 起點＝c0 的 span(1) 累算");
+        assert_eq!(h.grid_span, 2, "gridSpan 有效值透出");
+        assert_eq!((h.grid_cols, h.rows), (3, 2));
+        // 跨欄格之後的格（r1 是兩格普通表，起點直接＝索引）仍對。
+        let h2 = locate_table_for_para(&roots, 3).expect("段 3 在 r1c1");
+        assert_eq!((h2.row, h2.cell, h2.grid_col_start), (1, Some(1), 1));
+        // 表外段落＝None（不是錯誤）。
+        assert!(locate_table_for_para(&roots, 99).is_none());
+    }
+
+    /// 燈 E-純 2：巢狀表命中——段落掛在第 1 格內第 0 張子表，路徑＝
+    /// `[(row, cell, sub)]` 且第 3 項語義＝宿主格內 `Block::Table` 序列序
+    /// （同格先擺一張 decoy 子表驗證 sub≠0）。
+    #[test]
+    fn e2_locate_nested_table_deepest_wins_with_sub_index() {
+        let inner = e_table(
+            1,
+            vec![e_row(vec![e_cell(
+                vec![Block::Paragraph { index: 5 }],
+                None,
+            )])],
+        );
+        let decoy = e_table(
+            1,
+            vec![e_row(vec![e_cell(
+                vec![Block::Paragraph { index: 4 }],
+                None,
+            )])],
+        );
+        // 宿主格 blocks：段 9（自身）、decoy 表（序 0）、inner 表（序 1）。
+        let host = e_cell(
+            vec![
+                Block::Paragraph { index: 9 },
+                Block::Table(Box::new(decoy)),
+                Block::Table(Box::new(inner)),
+            ],
+            None,
+        );
+        let root = e_table(
+            1,
+            vec![e_row(vec![
+                e_cell(vec![Block::Paragraph { index: 8 }], None),
+                host,
+            ])],
+        );
+        let roots = vec![BodyTable {
+            para_start: 4,
+            table: root,
+        }];
+        let h = locate_table_for_para(&roots, 5).expect("段 5 在巢狀表（序 1）");
+        assert_eq!(
+            h.nested_steps,
+            vec![(0, 1, 1)],
+            "sub_table_idx＝格內第 1 張表"
+        );
+        assert_eq!((h.row, h.cell), (0, Some(0)), "座標是**巢狀表自身**的格");
+        // 宿主格自身段落命中→回根表（最深＝根表，steps 空）。
+        let h9 = locate_table_for_para(&roots, 9).expect("段 9 掛宿主格");
+        assert!(h9.nested_steps.is_empty(), "根表格內段落＝根表命中");
+        // decoy 表的段落→回 decoy 表（steps 同 (0,1,0)）。
+        let h4 = locate_table_for_para(&roots, 4).expect("段 4 在 decoy");
+        assert_eq!(h4.nested_steps, vec![(0, 1, 0)]);
+    }
+
+    /// 燈 E-純 3：多根表——root_slot 按 `OoxmlDoc::tables` 序對號；區間粗篩
+    /// 不得把「段落在後一張表」誤判成前一張（para_start 相同起點的邊界）。
+    #[test]
+    fn e3_multi_root_tables_resolve_by_root_slot() {
+        let t0 = e_table(
+            1,
+            vec![e_row(vec![e_cell(
+                vec![Block::Paragraph { index: 0 }],
+                None,
+            )])],
+        );
+        let t1 = e_table(
+            2,
+            vec![e_row(vec![e_cell(
+                vec![Block::Paragraph { index: 1 }],
+                None,
+            )])],
+        );
+        let t2 = e_table(
+            2,
+            vec![e_row(vec![e_cell(
+                vec![Block::Paragraph { index: 2 }],
+                None,
+            )])],
+        );
+        let roots = vec![
+            BodyTable {
+                para_start: 0,
+                table: t0,
+            },
+            BodyTable {
+                para_start: 1,
+                table: t1,
+            },
+            BodyTable {
+                para_start: 2,
+                table: t2,
+            },
+        ];
+        for (para, want) in [(0usize, 0usize), (1, 1), (2, 2)] {
+            let h = locate_table_for_para(&roots, para).expect("每段各隸一張");
+            assert_eq!(h.root_slot, want, "段 {para} 必須落在 root_slot {want}");
+        }
+        assert!(locate_table_for_para(&roots, 3).is_none(), "越界段落＝None");
+    }
+
+    /// 燈 E-純 4：摘要——`table_count` 含巢狀（根 1＋子 1＝2）、`para_cells`
+    /// 逐格計段落、`para_end` 半開含巢狀段落（table_para_end 口徑）。
+    #[test]
+    fn e4_summaries_count_nested_tables_and_cell_paras() {
+        let inner = e_table(
+            1,
+            vec![e_row(vec![e_cell(
+                vec![Block::Paragraph { index: 2 }],
+                None,
+            )])],
+        );
+        let root = e_table(
+            2,
+            vec![e_row(vec![
+                e_cell(
+                    vec![Block::Paragraph { index: 0 }, Block::Paragraph { index: 1 }],
+                    None,
+                ),
+                e_cell(vec![Block::Table(Box::new(inner))], None),
+            ])],
+        );
+        let roots = vec![BodyTable {
+            para_start: 0,
+            table: root,
+        }];
+        let s = table_summaries(&roots);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].table_count, 2, "根表＋1 巢狀");
+        assert_eq!(s[0].para_cells, 3, "格內段落含巢狀表格");
+        assert_eq!((s[0].grid_cols, s[0].rows), (2, 1));
+        assert_eq!(
+            (s[0].para_start, s[0].para_end),
+            (0, 3),
+            "para_end 半開含巢狀段"
+        );
+        assert_eq!(s[0].root_slot, 0);
     }
 }
