@@ -89,7 +89,7 @@ export const DEPENDENCY_MAP = {
 /**
  * U4：外殼已真接引擎 Mutation 的指令表（第一批：M4 表格家族＋M5.1 圖片插入）。
  *
- * 每筆 spec 說明了「core 分支验什麼、UI 層拿什麼去呼 adapter」。欄位鍵名對
+ * 每筆 spec 說明了「core 分支驗什麼、UI 層拿什麼去呼 adapter」。欄位鍵名對
  * `core/engine-api/src/mutation.rs` 的宣告，不是外殼自創：
  * - InsertTableRow  table／at_row／position        （mutation.rs:302-306）
  * - DeleteTableRow  table／row                     （mutation.rs:308）
@@ -160,7 +160,7 @@ function pickRootSlot(payload) {
   return { value: n, error: null };
 }
 
-/** 讀索引欄（依候選鍵名取第一个存在的）：缺欄回 value=null，非法回 error */
+/** 讀索引欄（依候選鍵名取第一個存在的）：缺欄回 value=null，非法回 error */
 function pickIndex(payload, keys) {
   for (const k of keys) {
     const v = payload?.[k];

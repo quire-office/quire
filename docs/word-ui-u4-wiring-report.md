@@ -86,7 +86,7 @@ worker：`ow-render`
 
 實測：`SetTableProps { shading_fill: 'E06699' }` → `ok=true`、存檔 `document.xml` 確實含 `<w:shd w:fill="E06699">`，但顯示列表項目數 **80→80 零變化**（`Rect` 零發射）。同一個 `shading_fill` 放在 `SetCellProps` 就有 `Rect`。
 
-→ 這層「XML 寫了、用戶看不見」不是外殼能補的（補就是 JS 自繪，違反「嚴禁平行另造排版器」）。外殼做法：命令照送（XML 層是真實寫入），但**不得宣稱可見效果**；考卷 `5.9` 斷言顯示列表零發射並在標籤面維持誠實（`warn` 於發射出現時提醒重估），`[檢查 4(d)]`／`[檢查 7]` 禁止把它掛成 live。發射缺口属引擎發射面（`table_map.rs` 的 `tblStylePr` 條件底紋有路徑，`tblPr` 直接底紋無發射），建議 PM 另開引擎卡。
+→ 這層「XML 寫了、用戶看不見」不是外殼能補的（補就是 JS 自繪，違反「嚴禁平行另造排版器」）。外殼做法：命令照送（XML 層是真實寫入），但**不得宣稱可見效果**；考卷 `5.9` 斷言顯示列表零發射並在標籤面維持誠實（`warn` 於發射出現時提醒重估），`[檢查 4(d)]`／`[檢查 7]` 禁止把它掛成 live。發射缺口屬引擎發射面（`table_map.rs` 的 `tblStylePr` 條件底紋有路徑，`tblPr` 直接底紋無發射），建議 PM 另開引擎卡。
 
 ### 1.3 契約第 4 條：圖片插入
 
@@ -131,7 +131,9 @@ worker：`ow-render`
 | `table:align-center` | 格內文字 x `72.0`（整表位移，見簽名） | — |
 | `cell:shading #00AAFF` | items 46、`Rect` 1 筆 `fill=0xFF00AAFF`、`x=259 y=89 w=78 h=17` | hash `1168052406`、非白 123325、藍色素 2948 |
 | `insert:picture`（40×24 PNG） | `Image` 項 1 筆（mime `image/png`、30×18pt、base64 像素 236 字元） | 紅色素 816 |
-| 單次 undo（`edit:undo`） | items 回 41、Rect 0、paras 14、tables 0 | hash 逐位回 `2157956449`、非白回 127215 |
+| 兩次撤銷（表格＋底紋各一筆，經 `edit:undo`） | items 回 41、Rect 0、paras 14、tables 0 | hash 逐位回 `2157956449`、非白回 127215 |
+
+撤銷鏈實際時序（如實記，避免誤讀成「一筆撤銷還原全部」）：先插表再上底紋（兩筆 mutation），第一筆撤銷走 `adapter.undo()` 直連（顯示列表 Rect 1→0，但畫布不重繪——重繪屬 UI 路徑，非缺陷），第二筆撤銷走 UI 的 `edit:undo`（觸發 reflow），畫布 hash 逐位回基線 `2157956449`、非白像素回 127215。
 
 截圖（同一 viewport，含 Ribbon／尺規／狀態列的真實編輯器）：
 - `u4_evidence_before.png`（無表格）
@@ -202,4 +204,16 @@ U1／U2／U3 三份本卡**未修改**，只重跑確認未回歸。考卷 `5.x`
 
 ## 6. 繁中純度
 
-diff 新增行以 opencc s2t 逐字元比對＋碼位掃描。修掉一處真實洩漏：adapter 註解一個 U+52A8（「動」之簡體形）改寫為 U+52D5。本報告依紀律以 U+ 碼位描述、不貼簡體字面，以免污染後續掃描。零 emoji。
+diff 新增行以 opencc s2t 逐字元比對＋碼位掃描（623 個唯一 CJK 字元）。共修掉 **5 處**真實簡體洩漏（本節由後續 run 補正——首版宣稱「一處」為不實，實際掃描抓出五處）：
+
+| 檔 | 位置 | 洩漏碼位 | 修正碼位 |
+| --- | --- | --- | --- |
+| `qword-core.js` | U4 指令表註解「core 分支?什麼」 | U+9A8C | U+9A57（驗） |
+| `qword-core.js` | `pickIndex` 註解「第?個」 | U+4E2A | U+500B（個） |
+| `engine-adapter.js` | `buildSetTablePropsMutation` 註解「?默忽略」 | U+9759 | U+975C（靜） |
+| `engine-adapter.js` | 表格路徑解析註解「最?一張」 | U+540E | U+5F8C（後） |
+| `word-ui-u4-wiring-report.md` | §1.2 降級項「缺口?引擎發射面」 | U+5C5E | U+5C6C（屬） |
+
+opencc 另報三筆**同形字誤報**，依 skill 白名單原則**不改**：`蒙`（「蒙混過關」為正體用法，`矇` 僅用於失明義）、`准`（「不准只畫佔位框」之「不准」為正體用法，`準` 用於標準／依準義）、`后`（白名單字）。
+
+本報告依紀律以 U+ 碼位描述洩漏字、不貼簡體字面，以免污染後續掃描。零 emoji（考卷輸出的 `✓`／`✗` 為 U+2713／U+2717 幾何符號，非 emoji 區段）。

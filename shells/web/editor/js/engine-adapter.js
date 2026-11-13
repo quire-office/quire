@@ -323,7 +323,7 @@ export function buildDeleteTableColumnMutation(table, gridCol) {
 /**
  * 建立 M4.6 SetTableProps 變更物件
  * patch 欄位**只有三欄**（`mutation.rs:162-174`）：width_pt／alignment／
- * shading_fill。引擎的 serde 對未知欄位是静默忽略（實測 patch:{border_pt:6}
+ * shading_fill。引擎的 serde 對未知欄位是靜默忽略（實測 patch:{border_pt:6}
  * 回 ok=true 且顯示列表零變化），因此本建構器只放行這三欄、其餘一律丟棄，
  * 避免外殼送出「看起來成功、實際沒做事」的假接線。
  * **邊框／框線不是本變體的欄位**——引擎目前無 `w:tblBorders` 寫入面，
@@ -964,7 +964,7 @@ export class EngineAdapter {
 
   /**
    * 解析目標表格路徑：payload 帶 rootSlot 用之；否則以游標段落後最近的根表
-   * （無從反查時退到最后一張根表，並回傳 discovered=true 供 UI 在狀態列說明）。
+   * （無從反查時退到最後一張根表，並回傳 discovered=true 供 UI 在狀態列說明）。
    * 引擎未提供 caret→table 反查（wasm 殼未綁 tables_json），此處只用引擎給的
    * 張數真值，不自行猜座標。
    */
