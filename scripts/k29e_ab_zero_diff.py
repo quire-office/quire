@@ -4,6 +4,9 @@
 口徑（quire-redlight-conventions）：每檔一次 quire-cli dump（全頁 JSON），
 ThreadPoolExecutor 平行；比對前剝 data_b64、浮點 round 4、含頁面尺寸欄。
 PASS 條件＝DIFF 檔數恰為 0（編輯卡無合法觸發集）。
+
+用法：python3 scripts/k29e_ab_zero_diff.py <base-binary> <head-binary> [repo-root]
+（repo-root 預設目前目錄；二進位路徑一律由呼叫端餵，本檔不寫死本機路徑）
 """
 import glob
 import json
@@ -12,9 +15,11 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-BASE = "/home/jerry/.hermes/profiles/ow-core/cache/scratch/k29e-base-target/debug/quire-cli"
-HEAD = "/home/jerry/projects/quire/.worktrees/t_4b55fc9d/target/debug/quire-cli"
-ROOT = "/home/jerry/projects/quire/.worktrees/t_4b55fc9d"
+if len(sys.argv) < 3:
+    sys.exit("用法：k29e_ab_zero_diff.py <base-binary> <head-binary> [repo-root]")
+BASE = os.path.abspath(sys.argv[1])
+HEAD = os.path.abspath(sys.argv[2])
+ROOT = os.path.abspath(sys.argv[3]) if len(sys.argv) > 3 else os.getcwd()
 
 STRIP_KEYS = {"data_b64"}
 
@@ -60,7 +65,7 @@ def compare(path):
 
 
 def main():
-    files = sorted(set(glob.glob("corpus/**/*.docx", recursive=True)))
+    files = sorted(set(glob.glob(os.path.join(ROOT, "corpus", "**", "*.docx"), recursive=True)))
     print(f"corpus docx 檔數：{len(files)}")
     diffs = []
     skipped = []
