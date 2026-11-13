@@ -75,12 +75,11 @@ export const GROUPS = {
  */
 export const DEPENDENCY_MAP = {
   'live': { name: '既有能力', desc: '外殼或當前引擎直接支援' },
-  'pending:K29b': { name: 'K29b 段落拆併與樣式', desc: '字型、粗斜底線、色彩、段落對齊、清單編號（引擎切片開發中）' },
-  'pending:shell': { name: '外殼功能待接線', desc: '剪貼簿、尋找取代等外殼自身功能（開發中）' },
-  'pending:K29b': { name: 'K29b 物件與插入引擎', desc: '表格、圖片、圖形、SmartArt、文字方塊、頁首頁尾與符號' },
-  'pending:K29c': { name: 'K29c 版面與樣式系統', desc: '主題、樣式庫、邊界、紙張方向、分欄、背景浮水印與繞排' },
-  'pending:K29d': { name: 'K29d 校對與審閱協同', desc: '拼寫檢查、同義字、字數統計、翻譯、批註、修訂追蹤與保護' },
-  'pending:K29e': { name: 'K29e 參考資料與文獻', desc: '目錄產生、註腳、引文、圖表目錄與索引' },
+  'pending:shell': { name: '外殼待接線', desc: '引擎已有對應能力（Mutation 欄位真實存在），瀏覽器外殼接線與對話框進行中；剪貼簿、尋找取代屬外殼自身功能' },
+  'pending:K29b': { name: 'K29b 切片（開發中）', desc: '引擎端切片進行中；逐鈕真實缺口以該鈕 title 為準' },
+  'pending:K29c': { name: 'K29c 表格與圖片切片', desc: '已隨 v0.1.0-beta.12 入 main（M4 表格＋M5 圖片）；本標籤僅供歷史追溯，鈕面已按逐鈕查證重掛' },
+  'pending:K29d': { name: 'K29d 節與註腳切片', desc: '已隨 v0.1.0-beta.12 入 main（M6 節／頁首頁尾／註腳）；本標籤僅供歷史追溯，鈕面已按逐鈕查證重掛' },
+  'pending:K29e': { name: 'K29e 引擎切片（開發中）', desc: '引擎端切片進行中（樣式面／校閱面／參考資料面）；逐鈕真實缺口以該鈕 title 為準' },
   'pending:K29s': { name: 'K29s 視窗與多重視圖', desc: '多視窗檢視、視窗重排與分割' },
   'pending:K29m': { name: 'K29m 巨集與腳本擴充', desc: '巨集錄製與腳本自動化' },
   'pending:K29f': { name: 'K29f 檔案與協同傳輸', desc: '本機/雲端儲存、共用與協同編輯' },
@@ -478,8 +477,20 @@ export class QWordCore {
       handled = true;
       req = 'live';
     } else if (cmdId === 'table:grid-select') {
-      handled = true;
-      req = 'live';
+      // M4.1 InsertTable 真接線：本層只做指令記帳與事件匯流，實際 Mutation
+      // 由 UI 層的 handleInsertTable 呼叫 adapter.insertTable 落地（與
+      // format:bold 等同一分層契約）。誠實紀律：尺寸非法時不得沿用呼叫端
+      // 帶入的 live 宣稱——引擎不會被呼叫，故強制降回真實缺口標籤。
+      const rows = Number(payload?.rows);
+      const cols = Number(payload?.cols);
+      const valid = Number.isInteger(rows) && Number.isInteger(cols) && rows > 0 && cols > 0;
+      handled = valid;
+      if (valid) {
+        req = 'live';
+        this._notify('table:grid-insert', { rows, cols });
+      } else {
+        req = String(requirement || '') === 'live' ? 'pending:shell' : requirement;
+      }
     } else if (cmdId === 'symbol:palette-select') {
       handled = true;
       req = 'live';
