@@ -15,6 +15,17 @@
 import { QWordCore, TABS, DEPENDENCY_MAP } from './qword-core.js';
 import { EngineAdapter, getDefaultSampleBytes } from './engine-adapter.js';
 
+/**
+ * 檔名副檔名 → MIME（僅在瀏覽器未給 file.type 時備援使用）。
+ * 只列引擎 validate_media 認可的格式；其餘回 null 讓上層如實回報不支援，
+ * 不用 octet-stream 蒙混過外殼檢查（檔頭與 MIME 相符與否由引擎最終裁決）。
+ */
+function mimeFromName(name) {
+  const ext = String(name || '').split('.').pop().toLowerCase();
+  const MAP = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
+  return MAP[ext] ?? null;
+}
+
 export class QWordUI {
   constructor() {
     this.core = new QWordCore();
@@ -131,6 +142,16 @@ export class QWordUI {
         this.handleApplyStyle(data);
       } else if (type === 'table:grid-insert') {
         this.handleInsertTable(data);
+      } else if (type === 'table:row-col-mutate') {
+        this.handleTableRowCol(data);
+      } else if (type === 'table:props-apply') {
+        this.handleTableProps(data);
+      } else if (type === 'cell:props-apply') {
+        this.handleCellProps(data);
+      } else if (type === 'image:inline-insert') {
+        this.handleInlineImageInsert(data);
+      } else if (type === 'image:pick-request') {
+        this.requestImageFilePick();
       } else if (type === 'page:change') {
         this.scrollToPage(data.currentPage - 1);
       }
@@ -263,6 +284,18 @@ export class QWordUI {
         const file = e.target.files && e.target.files[0];
         if (!file) return;
         const bytes = new Uint8Array(await file.arrayBuffer());
+        // U4 契約第 4 條：insert:picture 走同一個 #qword-file-input。區分方式
+        // 是「本次是由圖片鈕觸發的選取」（imagePickMode），此時把位元組交給
+        // 引擎做 InsertInlineImage，而不是當成開檔請求。
+        if (this.imagePickMode) {
+          this.imagePickMode = false;
+          this.restoreFileInputAccept();
+          const mime = String(file.type || '').trim().toLowerCase()
+            || (mimeFromName(file.name) ?? '');
+          this.handleInlineImageInsert({ bytes, mimeType: mime, altText: file.name || null });
+          this.fileInput.value = '';
+          return;
+        }
         await this.loadFile(bytes, file.name);
         this.fileInput.value = '';
       });
@@ -843,15 +876,199 @@ export class QWordUI {
     }
     const res = this.adapter.insertTable(rows, cols);
     if (res.ok) {
+      // 記下這張表為後續行列／屬性操作的作用對象（見 resolveRootSlot 說明）。
+      this.activeTableSlot = this.adapter.tableCount() - 1;
       await this.refreshPages();
       this.renderCaret();
       this.renderSelection();
       this.syncEngineStats();
       console.log(`[QWordUI] M4.1 InsertTable 成功：${rows} × ${cols}（段落數=${this.adapter.paragraphCount()}）`);
     } else {
-      console.warn('[QWordUI] M4.1 InsertTable 引擎拒絕:', res.error);
+      this._reportEngineRejection('table:grid-select', { rows, cols }, res);
       this.showErrorModal('表格插入失敗', String(res.error || '引擎拒絕了本次插入操作。'));
     }
+  }
+
+  // ── U4：M4.3／M4.4／M4.6／M5.1 落地層（真呼引擎，失敗如實回報）──────────────
+  //
+  // 共同契約：
+  // 1. core 層已驗過參數，這裡仍會再守一次「引擎是否已載入文件」——沒有文件
+  //    時任何 mutation 都不可能被執行，不得讓呼叫端以為成功。
+  // 2. 引擎回 ok=false 一律走 _reportEngineRejection（補一筆 handled=false 的
+  //    日誌）＋錯誤彈窗，禁止靜默。
+  // 3. 成功後必走 reflow 路徑（refreshPages/renderCaret/syncEngineStats），
+  //    畫面與狀態列反映的是引擎重算後的顯示列表，JS 端零幾何推算。
+
+  /**
+   * 決定本次操作作用於哪張根表格（TablePath.root_slot）。
+   *
+   * 誠實說明這個缺口的由來：引擎有 `table_map.rs` 的表格索引，但
+   * `shells/web/src/lib.rs` 沒有把「依游標／依座標反查 root_slot」綁進 wasm，
+   * 外殼也禁止自己算幾何當真相。因此目前的解析順序是：
+   *   呼叫端明確指定 → 本 session 最近操作的那張表 → 文件只有一張表時用 0
+   * 三者皆不可得時如實回報「無法定位目標表格」，不猜、不默默改到別張表上。
+   */
+  resolveRootSlot(requested) {
+    if (Number.isInteger(requested) && requested >= 0) {
+      this.activeTableSlot = requested;
+      return requested;
+    }
+    const count = this.adapter.tableCount();
+    if (count === 0) return null;
+    if (Number.isInteger(this.activeTableSlot) && this.activeTableSlot < count) return this.activeTableSlot;
+    if (count === 1) {
+      this.activeTableSlot = 0;
+      return 0;
+    }
+    return null;
+  }
+
+  /** 引擎或外殼前置檢查拒絕時補一筆失敗日誌（讀引擎回傳，非外殼自報旗標） */
+  _reportEngineRejection(cmdId, payload, res) {
+    if (typeof this.core?.recordCommandFailure !== 'function') return;
+    const dispatched = (this.core.commandLog || []).filter((e) => e.cmdId === cmdId);
+    const req = dispatched.length ? dispatched[dispatched.length - 1].requirement : 'live';
+    const message = res?.error || '操作失敗，未提供錯誤訊息';
+    // rejectedByShell＝外殼前置檢查就擋下（引擎未被呼叫）；否則引擎真的回
+    // ok=false。兩者都是失敗，但日誌要分得出來，否則會被誤讀成引擎故障。
+    this.core.recordCommandFailure(cmdId, payload, message, req, !res?.rejectedByShell);
+  }
+
+  /** M4.3／M4.4：列／欄的插入與刪除 */
+  async handleTableRowCol(payload = {}) {
+    const cmdId = payload.cmdId || 'table:row-col';
+    const slot = this._requireTableTarget(cmdId, payload, payload.rootSlot, '編輯表格行列');
+    if (slot === null) return;
+    let res;
+    switch (payload.mutation) {
+      case 'InsertTableRow':
+        res = this.adapter.insertTableRow(payload.position, { rootSlot: slot, atRow: payload.index });
+        break;
+      case 'DeleteTableRow':
+        res = this.adapter.deleteTableRow({ rootSlot: slot, row: payload.index });
+        break;
+      case 'InsertTableColumn':
+        res = this.adapter.insertTableColumn(payload.position, { rootSlot: slot, atGridCol: payload.index, widthPt: payload.widthPt });
+        break;
+      case 'DeleteTableColumn':
+        res = this.adapter.deleteTableColumn({ rootSlot: slot, gridCol: payload.index });
+        break;
+      default:
+        this._reportEngineRejection(cmdId, payload, { error: `未知的行列操作變體 ${payload.mutation}`, rejectedByShell: true });
+        this.showErrorModal('行列操作失敗', `未知的行列操作變體：${payload.mutation}`);
+        return;
+    }
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+      console.log(`[QWordUI] ${payload.mutation} 成功（table=${slot} index=${payload.index} position=${payload.position}）`);
+    } else {
+      this._reportEngineRejection(cmdId, payload, res);
+      this.showErrorModal('表格行列操作失敗', String(res.error || '引擎拒絕了本次行列操作。'));
+    }
+  }
+
+  /** M4.6（表格面）：底紋／對齊／寬度 */
+  async handleTableProps(payload = {}) {
+    const cmdId = payload.cmdId || 'table:props';
+    const slot = this._requireTableTarget(cmdId, payload, payload.rootSlot, '變更表格屬性');
+    if (slot === null) return;
+    const res = this.adapter.setTableProps(payload.patch || {}, { rootSlot: slot });
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+      console.log(`[QWordUI] SetTableProps 成功（table=${slot}）套用欄=${JSON.stringify(res.applied)}`);
+    } else {
+      this._reportEngineRejection(cmdId, payload, res);
+      this.showErrorModal('表格屬性變更失敗', String(res.error || '引擎拒絕了本次屬性變更。'));
+    }
+  }
+
+  /** M4.6（儲存格面）：底紋／垂直對齊 */
+  async handleCellProps(payload = {}) {
+    const cmdId = payload.cmdId || 'cell:props';
+    const slot = this._requireTableTarget(cmdId, payload, payload.rootSlot, '變更儲存格屬性');
+    if (slot === null) return;
+    if (!Number.isInteger(payload.row) || !Number.isInteger(payload.cell)) {
+      this._reportEngineRejection(cmdId, payload, { error: '缺少 row／cell 座標', rejectedByShell: true });
+      this.showErrorModal('儲存格屬性變更失敗', '需要 row 與 cell 兩個非負整數座標。');
+      return;
+    }
+    const res = this.adapter.setCellProps(payload.patch || {}, { rootSlot: slot, row: payload.row, cell: payload.cell });
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+      console.log(`[QWordUI] SetCellProps 成功（table=${slot} cell=(${payload.row},${payload.cell})）套用欄=${JSON.stringify(res.applied)}`);
+    } else {
+      this._reportEngineRejection(cmdId, payload, res);
+      this.showErrorModal('儲存格屬性變更失敗', String(res.error || '引擎拒絕了本次屬性變更。'));
+    }
+  }
+
+  /** M5.1：把圖片位元組真的送進引擎（媒體寫入＋游標處 inline Drawing） */
+  async handleInlineImageInsert(payload = {}) {
+    const bytes = payload.bytes instanceof Uint8Array ? payload.bytes : Uint8Array.from(payload.bytes || []);
+    if (!this.adapter.engine) {
+      this._reportEngineRejection('insert:picture', { mimeType: payload.mimeType, byteLength: bytes.length },
+        { error: '尚未開啟文件', rejectedByShell: true });
+      this.showErrorModal('尚未開啟文件', '目前尚未載入任何 DOCX 文件，無法插入圖片。');
+      return;
+    }
+    const res = this.adapter.insertInlineImage(bytes, payload.mimeType, { altText: payload.altText ?? null });
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+      console.log(`[QWordUI] M5.1 InsertInlineImage 成功：${bytes.length} bytes／${payload.mimeType}（置入 ${JSON.stringify(res.placed)}）`);
+    } else {
+      this._reportEngineRejection('insert:picture', { mimeType: payload.mimeType, byteLength: bytes.length }, res);
+      this.showErrorModal('圖片插入失敗', String(res.error || '引擎拒絕了本次圖片插入。'));
+    }
+  }
+
+  /**
+   * insert:picture 的檔案選取走既有 #qword-file-input 路徑（契約第 4 條）。
+   * 圖片選擇模式下，change 事件處理改讀 bytes 送引擎，不再當成開檔請求。
+   */
+  requestImageFilePick() {
+    if (!this.fileInput) {
+      this.showErrorModal('找不到檔案選擇器', '頁面上沒有 #qword-file-input，無法選取圖片檔。');
+      return;
+    }
+    this.imagePickMode = true;
+    this.fileInput.accept = 'image/png,image/jpeg,image/gif,image/webp,image/svg+xml';
+    this.fileInput.click();
+  }
+
+  /** 圖片選取結束後還原開檔用 accept，避免污染開檔路徑 */
+  restoreFileInputAccept() {
+    if (this.fileInput) this.fileInput.accept = '.docx,.odt';
+  }
+
+  /** 表格操作共用的「引擎就緒＋表格可定位」前置檢查 */
+  _requireTableTarget(cmdId, payload, requested, actionLabel) {
+    if (!this.adapter.engine) {
+      this.showErrorModal('尚未開啟文件', `目前尚未載入任何 DOCX 文件，無法${actionLabel}。`);
+      return null;
+    }
+    const slot = this.resolveRootSlot(requested);
+    if (slot === null) {
+      const count = this.adapter.tableCount();
+      const why = count === 0
+        ? '文件中沒有任何表格。'
+        : `文件中有 ${count} 張表格，外殼目前無法判定要操作哪一張（缺游標反查表格索引的外殼綁定，詳見 U4 報告）。`;
+      this.showErrorModal('無法定位目標表格', why);
+      this._reportEngineRejection(cmdId, payload, { error: `root_slot 無法解析（表格數=${count}）`, rejectedByShell: true });
+      return null;
+    }
+    return slot;
   }
 
   async refreshPages() {
