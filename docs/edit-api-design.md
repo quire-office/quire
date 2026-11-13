@@ -95,7 +95,7 @@ Quire 的容器層無損承諾由 `core/ooxml/src/zip_struct.rs`、`core/ooxml/s
      - `parts: BTreeMap<String, Vec<u8>>`（`core/ooxml/src/lib.rs:321`）與 `pub bundle: ZipBundle`（`core/ooxml/src/lib.rs:323`，公開欄位：`Planned` 零失真搬運所需，外部不直接改寫）。
    - **其餘 OOXML 語義並未存放在 `OoxmlDoc` 結構體欄位中，而是由 `Engine::from_docx_bytes` 在開檔期從 `doc.parts` 按需呼叫無狀態解析函式取得**【已實測】：
      - 主題色與主題字型：`ThemeColors::from_parts(&doc.parts)`（`core/ooxml/src/theme.rs:119-123`）與 `ThemeFonts::from_parts(&doc.parts)`（`core/ooxml/src/theme.rs:358-362`），註解明確記載：`w:rFonts` 的主題字型引用在解析當下查表落地成直接值，純讀取，存檔路徑不經此層（`core/ooxml/src/theme.rs:17-18`、`core/ooxml/src/lib.rs:386-387`）。
-     - 樣式表：`StyleTable::parse_with_fonts`（`core/ooxml/src/styles.rs:924-930`），且受 `styles_referenced(&doc.parts)`（`core/engine-api/src/lib.rs:3359`）守門——必須在 `word/_rels/document.xml.rels` 中存在 `styles` 關聯才生效。
+     - 樣式表：`StyleTable::parse_with_fonts`（`core/ooxml/src/styles.rs:924-930`），且受 `styles_referenced(&doc.parts)`（`core/engine-api/src/lib.rs:351`）守門——必須在 `word/_rels/document.xml.rels` 中存在 `styles` 關聯才生效。
      - 節幾何與頁首頁尾引用：`read_sections_per_paragraph`（`core/ooxml/src/sectpr.rs:228-235`）、`read_sections_header_footer`（`core/ooxml/src/sectpr.rs:273-289`）、`read_sections_note_pr`（`core/ooxml/src/sectpr.rs:301-304`）、`read_sections_endnote_pr`（`core/ooxml/src/sectpr.rs:307-310`）。
      - 清單編號：`paragraph_numbering_from_parts`（`core/ooxml/src/numbering.rs:823-845`）與 `Numbering::from_parts`（`core/ooxml/src/numbering.rs:711-730`）。
      - 圖形、圖片與 VML/DrawingML 文字框：`read_images_with_theme`（`core/ooxml/src/drawing.rs:4832-4834`），產出 `Vec<InlineImage>`（`core/ooxml/src/drawing.rs:225-404`）。`core/ooxml/src/drawing.rs:1-46` 模組頭註解記載其支援 `wp:inline`（佔正文流整數行網格帶）、`wp:anchor`（浮動鎖點、跨欄／負偏移／頁面釘定 `page_pinned` 於 `core/ooxml/src/drawing.rs:348`、包裹模式 `wrap_type: Option<String>` 於 `core/ooxml/src/drawing.rs:371`、錨定文字框撐列事實 `TextboxGrow` 於 `core/ooxml/src/drawing.rs:322-356`）、DrawingML `wps:wsp`／`wpg:wgp` 與 VML `w:pict`／`v:shape`／`v:group`、以及 `a:blip` 下的雙色調 `DuotoneEffect`（`core/ooxml/src/drawing.rs:313-318`）。
@@ -105,7 +105,7 @@ Quire 的容器層無損承諾由 `core/ooxml/src/zip_struct.rs`、`core/ooxml/s
      - 這套完全相同的計數契約同時被四個解析器實作並依賴：`parse_document_xml_with_fonts`（`core/ooxml/src/lib.rs:569-1233`）、表格解析器 `table::count_flat_paras`（`core/ooxml/src/table.rs:1345-1347`）、圖形解析器 `drawing::count_paras`（`core/ooxml/src/drawing.rs:4842-4844`），以及節屬性解析器 `sectpr::scan_sections`（`core/ooxml/src/sectpr.rs:382-613`）。任何增刪段落或表格儲存格的 mutation 都必須同步維護這四處索引的對齊。
 
 2. **發射與協調層 `core/engine-api`（級聯烘焙與顯示列表組裝）**【已實測】：
-   - `Engine`（`core/engine-api/src/lib.rs:62-129`）持有烘焙後的段落投影 `paras_eff`（由 `cascade_paragraphs` 於 `core/engine-api/src/lib.rs:3217-3509` 合成：把 `StyleTable` 級聯結果、清單 marker 前綴、製表位點引填補字元烘焙進 `Run`）、頁首頁尾快取 `hf`／`hf_parts`（`core/engine-api/src/lib.rs:78-79`，由 `build_hf_layer` 於 `core/engine-api/src/lib.rs:7638-7761` 建立）、註腳與尾註排布 `foot`／`end`（`core/engine-api/src/lib.rs:89-105`）、圖形佔位池 `shape_boxes`（`core/engine-api/src/lib.rs:116`）與圖片像素池 `image_pixels`（`core/engine-api/src/lib.rs:123`）。
+   - `Engine`（`core/engine-api/src/lib.rs:62-129`）持有烘焙後的段落投影 `paras_eff`（由 `cascade_paragraphs` 於 `core/engine-api/src/lib.rs:3560-3826` 合成：把 `StyleTable` 級聯結果、清單 marker 前綴、製表位點引填補字元烘焙進 `Run`）、頁首頁尾快取 `hf`／`hf_parts`（`core/engine-api/src/lib.rs:78-79`，由 `build_hf_layer` 於 `core/engine-api/src/lib.rs:7638-7761` 建立）、註腳與尾註排布 `foot`／`end`（`core/engine-api/src/lib.rs:89-105`）、圖形佔位池 `shape_boxes`（`core/engine-api/src/lib.rs:116`）與圖片像素池 `image_pixels`（`core/engine-api/src/lib.rs:123`）。
    - 在 `page_display_list`（`core/engine-api/src/lib.rs:2248-2490`）中，文字框（`shape_boxes`）與圖片像素（`image_pixels`）皆採**消費式配對**，配對鍵為「宿主扁平段落索引 `para` ＋ 宣告寬度 `w_pt`（誤差 `< 0.01` pt）」（`core/engine-api/src/lib.rs:1923-1935`, `core/engine-api/src/lib.rs:8473`, `core/engine-api/src/lib.rs:8505`, `core/engine-api/src/lib.rs:8545`, `core/engine-api/src/lib.rs:7947`）。
 
 3. **排版層 `core/layout`（行網格分頁與增量重排）**【已實測】：
@@ -120,17 +120,17 @@ Quire 的容器層無損承諾由 `core/ooxml/src/zip_struct.rs`、`core/ooxml/s
   - `fn commit_local(&mut self, op: &EditOp) -> Vec<u8>`（`core/crdt/src/lib.rs:10`）
   - `fn apply_remote(&mut self, msg: &[u8]) -> Vec<EditOp>`（`core/crdt/src/lib.rs:10`）
 - 內建實作 `InMemoryBackend`（`core/crdt/src/lib.rs:30-35`, `core/crdt/src/lib.rs:46-106`）僅以 `BTreeMap<(usize, usize), (u64, u64, String)>` 儲存每個 `(para, run)` 的 `(lamport, session, text)`，以 `Stamped` 結構體（`core/crdt/src/lib.rs:39-44`）序列化為 JSON 位元組，並依 `(lamport, session)` 全序做 Last-Writer-Wins（LWW）覆寫（`core/crdt/src/lib.rs:73-93`），連「段內插入／刪除段落」導致的索引平移與同 run 內併發打字合併都完全不支援。
-- 此外，注意一個現存介面落差【已實測】：`CollabSession::commit_local`（`core/engine-api/src/lib.rs:2989-2998`）與 `EditOp::ReplaceRunText` 以 `(para, run)` 為單位，但 `Engine` 目前唯一暴露的編輯方法卻是整段置換 `replace_paragraph_text(para, text)`（`core/engine-api/src/lib.rs:2192`），根本沒有 `replace_run_text` 入口。
+- 此外，注意一個現存介面落差【已實測】：`CollabSession::commit_local`（`core/engine-api/src/lib.rs:3049-3058`）與 `EditOp::ReplaceRunText` 以 `(para, run)` 為單位，但 `Engine` 目前唯一暴露的編輯方法卻是整段置換 `replace_paragraph_text(para, text)`（`core/engine-api/src/lib.rs:2799`），根本沒有 `replace_run_text` 入口。
 
 ---
 ## 2. Mutation 型錄【設計提案】
 
-本章定義的統一編輯契約全部屬於**【設計提案】**，旨在取代現況僅改版面投影的 `insert_text_at_caret`／`replace_paragraph_text`（`core/engine-api/src/lib.rs:2219-2234`, `core/engine-api/src/lib.rs:2208-2252`），成為網頁編輯器（`shells/web`）、協作模組（`shells/web-collab` 與 `core/crdt`）及原生殼（`shells/native`）的唯一寫入通道。
+本章定義的統一編輯契約全部屬於**【設計提案】**，旨在取代現況僅改版面投影的 `insert_text_at_caret`／`replace_paragraph_text`（`core/engine-api/src/lib.rs:2279-2293`, `core/engine-api/src/lib.rs:2799-2843`），成為網頁編輯器（`shells/web`）、協作模組（`shells/web-collab` 與 `core/crdt`）及原生殼（`shells/native`）的唯一寫入通道。
 
 ### 2.1 統一尋址座標系、批次入口與錯誤原子性契約【設計提案】
 
 1. **雙座標系隔離與正準碼點（Canonical Codepoint）尋址**【設計提案】：
-   - 【已實測】現況 `Engine::cascade_paragraphs`（`core/engine-api/src/lib.rs:3217-3509`）會在發射投影 `paras_eff` 與版面文字 `layout.texts` 中注入兩類非原始文字：其一是清單編號的合成前綴字串（長度記於 `marker_chars: Vec<usize>`，`core/engine-api/src/lib.rs:378`, `core/engine-api/src/lib.rs:623-624`, `core/engine-api/src/lists.rs:146-184`），其二是製表位點引填補字串（`core/engine-api/src/lib.rs:3001-3063`）。
+   - 【已實測】現況 `Engine::cascade_paragraphs`（`core/engine-api/src/lib.rs:3560-3826`）會在發射投影 `paras_eff` 與版面文字 `layout.texts` 中注入兩類非原始文字：其一是清單編號的合成前綴字串（長度記於 `marker_chars: Vec<usize>`，`core/engine-api/src/lib.rs:378`, `core/engine-api/src/lib.rs:623-624`, `core/engine-api/src/lists.rs:146-184`），其二是製表位點引填補字串（`core/engine-api/src/lib.rs:3001-3063`）。
    - 【設計提案】所有 `Mutation` 的文字偏移量一律採用**正準段落碼點偏移（Canonical Paragraph Codepoint Offset，`cp: usize`）**，即對應 `OoxmlDoc::paragraphs[para].runs`（`core/ooxml/src/lib.rs:308-309`）串接後的 Unicode scalar value（`char`）計數，絕不含合成清單前綴或點引填補字元。`Engine` 另提供純轉換輔助函式 `layout_cp_to_canonical_cp(target, para, layout_cp) -> usize` 與 `canonical_cp_to_layout_cp(target, para, canonical_cp) -> usize`，避免合成字串被誤寫入 `word/document.xml`。
    - 【設計提案】跨 Part 子樹尋址統一由 `SubDocTarget` 表達，使正文、頁首頁尾、註腳尾註與文字框共用同一套段落／表格編輯原語：
 
