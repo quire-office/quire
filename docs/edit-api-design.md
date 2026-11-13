@@ -748,11 +748,11 @@ pub enum ReversibilityLevel {
 2. **紅燈定義（先紅後綠驗收判準）**【設計提案】：
    - **紅燈 1（表格增刪列欄、儲存格合併與跨頁表頭重排鎖）**：
      - 在 `fixtures/table_mixed.docx`（`core/ooxml/src/table.rs:1271`, `core/ooxml/src/table.rs:1551`）與 `corpus/selfgen/patho_table_across_pages.docx`（`core/engine-api/tests/r2_tbl_header.rs:27`）上執行 `M4.3 InsertTableRow`、`M4.4 InsertTableColumn` 與 `M4.5 MergeTableCells`。
-     - **斷言**：格內新增／刪除之 `<w:p>` 同步反映於 `engine.paragraph_count()`，表後段落索引與文字不發生錯位；存檔重開後 `engine.tables_json()`（`core/engine-api/src/lib.rs:2137-2139`）反映新的列欄數與 `grid_span`/`v_merge`；跨頁表格之 `w:tblHeader` 表頭列在重排後每個切片頁依然重發（對齊 `core/engine-api/tests/r2_tbl_header.rs:60-78`）；且 `roundtrip_check()` 證明除 `"word/document.xml"` 外所有 part 100% `zero_loss()`。
+     - **斷言**：格內新增／刪除之 `<w:p>` 同步反映於 `engine.paragraph_count()`，表後段落索引與文字不發生錯位；存檔重開後 `engine.tables_json()`（`core/engine-api/src/lib.rs:2140-2142`）反映新的列欄數與 `grid_span`/`v_merge`；跨頁表格之 `w:tblHeader` 表頭列在重排後每個切片頁依然重發（對齊 `core/engine-api/tests/r2_tbl_header.rs:60-78`）；且 `roundtrip_check()` 證明除 `"word/document.xml"` 外所有 part 100% `zero_loss()`。
    - **紅燈 2（圖片縮放與移動之零 Media 觸碰與配對鍵同步鎖）**：
      - 在 `fixtures/inline_image.docx`（`core/engine-api/src/lib.rs:5814`）或 `corpus/poi/test-data_document_Bug51170.docx`（`core/engine-api/tests/k4c_image_emit.rs:50`）對圖片執行 `M5.2 ResizeOrMoveImage`（將寬度 `w_pt` 修改為 `200.0` pt，高度修改為 `100.0` pt）。
      - **斷言**：
-       1. 不必存檔重開，當下 `engine.page_display_list` 發射之 `DrawItem::Image` 寬高立即變為 `200.0 × 100.0` pt，且**不得退化為 `0xFFF0F0F0` 佔位框**（證明 `Engine::image_pixels` 的 `PixelSource::w_pt` 於 `core/engine-api/src/lib.rs:233` 已同步更新）；
+       1. 不必存檔重開，當下 `engine.page_display_list` 發射之 `DrawItem::Image` 寬高立即變為 `200.0 × 100.0` pt，且**不得退化為 `0xFFF0F0F0` 佔位框**（證明 `Engine::image_pixels` 的 `PixelSource::w_pt` 於 `core/engine-api/src/lib.rs:240` 已同步更新）；
        2. 存檔後呼叫 `roundtrip_check()`，斷言 `whitelisted_changed` **僅含目標 XML part（如 `"word/document.xml"`），而 `"word/media/image1.png"` 與 `"word/_rels/document.xml.rels"` 均保持 `EntryDiff::zero_loss() == true`（壓縮流位元組一字未動）**！
    - **紅燈 3（新圖插入雜湊去重與 `M5.3` CoW Undo 零失真 vs 強制 GC 不可逆鎖）**：
      - 在 `fixtures/inline_image.docx` 執行 `M5.1 InsertInlineImage` 插入一張與既有 `word/media/image1.png` 位元組完全相同的圖片，斷言自動複用既有 `rId` 且不新增多餘 media part；插入全新 PNG 時則自動寫入 `word/media/image2.png` 與 `word/_rels/document.xml.rels`。
@@ -780,7 +780,7 @@ pub enum ReversibilityLevel {
    - **紅燈 2（頁首／頁尾獨立 Part 寫回與推下重算鎖）**：
      - 開啟 `fixtures/hf_table_header.docx`（`core/engine-api/tests/k9_hf_align.rs:16`）或 `corpus/poi/test-data_document_Bug51170.docx`（`core/engine-api/tests/k7b_header_push.rs:31`），指定 `SubDocTarget::Header { section_id: 0, slot: HfSlotKind::Default }` 執行 `M1.1 InsertText`（或 `M5.2 ResizeOrMoveImage` 增高頁首圖）。
      - **斷言**：
-       1. `Engine::recompute_notes()`（`core/engine-api/src/lib.rs:969-974`）自動重算頁首推下距離 `header_pushes_pt`，正文首行 `y` 隨頁首增高而同步下推（對齊 `core/engine-api/tests/k7b_header_push.rs:57-60` 口徑）；
+       1. `Engine::recompute_notes()`（`core/engine-api/src/lib.rs:976-981`）自動重算頁首推下距離 `header_pushes_pt`，正文首行 `y` 隨頁首增高而同步下推（對齊 `core/engine-api/tests/k7b_header_push.rs:57-60` 口徑）；
        2. 存檔後呼叫 `roundtrip_check()`，斷言 `whitelisted_changed` **僅含對應的 `"word/header1.xml"`（或 `"word/header2.xml"`），而正文 `"word/document.xml"` 保持 100% 未觸碰（`EntryDiff::zero_loss() == true`）**！
    - **紅燈 3（註腳／尾註插刪與跨頁掛載鎖）**：
      - 在 `corpus/poi/test-data_document_form_footnotes.docx`（`core/engine-api/tests/r7_footnote_anchor.rs:30`）透過 `M6.4 InsertNote` 在第 0 頁段落插入新註腳，並透過 `SubDocTarget::Footnote` 執行 `M1.1 InsertText` 編輯註文。
@@ -809,9 +809,9 @@ pub enum ReversibilityLevel {
 
 | 子系統維度 | 當下 Worktree 真實能力【已實測】 | 本設計書新增規格【設計提案】（留待 `K29a`–`K29d` 實作） |
 | :--- | :--- | :--- |
-| **1. 容器層（OPC / ZIP）無損重封裝** | 【已實測】`ZipBundle::open`、`decode_parts`、`serialize`（`core/ooxml/src/zip_struct.rs:167-582`）、`OoxmlDoc::save`（`core/ooxml/src/lib.rs:321-350`）與 `diff_zip_structure`（`core/ooxml/src/diff.rs:161-240`）已完整落地：未修改之 part 100% 原樣搬運 `local_raw`、`data_raw`、`gap_raw`、`central_raw`，零重壓縮。 | 【設計提案】在 `Engine::undo()` 將已修改 part 的明文還原至與開檔 `ZipEntry::decoded`（`core/ooxml/src/zip_struct.rs:129-138`）逐位元組相等時，自動將該 part 從 `Engine::touched`（`core/engine-api/src/lib.rs:94`）移除，實現 Edit → Undo → Save 全檔 `byte_identical`。 |
-| **2. 第一層（Part 內 XML）寫回機制** | 【已實測】**現況完全無 XML 節點級修補器或序列化器**；唯一能改動 `OoxmlDoc::parts` 的方法只有整 Part 替換 `Engine::set_part`（`core/engine-api/src/lib.rs:2854-2857`）與 `OoxmlDoc::set_part`（`core/ooxml/src/lib.rs:336-338`）。 | 【設計提案】§3.1 定義之 `XmlSpanIndex`、`ByteSpan` 與 `apply_xml_byte_patches` 外科手術式位元組切片替換（Surgical XML Patch），確保同一 XML part 內未觸碰段落與未知屬性（`w:rsidR`、`w14:paraId`、`mc:AlternateContent`）原位元組保留。 |
-| **3. 語義編輯 API 與持久化閉環** | 【已實測】`Engine::insert_text_at_caret`（`core/engine-api/src/lib.rs:2219-2234`）與 `Engine::replace_paragraph_text`（`core/engine-api/src/lib.rs:2208-2252`）僅更新 `self.layout` 與 `self.paras_eff`，**完全不改 `self.doc.paragraphs` 與 `self.doc.parts`**，存檔後編輯全部丟失（見 `core/engine-api/src/lib.rs:6370-6371`）。 | 【設計提案】§2 定義之 `Engine::apply_mutation`、`apply_batch`、跨子樹尋址 `SubDocTarget`／`DocPos`／`DocRange`、錯誤型別 `MutationError` 以及 `M1.1`～`M6.4` 全 20 項語義編輯閉環寫回。 |
+| **1. 容器層（OPC / ZIP）無損重封裝** | 【已實測】`ZipBundle::open`、`decode_parts`、`serialize`（`core/ooxml/src/zip_struct.rs:167-582`）、`OoxmlDoc::save`（`core/ooxml/src/lib.rs:321-350`）與 `diff_zip_structure`（`core/ooxml/src/diff.rs:161-240`）已完整落地：未修改之 part 100% 原樣搬運 `local_raw`、`data_raw`、`gap_raw`、`central_raw`，零重壓縮。 | 【設計提案】在 `Engine::undo()` 將已修改 part 的明文還原至與開檔 `ZipEntry::decoded`（`core/ooxml/src/zip_struct.rs:129-138`）逐位元組相等時，自動將該 part 從 `Engine::touched`（`core/engine-api/src/lib.rs:109`）移除，實現 Edit → Undo → Save 全檔 `byte_identical`。 |
+| **2. 第一層（Part 內 XML）寫回機制** | 【已實測】**現況完全無 XML 節點級修補器或序列化器**；唯一能改動 `OoxmlDoc::parts` 的方法只有整 Part 替換 `Engine::set_part`（`core/engine-api/src/lib.rs:2914-2917`）與 `OoxmlDoc::set_part`（`core/ooxml/src/lib.rs:336-338`）。 | 【設計提案】§3.1 定義之 `XmlSpanIndex`、`ByteSpan` 與 `apply_xml_byte_patches` 外科手術式位元組切片替換（Surgical XML Patch），確保同一 XML part 內未觸碰段落與未知屬性（`w:rsidR`、`w14:paraId`、`mc:AlternateContent`）原位元組保留。 |
+| **3. 語義編輯 API 與持久化閉環** | 【已實測】`Engine::insert_text_at_caret`（`core/engine-api/src/lib.rs:2279-2293`）與 `Engine::replace_paragraph_text`（`core/engine-api/src/lib.rs:2799-2843`）僅更新 `self.layout` 與 `self.paras_eff`，**完全不改 `self.doc.paragraphs` 與 `self.doc.parts`**，存檔後編輯全部丟失（見 `core/engine-api/src/lib.rs:6370-6371`）。 | 【設計提案】§2 定義之 `Engine::apply_mutation`、`apply_batch`、跨子樹尋址 `SubDocTarget`／`DocPos`／`DocRange`、錯誤型別 `MutationError` 以及 `M1.1`～`M6.4` 全 20 項語義編輯閉環寫回。 |
 | **4. Undo / Redo 歷史管理** | 【已實測】**現況 `Engine` 完全無 `undo`／`redo` 方法或歷史堆疊**。 | 【設計提案】§5 定義之 `InverseMutation`、`XmlReversePatch`、`UndoEntry`、`Engine::undo`／`Engine::redo`、IME 交易合併、以及針對圖片強制 GC 與 `set_part` 的不可逆誠實處理契約。 |
 | **5. 多人協作（CRDT）與外殼接線** | 【已實測】`core/crdt/src/lib.rs:1-170` 為 Phase 4 落地前之佔位實作（`InMemoryBackend` 僅支援 `EditOp::ReplaceRunText` 的 `(para, run)` LWW 覆寫），且 `WasmEngine`（`shells/web/src/lib.rs:8-77`）尚未暴露持久化編輯能力。 | 【設計提案】§4 定義之 `CollabIntent` 轉正準 `Mutation`、穩定邏輯 ID（`ParaId`／`TableId` 等）、字元級相對錨點與拆併段重綁定契約，以及 Slice 4 的外殼統一接線。 |
 
