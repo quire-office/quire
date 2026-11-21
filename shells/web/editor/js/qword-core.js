@@ -27,6 +27,10 @@ export const GROUPS = {
   // 插入
   pages: { id: 'pages', tabId: 'tab-insert', label: '頁面' },
   tables: { id: 'tables', tabId: 'tab-insert', label: '表格' },
+
+  // 表格儲存格（U4c：游標反查表格定位的垂直對齊群組，掛常用頁）
+  cell: { id: 'cell', tabId: 'tab-home', label: '儲存格' },
+
   illustrations: { id: 'illustrations', tabId: 'tab-insert', label: '圖例' },
   symbols: { id: 'symbols', tabId: 'tab-insert', label: '符號' },
   header_footer: { id: 'header_footer', tabId: 'tab-insert', label: '頁首與頁尾' },
@@ -86,6 +90,7 @@ export const DEPENDENCY_MAP = {
   'pending:engine-page': { name: '引擎缺口：頁面版面面', desc: '紙張絕對尺寸、裝訂線（gutter）、頁面框線（pgBorders）、文件背景（w:background）、行號（lnNumType）、自動連字設定欄未實作；需引擎切片' },
   'pending:engine-theme': { name: '引擎缺口：主題與預設值面', desc: 'theme1.xml（色彩／字型／效果集）與 docDefaults 寫入無引擎變體（僅只讀解析）；需引擎切片' },
   'pending:engine-para': { name: '引擎缺口：字元段落直接格式殘餘', desc: 'w:bidi 寫入欄未實作；底線形態族（w:u/@w:val 五形態）寫入真實但解析層折成布林、發射層一態，屬解析＋發射雙層缺口' },
+  'pending:engine-tblshading': { name: '引擎缺口：表格層底紋發射', desc: 'MutateTable.set_tbl_props 的 w:tblPr/w:shd 寫入真實落盤，但 core/layout 色塊發射僅唸 w:tcPr/w:shd 單格路徑——表格層底紋重排後顯示列表零發射（實測），用戶不可見；需發射層補欄（E 卡同源），非外殼可修' },
   'pending:ext': { name: '外部資源依賴', desc: '需詞庫／翻譯服務等外部資源；比對結果落地走既有 M1.1 InsertText／M1.2 DeleteRange 路徑，引擎 Mutation 面無缺口' },
   'pending:K29s': { name: 'K29s 視窗與多重視圖', desc: '多視窗檢視、視窗重排與分割' },
   'pending:K29m': { name: 'K29m 巨集與腳本擴充', desc: '巨集錄製與腳本自動化' },

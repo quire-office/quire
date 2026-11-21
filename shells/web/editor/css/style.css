@@ -967,6 +967,60 @@ body, html {
   z-index: 2;
 }
 
+/* U4c 表格屬性面板（popover-table-props）＋儲存格底紋面板動作列 */
+.qword-props-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 210px;
+}
+
+.qword-props-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.qword-props-label {
+  font-size: 11px;
+  color: var(--qw-text-secondary);
+  white-space: nowrap;
+}
+
+.qword-props-seg {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.qword-props-seg-btn {
+  min-width: 28px;
+  padding: 2px 6px;
+}
+
+.qword-props-input {
+  width: 72px;
+  font-size: 11px;
+  padding: 2px 4px;
+  border: 1px solid var(--qw-border, #d1d1d1);
+  border-radius: 2px;
+}
+
+.qword-props-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.qword-props-apply {
+  padding: 2px 8px;
+}
+
+.qword-props-hint {
+  font-size: 10px;
+  color: var(--qw-text-disabled);
+  line-height: 1.3;
+}
+
 /* 特殊字元面板 */
 .qword-symbol-picker {
   display: flex;
