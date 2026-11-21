@@ -183,14 +183,37 @@ fn lamp4_locator_resolves_every_paragraph_by_hand_verified_coords() {
     assert_eq!(l5["cell_path"]["row"], 1);
 
     // vMerge continue 空格零段落：r3 只有 c1/c2 兩段可查（段 10,11），
-    // 其 cell 座標是 tc 序 1/2（空 tc 佔 cell 0——tc 序≠網格欄，網格欄起點
-    // 由 grid_col_start 給）。
+    // 其 cell 座標是 tc 序 1/2（空 tc 佔 cell 0）。
+    //
+    // t_c1dbc6d7 S3-5 更正：舊註解在此宣稱「tc 序≠網格欄」，但本案例實測
+    // cell 與 grid_col_start **都是 1**（空 tc 也佔 1 欄 ⇒ 兩者恰好相等）——
+    // 這句話在舊 fixture 上是錯的，三層考卷從未在此真正測到兩者不等。真正的
+    // 不等案例在 T2 r1c1（tc 序 1、網格起點 2），由下方「分歧格」段與
+    // `e_gridspan_prefix.rs` 燈 7 共同封頂。
     let l10 = locate(&e, 10).expect("段 10 在 T0.r3c1");
     assert_eq!(l10["cell_path"]["row"], 3);
     assert_eq!(l10["cell_path"]["cell"], 1, "tc 序：空 vMerge 格佔 0");
     assert_eq!(
         l10["cell_path"]["grid_col_start"], 1,
-        "網格起點：前格 span=1 累算（空 tc 也佔 1 欄）"
+        "網格起點：前格 span=1 累算（空 tc 也佔 1 欄）⇒ 本案例兩者恰等，非分歧案例"
+    );
+
+    // 分歧格（S3-5 補）：T2 r1 的 c1——前格 gridSpan=2 ⇒ tc 序 1、網格起點 2。
+    // 這是三層考卷裡第一處**真正** cell != grid_col_start 的斷言（S2-2 的
+    // gridSpan 錯讀正是從「兩者恆等」的舊 fixture 洞漏網）。
+    let diverged: Vec<(u64, u64, u64)> = (0..e.paragraph_count())
+        .filter_map(|p| locate(&e, p))
+        .filter_map(|l| {
+            let c = l["cell_path"]["cell"].as_u64()?;
+            let g = l["cell_path"]["grid_col_start"].as_u64()?;
+            let s = l["cell_path"]["grid_span"].as_u64()?;
+            (c != g).then_some((c, g, s))
+        })
+        .collect();
+    assert!(
+        diverged.contains(&(1, 2, 1)),
+        "T2 r1c1 必須是 tc 序 1、網格起點 2、span 1 的分歧格（fixture 被改回舊形時本斷言紅）；\
+         實得分歧格 {diverged:?}"
     );
 
     // 巢狀表段（T0.r0c2 內掛）：nested_steps=[[0,2,0]]、cell_path 指巢狀表自身。
