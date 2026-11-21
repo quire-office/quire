@@ -182,6 +182,9 @@ fn e_tblpr_lamp1_xml_written_display_list_frozen() {
                 width_pt: None,
                 alignment: None,
                 shading_fill: Some(PROBE_FILL.to_string()),
+                // 合併漂移補正：main 的 E 邊框卡新增 `borders` 欄位（本卡分支基線較舊）。
+                // None＝零擾動，不影響本卡極性鎖語義。
+                borders: None,
             },
         })
         .expect("SetTableProps 應被受理");
