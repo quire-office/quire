@@ -256,10 +256,12 @@ impl TablePath {
 ///   並四捨五入取整；解析側既有口徑（`quire_layout::table::solve_pen`）即
 ///   `sz/8`、下限 0.25pt，本欄取其反函數，寫入→讀回零位移；
 /// - `space_pt`＝`@w:space`（**pt**，直接取整寫回）。單位口徑＝本庫既有
-///   `txbx_borders.space_pt` 同款 pt 約定；**渲染端不消費**——LO 25.8 探針
+///   `txbx_borders.space_pt` 同款 pt 約定；**無渲染消費者**——LO 25.8 探針
 ///   （`scripts/e_tblborder_space_probe.py`，table 級 space=0／12／240 三態）
-///   實測框線與文字基線零位移，本庫解析側同樣不讀取 ⇒ 本欄定位＝
-///   寫入保真透傳（存檔不丟資訊），本卡不宣稱其渲染語義（記 docs §5）。
+///   實測框線與文字基線零位移，本庫解析側也只收錄不消費
+///   （`quire_ooxml::table::Border::space` 存原字串；唯一 space 消費者是
+///   段邊框 `table_map.rs` 的 txbx_borders 路徑，與表格邊框無關）⇒ 本欄
+///   定位＝寫入保真透傳（存檔不丟資訊），本卡不宣稱其渲染語義（記 docs §5）。
 /// - `color`＝`@w:color`（RRGGBB／auto／theme 色名，原字串透傳）。
 ///
 /// 移除語意（照 K29c 既有「宣告即贏」紀律）：`style = Some("none"|"nil"|"hidden")`

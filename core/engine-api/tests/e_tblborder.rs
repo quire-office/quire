@@ -209,7 +209,7 @@ fn e_lamp1_table_borders_write_to_xml_and_emit_rules() {
         xml_snippet(&xml, "w:tblBorders")
     );
     // (a′) 表 1 容器（第二顆）逐方位嚴格斷言：新值全在、原 six-none 被逐位
-    // 覆寫（none 零殘留）、未觸碰方位零扰动——防「表 0 同名字串假綠」。
+    // 覆寫（none 零殘留）、未觸碰方位零擾動——防「表 0 同名字串假綠」。
     {
         let first = xml
             .find("<w:tblBorders>")
@@ -465,7 +465,7 @@ fn e_lamp3_read_side_matches_lo_truth() {
         t1_black_h, 0,
         "表 1 全 none＋nil／hidden：y>130 不得有黑色水平線"
     );
-    // inside 只畫內部：表 0 內橫線只出现在列交界（y≈105.6），不在表外框外。
+    // inside 只畫內部：表 0 內橫線只出現在列交界（y≈105.6），不在表外框外。
     let inside_h = all
         .iter()
         .filter(|it| it.0 && (it.5 - 1.5).abs() < 1e-3)
