@@ -111,6 +111,9 @@ export class QWordUI {
       if (type === 'file:save') {
         this.saveCurrentDoc();
       } else if (type === 'file:open') {
+        // U4d L2：開檔請求前先主動清掉圖片選取態——殘留的 imagePickMode 會讓
+        // 這次開檔被誤判成圖片插入（圖片鈕取消後 change 不觸發，旗標卡在 true）
+        this.resetImagePickMode();
         if (this.fileInput) this.fileInput.click();
       } else if (type === 'file:open-sample') {
         this.loadDefaultSample();
@@ -164,13 +167,14 @@ export class QWordUI {
         this.handleInlineImageInsert(data);
       } else if (type === 'image:pick-request') {
         this.requestImageFilePick();
-      } else if (type === 'table:row-col-rejected' || type === 'table:props-rejected') {
-        // U4c：core 驗證層降標（如游標不在表格格內、參數非法）不得靜默——
-        // 用戶看得見「按了沒反應」就是另一種粉飾，如實告知缺什麼。
-        const isCellScoped = /^cell:/.test(String(data?.cmdId || ''));
-        this.showErrorModal('操作未送出',
-          `${data?.cmdId || '表格命令'} 未被受理：${(data?.problems || []).join('；') || '參數不完整'}。`
-          + (isCellScoped ? ' 儲存格級命令需把游標放在目標格內（點一下該格再操作）。' : ''));
+      } else if (type === 'table:row-col-rejected') {
+        // U4d L8（S3-8）：core 對非法行列參數派發拒絕事件，舊版 UI 零監聽——
+        // 用戶點了按鈕畫面完全靜默，這是把失敗藏起來。補監聽＋彈窗＋失敗日誌。
+        this.handleCoreRejected('行列操作被拒', data);
+      } else if (type === 'table:props-rejected') {
+        this.handleCoreRejected('表格／儲存格屬性變更被拒', data);
+      } else if (type === 'image:inline-rejected') {
+        this.handleCoreRejected('圖片插入被拒', data);
       } else if (type === 'page:change') {
         this.scrollToPage(data.currentPage - 1);
       }
@@ -312,16 +316,28 @@ export class QWordUI {
 
   initFilePipeline() {
     if (this.fileInput) {
+      // U4d L2（S1-2）：用戶在檔案選取器按「取消」時，瀏覽器只派 `cancel` 事件、
+      // 不派 `change`。舊版只監聽 change，於是圖片鈕觸發的 imagePickMode 旗標與
+      // 被改寫成圖片過濾的 accept 永久殘留——之後「檔案→開啟」被鎖成只能選圖片，
+      // 強選 DOCX 又會誤入 handleInlineImageInsert，開檔管線對整個 session 壞死。
+      // 修法：cancel 監聽把旗標與 accept 還原（change 路徑維持原行為）。
+      this.fileInput.addEventListener('cancel', () => {
+        this.resetImagePickMode();
+        this.fileInput.value = '';
+      });
       this.fileInput.addEventListener('change', async (e) => {
         const file = e.target.files && e.target.files[0];
-        if (!file) return;
+        if (!file) {
+          // 選了又清空／無檔案：同樣不得讓圖片選取態殘留
+          this.resetImagePickMode();
+          return;
+        }
         const bytes = new Uint8Array(await file.arrayBuffer());
         // U4 契約第 4 條：insert:picture 走同一個 #qword-file-input。區分方式
         // 是「本次是由圖片鈕觸發的選取」（imagePickMode），此時把位元組交給
         // 引擎做 InsertInlineImage，而不是當成開檔請求。
         if (this.imagePickMode) {
-          this.imagePickMode = false;
-          this.restoreFileInputAccept();
+          this.resetImagePickMode();
           const mime = String(file.type || '').trim().toLowerCase()
             || (mimeFromName(file.name) ?? '');
           this.handleInlineImageInsert({ bytes, mimeType: mime, altText: file.name || null });
@@ -994,8 +1010,12 @@ export class QWordUI {
     }
     const res = this.adapter.insertTable(rows, cols);
     if (res.ok) {
-      // 記下這張表為後續行列／屬性操作的作用對象（見 resolveRootSlot 說明）。
-      this.activeTableSlot = this.adapter.tableCount() - 1;
+      // 記下這張表為後續行列／屬性操作的作用對象。U4d L6：值來自 adapter 的
+      // 引擎真索引反查（游標段落落在哪張＝剛插的那張），**不是** tableCount()-1
+      // 的盲設——插入錨點是游標段落，游標在前段時新表不排在清單最後，盲設會
+      // 把後續操作指向舊表（agy 覆核坐實）。反查不可得時是 null，resolveRootSlot
+      // 會如實走「無法判定目標」的誠實路徑。
+      this.activeTableSlot = this.adapter.lastInsertedRootSlot;
       await this.refreshPages();
       this.renderCaret();
       this.renderSelection();
@@ -1071,16 +1091,29 @@ export class QWordUI {
 
   /** 決定本次操作作用於哪張根表格（TablePath.root_slot）。
    *
-   * 誠實說明這個缺口的由來：引擎有 `table_map.rs` 的表格索引，但
-   * `shells/web/src/lib.rs` 沒有把「依游標／依座標反查 root_slot」綁進 wasm，
-   * 外殼也禁止自己算幾何當真相。因此目前的解析順序是：
-   *   呼叫端明確指定 → 本 session 最近操作的那張表 → 文件只有一張表時用 0
-   * 三者皆不可得時如實回報「無法定位目標表格」，不猜、不默默改到別張表上。
+   * U4d L6 改寫：引擎真索引（table_locator_json，t_f91e5773 綁定）落地後，
+   * 解析順序收窄為——
+   *   1. 呼叫端明確指定 → 用之（並記為最近操作對象）
+   *   2. **游標反查**：游標段落真的落在某張表的格內 → 那張就是目標（「點哪張
+   *      改哪張」由引擎回答，不是外殼猜）
+   *   3. 游標在表外：本 session 最近一次真反查記下的那張（activeTableSlot）
+   *   4. 文件只有一張表 → 0（無歧義）
+   * 三者皆不可得（多張表＋游標在表外＋無近期記錄）時回 null，上層如實回報
+   * 「無法判定目標表格」——**禁止靜默退回 count-1**：插入錨點是游標段落，
+   * 新表不必然排在最後，末張猜測會操作到用戶沒點的表（agy 覆核坐實，紅燈
+   * 實錄見 docs/word-ui-u4d-fixes-report.md L6）。
    */
   resolveRootSlot(requested) {
     if (Number.isInteger(requested) && requested >= 0) {
       this.activeTableSlot = requested;
       return requested;
+    }
+    const located = typeof this.adapter.currentTableCell === 'function'
+      ? this.adapter.currentTableCell()
+      : null;
+    if (located && Number.isInteger(located.rootSlot) && located.rootSlot >= 0) {
+      this.activeTableSlot = located.rootSlot;
+      return located.rootSlot;
     }
     const count = this.adapter.tableCount();
     if (count === 0) return null;
@@ -1216,9 +1249,36 @@ export class QWordUI {
     this.fileInput.click();
   }
 
-  /** 圖片選取結束後還原開檔用 accept，避免污染開檔路徑 */
-  restoreFileInputAccept() {
+  /**
+   * 圖片選取態的唯一復原出口（U4d L2）：清旗標＋還原開檔用 accept。
+   * change（選了檔）、cancel（按取消）、file:open（開檔請求）三路徑共用，
+   * 任一條都不得讓圖片過濾殘留污染開檔管線。
+   */
+  resetImagePickMode() {
+    this.imagePickMode = false;
     if (this.fileInput) this.fileInput.accept = '.docx,.odt';
+  }
+
+  /**
+   * core 參數驗證拒絕事件的統一出口（U4d L8）：core 在行列／屬性／圖片命令
+   * 參數非法時派發 `table:row-col-rejected`／`table:props-rejected`／
+   * `image:inline-rejected`（帶 cmdId＋problems 明細），UI 必須讓用戶看見——
+   * 舊版三顆事件零監聽，非法輸入畫面完全靜默（agy 覆核坐實）。
+   * 彈窗帶 problems 逐條明細（不得只說「失敗」），並補一筆外殼拒絕日誌。
+   */
+  handleCoreRejected(title, payload = {}) {
+    const problems = Array.isArray(payload.problems) && payload.problems.length
+      ? payload.problems
+      : ['外殼參數驗證未通過（core 未提供明細）'];
+    const cmdId = payload.cmdId || 'unknown';
+    const detail = problems.map((p) => `・${p}`).join('\n');
+    // U4c 折入（PM 衝突解）：儲存格級命令補「先把游標點進目標格」指引，
+    // 不得因改用共用房東而丟失 U4c 的「如實告知缺什麼」語意。
+    const cellHint = /^cell:/.test(String(cmdId))
+      ? '\n儲存格級命令需把游標放在目標格內（點一下該格再操作）。'
+      : '';
+    this._reportEngineRejection(cmdId, payload, { error: problems.join('；'), rejectedByShell: true });
+    this.showErrorModal(title, `指令「${cmdId}」被參數驗證擋下：\n${detail}${cellHint}`);
   }
 
   /** 表格操作共用的「引擎就緒＋表格可定位」前置檢查 */
@@ -1232,9 +1292,9 @@ export class QWordUI {
       const count = this.adapter.tableCount();
       const why = count === 0
         ? '文件中沒有任何表格。'
-        : `文件中有 ${count} 張表格，外殼目前無法判定要操作哪一張（缺游標反查表格索引的外殼綁定，詳見 U4 報告）。`;
+        : `文件中有 ${count} 張表格，且游標目前不在任何表格內，外殼無法判定要操作哪一張（請把游標點進目標表格的儲存格，或明確指定 root_slot）。`;
       this.showErrorModal('無法定位目標表格', why);
-      this._reportEngineRejection(cmdId, payload, { error: `root_slot 無法解析（表格數=${count}）`, rejectedByShell: true });
+      this._reportEngineRejection(cmdId, payload, { error: `root_slot 無法解析（表格數=${count}，游標不在表內）`, rejectedByShell: true });
       return null;
     }
     return slot;
