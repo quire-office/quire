@@ -130,6 +130,18 @@ export class QWordUI {
         this.handleFormatItalic(data);
       } else if (type === 'format:font-color') {
         this.handleFormatColor(data);
+      } else if (type === 'format:underline') {
+        this.handleFormatUnderline(data);
+      } else if (type === 'format:strikethrough') {
+        this.handleFormatStrikethrough(data);
+      } else if (type === 'format:vert-align') {
+        this.handleFormatVertAlign(data);
+      } else if (type === 'format:highlight') {
+        this.handleFormatHighlight(data);
+      } else if (type === 'font:family') {
+        this.handleSetFontFamily(data);
+      } else if (type === 'font:clear-formatting') {
+        this.handleClearDirectFormatting();
       } else if (type === 'font:grow') {
         this.handleGrowFont();
       } else if (type === 'font:shrink') {
@@ -263,11 +275,19 @@ export class QWordUI {
     // 7. Popovers 觸發綁定
     this.initPopovers();
 
-    // 8. 字型大小下拉選單變更
+    // 8. 字型大小／字型族下拉選單變更（U4b：字型族補上 change 綁定——引擎欄位
+    //    RunDirectPatch::font_family 真實存在，此前缺的只是外殼這一層事件，
+    //    沒有它鈕面掛 live 就是假宣稱）。
     const fontSizeSelect = document.querySelector('.qword-select-size');
     if (fontSizeSelect) {
       fontSizeSelect.addEventListener('change', (e) => {
         this.dispatchCommand('font:size', { size: e.target.value }, 'live');
+      });
+    }
+    const fontFamilySelect = document.querySelector('.qword-select-font');
+    if (fontFamilySelect) {
+      fontFamilySelect.addEventListener('change', (e) => {
+        this.dispatchCommand('font:family', { family: e.target.value }, 'live');
       });
     }
 
@@ -737,6 +757,92 @@ export class QWordUI {
     }
   }
 
+  // K29e 六欄 UI 落地層（U4b）：全部真呼 adapter 的 buildFormatTextRangeMutation
+  // → apply_mutation_json 路徑；res.ok=false（引擎拒絕或形態非法）時補一筆
+  // 失敗日誌（U4 誠實紀律：考卷讀得到真實失敗，不會看到全部成功的假象）。
+  async handleFormatUnderline(payload) {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.formatUnderline(payload?.style);
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    } else {
+      this.core.recordCommandFailure('format:underline');
+    }
+  }
+
+  async handleFormatStrikethrough(payload) {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.formatStrikethrough(payload?.style);
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    } else {
+      this.core.recordCommandFailure('format:strikethrough');
+    }
+  }
+
+  async handleFormatVertAlign(payload) {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.formatVertAlign(payload?.mode || 'superscript');
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    } else {
+      this.core.recordCommandFailure('format:vert-align');
+    }
+  }
+
+  async handleFormatHighlight(payload) {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.formatHighlight(payload?.color || '#FFFF00');
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    } else {
+      this.core.recordCommandFailure('format:highlight');
+    }
+  }
+
+  async handleSetFontFamily(payload) {
+    if (!this.adapter.engine) return;
+    const family = payload?.family;
+    if (!family) {
+      this.core.recordCommandFailure('font:family');
+      return;
+    }
+    const res = this.adapter.setFontFamily(family);
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    } else {
+      this.core.recordCommandFailure('font:family');
+    }
+  }
+
+  async handleClearDirectFormatting() {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.clearDirectCharFormatting();
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    } else {
+      this.core.recordCommandFailure('font:clear-formatting');
+    }
+  }
+
   async handleGrowFont() {
     if (!this.adapter.engine) return;
     const res = this.adapter.growFont();
@@ -1173,6 +1279,13 @@ export class QWordUI {
         // 誠實措辭：引擎側 Mutation 欄位已真實存在，缺口是瀏覽器外殼接線，
         // 不可再對使用者宣稱「需要編輯 API（開發中）」。
         html += `<span class="qword-tooltip-req">⚠️ 編輯 API 已支援，外殼接線中（${depInfo.name}）</span>`;
+      } else if (req === 'pending:ext') {
+        // 誠實措辭：引擎 Mutation 面無缺口，缺口是詞庫／翻譯服務等外部資源。
+        html += `<span class="qword-tooltip-req">⚠️ 需外部資源（${depInfo.name}）</span>`;
+      } else if (cardId.startsWith('engine-')) {
+        // 誠實措辭（U4b）：缺口在引擎欄位／解析／發射層，非外殼可修，也不宣稱
+        // 「開發中」（無已排定切片）——具體缺口點名在鈕 title 與依賴卡片。
+        html += `<span class="qword-tooltip-req">⚠️ 引擎缺口，待切片（${depInfo.name}）</span>`;
       } else {
         html += `<span class="qword-tooltip-req">⚠️ 需要編輯 API（開發中: ${depInfo.name}）</span>`;
       }
@@ -1427,8 +1540,9 @@ export class QWordUI {
         swatch.setAttribute('data-color', col);
         swatch.addEventListener('click', () => {
           const mode = palette.getAttribute('data-color-target') || 'font';
-          const req = mode === 'font' ? 'live' : 'pending:K29b';
-          this.dispatchCommand(`format:color:${mode}`, { color: col }, req);
+          // U4b：highlight 模式的引擎欄位（RunDirectPatch::highlight）已入庫
+          // ＋三側接線完成，原寫死的 pending:K29b 是失效標籤，兩模式同為 live。
+          this.dispatchCommand(`format:color:${mode}`, { color: col }, 'live');
           this.closeAllPopovers();
         });
         palette.appendChild(swatch);

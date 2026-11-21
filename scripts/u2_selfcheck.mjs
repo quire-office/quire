@@ -200,7 +200,9 @@ const redoBtnMatch = htmlContent.match(/<button[^>]+data-command="edit:redo"[^>]
 assert(redoBtnMatch && /data-requirement="live"/i.test(redoBtnMatch[0]), 'edit:redo 按鈕已正確標記為 live');
 console.log('  ✓ 按鈕 [edit:redo] 標記為 live (接 redo_json)');
 
-// 嚴格紅線檢查：底線等仍須為 pending，不準假裝支援；粗斜體支援 U3 轉 live
+// 嚴格紅線檢查：粗斜體支援 U3 轉 live；底線在 K29e 入庫（66460e4）＋U4b 接線後
+// 同樣落地——斷言精確收窄成 pending|live 雙態（原「維持 pending:K29b」斷言的
+// 前提是 K29e 未入庫，該前提已失效，見 docs/word-ui-k29e-remap-report.md §1）。
 const boldBtnMatch = htmlContent.match(/<button[^>]+data-command="format:bold"[^>]*>/i);
 assert(boldBtnMatch && /data-requirement="(?:pending:K29b|live)"/i.test(boldBtnMatch[0]), 'format:bold 標記合規（pending:K29b 或 live）');
 console.log('  ✓ 按鈕 [format:bold] 標記合規（pending:K29b 或 live）');
@@ -210,8 +212,8 @@ assert(italicBtnMatch && /data-requirement="(?:pending:K29b|live)"/i.test(italic
 console.log('  ✓ 按鈕 [format:italic] 標記合規（pending:K29b 或 live）');
 
 const underlineBtnMatch = htmlContent.match(/<button[^>]+data-command="format:underline"[^>]*>/i);
-assert(underlineBtnMatch && /data-requirement="pending:K29b"/i.test(underlineBtnMatch[0]), 'format:underline 誠實維持 pending（K29b 樣式面，不假裝可用）');
-console.log('  ✓ 按鈕 [format:underline] 誠實維持 pending（K29b 樣式面，不假裝可用）（不假裝可用）');
+assert(underlineBtnMatch && /data-requirement="(?:pending:[^"]+|live)"/i.test(underlineBtnMatch[0]), 'format:underline 標記合規（誠實雙態：K29e 入庫＋U4b 接線後為 live）');
+console.log('  ✓ 按鈕 [format:underline] 標記合規（pending|live 雙態，不掛虛構態）');
 
 // 5. 無 DOM 純邏輯層 WasmEngine 執行閉環測試
 console.log('\n[檢查 5] 探針驗證：Node.js ESM 執行 WasmEngine 打字閉環...');
