@@ -1,7 +1,9 @@
 // E-1 根因探針：分次單欄呼叫是否互相覆蓋（node＋真 wasm，零瀏覽器變因）
+// 位置：shells/web/editor/tests/（U4b 白名單內正式探針，非暫存檔）；
+// repo 根需向上四層。
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const ADAPTER = path.join(ROOT, 'shells/web/editor/js/engine-adapter.js');
 const { EngineAdapter } = await import(ADAPTER);
 

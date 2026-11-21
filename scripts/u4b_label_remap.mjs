@@ -36,7 +36,7 @@ const argVal = (flag) => {
   return i >= 0 && process.argv[i + 1] ? path.resolve(process.argv[i + 1]) : null;
 };
 const HTML = argVal('--html') || path.join(ROOT, 'shells/web/editor/index.html');
-const EVID = argVal('--evid') || path.join(ROOT, 'scratch_u4b_remap_evidence.csv');
+const EVID = argVal('--evid') || path.join(ROOT, 'docs/word-ui-k29e-remap-evidence.csv');
 
 const LIVE_T = '引擎已支援（K29e 字元格式切片），外殼接線完成';
 
