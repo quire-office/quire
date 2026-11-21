@@ -106,7 +106,10 @@ fn compute_cond_gates(t: &Table) -> Vec<Vec<CellConds>> {
             .map(|c| {
                 let span = c.props.grid_span().max(1);
                 let start = col;
-                col += span;
+                // S3-2（同溢位類）：畸形超大 w:gridSpan 累加在 debug 建構（含
+                // wasm32）會 attempt to add with overflow ⇒ wasm 邊 panic＝
+                // 瀏覽器 abort。saturating 對一切合法值逐位元組等值。
+                col = col.saturating_add(span);
                 let mut a = [false; 12];
                 a[0] = first_row;
                 a[1] = last_row;
@@ -1955,10 +1958,16 @@ pub struct TableHit {
     pub grid_cols: usize,
     /// 目標表列數（`rows.len()`）。
     pub rows: usize,
-    /// 宿主格索引（目標表宿主列內 `cells` 的下標；段落直接落於**根表本體外**
-    /// ＝`None`——本結構只在「段落確在該表某格內」時產生，故恆 Some，
-    /// 欄位仍留 Option 供未來 body 級命中（若有）相容）。
-    pub cell: Option<usize>,
+    /// 宿主格索引（目標表宿主列內 `cells` 的下標；tc 序，非網格欄——網格欄
+    /// 起點另由 `grid_col_start` 給）。
+    ///
+    /// t_c1dbc6d7 S3-3：本欄原為 `Option<usize>`，文件寫「留 Option 供未來
+    /// body 級命中」，但 `Engine::table_locator_json` 用 `hit.cell?` —— 一旦
+    /// 未來真的出現 `cell == None` 的命中，`?` 會讓整條反查**靜默回 None**
+    /// （外殼誤判成「段落不在表內」而非「命中但無格」）。本結構只在「段落
+    /// 確在某格內」時產生（`locate_in_table` 的命中條件就是某格擁有該段），
+    /// 故改回非可选中斷該靜默路徑；`table_locator_json` 同批移除 `?`。
+    pub cell: usize,
     /// 宿主列索引。
     pub row: usize,
     /// 宿主格的網格起點欄（gridSpan 累算：前面各格 `grid_span` 之和）——
@@ -1967,9 +1976,18 @@ pub struct TableHit {
     pub grid_col_start: usize,
     /// 宿主格跨欄數（`gridSpan` 有效值，缺＝1）。
     pub grid_span: usize,
-    /// 宿主格在**巢狀序列最深表**中的列（＝`row` 的別名，保留顯名字段供
-    /// JSON 直讀）。
+    /// 宿主格在**巢狀序列最深表**中的列（＝`row` 的別名）。
+    ///
+    /// t_c1dbc6d7 S3-4：本欄與 `row` 數值恆等，但**保留不刪**——它是
+    /// `cell_path` JSON 的既有欄位，刪屬 breaking（JS 端目前尚無消費端，
+    /// 但契約已出貨）。文件同步說明兩者語義差別：`row` 屬 `table_path`
+    /// 層（M4 的 `row` 引數基準）、`cell_row` 屬 `cell_path` 層（外殼直讀）。
     pub cell_row: usize,
+    /// **身分識別子**（t_c1dbc6d7 S2-1）：命中段落的 canonical 索引＝傳入的
+    /// `para_index`。外殼／M4 端可據此比對「反查當時的段落」與「Mutation 實際
+    /// 落點」是否同一份文件狀態（文件被編輯過→段落索引平移→識別子不符）。
+    /// 由 `Engine::table_locator_json` 輸出成 JSON 的 `anchor_para` 欄。
+    pub anchor_para: usize,
 }
 
 /// 表格索引摘要（`tables_json` 的輕量伴跑面：外殼列「表格清單」不需整棵樹）。
@@ -1997,14 +2015,34 @@ pub struct TableSummary {
 /// `iter`，無 index 運算）。段落索引由主解析器按文件序編號且恰被**一格**
 /// 擁有（`Block::Paragraph { index }` 唯一性），故「最深」即唯一解，無需
 /// 候選仲裁。
+///
+/// t_c1dbc6d7 S3-1（效能，非行為）：根表 `para_start` 由 parser 保證**非遞減**
+/// （`p_count` 只增不減），故首見 `para_start > para_index` 即提前結束掃描——
+/// 否則每次查詢都要為其後**每一張**根表重算一次 `table_para_end`（其成本＝
+/// 該表含巢狀的總格數），游標反查在大文件會退化到 O(檔內總格數)／每次查詢。
 pub fn locate_table_for_para(tables: &[BodyTable], para_index: usize) -> Option<TableHit> {
+    let mut scratch: Vec<(usize, usize, usize)> = Vec::new();
+    locate_table_for_para_in(tables, para_index, &mut scratch)
+}
+
+/// `locate_table_for_para` 的可重用暫存版（同一份 scratch 可跨多次查詢複用，
+/// 外殼批量反查時省掉每層 `steps.to_vec()` 的配置）。
+pub fn locate_table_for_para_in(
+    tables: &[BodyTable],
+    para_index: usize,
+    scratch: &mut Vec<(usize, usize, usize)>,
+) -> Option<TableHit> {
     for (root_slot, bt) in tables.iter().enumerate() {
+        if bt.para_start > para_index {
+            break;
+        }
         // 表內段落的索引必落在 [para_start, para_end)——先以區間粗篩快速
         // 否決不相干根表（單調性由 parser 保證，find_cell_for_para 同款用法）。
         if para_index < bt.para_start || para_index >= table_para_end(&bt.table, bt.para_start) {
             continue;
         }
-        if let Some(hit) = locate_in_table(root_slot, &[], &bt.table, para_index) {
+        scratch.clear();
+        if let Some(hit) = locate_in_table(root_slot, scratch, &bt.table, para_index) {
             return Some(hit);
         }
     }
@@ -2013,12 +2051,16 @@ pub fn locate_table_for_para(tables: &[BodyTable], para_index: usize) -> Option<
 
 /// 單表遞迴：先掃本表各格（段落直接掛此格＝命中），再按文件序下鑽巢狀表
 /// （深度優先——巢狀表命中時其格直接擁有段落，外層不可能同時擁有）。
+///
+/// `scratch`＝巢狀步累加的複用暫存 stack（呼叫端持有；S3-1：避免每下鑽一層
+/// 就 `to_vec()` 一次。命中時**只複製一次**進 `TableHit`）。
 fn locate_in_table(
     root_slot: usize,
-    steps: &[(usize, usize, usize)],
+    scratch: &mut Vec<(usize, usize, usize)>,
     t: &Table,
     para_index: usize,
 ) -> Option<TableHit> {
+    let depth = scratch.len();
     for (r_idx, row) in t.rows.iter().enumerate() {
         let mut col_cursor = 0usize;
         for (c_idx, cell) in row.cells.iter().enumerate() {
@@ -2030,42 +2072,48 @@ fn locate_in_table(
             if owns {
                 return Some(TableHit {
                     root_slot,
-                    nested_steps: steps.to_vec(),
+                    nested_steps: scratch.clone(),
                     grid_cols: t.grid_col_count(),
                     rows: t.rows.len(),
-                    cell: Some(c_idx),
+                    cell: c_idx,
                     row: r_idx,
                     grid_col_start: col_cursor,
                     grid_span: span,
                     cell_row: r_idx,
+                    anchor_para: para_index,
                 });
             }
-            col_cursor += span;
+            col_cursor = col_cursor.saturating_add(span);
         }
     }
     // 本表無直接命中→依文件序下鑽每格內巢狀表（深度優先，最深者勝）。
     // `sub_table_idx` 口徑＝該格**巢狀表序列**（只數 `Block::Table`，跳過
     // 段落 block）的下標——與 mutation_k29c::locate_table 的
     // `direct_children(cell, "tbl")` 對齊，否則外殼拿本路徑餵 M4 會錯位。
-    // 已知殘差（誠實記帳）：canonical 把 `w:sdt`／`w:ins` 透明包裝**內**的
-    // 巢狀表也掛進 blocks（parser 透明包裝規則），而 locate_table 走 raw XML
-    // 只看直接子節點——此類檔案兩者序可能錯位；corpus 實測此形態未見於表內
-    // 巢狀（sdt 多在 body 級），外殼端 M4 呼叫本就有誠實拒絕兜底。
+    //
+    // 已知殘差（誠實記帳，t_c1dbc6d7 S2-1 更新）：canonical 把 `w:sdt`／
+    // `w:ins` 透明包裝**內**的巢狀表也掛進 blocks（parser 透明包裝規則），而
+    // locate_table 走 raw XML 只看直接子節點——這類檔案兩者序可能錯位。
+    // 「外殼端 M4 呼叫本就有誠實拒絕兜底」這句話**先前不成立**（locate_table
+    // 只有 `Vec::get` 越界檢查、無身分驗證，界內錯位會靜默改錯表），現由
+    // `mutation_k29c::table_identity_error` 補上真正的拒收防線（識別子＝目標表
+    // 首段的 canonical 索引，經 `find_paragraph_span` 換算成 raw 區間比對）。
     for (r_idx, row) in t.rows.iter().enumerate() {
         for (c_idx, cell) in row.cells.iter().enumerate() {
             let mut sub_idx = 0usize;
             for b in cell.blocks.iter() {
                 if let Block::Table(inner) = b {
-                    let mut deeper = steps.to_vec();
-                    deeper.push((r_idx, c_idx, sub_idx));
+                    scratch.push((r_idx, c_idx, sub_idx));
                     sub_idx += 1;
-                    if let Some(hit) = locate_in_table(root_slot, &deeper, inner, para_index) {
+                    if let Some(hit) = locate_in_table(root_slot, scratch, inner, para_index) {
                         return Some(hit);
                     }
+                    scratch.pop();
                 }
             }
         }
     }
+    scratch.truncate(depth);
     None
 }
 
@@ -2574,13 +2622,13 @@ mod tests {
         let h = locate_table_for_para(&roots, 1).expect("段 1 在 r0c1（跨欄格）");
         assert_eq!(h.root_slot, 0);
         assert!(h.nested_steps.is_empty(), "根表命中＝零巢狀步");
-        assert_eq!((h.row, h.cell), (0, Some(1)));
+        assert_eq!((h.row, h.cell), (0, 1));
         assert_eq!(h.grid_col_start, 1, "c1 起點＝c0 的 span(1) 累算");
         assert_eq!(h.grid_span, 2, "gridSpan 有效值透出");
         assert_eq!((h.grid_cols, h.rows), (3, 2));
         // 跨欄格之後的格（r1 是兩格普通表，起點直接＝索引）仍對。
         let h2 = locate_table_for_para(&roots, 3).expect("段 3 在 r1c1");
-        assert_eq!((h2.row, h2.cell, h2.grid_col_start), (1, Some(1), 1));
+        assert_eq!((h2.row, h2.cell, h2.grid_col_start), (1, 1, 1));
         // 表外段落＝None（不是錯誤）。
         assert!(locate_table_for_para(&roots, 99).is_none());
     }
@@ -2630,7 +2678,7 @@ mod tests {
             vec![(0, 1, 1)],
             "sub_table_idx＝格內第 1 張表"
         );
-        assert_eq!((h.row, h.cell), (0, Some(0)), "座標是**巢狀表自身**的格");
+        assert_eq!((h.row, h.cell), (0, 0), "座標是**巢狀表自身**的格");
         // 宿主格自身段落命中→回根表（最深＝根表，steps 空）。
         let h9 = locate_table_for_para(&roots, 9).expect("段 9 掛宿主格");
         assert!(h9.nested_steps.is_empty(), "根表格內段落＝根表命中");

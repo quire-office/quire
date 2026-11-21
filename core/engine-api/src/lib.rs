@@ -2186,7 +2186,7 @@ impl Engine {
             },
             "cell_path": {
                 "row": hit.row,
-                "cell": hit.cell?,
+                "cell": hit.cell,
                 "cell_row": hit.cell_row,
                 "grid_col_start": hit.grid_col_start,
                 "grid_span": hit.grid_span,
@@ -2194,6 +2194,10 @@ impl Engine {
                 "rows": hit.rows,
                 "depth": hit.nested_steps.len(),
             },
+            // S2-1 識別子：命中段落的 canonical 索引。外殼把它跟著 table_path
+            // 一起存著，送 Mutation 前若文件已被其他編輯動過（段落索引平移），
+            // 由引擎側的身分驗證統一拒收；本欄也讓外殼可自行早早發現過期路徑。
+            "anchor_para": hit.anchor_para,
         });
         serde_json::to_string(&out).ok()
     }

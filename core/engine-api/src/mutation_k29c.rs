@@ -328,6 +328,151 @@ fn part_for_target(target: &SubDocTarget) -> Result<&'static str, MutationError>
     }
 }
 
+/// **身分驗證防線（t_c1dbc6d7 S2-1）**：把 canonical 樹（`OoxmlDoc::tables`）
+/// 认定的那張表，與 `locate_table` 在 raw 明文上解析出的節點做**同一性比對**。
+///
+/// # 為何必須有這條防線
+/// canonical 解析器（`core/ooxml/src/table.rs`）的 `tbl_parent()`／`under()`
+/// **穿透** `w:sdt`／`w:ins`／`w:del`／`w:customXml` 等透明包裝，把包裝**內**的
+/// 表掛進 canonical 樹並計入 `root_slot`；本模組的 `locate_table` 走
+/// `direct_children`——**不穿透**任何包裝。兩套口徑不同 ⇒ 只要被包裝節點之後
+/// 還有 ≥1 個未包裝的直接兄弟，raw 側解析出的就是**另一張**表，而
+/// `Vec::get(idx)` 只擋越界、查不出這種「界內錯位」——過去會靜默改錯／刪錯
+/// 下一張表、列或格（corpus 實測 13/400 檔有此形態）。
+///
+/// # 比對方式（卡面定案 (a)：反查路徑附帶可比對識別子）
+/// 識別子＝目標表內**首段（文件序最小段）的 canonical 索引**。驗證步：
+/// 1. 以 `path` 在 canonical 樹定位目標表（找不到＝路徑與文件不符）。
+/// 2. 取該表子樹的首段 canonical 索引 `anchor`，用 `find_paragraph_span`
+///    （**與主解析器同口徑**的既有原語）換成 raw 位元組區間。
+/// 3. 該區間必須**完整落在** raw 解析出的 `(start, end)` 內；不符＝兩套口徑
+///    在此檔分岔 ⇒ `Err(InvalidTableOperation{detail:"路徑與文件不符…"})`，
+///    **絕不靜默執行**。
+/// 4. 目標表子樹**零段落**（無識別子可用）時退回**逐層張數配對**：raw 直屬
+///    `w:tbl` 數必與該層 canonical 表數相等——不相等代表該層兩套口徑已分岔。
+///
+/// # 代價與殘差（誠實記帳）
+/// - 本防線只「拒絕錯位」，**不修正**錯位：透明包裝檔內那些 raw 序與 canonical
+///   序不一致的表，改完之後會得到誠實拒絕而非「改對」。要「改對」需讓 raw 側
+///   改用與 parser 同一支穿透規則（卡面選項 (b)，動 parser 熱檔，PM 未核准）。
+/// - 逐層張數配對是「等式檢查」而非「一一對應檢查」：理論上存在「一處多算＋
+///   一處少算」互相抵銷的病態檔，此时配對通過而身分仍錯。這類檔在 corpus
+///   未見，且識別子可用（表內有段）時走的是第 3 步的強驗證，不受此殘差影響。
+/// - 成本：每次 M4 呼叫多一次 `find_paragraph_span`（O(文件大小)）；只在
+///   Mutation 路徑，不進顯示列表／roundtrip 熱路徑。
+fn table_identity_error(
+    tables: &[quire_ooxml::BodyTable],
+    text: &str,
+    path: &TablePath,
+    resolved: (usize, usize),
+) -> Result<(), MutationError> {
+    let mismatch = || MutationError::InvalidTableOperation {
+        detail: "路徑與文件不符（疑似 sdt/ins 透明包裝錯位）".to_string(),
+    };
+    // 1) canonical 側定位目標表（根表＋巢狀步逐層下鑽）。
+    let root = tables.get(path.root_slot).ok_or_else(mismatch)?;
+    let mut target = &root.table;
+    for (row, cell, sub) in &path.nested_steps {
+        let c = target
+            .rows
+            .get(*row)
+            .and_then(|r| r.cells.get(*cell))
+            .ok_or_else(mismatch)?;
+        target = c
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                quire_ooxml::Block::Table(inner) => Some(&**inner),
+                _ => None,
+            })
+            .nth(*sub)
+            .ok_or_else(mismatch)?;
+    }
+    // 2)＋3) 識別子可用（表內有段）⇒ 強驗證：首段的 raw 區間必須落在解析結果內。
+    let anchor = first_para_index(target);
+    if let Some(idx) = anchor {
+        let (span, _) = match crate::mutation::find_paragraph_span(text.as_bytes(), idx) {
+            Ok(v) => v,
+            Err(_) => return Err(mismatch()),
+        };
+        if !(resolved.0 <= span.start && span.end <= resolved.1) {
+            return Err(mismatch());
+        }
+        return Ok(());
+    }
+    // 4) 零段落 ⇒ 無識別子，退回**逐層張數配對**：canonical 表數恒 ≥ raw 直屬
+    //    數（透明包裝只讓 canonical 多認、raw 不會多認），兩者相等 ⇔ 該層無
+    //    包裝穿插 ⇔ 兩套口徑在本層的序對應一致。
+    let body_start = match find_local_tag(text, "body") {
+        Some(s) => s,
+        None => return Err(mismatch()),
+    };
+    let raw_roots = direct_children(text, body_start, "tbl");
+    if raw_roots.len() != tables.len() {
+        return Err(mismatch());
+    }
+    let mut cursor_span = *raw_roots.get(path.root_slot).ok_or_else(mismatch)?;
+    let mut cur = &root.table;
+    for (row, cell, sub) in &path.nested_steps {
+        let rows = direct_children(text, cursor_span.0, "tr");
+        let row_span = *rows.get(*row).ok_or_else(mismatch)?;
+        let cells = direct_children(text, row_span.0, "tc");
+        let cell_span = *cells.get(*cell).ok_or_else(mismatch)?;
+        let sub_tables = direct_children(text, cell_span.0, "tbl");
+        let canonical_count = cur
+            .rows
+            .get(*row)
+            .and_then(|r| r.cells.get(*cell))
+            .map(|c| {
+                c.blocks
+                    .iter()
+                    .filter(|b| matches!(b, quire_ooxml::Block::Table(_)))
+                    .count()
+            })
+            .ok_or_else(mismatch)?;
+        if sub_tables.len() != canonical_count {
+            return Err(mismatch());
+        }
+        cursor_span = *sub_tables.get(*sub).ok_or_else(mismatch)?;
+        cur = cur
+            .rows
+            .get(*row)
+            .and_then(|r| r.cells.get(*cell))
+            .and_then(|c| {
+                c.blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        quire_ooxml::Block::Table(inner) => Some(&**inner),
+                        _ => None,
+                    })
+                    .nth(*sub)
+            })
+            .ok_or_else(mismatch)?;
+    }
+    Ok(())
+}
+
+/// 表（含全部巢狀子表）內**文件序最小**的段落 canonical 索引；零段落＝`None`。
+///
+/// 「最小」而非「首列首格第一塊」：canonical 的段落索引由主解析器按文件序編號，
+/// 最小索引即文件序第一段——與 raw 側 `find_paragraph_span` 的掃描序同向，兩者
+/// 換算出來的位元組區間可直接比對（透明包裝錯位時兩者必然分離）。
+fn first_para_index(t: &quire_ooxml::Table) -> Option<usize> {
+    let mut min: Option<usize> = None;
+    t.walk(&mut |sub| {
+        for row in &sub.rows {
+            for cell in &row.cells {
+                for b in &cell.blocks {
+                    if let quire_ooxml::Block::Paragraph { index } = b {
+                        min = Some(min.map_or(*index, |m: usize| m.min(*index)));
+                    }
+                }
+            }
+        }
+    });
+    min
+}
+
 fn locate_table(text: &str, path: &TablePath) -> Result<(usize, usize), MutationError> {
     if path.target != SubDocTarget::Body {
         return Err(MutationError::SubDocNotFound {
@@ -386,15 +531,36 @@ struct RowLayout {
     cells: Vec<CellLayout>,
 }
 
+/// 讀單格的 `w:gridSpan/@w:val`（跨欄數）。
+///
+/// **必須先定位 `<w:gridSpan` 標籤本身，再在該標籤內搜 `w:val`**（卡面定案）。
+/// 舊實作直接對**整段 `<w:tcPr>`** 呼叫 `attr_in_tag(raw, "w:val")`——那是
+/// 「本 tcPr 內第一個 `w:val`」，而 ECMA-376 §17.4.103 的 `w:tcPr` 允許
+/// `w:tcBorders`／`w:shd`／`w:vMerge`／`w:cnfStyle` 等**自帶 `w:val`** 的子女
+/// 先於 `w:gridSpan` 宣告：
+///   - `<w:shd w:val="clear">` ⇒ 拿到列舉字串，`parse()` 失敗 → 跨欄數錯算 **1**；
+///   - `<w:vMerge w:val="3">`（畸形數字 val）⇒ 直接把合併序号當成跨欄數。
+/// 錯算會讓本模組 `row_layout` 的 `col_start`／`span` 與游標反查面
+/// （`table_map.rs` 走 canonical `CellProps::grid_span()`）分岔，餵
+/// `InsertTableColumn`／`DeleteTableColumn`／`MergeTableCells` 就操作錯欄。
+///
+/// **口徑逐字對齊 canonical**（`core/ooxml/src/table.rs::CellProps::grid_span`）：
+/// 以 **u32** 解析（非 usize）、缺／非法／0＝1、不 panic。用 u32 是為了讓
+/// `w:gridSpan w:val="18446744073709551615"` 這類「usize 解得開、u32 解不開」
+/// 的畸形值兩側同判 1——否則又是新的同義兩制。
 fn cell_grid_span(text: &str, tcpr: Option<(usize, usize)>) -> usize {
     let Some((s, e)) = tcpr else {
         return 1;
     };
     let raw = &text[s..e];
-    attr_in_tag(raw, "w:val")
-        .and_then(|v| v.trim().parse::<usize>().ok())
+    // 起點定位：只認 `<w:gridSpan` 這個標籤（local name 精確比對，不認子字串）。
+    let Some(at) = find_local_tag(raw, "gridSpan") else {
+        return 1;
+    };
+    attr_in_tag(&tag_open_string(raw, at), "w:val")
+        .and_then(|v| v.trim().parse::<u32>().ok())
         .filter(|v| *v > 0)
-        .unwrap_or(1)
+        .unwrap_or(1) as usize
 }
 
 fn row_layout(text: &str, row: (usize, usize)) -> RowLayout {
@@ -410,7 +576,7 @@ fn row_layout(text: &str, row: (usize, usize)) -> RowLayout {
             col_start: col,
             span,
         });
-        col += span;
+        col = col.saturating_add(span);
     }
     RowLayout {
         start: row.0,
@@ -1321,6 +1487,53 @@ impl Engine {
         })
     }
 
+    /// raw 側表格定位＋**身分驗證**（t_c1dbc6d7 S2-1 的唯一收口點）。
+    ///
+    /// `locate_table` 只看 raw 明文、不穿透 `w:sdt`／`w:ins`／`w:del` 透明包裝，
+    /// canonical 樹（反查路徑的來源）會穿透 ⇒ 兩套口徑在包裝檔上分岔。本方法
+    /// 在解析完成後立刻拿 canonical 事實比對 raw 節點，錯位即誠實拒絕，
+    /// **絕不靜默改錯表**。全部 M4 呼叫點一律經本方法（不得繞行 `locate_table`）。
+    ///
+    /// 解析**失敗**時也要把話說對：本模組的 `TablePath` 一律由我方反查面
+    /// （`table_locator_json`）鑄出，若 root 張數兩套口徑就不相等（透明包裝檔），
+    /// 解析失敗的原因是「口徑分岔」而不是「使用者選錯第幾張」——此時改發
+    /// 點名透明包裝的拒絕，避免外殼拿「越界」假線索去重選表（實測：
+    /// `sdt_wrapped_table.docx` 的裸表 T_B 在 canonical 是 root_slot 1、raw 直屬
+    /// 只有 1 張，舊訊息是會誤導人的「根表序 1 越界（共 1 張）」）。
+    fn locate_table_verified(
+        &self,
+        text: &str,
+        path: &TablePath,
+    ) -> Result<(usize, usize), MutationError> {
+        let span = match locate_table(text, path) {
+            Ok(span) => span,
+            Err(err) => return Err(self.classify_locate_error(text, err)),
+        };
+        table_identity_error(&self.doc.tables, text, path, span)?;
+        Ok(span)
+    }
+
+    /// 解析失敗的**原因歸屬**：兩套 root 張數口徑已分岔 ⇒ 換成點名透明包裝的
+    /// 誠實拒絕；張數相等（路徑過期／使用者傳錯）⇒ 原封不動沿用原錯誤。
+    fn classify_locate_error(&self, text: &str, err: MutationError) -> MutationError {
+        let raw_root_count = match find_local_tag(text, "body") {
+            Some(body_start) => direct_children(text, body_start, "tbl").len(),
+            None => return err,
+        };
+        if raw_root_count != self.doc.tables.len() {
+            MutationError::InvalidTableOperation {
+                detail: format!(
+                    "路徑與文件不符（疑似 sdt/ins 透明包裝錯位：{} 張根表在 canonical \
+                     計入但 raw 直屬子節點只認 {} 張，本檔這類路徑一律拒收）",
+                    self.doc.tables.len(),
+                    raw_root_count
+                ),
+            }
+        } else {
+            err
+        }
+    }
+
     fn body_part(&self) -> Result<(&'static str, Vec<u8>), MutationError> {
         let name = "word/document.xml";
         let xml =
@@ -1429,7 +1642,7 @@ impl Engine {
     ) -> Result<MutationOutcome, MutationError> {
         let (_, xml) = self.body_part()?;
         let text = text_of(&xml)?;
-        let (start, end) = locate_table(text, &table)?;
+        let (start, end) = self.locate_table_verified(text, &table)?;
         let new_xml = apply_replacements(&xml, &[(ByteSpan { start, end }, Vec::new())])?;
         let mut commit = K29cCommit::new();
         commit.update("word/document.xml", new_xml);
@@ -1447,7 +1660,7 @@ impl Engine {
     ) -> Result<MutationOutcome, MutationError> {
         let (_, xml) = self.body_part()?;
         let text = text_of(&xml)?;
-        let (table_start, table_end) = locate_table(text, &table)?;
+        let (table_start, table_end) = self.locate_table_verified(text, &table)?;
         let rows = direct_children(text, table_start, "tr");
         let template = *rows
             .get(at_row)
@@ -1502,7 +1715,7 @@ impl Engine {
     ) -> Result<MutationOutcome, MutationError> {
         let (_, xml) = self.body_part()?;
         let text = text_of(&xml)?;
-        let (table_start, _) = locate_table(text, &table)?;
+        let (table_start, _) = self.locate_table_verified(text, &table)?;
         let rows = direct_children(text, table_start, "tr");
         if rows.len() <= 1 {
             return Err(MutationError::InvalidTableOperation {
@@ -1536,8 +1749,8 @@ impl Engine {
                     continue;
                 }
                 for ncell in &next_layout.cells {
-                    let overlaps = ncell.col_start < cell.col_start + cell.span
-                        && cell.col_start < ncell.col_start + ncell.span;
+                    let overlaps = ncell.col_start < cell.col_start.saturating_add(cell.span)
+                        && cell.col_start < ncell.col_start.saturating_add(ncell.span);
                     if !overlaps {
                         continue;
                     }
@@ -1573,7 +1786,7 @@ impl Engine {
         }
         let (_, xml) = self.body_part()?;
         let text = text_of(&xml)?;
-        let (table_start, _) = locate_table(text, &table)?;
+        let (table_start, _) = self.locate_table_verified(text, &table)?;
         let grid_cols = grid_col_spans(text, table_start);
         let insert_at = match position {
             InsertSide::Before => at_grid_col,
@@ -1606,7 +1819,7 @@ impl Engine {
             let row_open_end = tag_at(text, row.start).map(|t| t.end).unwrap_or(row.start);
             let mut inserted = false;
             for cell in &row.cells {
-                let cell_end_col = cell.col_start + cell.span;
+                let cell_end_col = cell.col_start.saturating_add(cell.span);
                 if insert_at == cell.col_start {
                     let new_cell = format!(
                         r#"<w:tc><w:tcPr><w:tcW w:w="{}" w:type="dxa"/></w:tcPr><w:p></w:p></w:tc>"#,
@@ -1675,7 +1888,7 @@ impl Engine {
     ) -> Result<MutationOutcome, MutationError> {
         let (_, xml) = self.body_part()?;
         let text = text_of(&xml)?;
-        let (table_start, _) = locate_table(text, &table)?;
+        let (table_start, _) = self.locate_table_verified(text, &table)?;
         let grid_cols = grid_col_spans(text, table_start);
         if grid_cols.len() <= 1 {
             return Err(MutationError::InvalidTableOperation {
@@ -1698,7 +1911,7 @@ impl Engine {
 
         for row in row_layouts(text, table_start) {
             for cell in &row.cells {
-                let cell_end_col = cell.col_start + cell.span;
+                let cell_end_col = cell.col_start.saturating_add(cell.span);
                 let contains = cell.col_start <= grid_col && grid_col < cell_end_col;
                 if !contains {
                     continue;
@@ -1757,7 +1970,7 @@ impl Engine {
         }
         let (_, xml) = self.body_part()?;
         let text = text_of(&xml)?;
-        let (table_start, _) = locate_table(text, &table)?;
+        let (table_start, _) = self.locate_table_verified(text, &table)?;
         let rows = row_layouts(text, table_start);
         if bottom_row >= rows.len() {
             return Err(MutationError::InvalidTableOperation {
@@ -1774,7 +1987,8 @@ impl Engine {
                 .cells
                 .iter()
                 .filter(|c| {
-                    c.col_start < left_grid_col + span_w && left_grid_col < c.col_start + c.span
+                    c.col_start < left_grid_col.saturating_add(span_w)
+                        && left_grid_col < c.col_start.saturating_add(c.span)
                 })
                 .collect();
             if selected.is_empty() {
@@ -1904,7 +2118,7 @@ impl Engine {
         }
         let (_, xml) = self.body_part()?;
         let text = text_of(&xml)?;
-        let (table_start, _) = locate_table(text, &table)?;
+        let (table_start, _) = self.locate_table_verified(text, &table)?;
         let rows = row_layouts(text, table_start);
         let row = rows
             .get(row_idx)
@@ -1997,7 +2211,7 @@ impl Engine {
     ) -> Result<MutationOutcome, MutationError> {
         let (_, xml) = self.body_part()?;
         let text = text_of(&xml)?;
-        let (table_start, _) = locate_table(text, &table)?;
+        let (table_start, _) = self.locate_table_verified(text, &table)?;
         let add = table_props_xml(&patch);
         // E 卡：tblBorders 逐方位併入（六方位全合法；補丁 None／全缺＝空
         // edges＝零擾動，既有容器與整檔逐位元組不變）。
@@ -2057,7 +2271,7 @@ impl Engine {
     ) -> Result<MutationOutcome, MutationError> {
         let (_, xml) = self.body_part()?;
         let text = text_of(&xml)?;
-        let (table_start, _) = locate_table(text, &table)?;
+        let (table_start, _) = self.locate_table_verified(text, &table)?;
         let rows = direct_children(text, table_start, "tr");
         let row = *rows
             .get(row_idx)
@@ -2111,7 +2325,7 @@ impl Engine {
     ) -> Result<MutationOutcome, MutationError> {
         let (_, xml) = self.body_part()?;
         let text = text_of(&xml)?;
-        let (table_start, _) = locate_table(text, &table)?;
+        let (table_start, _) = self.locate_table_verified(text, &table)?;
         let rows = row_layouts(text, table_start);
         let row = rows
             .get(row_idx)
