@@ -9,7 +9,7 @@
 //!   `w:gridSpan/@w:val`。ECMA-376 下 `w:tcBorders`／`w:shd`／`w:vMerge`／
 //!   `w:cnfStyle` 皆可先於 `w:gridSpan` 宣告且自帶 `w:val`：
 //!   `w:shd w:val="clear"`（列舉字串）⇒ `parse::<usize>()` 失敗 ⇒ 跨欄數錯算 **1**；
-//!   `w:vMerge w:val="3"`（畸形數字 val）⇒ 直接把合併序号當成跨欄數（錯算 **3**）。
+//!   `w:vMerge w:val="3"`（畸形數字 val）⇒ 直接把合併序號當成跨欄數（錯算 **3**）。
 //! - `table_map.rs` 反查面走 canonical `CellProps::grid_span()`（精確讀
 //!   `w:gridSpan/@w:val`）⇒ **同義兩制**：反查給的 `grid_col_start` 與 mutation
 //!   側 `row_layout` 算出的 `col_start`/`span` 分岔，餵 `InsertTableColumn`／
@@ -131,7 +131,7 @@ fn insert_col(e: &mut Engine, table: TablePath, at_grid_col: usize) -> Result<()
 }
 
 // ---------------------------------------------------------------------------
-// 燈 1：fixture 自證——污染前綴確實在檔（上游改掉形态時本燈先紅，不假綠）
+// 燈 1：fixture 自證——污染前綴確實在檔（上游改掉形態時本燈先紅，不假綠）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -157,7 +157,7 @@ fn lamp1_prefix_contamination_is_real_in_the_file() {
     // 中間不得先出現別的 w:val（否則「第一個 w:val」就不是 shd 的，燈 3 失去指向）。
     assert!(
         !xml[shd_open_end..gs_at].contains("w:val="),
-        "shd 與 gridSpan 之間不得有其他 w:val（本燈紅＝fixture 形态變了，燈 3 斷言需重推）"
+        "shd 與 gridSpan 之間不得有其他 w:val（本燈紅＝fixture 形態變了，燈 3 斷言需重推）"
     );
 
     let vm_at = xml
@@ -369,7 +369,7 @@ fn lamp5_malformed_huge_gridspan_never_panics() {
                 .is_empty()
         })
         .expect("溢位表要可反查");
-    // 允許成功或誠實拒絕，唯獨不准 panic（本燈能跑到這裡就代表沒炸）。
+    // 允許成功或誠實拒絕，唯獨不準 panic（本燈能跑到這裡就代表沒炸）。
     let _ = insert_col(&mut e, path_of(&hit), 1);
     let _ = e.apply_mutation(Mutation::DeleteTableColumn {
         table: path_of(&hit),
@@ -421,7 +421,7 @@ fn lamp6_buggy_gate_proves_lamp3_assertions_are_live() {
 #[test]
 fn lamp7_clean_gridspan_files_behave_and_roundtrip() {
     let e0 = open(MULTI_FIXTURE);
-    // 本檔必须至少有一格 cell != grid_col_start（S3-5 補的列），否則此燈測不到點。
+    // 本檔必須至少有一格 cell != grid_col_start（S3-5 補的列），否則此燈測不到點。
     let divergent: Vec<(u64, u64)> = (0..e0.paragraph_count())
         .filter_map(|p| locate(&e0, p))
         .filter_map(|h| {

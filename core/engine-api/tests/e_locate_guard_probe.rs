@@ -3,7 +3,7 @@
 //! # 為什麼需要它
 //! S2-1 的身分驗證防線（`table_identity_error`）是「寧可拒收、不可靜默錯改」。
 //! 防線本身正確，但它**可能過度拒收**：把正常檔（無透明包裝、兩套口徑本就一致）
-//! 也一併擋掉，就是使用者可见的能力回退——考卷綠燈看不出來（斷言只驗「拒收時
+//! 也一併擋掉，就是使用者可見的能力回退——考卷綠燈看不出來（斷言只驗「拒收時
 //! 零波及」，不會因為「拒收太多」而紅）。本探針把這件事變成可量測的數字。
 //!
 //! # 紀律
@@ -12,7 +12,7 @@
 //! - 跑法：`cargo test -p quire-engine --test e_locate_guard_probe -- --ignored --nocapture`
 //! - 唯一的硬斷言（必須綠）：**零靜默錯改**——凡 `Ok` 的路徑，被改的根表集合必恰
 //!   為反查宣稱的那一張。拒收率只報數字、不設閥值（語料再生成不假綠、也不誤紅）。
-//! - 「防線确实有在擋東西」的正向對照＝`e_sdt_wrapped_table` 燈 2／燈 6（修前紅
+//! - 「防線確實有在擋東西」的正向對照＝`e_sdt_wrapped_table` 燈 2／燈 6（修前紅
 //!   已存證 docs/e-locate-parity-redlight.md §4），本探針只補反向的過度拒收面。
 //!
 //! 繁中註解、禁簡體禁 emoji，署名 ADT109119。
@@ -28,7 +28,7 @@ fn corpus_manifest() -> Vec<String> {
     .expect("corpus/manifest.json 不在場");
     let v: Value = serde_json::from_str(&raw).expect("manifest 非合法 JSON");
     // manifest 實測欄位名＝`file`（相對於 corpus/）；兼容其他形狀，但**不可**在
-    // 欄位名對不上時靜默回空集合（空清單＝探針空轉報假綠，本卡踩过這個坑）。
+    // 欄位名對不上時靜默回空集合（空清單＝探針空轉報假綠，本卡踩過這個坑）。
     let arr = v
         .get("files")
         .and_then(|f| f.as_array())

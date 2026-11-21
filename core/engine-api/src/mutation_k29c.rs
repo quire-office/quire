@@ -329,7 +329,7 @@ fn part_for_target(target: &SubDocTarget) -> Result<&'static str, MutationError>
 }
 
 /// **身分驗證防線（t_c1dbc6d7 S2-1）**：把 canonical 樹（`OoxmlDoc::tables`）
-/// 认定的那張表，與 `locate_table` 在 raw 明文上解析出的節點做**同一性比對**。
+/// 認定的那張表，與 `locate_table` 在 raw 明文上解析出的節點做**同一性比對**。
 ///
 /// # 為何必須有這條防線
 /// canonical 解析器（`core/ooxml/src/table.rs`）的 `tbl_parent()`／`under()`
@@ -356,7 +356,7 @@ fn part_for_target(target: &SubDocTarget) -> Result<&'static str, MutationError>
 ///   序不一致的表，改完之後會得到誠實拒絕而非「改對」。要「改對」需讓 raw 側
 ///   改用與 parser 同一支穿透規則（卡面選項 (b)，動 parser 熱檔，PM 未核准）。
 /// - 逐層張數配對是「等式檢查」而非「一一對應檢查」：理論上存在「一處多算＋
-///   一處少算」互相抵銷的病態檔，此时配對通過而身分仍錯。這類檔在 corpus
+///   一處少算」互相抵銷的病態檔，此時配對通過而身分仍錯。這類檔在 corpus
 ///   未見，且識別子可用（表內有段）時走的是第 3 步的強驗證，不受此殘差影響。
 /// - 成本：每次 M4 呼叫多一次 `find_paragraph_span`（O(文件大小)）；只在
 ///   Mutation 路徑，不進顯示列表／roundtrip 熱路徑。
@@ -400,7 +400,7 @@ fn table_identity_error(
         }
         return Ok(());
     }
-    // 4) 零段落 ⇒ 無識別子，退回**逐層張數配對**：canonical 表數恒 ≥ raw 直屬
+    // 4) 零段落 ⇒ 無識別子，退回**逐層張數配對**：canonical 表數恆 ≥ raw 直屬
     //    數（透明包裝只讓 canonical 多認、raw 不會多認），兩者相等 ⇔ 該層無
     //    包裝穿插 ⇔ 兩套口徑在本層的序對應一致。
     let body_start = match find_local_tag(text, "body") {
@@ -539,7 +539,7 @@ struct RowLayout {
 /// `w:tcBorders`／`w:shd`／`w:vMerge`／`w:cnfStyle` 等**自帶 `w:val`** 的子女
 /// 先於 `w:gridSpan` 宣告：
 ///   - `<w:shd w:val="clear">` ⇒ 拿到列舉字串，`parse()` 失敗 → 跨欄數錯算 **1**；
-///   - `<w:vMerge w:val="3">`（畸形數字 val）⇒ 直接把合併序号當成跨欄數。
+///   - `<w:vMerge w:val="3">`（畸形數字 val）⇒ 直接把合併序號當成跨欄數。
 ///
 /// 錯算會讓本模組 `row_layout` 的 `col_start`／`span` 與游標反查面
 /// （`table_map.rs` 走 canonical `CellProps::grid_span()`）分岔，餵

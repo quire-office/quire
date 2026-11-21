@@ -9,7 +9,7 @@
 
 | 項目 | 定性 | 狀態 |
 | --- | --- | --- |
-| S2-1 `w:sdt`／`w:ins`／`w:del` 透明包裝內巢狀表 → 反查路徑界內錯位、靜默改錯表 | 真 S2，corpus 13/400 命中 | 落地：M4 入口身分驗證（卡面定案 (a)） |
+| S2-1 `w:sdt`／`w:ins`／`w:del` 透明包裝內巢狀表 → 反查路徑界內錯位、靜默改錯表 | 真 S2，卡面記 corpus 13/400；本卡重掃得 7/400（§5c） | 落地：M4 入口身分驗證（卡面定案 (a)） |
 | S2-2 `cell_grid_span` 對整段 `<w:tcPr>` 找第一個 `w:val` | S2 定性，corpus 0/400（機率證據） | 落地：先定位 `<w:gridSpan` 標籤再取該標籤 `@w:val`，改吃 u32 |
 | S3-1 反查面每下鑽一層 `steps.to_vec()`＋前置根表重算 `table_para_end` | 效能 | 落地：呼叫端持有 `scratch` 暫存 stack＋根表 `para_start` 單調性提前中斷 |
 | S3-2 `col_cursor += span` 未 `saturating_add` | wasm32 debug panic＝瀏覽器 abort，零容忍 | 落地：`table_map.rs`／`mutation_k29c.rs` 全部 `col + span` 類加法改 `saturating_add` |
@@ -78,7 +78,7 @@ ECMA-376 §17.4.103 的 `w:tcPr` 允許 `w:tcBorders`／`w:shd`／`w:vMerge`／`
 `w:val` 的子女先於 `w:gridSpan` 宣告：
 
 - `<w:shd w:val="clear">` ⇒ 拿到列舉字串，`parse()` 失敗 ⇒ 跨欄數錯算 **1**；
-- `<w:vMerge w:val="3">`（畸形數字 val）⇒ 直接把合併序号當成跨欄數（錯算 **3**）。
+- `<w:vMerge w:val="3">`（畸形數字 val）⇒ 直接把合併序號當成跨欄數（錯算 **3**）。
 
 錯算讓 `row_layout` 的 `col_start`／`span` 與反查面（`table_map.rs` 走 canonical
 `CellProps::grid_span()`）分岔，餵 `InsertTableColumn`／`DeleteTableColumn`／`MergeTableCells`
@@ -106,8 +106,8 @@ corpus 400 檔實測「`w:gridSpan` 之前出現其他 `w:val`」＝**0 命中**
 | `fixtures/sdt_wrapped_table.docx` | `scripts/gen_sdt_wrapped_table_fixture.py` | body 依序＝`w:sdtContent` 包一張表 T_A、接著裸表 T_B、表後尾段（確保 sdt 之後有未包裝兄弟） |
 | `fixtures/table_gridspan_prefix.docx` | `scripts/gen_gridspan_prefix_fixture.py` | 3 網格欄；r0c0 前綴 `<w:shd w:val="clear"/>`＋`<w:gridSpan w:val="2"/>`；r1c0 前綴 `<w:vMerge w:val="3"/>`＋`<w:gridSpan w:val="2"/>` |
 | `fixtures/table_nested_decoy.docx` | `scripts/gen_nested_decoy_fixture.py` | 宿主格內先 decoy 子表（`sub_table_idx=0`）再目標子表（`=1`）——驗 `sub_table_idx`≠0 直通 M4 |
-| `fixtures/table_gridspan_overflow.docx` | 同上（同檔附第二表） | 畸形 `w:gridSpan`（`4294967295`／`18446744073709551615`）——wasm32 debug `attempt to add with overflow` 即瀏覽器 abort，零 panic 是硬要求（S3-2） |
-| `fixtures/table_multi.docx`（擴列） | `scripts/gen_multi_table_fixture.py`（同步改，可重現） | T2 由「1 列 2 欄」擴為 3 網格欄：r0 三格（對照組）＋r1 為 `gridSpan=2` 跨前两欄＋一格 ⇒ **r1c1 的 tc 序＝1、網格起點＝2** |
+| `fixtures/table_gridspan_overflow.docx` | `scripts/gen_nested_decoy_fixture.py`（同檔附第二表） | 畸形 `w:gridSpan`：r0 兩格各 `4294967295`（＝u32::MAX，同列兩個 ⇒ 第二個累加即溢位）、r1 一格 `18446744073709551615`（＝usize::MAX，usize 解得開、u32 解不開 ⇒ 與 canonical 同判 1）——wasm32 debug `attempt to add with overflow` 即瀏覽器 abort，零 panic 是硬要求（S3-2） |
+| `fixtures/table_multi.docx`（擴列） | `scripts/gen_multi_table_fixture.py`（同步改，可重現） | T2 由「1 列 2 欄」擴為 3 網格欄：r0 三格（對照組）＋r1 為 `gridSpan=2` 跨前兩欄＋一格 ⇒ **r1c1 的 tc 序＝1、網格起點＝2** |
 
 `table_multi` 的 T2 擴列是 S3-5 的正解：舊形「1 列 2 欄、r0c1 兩者皆 1」使全套 fixture
 **沒有任何一格** `cell != grid_col_start` 真正成立，三層考卷（engine／engine／wasm 殼）從未測到
@@ -196,8 +196,36 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 燈 6 語料面實測輸出（head 態，`--nocapture`）：
 `燈 6 實測：7 檔／10 條反查路徑；套改 2 條、誠實拒絕 8 條`
-⇒ 7 檔透明包裝語料全數落於准集（改對或誠實拒絕），零靜默錯改；其中 2 條本就不受包裝錯位影響、
+⇒ 7 檔透明包裝語料全數落於準集（改對或誠實拒絕），零靜默錯改；其中 2 條本就不受包裝錯位影響、
 照常成功＝**防線未誤擋正常檔**的語料面證據。
+
+## §4b run 290 半成品態的 fixture／產生器不同步（本卡發現並更正）
+
+本卡重跑四個產生器做 byte 級可重現性驗證時發現：run 290 commit 的
+`table_gridspan_overflow.docx` 與 `table_nested_decoy.docx` **無法由同批 commit 的產生器重現**
+（overflow：commit 態 document.xml 772 bytes 且缺 `4294967295` 那兩個格、tblGrid 少一欄；
+nested_decoy：commit 態多一個空 `<w:tr>`）。即 commit 態是**手改或舊版產生器**產出的成品，
+產生器後續又改過 ⇒ 「可重現」宣稱在 run 290 未成立。
+
+處理：**以產生器現行輸出為準**重新生成並 commit（產生器是事實來源、可重跑）。新版 overflow 檔
+反而**更強**：r0 兩格各 `w:gridSpan w:val="4294967295"`（u32::MAX）＋ r1 一格
+`18446744073709551615`（usize::MAX），同列兩個 u32::MAX 讓「第二個累加」也進考卷。
+
+重生成後在 base binary（`37ffbbb`）**重跑紅燈存證**（§4 的數字全部重驗，非沿用）：
+
+```
+test result: FAILED. 4 passed; 4 failed;   # e_gridspan_prefix（同前：lamp3a/3b/5/6 紅）
+  lamp5 panicked at core/engine-api/src/mutation_k29c.rs:413:9: attempt to add with overflow
+test result: FAILED. 4 passed; 4 failed;   # e_sdt_wrapped_table（同前：lamp2/3/6/7 紅）
+  lamp2/lamp6 界內錯位 left: [1] / right: [0]
+```
+
+（base 態溢位站點由舊 fixture 態的 `:1631:63` 變成新 fixture 態的 `:413:9`（`row_layout` 的
+`col += span`）——兩處都是修前的未 saturating 加法，新 fixture 觸發的是 mutation 側那一處，
+與 S3-2 卡面指名的 `table_map.rs` `col_cursor` 是**兩個不同站點**，現兩側都已 `saturating_add`。）
+
+紀律記帳：本卡未動 `git checkout`／`reset` 還原任何檔案（依還原鐵律），僅以產生器重生成並讓
+考卷＋八閘在新檔態重新驗證。
 
 ## §5 無損紅線與閘門
 
@@ -206,6 +234,65 @@ test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 - `bash ~/.hermes/scripts/ow-gate.sh <worktree>`：八閘 fail=0（含 wasm32 `cargo check`、goldens、
   `check-layering.sh`、`cargo fmt --check`、`clippy -D warnings`、`cargo test --workspace`）。
 - 本卡未新增探針腳本掛 CI（無 LO 真值面向：本卡是口徑一致性，非渲染視覺）。
+
+## §5b 全語料假拒收探針（`e_locate_guard_probe.rs`，`#[ignore]`，PM 手跑）
+
+防線的原則「寧可拒收、不可靜默錯改」是對的，但它**可能過度拒收**——把兩套口徑本就一致的
+正常檔也擋掉，就是使用者可見的能力回退，而考卷綠燈看不出來（斷言只驗「拒收時零波及」）。
+本探針把這件事變成可量測的數字；唯一的硬斷言＝**零靜默錯改**（凡 `Ok` 者，被改根表必恰為
+反查宣稱那張、且目標確實被改到），拒收率只報數字不設閥值。
+
+```
+探針實測：有表檔 148（跳過 1）／反查路徑 292；套改 284、誠實拒絕 8（拒收率 2.7%）
+  拒收 ooxmlexport/tdf106724.docx: InvalidTableOperation{detail:"…1 張根表在 canonical 計入但 raw 直屬子節點只認 0 張…"}
+  拒收 poi/test-data_document_Bug54771a.docx: …2 張 vs 0 張（2 條）
+  拒收 poi/test-data_document_Bug54849.docx: …（2 條：1 條識別子不符、1 條 2 張 vs 1 張）
+  拒收 xopt/TestFiles_HC031-Complicated-Document.docx: …3 張 vs 2 張
+  拒收 ooxmlexport/table-start-2-sdt.docx: …1 張 vs 0 張
+  拒收 xopt/NewDocxDocuments_ContentControlsNested.docx: …1 張 vs 0 張
+test result: ok. 1 passed; 0 failed  （耗時 1439s ⇒ 故 #[ignore]，不得進零回退鐵閘）
+```
+
+（上列是**該次實跑逐字輸出**。探針另有一個「目標根表原本就自帶 center ⇒ 該條歸屬斷言恆真」
+的計數器，在本次開跑**之後**才加入，故該次未印出該數；PM 重跑即會報出，未測得的數字本檔不假填。）
+
+**判讀**：8 條拒收**全數**落在透明包裝語料檔（7 檔），其餘 141 檔有表檔路徑**無一條**被拒；
+284 條套改路徑**無一條**改到別張表、也無一條靜默空寫 ⇒ 防線**零誤擋**且**零漏網**。探針跑法：
+`cargo test -p quire-engine --test e_locate_guard_probe -- --ignored --nocapture`。
+
+探針自身踩過的兩個坑（已寫進檔頭紀律）：
+1. `tables_json` 根表陣列每項是 `{para_start, table:{…}}`，讀 `item["props"]` 恆 `None`
+   ⇒ 誤報「靜默空寫」缺陷（實為探針讀錯層，該檔 raw XML 的 `<w:jc w:val="center"/>` 已正確寫入）。
+2. manifest 欄位名對不上時不可 `unwrap_or_default` 回空集合 ⇒ 探針空轉報 `files=0` 假綠；
+   現改為 `panic` ＋ 入選檔數下限斷言。
+
+## §5c 語料命中數的誠實記帳（13 vs 7）
+
+卡面記「`<w:sdt>`／`<w:ins>`／`<w:del>` 段內含 `<w:tbl>` 者 **13 檔**」。本卡以標籤深度掃描重跑
+（`scan_wrapped_list.py`；manifest 欄位名實為 `file` 且相對於 `corpus/`）得 **7 檔／400**：
+`ooxmlexport/tdf106724`、`ooxmlexport/tdf114882`、`ooxmlexport/table-start-2-sdt`、
+`poi/test-data_document_Bug54771a`、`poi/test-data_document_Bug54849`、
+`xopt/TestFiles_HC031-Complicated-Document`、`xopt/NewDocxDocuments_ContentControlsNested`。
+
+為排除「掃描範圍」造成差異，另跑兩種口徑覆核（兩腳本在 scratch，非入庫件）：
+
+| 口徑 | 腳本 | 檔數 |
+| --- | --- | --- |
+| 表**確在**包裝段內，只掃 `word/document.xml` | `scan_wrapped_list.py` | **7** |
+| 同上，但掃 `word/` 下**全部** xml part（含 header/footer/footnotes） | `scan_wrapped_allparts.py` | **7**（無增檔） |
+| 正則「包裝開標籤之後出現 `w:tbl`」（**不驗閉合**） | `scan_wrapped_regex13.py` | 21 |
+| 「有包裝標籤」且「有 `w:tbl`」（**不限**位置關係） | `scan_wrapped_coexist.py` | 33 |
+
+四種口徑得 7／7／21／33，**無一種恰為 13**；範圍不是變因（全 parts 仍 7），故 13 出自某種
+介於「嚴格巢狀」與「寬鬆共存」之間、本卡無從重現的判準（卡面未附原始腳本）。
+**本卡不自行判定卡面數字為錯**，請 PM 以其原腳本覆核；考卷掛清單以「可重跑、且 base binary
+實測到缺陷」的 7 檔為準（§4 於 `Bug54849` 實測界內錯位 `left:[1]/right:[0]`，定性不受影響）。
+若 PM 覆核後確有其他檔屬真巢狀態，把它們補進 `e_sdt_wrapped_table.rs` 的 `CORPUS_WRAPPED`
+清單即可（該燈對缺檔只掛帳不報紅）。
+
+**覆蓋不受此爭議影響**：`e_locate_guard_probe.rs`（§5b）對 **400 檔全語料**逐檔跑同一條
+零靜默錯改硬斷言（148 有表檔／292 條反查路徑），是比「7 檔清單燈」嚴格得多的全覆蓋面，
+任何漏網檔（含卡面 13 檔中本卡未列者）都會由它報紅。
 
 ## §6 鑑別力證明（BUGGY 期望門控，同支 binary 切換）
 
@@ -224,7 +311,8 @@ E_GRIDSPAN_BUGGY=1   → lamp6 FAILED:「BUGGY 態：期望換成不可能值 �
 
 1. **選項 (b) 若要推進**（透明包裝檔「改對」而非「誠實拒絕」）：需另卡核准動
    `core/ooxml/src/table.rs` 的 `tbl_parent()`／`under()` 穿透規則，讓 `locate_table` 與 parser
-   吃同一支規則。影響面＝mutation 熱檔＋13/400 語料檔，建議以 `corpus` 全掃 A/B 為準入閘。
+   吃同一支規則。影響面＝mutation 熱檔＋透明包裝語料檔（§5c：本卡重掃得 7 檔／400，卡面記 13 檔），
+   建議以 `corpus` 全掃 A/B 為準入閘。
 2. **JS 端消費端**：`table_locator_json` 新增的 `anchor_para` 欄目前是純輸出（`shells/web/editor/`
    本卡嚴禁觸碰、t_b9ae819b U4b 正在改）。U4b 收案後可另卡讓殼層在送 Mutation 前自行比對，
    省下往返；引擎側已收口，殼層漏比對不會造成靜默錯改。

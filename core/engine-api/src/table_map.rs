@@ -1966,7 +1966,7 @@ pub struct TableHit {
     /// 未來真的出現 `cell == None` 的命中，`?` 會讓整條反查**靜默回 None**
     /// （外殼誤判成「段落不在表內」而非「命中但無格」）。本結構只在「段落
     /// 確在某格內」時產生（`locate_in_table` 的命中條件就是某格擁有該段），
-    /// 故改回非可选中斷該靜默路徑；`table_locator_json` 同批移除 `?`。
+    /// 故改回非可選中斷該靜默路徑；`table_locator_json` 同批移除 `?`。
     pub cell: usize,
     /// 宿主列索引。
     pub row: usize,
