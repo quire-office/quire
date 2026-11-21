@@ -307,6 +307,23 @@ E_GRIDSPAN_BUGGY=1   → lamp6 FAILED:「BUGGY 態：期望換成不可能值 �
 注意 BUGGY 態的「實得」欄（`[]` 與 `2/3`）正是綠態的真值，與 §4 base 態紅燈的錯值（`[1]`、`3/2`）
 互為對照。
 
+可重跑入口（隨貨腳本，PM 明示隨貨要求）：
+
+```
+bash scripts/e_locate_parity_buggy_replay.sh buggy          # 雙盞各紅 1（exit=101）
+bash scripts/e_locate_parity_buggy_replay.sh good           # 8/8 ＋ 8/8 綠
+bash scripts/e_locate_parity_buggy_replay.sh base 37ffbbb   # pre-fix 態重現 §4 紅燈存證
+```
+
+`base` 態走 `git worktree add`（唯讀檢出）建 pre-fix 乾淨樹再 copy 考卷＋fixture，**絕不**
+`checkout`／`reset` 本工作區——動到 src 的字串置換注入對本卡不合規（缺陷在口徑失配，注入點
+必然碰禁改面 `core/ooxml/src/table.rs` 或 mutation 熱檔），故本卡不採 k29e 那套 src 置換紀律。
+
+另有一項**獨立於引擎**的鑑別力證明（§4b S3-5）：以 ElementTree 逐態重現 `locate_in_table` 的
+「cell＝tc 序／grid_col_start＝網格游標」演算，比對 `table_multi.docx` 兩態——
+merge-base `37ffbbb` 態分歧格集合為**空**、本卡工作區態得 `[(tbl 2, row 1, cell 1, grid 2, span 1)]`
+⇒ wasm 殼燈 4 新增的「必須存在 (1,2,1) 分歧格」斷言在舊 fixture 必紅，非恆綠裝飾斷言。
+
 ## §7 給 PM 的下一步建議（不掛帳、不擴權）
 
 1. **選項 (b) 若要推進**（透明包裝檔「改對」而非「誠實拒絕」）：需另卡核准動

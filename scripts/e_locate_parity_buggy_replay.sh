@@ -11,7 +11,7 @@
 #   （core/ooxml/src/table.rs）與 mutation 熱檔，故**不走字串置換注入**，改用考卷內建
 #   的 BUGGY 期望門控（E_SDT_TABLE_BUGGY／E_GRIDSPAN_BUGGY）：只換期望常數、引擎碼零動靜，
 #   該燈即紅 ⇒ 證明斷言真在比對 canonical 事實。
-# - base 態紅燈另以 `git worktree add`（唯讀检出，絕不 checkout/reset 本工作區）建 pre-fix
+# - base 態紅燈另以 `git worktree add`（唯讀檢出，絕不 checkout/reset 本工作區）建 pre-fix
 #   乾淨樹，copy 考卷＋fixture 後跑：界內錯位（left:[1] vs right:[0]）與 overflow panic
 #   在那邊重現，寫進 docs/e-locate-parity-redlight.md §4／§4b。
 # - 嚴禁 git checkout / reset / clean / stash / push 動到本工作區。
