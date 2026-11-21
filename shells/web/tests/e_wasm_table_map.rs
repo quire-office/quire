@@ -121,9 +121,12 @@ fn lamp3_summary_surface_matches_canonical_facts() {
     assert_eq!(rows[0]["grid_cols"], 3);
     assert_eq!(rows[0]["table_count"], 2, "T0 含 1 巢狀表");
     assert_eq!(rows[0]["para_cells"], 12);
-    // T1：1 列 2 欄無巢狀；T2：2 列 2 欄。
-    assert_eq!(rows[1]["rows"], 1);
-    assert_eq!(rows[1]["grid_cols"], 2);
+    // T1：2 列 3 網格欄無巢狀——E 返修卡 t_c1dbc6d7 S3-5 擴列（r0 三格＋r1
+    //     gridSpan=2＋一格；r1c1 是全套 fixture 第一格 `cell != grid_col_start`
+    //     真樣本，舊形「1 列 2 欄」正是 S2-2 gridSpan 錯讀漏網的洞）；
+    //     T2（根表三）：2 列 2 欄不變。
+    assert_eq!(rows[1]["rows"], 2);
+    assert_eq!(rows[1]["grid_cols"], 3);
     assert_eq!(rows[1]["table_count"], 1);
     assert_eq!(rows[2]["rows"], 2);
     assert_eq!(rows[2]["grid_cols"], 2);

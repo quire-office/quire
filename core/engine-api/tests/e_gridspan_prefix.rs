@@ -24,6 +24,7 @@
 //!     該列**格數不變**；
 //!   * 口徑分岔（修前）⇒ 該格被錯算成 span=1，插入點變成「下一格的起點」⇒
 //!     引擎改為**新增一格**，該列格數 +1、原格 `gridSpan` 不變。
+//!
 //! 「列格數」與「該格 gridSpan」都是 `tables_json` 直接可讀的 canonical 事實，
 //! 斷言的是使用者看得見的結果（欄有沒有插對地方），不是內部變數。
 //!
@@ -41,9 +42,7 @@
 //! `E_GRIDSPAN_BUGGY=1` 把燈 3 的期望值換成不可能值 ⇒ 該燈必紅（同支 binary
 //! 切換＝斷言真在比對 canonical 事實）。實跑兩態記 docs。
 
-use quire_engine::{
-    CellPropsPatch, Engine, InsertSide, Mutation, SubDocTarget, TablePath,
-};
+use quire_engine::{CellPropsPatch, Engine, InsertSide, Mutation, SubDocTarget, TablePath};
 use serde_json::Value;
 
 const PREFIX_FIXTURE: &str = "fixtures/table_gridspan_prefix.docx";
@@ -251,7 +250,8 @@ fn assert_insert_inside_spanned_cell(row: usize, tag: &str) {
     );
 
     let mut e = open(PREFIX_FIXTURE);
-    insert_col(&mut e, path, 1).unwrap_or_else(|err| panic!("{tag}：InsertTableColumn 失敗: {err}"));
+    insert_col(&mut e, path, 1)
+        .unwrap_or_else(|err| panic!("{tag}：InsertTableColumn 失敗: {err}"));
 
     let t = root_table(&e, 0);
     let cells = row_cell_count(&t, row);
@@ -362,7 +362,12 @@ fn lamp5_malformed_huge_gridspan_never_panics() {
     // mutation 面（row_layout 的 col += span）。
     let hit = (0..e.paragraph_count())
         .filter_map(|p| locate(&e, p))
-        .find(|h| h["table_path"]["nested_steps"].as_array().unwrap().is_empty())
+        .find(|h| {
+            h["table_path"]["nested_steps"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        })
         .expect("溢位表要可反查");
     // 允許成功或誠實拒絕，唯獨不准 panic（本燈能跑到這裡就代表沒炸）。
     let _ = insert_col(&mut e, path_of(&hit), 1);
@@ -377,9 +382,7 @@ fn lamp5_malformed_huge_gridspan_never_panics() {
         left_grid_col: 0,
         right_grid_col: 1,
     });
-    let diff = e
-        .roundtrip_check()
-        .expect("溢位檔 roundtrip_check 不得炸");
+    let diff = e.roundtrip_check().expect("溢位檔 roundtrip_check 不得炸");
     assert!(diff.pass, "溢位檔未編輯部分零失真: {:?}", diff.violations);
 }
 
@@ -453,6 +456,10 @@ fn lamp7_clean_gridspan_files_behave_and_roundtrip() {
     let diff = open(MULTI_FIXTURE)
         .roundtrip_check()
         .expect("roundtrip_check 失敗");
-    assert!(diff.pass, "未編輯檔 roundtrip 必須通過: {:?}", diff.violations);
+    assert!(
+        diff.pass,
+        "未編輯檔 roundtrip 必須通過: {:?}",
+        diff.violations
+    );
     assert!(diff.byte_identical, "未編輯檔必須 byte-identical");
 }

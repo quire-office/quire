@@ -20,6 +20,7 @@
 //!   * 命中且改對 ⇒ `Ok` 且「被改表集合 == 反查宣稱的那一張」。
 //!   * 界內錯位（缺陷態）⇒ `Ok` 但被改的是**另一張**表 → 本考卷紅。
 //!   * 誠實拒絕（修後態）⇒ `Err(InvalidTableOperation)`，且所有表的 raw XML 零變化。
+//!
 //! 三種結果只准出現第一與第三種；第二種就是 S2-1 的死亡形態，由燈 2 封死。
 //!
 //! # fixture
@@ -132,19 +133,23 @@ fn subtree_centered(node: &Value) -> bool {
         .as_array()
         .map(|rows| {
             rows.iter().any(|r| {
-                r["cells"].as_array().map(|cs| {
-                    cs.iter().any(|c| {
-                        c["blocks"].as_array().map(|bs| {
-                            bs.iter().any(|b| {
-                                b.as_object()
-                                    .and_then(|o| o.get("Table"))
-                                    .is_some_and(subtree_centered)
-                            })
+                r["cells"]
+                    .as_array()
+                    .map(|cs| {
+                        cs.iter().any(|c| {
+                            c["blocks"]
+                                .as_array()
+                                .map(|bs| {
+                                    bs.iter().any(|b| {
+                                        b.as_object()
+                                            .and_then(|o| o.get("Table"))
+                                            .is_some_and(subtree_centered)
+                                    })
+                                })
+                                .unwrap_or(false)
                         })
-                        .unwrap_or(false)
                     })
-                })
-                .unwrap_or(false)
+                    .unwrap_or(false)
             })
         })
         .unwrap_or(false)
@@ -248,11 +253,7 @@ fn raw_split(xml: &str) -> (String, String) {
         + xml[sdt_close..]
             .find("<w:tbl>")
             .expect("sdt 之後要有裸表 T_B");
-    let b_end = b_at
-        + xml[b_at..]
-            .find("</w:tbl>")
-            .expect("T_B 要有閉標籤")
-            + "</w:tbl>".len();
+    let b_end = b_at + xml[b_at..].find("</w:tbl>").expect("T_B 要有閉標籤") + "</w:tbl>".len();
     (
         xml[sdt_at..sdt_close].to_string(),
         xml[b_at..b_end].to_string(),
@@ -391,7 +392,11 @@ fn lamp3_no_path_in_a_wrapped_file_may_half_write() {
             }
         }
     }
-    assert_eq!(slots.len(), 2, "本 fixture 要有 T_A／T_B 兩條可反查根表路徑");
+    assert_eq!(
+        slots.len(),
+        2,
+        "本 fixture 要有 T_A／T_B 兩條可反查根表路徑"
+    );
 
     for slot in slots {
         let (_, hit) = locate_first_in_slot(&e0, slot);
@@ -449,10 +454,12 @@ fn lamp4_ordinary_multi_table_files_keep_working_unchanged() {
         );
     }
     // 無損紅線：未編輯檔案 roundtrip 零失真。
-    let diff = open(rel)
-        .roundtrip_check()
-        .expect("roundtrip_check 失敗");
-    assert!(diff.pass, "未編輯檔案 roundtrip 必須通過: {:?}", diff.violations);
+    let diff = open(rel).roundtrip_check().expect("roundtrip_check 失敗");
+    assert!(
+        diff.pass,
+        "未編輯檔案 roundtrip 必須通過: {:?}",
+        diff.violations
+    );
     assert!(diff.byte_identical, "未編輯檔案必須 byte-identical");
 }
 
@@ -547,7 +554,9 @@ fn lamp6_corpus_wrapped_tables_never_silently_hit_the_wrong_table() {
         files >= 5,
         "語料樣本必須實質在場（缺太多代表語料不該由本燈假綠）：實得 {files} 檔"
     );
-    eprintln!("燈 6 實測：{files} 檔／{paths} 條反查路徑；套改 {applied} 條、誠實拒絕 {refused} 條");
+    eprintln!(
+        "燈 6 實測：{files} 檔／{paths} 條反查路徑；套改 {applied} 條、誠實拒絕 {refused} 條"
+    );
 }
 
 // ---------------------------------------------------------------------------

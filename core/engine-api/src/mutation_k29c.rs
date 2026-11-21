@@ -540,6 +540,7 @@ struct RowLayout {
 /// 先於 `w:gridSpan` 宣告：
 ///   - `<w:shd w:val="clear">` ⇒ 拿到列舉字串，`parse()` 失敗 → 跨欄數錯算 **1**；
 ///   - `<w:vMerge w:val="3">`（畸形數字 val）⇒ 直接把合併序号當成跨欄數。
+///
 /// 錯算會讓本模組 `row_layout` 的 `col_start`／`span` 與游標反查面
 /// （`table_map.rs` 走 canonical `CellProps::grid_span()`）分岔，餵
 /// `InsertTableColumn`／`DeleteTableColumn`／`MergeTableCells` 就操作錯欄。
