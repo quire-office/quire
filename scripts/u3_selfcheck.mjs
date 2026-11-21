@@ -14,10 +14,14 @@
  *                font:grow, font:shrink, font:size,
  *                paragraph:align-left, paragraph:align-center, paragraph:align-right, paragraph:align-justify,
  *                style:normal, style:no-spacing, style:h1, style:h2, style:h3
- *    - 嚴格維持 pending: format:underline, format:underline-style, format:strikethrough,
- *                       format:subscript, format:superscript, format:highlight, format:highlight-palette,
- *                       font:family, font:clear-formatting,
- *                       paragraph:bullets, paragraph:numbering, paragraph:multilevel
+ *    - K29e 六欄族必轉 live（U4b，引擎欄位已入 main 66460e4＋三側接線完成，
+ *      閉環背書＝本檔檢查 5.5（真 wasm 上下標）＋scripts/u4b_selfcheck.mjs）:
+ *      format:underline, format:strikethrough,
+ *      format:subscript, format:superscript, format:highlight,
+ *      format:highlight-palette, font:family, font:clear-formatting
+ *    - 誠實維持 pending（引擎面缺口）: format:underline-style（解析折 bool＋
+ *      發射一態，禁止假 live）, paragraph:bullets, paragraph:numbering,
+ *      paragraph:multilevel（清單家族引擎無欄位）
  * 5. 真引擎無 DOM 純邏輯層閉環驗證：
  *    - 粗體閉環：選取 -> format:bold -> apply_mutation_json -> 顯示列表 flags 帶 bold -> undo -> 消失
  *    - 斜體閉環：選取 -> format:italic -> 顯示列表 flags 帶 italic -> undo -> 消失
@@ -215,17 +219,36 @@ for (const cmd of REQUIRED_LIVE_BUTTONS) {
   }
 }
 
-// 產品誠實紅線：引擎未支援之樣式控制項必須嚴格維持 pending，絕不假裝可用
-const REQUIRED_PENDING_BUTTONS = [
+// 產品誠實紅線：K29e 已入 main（66460e4）且 U4b 完成三側接線——原「嚴格維持
+// pending:K29b」清單的前提（引擎欄位不存在）已失效。斷言精確收窄成兩組：
+//   (a) K29e 六欄族必須是 live，且由檢查 5 的閉環探針為其真實性背書；
+//   (b) 引擎仍無欄位者（段落清單族）必須維持 pending:K29b；
+//   (c) 底線形態鈕（underline-style）是引擎解析＋發射雙層缺口，禁止 live——
+//       這把鎖比原斷言更強（原斷言只鎖「不許 live」的新標籤面，這裡逐字鎖死
+//       「不許掛 live」且允許任何 pending:* 真實缺口標籤）。
+const K29E_LIVE_BUTTONS = [
   'format:underline',
-  'format:underline-style',
   'format:strikethrough',
   'format:subscript',
   'format:superscript',
   'format:highlight',
   'format:highlight-palette',
   'font:family',
-  'font:clear-formatting',
+  'font:clear-formatting'
+];
+
+for (const cmd of K29E_LIVE_BUTTONS) {
+  const reg = new RegExp(`<(?:button|select)[^>]+data-command=["']${cmd}["'][^>]*>`, 'i');
+  const match = htmlContent.match(reg);
+  assert(match !== null, `未在 HTML 中找到按鈕/控制項: [${cmd}]`);
+  if (match) {
+    const isLive = /data-requirement=["']live["']/i.test(match[0]);
+    assert(isLive, `按鈕 [${cmd}] K29e 已入庫＋U4b 已接線，應為 live，實際為: ${match[0]}`);
+    console.log(`  ${isLive ? '✓' : '✗'} 按鈕 [${cmd}] 標記為 live（K29e 六欄族，閉環證據見檢查 5.5）`);
+  }
+}
+
+const REQUIRED_PENDING_BUTTONS = [
   'paragraph:bullets',
   'paragraph:numbering',
   'paragraph:multilevel'
@@ -239,6 +262,19 @@ for (const cmd of REQUIRED_PENDING_BUTTONS) {
     const isPending = /data-requirement=["']pending:K29b["']/i.test(match[0]);
     assert(isPending, `紅線違規：按鈕 [${cmd}] 必須維持 pending:K29b，實際為: ${match[0]}`);
     console.log(`  ${isPending ? '✓' : '✗'} 按鈕 [${cmd}] 誠實維持 pending:K29b`);
+  }
+}
+
+// 底線形態鈕：引擎解析層（styles.rs 折 bool）＋發射層（FLAG_UNDERLINE 一態）
+// 雙層缺口，用戶看不見五形態差異——掛 live 即假宣稱。只准 pending:*。
+{
+  const reg = new RegExp(`<(?:button|select)[^>]+data-command=["']format:underline-style["'][^>]*>`, 'i');
+  const match = htmlContent.match(reg);
+  assert(match !== null, '未在 HTML 中找到按鈕/控制項: [format:underline-style]');
+  if (match) {
+    const isHonestPending = /data-requirement=["']pending:[^"']+["']/i.test(match[0]);
+    assert(isHonestPending, `紅線違規：format:underline-style 屬引擎解析＋發射缺口，禁止掛 live，實際為: ${match[0]}`);
+    console.log('  ✓ 按鈕 [format:underline-style] 誠實掛 pending（引擎形態缺口，假 live 回塞鎖）');
   }
 }
 
@@ -336,6 +372,51 @@ try {
     console.log('  ✓ M2.2 樣式 style_id (Normal) 閉環與 Undo 驗證通過');
   } else {
     warnings.push(`未找到 reader-styles.docx fixture，跳過樣式 fixture 驗證`);
+  }
+
+  // (5.5) K29e 上下標閉環（U4b）：檢查 4 的「閉環背書」在此如實兌現——
+  //       真 wasm 呼叫 adapter.formatVertAlign，斷言用 docs/k29e-redlight.md
+  //       §2 的 LO 真值常數（0.58×字級、−0.35×base、行高不膨脹）。
+  //       完整六欄閉環（底線/刪除線/醒目提示/字型族/清除/undo）在
+  //       scripts/u4b_selfcheck.mjs，此處只鎖「live 標籤背後的引擎真的動」最小鏈。
+  {
+    const k = new EngineAdapter();
+    await k.init();
+    k.openDefaultSample();
+    const baseTexts = () => k.getPageDisplayList(0).items.filter(i => i.Text).map(i => i.Text);
+    const ys0 = baseTexts().slice(0, 6).map(t => t.y);
+    const before = baseTexts();
+    const sizeBase = before[1].size_pt;
+    // 行高不膨脹的判據（比照 u4b_selfcheck 檢查 4 的口徑）：僅被套上下標的
+    // 那行基線位移，其後各行絕對 y 逐位不動——若行高膨脹，其後全部行會
+    // cumulatively 下推（LO 真值 pitch 恆定；卡面「改行高」舊前提已被探針推翻）。
+    k.caret = { para: 1, cp: 0 };
+    const supRes = k.formatVertAlign('superscript');
+    assert(supRes.ok === true, `K29e superscript 受理（ok=${supRes.ok}）`);
+    const sup = baseTexts()[1];
+    const ratio = sup.size_pt / sizeBase;
+    assert(Math.abs(ratio - 0.58) < 0.01,
+      `上標字級折 0.58×base（實得 ${sup.size_pt}pt＝${ratio.toFixed(4)}×${sizeBase}，LO 真值 0.58）`);
+    const dy = sup.y - ys0[1];
+    assert(Math.abs(dy - (-0.35 * sizeBase)) < 0.02 * sizeBase,
+      `上標基線 −0.35×base（實得 dy=${dy.toFixed(4)}pt，期望 ${(-0.35 * sizeBase).toFixed(4)}）`);
+    const ysSup = baseTexts().slice(0, 6).map(t => t.y);
+    const othersHold = ysSup.slice(2).every((y, i) => Math.abs(y - ys0[i + 2]) < 0.001);
+    assert(othersHold,
+      `行高不膨脹：受標行之外各行絕對 y 逐位不動（${JSON.stringify(ys0.slice(2))} → ${JSON.stringify(ysSup.slice(2))}）`);
+    const supUndo = k.undo();
+    assert(supUndo.undone === true && baseTexts()[1].size_pt === before[1].size_pt && Math.abs(baseTexts()[1].y - ys0[1]) < 1e-9,
+      '上標 undo 後字級與基線逐位回基線');
+    k.caret = { para: 1, cp: 0 };
+    const subRes = k.formatVertAlign('subscript');
+    assert(subRes.ok === true, `K29e subscript 受理（ok=${subRes.ok}）`);
+    const sub = baseTexts()[1];
+    assert(Math.abs(sub.size_pt / sizeBase - 0.58) < 0.01, `下標字級折 0.58×base（實得 ${sub.size_pt}pt）`);
+    const subDy = sub.y - ys0[1];
+    assert(Math.abs(subDy - sizeBase / 11) < 0.02 * sizeBase,
+      `下標基線 +base/11（實得 dy=${subDy.toFixed(4)}pt，LO 真值 +1.0pt@11pt 同比例）`);
+    assert(k.undo().undone === true && Math.abs(baseTexts()[1].y - ys0[1]) < 1e-9, '下標 undo 逐位還原');
+    console.log(`  ✓ K29e 上下標閉環：sup −0.35×base／sub +base/11／0.58×字級／行高不膨脹＋undo 逐位還原（檢查 4 的 live 背書由此兌現）`);
   }
 
   // (7) 存檔驗證

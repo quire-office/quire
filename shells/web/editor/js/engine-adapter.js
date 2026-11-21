@@ -103,9 +103,135 @@ export function buildInsertBreakMutation(para, cp, kind = 'LineWrapping') {
 }
 
 /**
+ * K29e 底線形態映射（U4b）：把外殼的「底線樣式」語意折算成引擎
+ * `UnderlineKind` 串列枚舉。錨點＝`core/engine-api/src/mutation.rs` 的
+ * `enum UnderlineKind { Single, Double, Dotted, Dashed, None }`（serde 預設
+ * 外標＝變體名原字串，非 snake_case，故此處逐字用大寫首字母形態）。
+ *
+ * 誠實紀律：引擎端 `w:u/@w:val` 寫入是五形態齊備的（`as_u_val()` 五臂），
+ * 但**解析層只把 `w:u` 折成 `Option<bool>`（core/ooxml/src/styles.rs
+ * `b"u" => rs.underline = Some(toggle_on_attr(e))`）**——形態不進 RunStyle，
+ * 發射層因此只能繪「有／無底線」兩態。這是外殼接不通的真實斷點，
+ * 逐字記在 docs/word-ui-k29e-remap-report.md §2.3；`format:underline-style`
+ * 據此不得掛 live。
+ */
+export const UNDERLINE_KINDS = ['Single', 'Double', 'Dotted', 'Dashed', 'None'];
+
+/**
+ * 建立刪除線形態值（引擎 `StrikeKind { Single, Double, None }`）。
+ * 同 UnderlineKind 口徑：枚舉名原字串外標。
+ */
+export const STRIKE_KINDS = ['Single', 'Double', 'None'];
+
+/**
+ * K29e 上下標值（引擎 `RunDirectPatch::vert_align` 直接沿用級聯層
+ * `quire_ooxml::VertAlign { Baseline, Superscript, Subscript }`，單一真值源、
+ * 不另造鏡像枚舉——見 mutation.rs 該欄註解）。
+ */
+export const VERT_ALIGN_VALUES = ['Baseline', 'Superscript', 'Subscript'];
+
+/**
+ * K29e highlight 十六個命名色（ECMA-376 §17.3.2.15 ST_HighlightColor）。
+ * 對齊根＝`core/engine-api/src/mutation.rs` 的 `highlight_named_color()`：
+ * 命中此表 → 寫 `<w:highlight w:val="<name>"/>`（Word 高亮 UI 的互通形態）；
+ * 未命中 → 走 `<w:shd w:fill="RRGGBB"/>` 底紋路徑。兩條路徑在解析層同落
+ * `RunStyle.highlight`，發射同為文字底方塊，故外殼兩態都算真接線。
+ * alpha=0（0x00RRGGBB）＝明確移除，引擎寫 `<w:highlight w:val="none"/>`。
+ */
+export const HIGHLIGHT_NAMED_COLORS = [
+  { name: 'black', rgb: 0x000000 },
+  { name: 'blue', rgb: 0x0000FF },
+  { name: 'cyan', rgb: 0x00FFFF },
+  { name: 'darkblue', rgb: 0x000080 },
+  { name: 'darkcyan', rgb: 0x008080 },
+  { name: 'darkgray', rgb: 0x808080 },
+  { name: 'darkgreen', rgb: 0x008000 },
+  { name: 'darkmagenta', rgb: 0x800080 },
+  { name: 'darkred', rgb: 0x800000 },
+  { name: 'darkyellow', rgb: 0x808000 },
+  { name: 'green', rgb: 0x00FF00 },
+  { name: 'lightgray', rgb: 0xD3D3D3 },
+  { name: 'magenta', rgb: 0xFF00FF },
+  { name: 'red', rgb: 0xFF0000 },
+  { name: 'white', rgb: 0xFFFFFF },
+  { name: 'yellow', rgb: 0xFFFF00 }
+];
+
+/**
+ * 正規化底線形態輸入：接受引擎枚舉名（'Single'…）、OOXML 字面（'single'…）
+ * 或 `false`／'none'（明確移除）。回傳引擎枚舉名，非法值回傳 null（呼叫端
+ * 據此拒絕，不得憑空選一個形態塞給引擎）。
+ */
+export function normalizeUnderlineKind(value) {
+  if (value === undefined || value === null) return null;
+  if (value === false) return 'None';
+  if (typeof value === 'string') {
+    const lowered = value.trim().toLowerCase();
+    if (lowered === 'none' || lowered === '0' || lowered === 'false') return 'None';
+    // OOXML 字面 `dashed` 與相容別名 `dash` 都收（mutation.rs 註解：Word
+    // 相容讀取端也吃 dash）；`thick`／`wavy` 等未入引擎枚舉的形態一律拒。
+    const alias = { single: 'Single', double: 'Double', dotted: 'Dotted', dashed: 'Dashed', dash: 'Dashed' };
+    return alias[lowered] || null;
+  }
+  return null;
+}
+
+/**
+ * 正規化上下標輸入：接受 'superscript'／'subscript'／'baseline'（不分大小寫）、
+ * 引擎枚舉名，或布林 true（上標）。非法回 null。
+ */
+export function normalizeVertAlign(value) {
+  if (value === undefined || value === null) return null;
+  if (value === true) return 'Superscript';
+  if (value === false) return 'Baseline';
+  if (typeof value === 'string') {
+    const lowered = value.trim().toLowerCase();
+    const alias = {
+      superscript: 'Superscript', super: 'Superscript', sup: 'Superscript',
+      subscript: 'Subscript', sub: 'Subscript',
+      baseline: 'Baseline', normal: 'Baseline'
+    };
+    return alias[lowered] || null;
+  }
+  return null;
+}
+
+/**
+ * 把 '#RRGGBB'／'#AARRGGBB'／數值 折成引擎要的 0xAARRGGBB。
+ * 傳回 undefined＝輸入不可解析（呼叫端據此拒絕，不憑空退黑色）。
+ * alpha 缺省補 0xFF（引擎 highlight 欄以 alpha==0 判「明確移除」，
+ * 故外殼絕不能把一個可見色誤補成 alpha=0）。
+ */
+export function parseColorArgb(color) {
+  if (typeof color === 'number' && Number.isFinite(color)) {
+    return (color >>> 0);
+  }
+  if (typeof color === 'string') {
+    const clean = color.replace('#', '').trim();
+    if (/^[0-9a-fA-F]{6}$/.test(clean)) {
+      return (0xFF000000 | parseInt(clean, 16)) >>> 0;
+    }
+    if (/^[0-9a-fA-F]{8}$/.test(clean)) {
+      return parseInt(clean, 16) >>> 0;
+    }
+  }
+  return undefined;
+}
+
+/**
  * 建立 M2.1 FormatTextRange 變更物件
  * @param {Object} range - { start: { para, cp }, end: { para, cp }, target?: string }
- * @param {Object} patch - { bold?: boolean, italic?: boolean, color_rgb?: number, size_pt?: number, char_style?: string }
+ * @param {Object} patch - { bold?, italic?, color_rgb?, size_pt?, char_style?,
+ *                           underline?, strike?, vert_align?, highlight?, font_family? }
+ *
+ * 欄位契約逐欄對齊 `core/engine-api/src/mutation.rs` 的 `RunDirectPatch`（11 欄：
+ * bold／italic／color_rgb／size_pt／char_style／underline／strike／vert_align／
+ * highlight／font_family ＋ serde default）。語意紀律（引擎檔頭明文，全欄統一）：
+ * - `undefined`／未帶 → `null`＝保持原宣告（patch 不碰該欄，XML 原樣保留）；
+ * - 帶值 → 明確設定；
+ * - 移除類值（`false`／'None'／'Baseline'／alpha=0 色／空字串族名）＝明確移除，
+ *   引擎寫出顯式關閉形態，級聯兜底不得再補回。
+ * 這裡不得把 `null` 折成某個具體值，否則會憑空對文件寫入移除宣告。
  */
 export function buildFormatTextRangeMutation(range, patch = {}) {
   const normStart = range?.start || { para: 0, cp: 0 };
@@ -131,7 +257,21 @@ export function buildFormatTextRangeMutation(range, patch = {}) {
         italic: patch.italic !== undefined ? patch.italic : null,
         color_rgb: patch.color_rgb !== undefined ? patch.color_rgb : null,
         size_pt: patch.size_pt !== undefined ? patch.size_pt : null,
-        char_style: patch.char_style !== undefined ? patch.char_style : null
+        char_style: patch.char_style !== undefined ? patch.char_style : null,
+        // K29e 六欄（U4b 接線）：呼叫端已正規化（見 normalizeUnderlineKind／
+        // normalizeVertAlign／parseColorArgb），此處只做「未帶→null＝不碰」的
+        // 欄位級換算，不再二次猜值。傳給引擎的形態：
+        //   underline  = 'Single'|'Double'|'Dotted'|'Dashed'|'None'（serde 外部標
+        //                的無欄位列舉＝字串變體名）
+        //   strike     = 'Single'|'Double'|'None'
+        //   vert_align = 'Superscript'|'Subscript'|'Baseline'
+        //   highlight  = 0xAARRGGBB 數值（alpha=0＝明確移除）
+        //   font_family= 字串（空字串＝明確移除直接層宣告）
+        underline: patch.underline !== undefined ? patch.underline : null,
+        strike: patch.strike !== undefined ? patch.strike : null,
+        vert_align: patch.vert_align !== undefined ? patch.vert_align : null,
+        highlight: patch.highlight !== undefined ? patch.highlight : null,
+        font_family: patch.font_family !== undefined ? patch.font_family : null
       }
     }
   };
@@ -1309,6 +1449,190 @@ export class EngineAdapter {
   setFontSize(sizePt) {
     const pt = parseFloat(sizePt) || 12.0;
     return this.formatTextRange(null, { size_pt: pt });
+  }
+
+  // ==========================================================================
+  // K29e 字元格式六欄（U4b 接線）
+  //
+  // 三查依據（逐欄，全部由本 run 實讀 core/ 取得，行號以實讀為準）：
+  //   查二：`core/engine-api/src/mutation.rs` `RunDirectPatch` 宣告 underline／
+  //         strike／vert_align／highlight／font_family 五欄（K29e 補齊，欄名與
+  //         本檔建構器逐字一致；`serde(default)` 允許缺欄）。
+  //   查三：`patch_rpr()` 的 K29e 寫入臂逐欄真實存在——`remove_element("w:u")`
+  //         ＋`<w:u w:val="{as_u_val()}"/>`、`w:strike`＋`w:dstrike`、
+  //         `w:vertAlign`、`w:highlight`／`w:shd` 雙族、`w:rFonts` 四欄同族名。
+  //
+  // 誠實斷點（故 `format:underline-style` 不得掛 live，見報告 §2.3）：
+  //   解析層 `core/ooxml/src/styles.rs` 把 `w:u` 折成 `Option<bool>`，形態不進
+  //   `RunStyle`；發射層 `run_style()` 只能發 FLAG_UNDERLINE（4）一態。五形態
+  //   寫進 XML 是真的、存檔讀回也是真的，但「用戶看見那層」無差異 ⇒ 鈕留
+  //   pending（引擎面缺口，非外殼可修）。
+  // ==========================================================================
+
+  /**
+   * 取得游標處的字元格式探針（K29e 擴充態）。
+   *
+   * 探針只讀 `page_display_list`（用戶看見那層），不讀任何自報旗標：
+   * - underline／strike 讀 `Text.flags` 的 FLAG_UNDERLINE(4)／FLAG_STRIKE(8)
+   *   （`core/render-trait/src/lib.rs` 定義，發射源 `run_style()`）；
+   * - vert_align 無法從旗標讀出（發射層把上下標折成 size_pt×0.58＋基線位移，
+   *   無獨立旗標），故以「該 Text 項字級 ÷ 該頁最大字級」的比例推定，
+   *   容差比照引擎發射常數 0.58（docs/k29e-redlight.md §2 LO 真值）。推定不出
+   *   來時回 null，呼叫端據此走「明確設定」而非憑空猜一個 toggle 方向。
+   */
+  getCursorCharFormatProbe() {
+    const fallback = {
+      underline: false, strike: false, vert_align: null,
+      size_pt: 12, family: null, detected: false
+    };
+    if (!this.engine) return fallback;
+    const para = this.caret ? this.caret.para : 0;
+    const rect = this.caretRect(para, this.caret ? this.caret.cp : 0);
+    const pageIdx = rect ? rect.page : 0;
+    const dl = this.getPageDisplayList(pageIdx);
+    if (!dl || !Array.isArray(dl.items)) return fallback;
+
+    const targetX = rect ? rect.x_pt : 72;
+    const targetY = rect ? rect.y_pt : 72;
+    let matchedItem = null;
+    let minDist = Infinity;
+    let maxSeenSize = 0;
+    for (const it of dl.items) {
+      if (!it.Text) continue;
+      const t = it.Text;
+      if (typeof t.size_pt === 'number' && t.size_pt > maxSeenSize) maxSeenSize = t.size_pt;
+      const dx = Math.abs(t.x - targetX);
+      const dy = Math.abs(t.y - targetY);
+      const dist = dx + dy * 2;
+      if (dist < minDist) {
+        minDist = dist;
+        matchedItem = t;
+      }
+    }
+    if (!matchedItem) return fallback;
+
+    const flags = matchedItem.flags || 0;
+    let vert = null;
+    if (maxSeenSize > 0 && typeof matchedItem.size_pt === 'number') {
+      const ratio = matchedItem.size_pt / maxSeenSize;
+      // 引擎發射口徑：sup/sub 段 size = base×0.58（core/engine-api/src/lib.rs
+      // K29e 上下標發射契約）。0.58±0.05 帶內＝該段是上下標態；再依基線位移
+      // 方向分上／下標：上標 y 較同段正文上移 0.35×base，下標下移 base/11。
+      // 此處只判「是上下標」，上下標之間的分別交由呼叫端逐鈕語意決定。
+      if (Math.abs(ratio - 0.58) < 0.05) vert = 'Short';
+    }
+    return {
+      underline: (flags & 4) === 4,
+      strike: (flags & 8) === 8,
+      vert_align: vert,
+      size_pt: matchedItem.size_pt || 12,
+      family: matchedItem.family || null,
+      detected: true
+    };
+  }
+
+  /**
+   * 底線切換／設定（K29e；引擎 `RunDirectPatch::underline`）。
+   * @param {string|boolean|null} kind - 'single'|'double'|'dotted'|'dashed'|
+   *                                     'none'／false＝明確移除；未帶＝切換。
+   */
+  formatUnderline(kind) {
+    const normalized = (kind === undefined || kind === null)
+      ? null
+      : normalizeUnderlineKind(kind);
+    if (kind !== undefined && kind !== null && normalized === null) {
+      return { ok: false, error: `不支援的底線形態：${String(kind)}（引擎枚舉僅 single/double/dotted/dashed/none）` };
+    }
+    const next = normalized !== null
+      ? normalized
+      : (this.getCursorCharFormatProbe().underline ? 'None' : 'Single');
+    return this.formatTextRange(null, { underline: next });
+  }
+
+  /**
+   * 刪除線切換／設定（K29e；引擎 `RunDirectPatch::strike`）。
+   * @param {string|boolean|null} kind - 'single'|'double'|'none'／false＝明確
+   *                                     移除；未帶＝切換。
+   */
+  formatStrikethrough(kind) {
+    let normalized = null;
+    if (kind !== undefined && kind !== null) {
+      const lowered = String(kind).trim().toLowerCase();
+      if (kind === false || lowered === 'none') normalized = 'None';
+      else if (lowered === 'single') normalized = 'Single';
+      else if (lowered === 'double') normalized = 'Double';
+      else return { ok: false, error: `不支援的刪除線形態：${String(kind)}（引擎 StrikeKind 僅 Single/Double/None）` };
+    }
+    const next = normalized !== null
+      ? normalized
+      : (this.getCursorCharFormatProbe().strike ? 'None' : 'Single');
+    return this.formatTextRange(null, { strike: next });
+  }
+
+  /**
+   * 上標／下標設定（K29e；引擎 `RunDirectPatch::vert_align`）。
+   * 同一鈕重複點＝退回基線（切換語意）。
+   * @param {string} want - 'superscript'|'subscript'|'baseline'
+   */
+  formatVertAlign(want) {
+    const normalized = normalizeVertAlign(want);
+    if (normalized === null) {
+      return { ok: false, error: `不支援的上下標值：${String(want)}` };
+    }
+    const probe = this.getCursorCharFormatProbe();
+    const next = (probe.detected && probe.vert_align === 'Short') ? 'Baseline' : normalized;
+    return this.formatTextRange(null, { vert_align: next });
+  }
+
+  /**
+   * 文字醒目提示（K29e；引擎 `RunDirectPatch::highlight`）。
+   * 命名色走 `<w:highlight w:val="..."/>`、非命名色走 `<w:shd w:fill=.../>`——
+   * 兩條路徑在解析層同落 `RunStyle.highlight`，發射同為 Rect 底方塊。
+   * @param {string|number} color - '#RRGGBB'／'#AARRGGBB'／數值；
+   *                                'none'／false／alpha=0 ＝明確移除。
+   */
+  formatHighlight(color) {
+    if (color === 'none' || color === false || color === 0) {
+      return this.formatTextRange(null, { highlight: 0x00FFFFFF });
+    }
+    const argb = parseColorArgb(color);
+    if (argb === undefined) {
+      return { ok: false, error: `醒目色無法解析：${String(color)}` };
+    }
+    return this.formatTextRange(null, { highlight: argb });
+  }
+
+  /**
+   * 字型族設定（K29e；引擎 `RunDirectPatch::font_family`）。
+   * 引擎寫入口徑＝`w:rFonts` 的 ascii／hAnsi／cs／eastAsia 四欄同一族名
+   * （「整包選族」語義，mutation.rs 該欄註解明文）。
+   * @param {string} family - 族名；空字串＝明確移除直接層宣告。
+   */
+  setFontFamily(family) {
+    if (typeof family !== 'string') {
+      return { ok: false, error: `字型族名必須是字串，實得 ${typeof family}` };
+    }
+    return this.formatTextRange(null, { font_family: family.trim() });
+  }
+
+  /**
+   * 清除所有字元直接格式（K29e 六欄＋粗斜體全走「明確移除」形態）。
+   *
+   * 誠實邊界：本方法清的是**直接格式層**（引擎寫顯式關閉宣告，級聯不得補回）；
+   * 樣式鏈（docDefaults／字元樣式／段落樣式）若另有宣告，仍會如 LO/Word 那般
+   * 顯形——引擎在 highlight 欄的取捨註解明文拒絕虛構第四態。故本鈕的title
+   * 寫「清除直接格式」而非「清除所有格式」，不誇大效果。
+   */
+  clearDirectCharFormatting() {
+    return this.formatTextRange(null, {
+      bold: false,
+      italic: false,
+      underline: 'None',
+      strike: 'None',
+      vert_align: 'Baseline',
+      highlight: 0x00FFFFFF,
+      font_family: ''
+    });
   }
 
   /**

@@ -79,7 +79,14 @@ export const DEPENDENCY_MAP = {
   'pending:K29b': { name: 'K29b 切片（開發中）', desc: '引擎端切片進行中；逐鈕真實缺口以該鈕 title 為準' },
   'pending:K29c': { name: 'K29c 表格與圖片切片', desc: '已隨 v0.1.0-beta.12 入 main（M4 表格＋M5 圖片）；本標籤僅供歷史追溯，鈕面已按逐鈕查證重掛' },
   'pending:K29d': { name: 'K29d 節與註腳切片', desc: '已隨 v0.1.0-beta.12 入 main（M6 節／頁首頁尾／註腳）；本標籤僅供歷史追溯，鈕面已按逐鈕查證重掛' },
-  'pending:K29e': { name: 'K29e 引擎切片（開發中）', desc: '引擎端切片進行中（樣式面／校閱面／參考資料面）；逐鈕真實缺口以該鈕 title 為準' },
+  'pending:K29e': { name: 'K29e 引擎切片（已入庫）', desc: '已入 main（66460e4，字元格式六欄＋發射層上下標臂）；本標籤僅供歷史追溯——錯掛本標籤的鈕已按真實缺口逐鈕重掛，缺口面見對應 pending:engine-* 卡片' },
+  'pending:engine-review': { name: '引擎缺口：校閱面', desc: '修訂追蹤寫入（w:ins／w:del）、批註模型（w:comment）、文件保護（documentProtection）、語言標記（w:lang）皆無引擎 Mutation 變體；需引擎切片，非外殼可修' },
+  'pending:engine-refs': { name: '引擎缺口：參考資料面', desc: '目錄／引文／索引／題注／書籤域寫入無引擎 Mutation 變體（fldSimple／instrText 僅只讀投影）；需引擎切片' },
+  'pending:engine-drawing': { name: '引擎缺口：圖形物件面', desc: '圖層 z 序調整、群組、旋轉、自訂繞排點無引擎欄位（M5.2 僅尺寸／定位／繞排模式）；需引擎切片' },
+  'pending:engine-page': { name: '引擎缺口：頁面版面面', desc: '紙張絕對尺寸、裝訂線（gutter）、頁面框線（pgBorders）、文件背景（w:background）、行號（lnNumType）、自動連字設定欄未實作；需引擎切片' },
+  'pending:engine-theme': { name: '引擎缺口：主題與預設值面', desc: 'theme1.xml（色彩／字型／效果集）與 docDefaults 寫入無引擎變體（僅只讀解析）；需引擎切片' },
+  'pending:engine-para': { name: '引擎缺口：字元段落直接格式殘餘', desc: 'w:bidi 寫入欄未實作；底線形態族（w:u/@w:val 五形態）寫入真實但解析層折成布林、發射層一態，屬解析＋發射雙層缺口' },
+  'pending:ext': { name: '外部資源依賴', desc: '需詞庫／翻譯服務等外部資源；比對結果落地走既有 M1.1 InsertText／M1.2 DeleteRange 路徑，引擎 Mutation 面無缺口' },
   'pending:K29s': { name: 'K29s 視窗與多重視圖', desc: '多視窗檢視、視窗重排與分割' },
   'pending:K29m': { name: 'K29m 巨集與腳本擴充', desc: '巨集錄製與腳本自動化' },
   'pending:K29f': { name: 'K29f 檔案與協同傳輸', desc: '本機/雲端儲存、共用與協同編輯' },
@@ -516,6 +523,45 @@ export class QWordCore {
       handled = true;
       req = 'live';
       this._notify('format:font-color', payload);
+    } else if (cmdId === 'format:underline') {
+      // K29e（U4b）：引擎 RunDirectPatch::underline 欄真實存在＋patch_rpr 寫入臂
+      // 齊備，adapter.formatUnderline 真的組件送引擎 → live。
+      handled = true;
+      req = 'live';
+      this._notify('format:underline', payload);
+    } else if (cmdId === 'format:underline-style') {
+      // 誠實缺口（引擎面，外殼修不了）：五形態寫入是真的（w:u/@w:val 進 XML），
+      // 但解析層 core/ooxml/src/styles.rs 把 w:u 折成 Option<bool>，形態不進
+      // RunStyle → 發射層繪不出單條／雙條／點／虛線差異，用戶看見那層零變化。
+      // 掛 live＝假宣稱，故受理=false、標籤維持呼叫端傳入的真實缺口值。
+      handled = false;
+    } else if (cmdId === 'format:strikethrough') {
+      handled = true;
+      req = 'live';
+      this._notify('format:strikethrough', payload);
+    } else if (cmdId === 'format:subscript') {
+      handled = true;
+      req = 'live';
+      this._notify('format:vert-align', { mode: 'subscript', ...payload });
+    } else if (cmdId === 'format:superscript') {
+      handled = true;
+      req = 'live';
+      this._notify('format:vert-align', { mode: 'superscript', ...payload });
+    } else if (cmdId === 'format:highlight' || cmdId === 'format:highlight-palette' || cmdId === 'format:color:highlight') {
+      handled = true;
+      req = 'live';
+      this._notify('format:highlight', payload);
+    } else if (cmdId === 'font:family') {
+      handled = true;
+      req = 'live';
+      const familyVal = payload.family || (cmdId.startsWith('font:family:') ? cmdId.replace('font:family:', '') : null);
+      this._notify('font:family', { family: familyVal, ...payload });
+    } else if (cmdId === 'font:clear-formatting') {
+      // K29e 後真實缺口消失：六欄明確移除形態全有路徑（見報告 §2.4）。
+      // 語意是「清除直接格式層」，樣式鏈宣告照常顯形——title 已照實改寫。
+      handled = true;
+      req = 'live';
+      this._notify('font:clear-formatting', payload);
     } else if (cmdId === 'font:grow') {
       handled = true;
       req = 'live';
