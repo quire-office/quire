@@ -86,7 +86,7 @@ async function runInPage(baseUrl) {
       minTextX: texts.length ? Math.min(...texts.map((t) => Math.round(t.x * 10) / 10)) : null
     };
   };
-  /** 逐位 diff：回前 4 筆不同的項目（型別＋前後值），是「哪項动了」的直接實據 */
+  /** 逐位 diff：回前 4 筆不同的項目（型別＋前後值），是「哪項動了」的直接實據 */
   const diffItems = (a, b) => {
     const out = [];
     const n = Math.max(a.strs.length, b.strs.length);
