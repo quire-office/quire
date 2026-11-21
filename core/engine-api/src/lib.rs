@@ -2167,9 +2167,15 @@ impl Engine {
     ///
     /// 命中回 `{"para":p,"table_path":{"target":"Body","root_slot":n,
     /// "nested_steps":[[r,c,s],...]},"cell_path":{"row":r,"cell":c,
-    /// "grid_col_start":g,"grid_span":n,"grid_cols":n,"rows":n,"depth":d}}`；
-    /// 段落不在任何表內（body 級正文段）回 `None`——**回 None 不是錯誤**，
-    /// 外殼據此走正文編輯路徑，不得當成失敗。
+    /// "cell_row":r,"grid_col_start":g,"grid_span":n,"grid_cols":n,"rows":n,
+    /// "depth":d},"anchor_para":p}`；段落不在任何表內（body 級正文段）回
+    /// `None`——**回 None 不是錯誤**，外殼據此走正文編輯路徑，不得當成失敗。
+    ///
+    /// `cell_path.cell_row` 與 `table_path` 層的 `row` **數值恆等**（t_c1dbc6d7
+    /// S3-4：欄位保留不刪，刪屬 breaking；語義分層見 `table_map::TableHit`）。
+    /// `anchor_para`＝命中段落的 canonical 索引（S2-1 識別子）：外殼若先把
+    /// 路徑存著、期間文件又被其他編輯動過（段落索引平移），引擎側
+    /// `table_identity_error` 會統一拒收；本欄讓外殼也能自行早早發現過期路徑。
     ///
     /// `table_path` 的欄位名／語義與 `mutation::TablePath` 逐字對齊（外殼
     /// `JSON.parse` 後可直接塞進 `SetCellProps.table`／`DeleteTable.table`
@@ -2186,7 +2192,7 @@ impl Engine {
             },
             "cell_path": {
                 "row": hit.row,
-                "cell": hit.cell?,
+                "cell": hit.cell,
                 "cell_row": hit.cell_row,
                 "grid_col_start": hit.grid_col_start,
                 "grid_span": hit.grid_span,
@@ -2194,6 +2200,10 @@ impl Engine {
                 "rows": hit.rows,
                 "depth": hit.nested_steps.len(),
             },
+            // S2-1 識別子：命中段落的 canonical 索引。外殼把它跟著 table_path
+            // 一起存著，送 Mutation 前若文件已被其他編輯動過（段落索引平移），
+            // 由引擎側的身分驗證統一拒收；本欄也讓外殼可自行早早發現過期路徑。
+            "anchor_para": hit.anchor_para,
         });
         serde_json::to_string(&out).ok()
     }

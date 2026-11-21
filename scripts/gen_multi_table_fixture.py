@@ -15,7 +15,8 @@ T1（4 列 × 3 網格欄）
   r1：B1（gridSpan=3）「根表一 r1c0」＋「B1 第二段」
   r2：V1（vMerge restart）「根表一 r2c0」｜C1「根表一 r2c1」｜C2「根表一 r2c2」
   r3：V2（vMerge continue，**空 tc 無段落**）｜C3「根表一 r3c1」｜C4「根表一 r3c2」
-T2（1 列 × 2 欄）：「根表二 r0c0」／「根表二 r0c1」
+T2（3 網格欄；r0 三格、r1 為 gridSpan=2＋一格＝**cell ≠ grid_col_start**
+      的樣本，E 返修卡 t_c1dbc6d7 S3-5 補上）
 T3（2 列 × 2 欄）：「根表三 r0c0」…「根表三 r1c1」
 
 純 stdlib、STORE 壓縮、固定時間戳（可重複生成、位元組可重現，
@@ -85,11 +86,23 @@ T1 = (
     + "</w:tbl>"
 )
 
+# T2（E 返修卡 t_c1dbc6d7 S3-5 擴列）：3 網格欄。
+#   r0：三格（tc 序＝網格欄，對照組）。
+#   r1：c0（gridSpan=2 跨前兩欄）＋ c1——**r1c1 的 tc 序＝1、網格起點＝2**，
+#       這是全套 fixture 裡第一格 `cell != grid_col_start` 真正成立的樣本
+#       （舊 T2 一列兩欄、r0c1 兩者皆 1，三層考卷從沒測到兩者不等——S2-2
+#       的 gridSpan 錯讀正是從這個洞漏網）。行內網格總和 2+1=3＝欄數，合法。
 T2 = (
     "<w:tbl>"
-    '<w:tblPr><w:tblW w:w="6000" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr>'
-    '<w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>'
-    "<w:tr>" + tc(["根表二 r0c0"]) + tc(["根表二 r0c1"]) + "</w:tr>"
+    '<w:tblPr><w:tblW w:w="9000" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr>'
+    '<w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>'
+    "<w:tr>" + tc(["根表二 r0c0"]) + tc(["根表二 r0c1"]) + tc(["根表二 r0c2"]) + "</w:tr>"
+    "<w:tr>"
+    + '<w:tc><w:tcPr><w:tcW w:w="6000" w:type="dxa"/><w:gridSpan w:val="2"/></w:tcPr>'
+    + para("根表二 r1c0 跨兩欄")
+    + "</w:tc>"
+    + tc(["根表二 r1c1"])
+    + "</w:tr>"
     "</w:tbl>"
 )
 

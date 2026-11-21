@@ -121,9 +121,12 @@ fn lamp3_summary_surface_matches_canonical_facts() {
     assert_eq!(rows[0]["grid_cols"], 3);
     assert_eq!(rows[0]["table_count"], 2, "T0 含 1 巢狀表");
     assert_eq!(rows[0]["para_cells"], 12);
-    // T1：1 列 2 欄無巢狀；T2：2 列 2 欄。
-    assert_eq!(rows[1]["rows"], 1);
-    assert_eq!(rows[1]["grid_cols"], 2);
+    // T1：2 列 3 網格欄無巢狀——E 返修卡 t_c1dbc6d7 S3-5 擴列（r0 三格＋r1
+    //     gridSpan=2＋一格；r1c1 是全套 fixture 第一格 `cell != grid_col_start`
+    //     真樣本，舊形「1 列 2 欄」正是 S2-2 gridSpan 錯讀漏網的洞）；
+    //     T2（根表三）：2 列 2 欄不變。
+    assert_eq!(rows[1]["rows"], 2);
+    assert_eq!(rows[1]["grid_cols"], 3);
     assert_eq!(rows[1]["table_count"], 1);
     assert_eq!(rows[2]["rows"], 2);
     assert_eq!(rows[2]["grid_cols"], 2);
@@ -180,14 +183,37 @@ fn lamp4_locator_resolves_every_paragraph_by_hand_verified_coords() {
     assert_eq!(l5["cell_path"]["row"], 1);
 
     // vMerge continue 空格零段落：r3 只有 c1/c2 兩段可查（段 10,11），
-    // 其 cell 座標是 tc 序 1/2（空 tc 佔 cell 0——tc 序≠網格欄，網格欄起點
-    // 由 grid_col_start 給）。
+    // 其 cell 座標是 tc 序 1/2（空 tc 佔 cell 0）。
+    //
+    // t_c1dbc6d7 S3-5 更正：舊註解在此宣稱「tc 序≠網格欄」，但本案例實測
+    // cell 與 grid_col_start **都是 1**（空 tc 也佔 1 欄 ⇒ 兩者恰好相等）——
+    // 這句話在舊 fixture 上是錯的，三層考卷從未在此真正測到兩者不等。真正的
+    // 不等案例在 T2 r1c1（tc 序 1、網格起點 2），由下方「分歧格」段與
+    // `e_gridspan_prefix.rs` 燈 7 共同封頂。
     let l10 = locate(&e, 10).expect("段 10 在 T0.r3c1");
     assert_eq!(l10["cell_path"]["row"], 3);
     assert_eq!(l10["cell_path"]["cell"], 1, "tc 序：空 vMerge 格佔 0");
     assert_eq!(
         l10["cell_path"]["grid_col_start"], 1,
-        "網格起點：前格 span=1 累算（空 tc 也佔 1 欄）"
+        "網格起點：前格 span=1 累算（空 tc 也佔 1 欄）⇒ 本案例兩者恰等，非分歧案例"
+    );
+
+    // 分歧格（S3-5 補）：T2 r1 的 c1——前格 gridSpan=2 ⇒ tc 序 1、網格起點 2。
+    // 這是三層考卷裡第一處**真正** cell != grid_col_start 的斷言（S2-2 的
+    // gridSpan 錯讀正是從「兩者恆等」的舊 fixture 洞漏網）。
+    let diverged: Vec<(u64, u64, u64)> = (0..e.paragraph_count())
+        .filter_map(|p| locate(&e, p))
+        .filter_map(|l| {
+            let c = l["cell_path"]["cell"].as_u64()?;
+            let g = l["cell_path"]["grid_col_start"].as_u64()?;
+            let s = l["cell_path"]["grid_span"].as_u64()?;
+            (c != g).then_some((c, g, s))
+        })
+        .collect();
+    assert!(
+        diverged.contains(&(1, 2, 1)),
+        "T2 r1c1 必須是 tc 序 1、網格起點 2、span 1 的分歧格（fixture 被改回舊形時本斷言紅）；\
+         實得分歧格 {diverged:?}"
     );
 
     // 巢狀表段（T0.r0c2 內掛）：nested_steps=[[0,2,0]]、cell_path 指巢狀表自身。

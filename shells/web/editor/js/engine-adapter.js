@@ -335,20 +335,46 @@ export function buildInsertTableMutation(afterPara, rows, cols, colWidthsPt = nu
 
 /**
  * 建立表格穩定路徑 TablePath（欄位名逐欄照抄
- * `core/engine-api/src/mutation.rs:144-149`：target／root_slot／nested_steps）。
+ * `core/engine-api/src/mutation.rs` 的 `pub struct TablePath`：target／
+ * root_slot／nested_steps）。
  *
  * nested_steps 每一步為 (row_idx, cell_idx, sub_table_idx)，指向該格內第幾個
- * 巢狀 `<w:tbl>`。外殼目前一律走根表（巢狀表定位需要引擎的表格幾何反查，
- * 而 `table_count()`／`tables_json()` 尚未綁進 wasm 殼——見 U4 報告殘留項）。
+ * 巢狀 `<w:tbl>`。serde 契約是 `Vec<(usize, usize, usize)>`——JSON 必須是
+ * **數值陣列**；實測傳 `{row_idx,cell_idx,sub_table_idx}` 物件會被引擎拒
+ * （`invalid type: map, expected a tuple of size 3`，U4d 考卷 L3 實錄）。
+ * 故本層把兩種輸入形態（陣列／具名欄位物件）正規化成陣列，且**不完整或
+ * 長度不對的形態直接拋錯**——把壞形態靜默送引擎等於把失敗藏進錯誤訊息裡。
+ * 巢狀表定位走 `table_locator_json()` 的真反查（wasm 殼已綁，合併點 db865bf），
+ * 外殼不再靠越界探針考古。
  *
  * @param {number} rootSlot - 根表序號（OoxmlDoc::tables 的序）
- * @param {Array<Array<number>>} [nestedSteps] - 巢狀步進，預設空陣列＝根表
+ * @param {Array<Array<number>|{row_idx:number,cell_idx:number,sub_table_idx:number}>} [nestedSteps]
+ *        巢狀步進，預設空陣列＝根表
  */
 export function buildTablePath(rootSlot, nestedSteps = []) {
+  if (!Array.isArray(nestedSteps)) {
+    throw new Error(`nested_steps 需為陣列，收到 ${JSON.stringify(nestedSteps)}`);
+  }
+  const steps = nestedSteps.map((step, i) => {
+    if (Array.isArray(step)) {
+      if (step.length !== 3 || step.some((v) => !Number.isInteger(Number(v)) || Number(v) < 0)) {
+        throw new Error(`nested_steps[${i}] 需為 [row_idx, cell_idx, sub_table_idx] 三個非負整數，收到 ${JSON.stringify(step)}`);
+      }
+      return step.map(Number);
+    }
+    if (step && typeof step === 'object') {
+      const triple = [step.row_idx, step.cell_idx, step.sub_table_idx].map(Number);
+      if (triple.some((v) => !Number.isInteger(v) || v < 0)) {
+        throw new Error(`nested_steps[${i}] 物件形態需齊備 row_idx／cell_idx／sub_table_idx 非負整數，收到 ${JSON.stringify(step)}`);
+      }
+      return triple;
+    }
+    throw new Error(`nested_steps[${i}] 形態非法（三元組陣列或具名欄位物件）：${JSON.stringify(step)}`);
+  });
   return {
     target: 'Body',
     root_slot: Number(rootSlot),
-    nested_steps: nestedSteps
+    nested_steps: steps
   };
 }
 
@@ -462,12 +488,13 @@ export function buildDeleteTableColumnMutation(table, gridCol) {
 
 /**
  * 建立 M4.6 SetTableProps 變更物件
- * patch 欄位**只有三欄**（`mutation.rs:162-174`）：width_pt／alignment／
- * shading_fill。引擎的 serde 對未知欄位是靜默忽略（實測 patch:{border_pt:6}
- * 回 ok=true 且顯示列表零變化），因此本建構器只放行這三欄、其餘一律丟棄，
- * 避免外殼送出「看起來成功、實際沒做事」的假接線。
- * **邊框／框線不是本變體的欄位**——引擎目前無 `w:tblBorders` 寫入面，
- * 該效果屬引擎缺口，見 U4 報告「判定引擎缺欄位的具體證據」。
+ * patch 欄位**只放行三欄**：width_pt／alignment／shading_fill。引擎的 serde
+ * 對未知欄位是靜默忽略（實測 patch:{bogus_field:123} 回 ok=true 且顯示列表
+ * 零變化），因此本建構器只放行這三欄、其餘一律丟棄，避免外殼送出「看起來
+ * 成功、實際沒做事」的假接線。
+ * 邊框（U4d 重估）：E 卡 2cb6a18 已把 `borders: Option<TableBordersPatch>`
+ * 送進引擎（合規 patch 實測有 Rule 發射），但外殼邊框接線不在本卡工作面——
+ * 未接線前本建構器仍不放行 borders／borderPt，等 PM 開工時一併接上。
  */
 export function buildSetTablePropsMutation(table, patch = {}) {
   return {
@@ -652,6 +679,51 @@ export const TRANSFERRED_LIVE_COMMANDS = [
 ];
 
 /**
+ * 正規化一筆引擎回傳字串（U4d L9：wasm 邊界的誠實底線）。
+ *
+ * 為何必須包：引擎回傳是**外部資料**——壞字串（OOM 截斷、panic 前殘字、未來
+ * API 改版）若直接 JSON.parse，會把一次編輯操作炸成未捕獲例外，用戶看到的是
+ * 整個編輯器無回應，而不是「這次操作失敗」。
+ *
+ * 兩級口徑（皆不猜、不重試、不把壞字串當成功）：
+ * - safeEngineJson：唯讀面（顯示列表／游標反查／索引摘要…）。壞字串與空字串
+ *   一律回 null（「無資料」語義）＋console.warn 留痕，呼叫端既有 null 分支天然
+ *   處理。
+ * - engineMutationResult：變更面（apply/undo/redo）。回傳必須帶 ok:false＋可讀
+ *   error 給上層彈窗與失敗日誌，絕不回 null 讓 `res.ok` 炸在呼叫端。
+ * @param {string|null|undefined} text - 引擎回傳的 JSON 字串
+ * @param {string} label - 哪個 API 的回傳（進錯誤訊息與 warn，供查案）
+ * @returns {Object|null}
+ */
+function safeEngineJson(text, label) {
+  if (text === null || text === undefined || text === '') return null;
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    console.warn(`[EngineAdapter] ${label} 回傳非合法 JSON（${err.message}）：${String(text).slice(0, 80)}`);
+    return null;
+  }
+}
+
+/** 變更面專用：壞字串/空字串 → ok:false＋rejectedByShell（上層走失敗路徑，零未捕獲例外）。 */
+function engineMutationResult(text, label) {
+  if (text === null || text === undefined || text === '') {
+    return { ok: false, rejectedByShell: true, badEngineJson: true, error: `${label} 回傳空字串，無法判定結果` };
+  }
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    const head = String(text).slice(0, 80);
+    return {
+      ok: false,
+      rejectedByShell: true,
+      badEngineJson: true,
+      error: `${label} 回傳非合法 JSON（${err.message}）：${head}`
+    };
+  }
+}
+
+/**
  * 引擎適配器類別
  */
 export class EngineAdapter {
@@ -662,6 +734,12 @@ export class EngineAdapter {
     this.selection = null; // { start: { para, cp }, end: { para, cp } }
     this.isInitialized = false;
     this.isDirty = false;
+    /**
+     * 最近一次 InsertTable 落地後的根表序（U4d L6）：由 insertTable 用引擎真
+     * 索引反查寫入，**不是** tableCount()-1 的盲設猜測——游標在前段插表時新表
+     * 不排在最後，盲設會指向舊表。null＝尚未反查得出來。
+     */
+    this.lastInsertedRootSlot = null;
   }
 
   /**
@@ -735,9 +813,8 @@ export class EngineAdapter {
    */
   async renderPage(pageIndex, canvas, displayWidthPx = DEFAULT_DISPLAY_WIDTH_PX) {
     if (!this.engine) throw new Error('尚未載入文件，無法渲染頁面');
-    const jsonStr = this.engine.page_display_list_json(pageIndex);
-    if (!jsonStr) return null;
-    const dl = JSON.parse(jsonStr);
+    const dl = safeEngineJson(this.engine.page_display_list_json(pageIndex), 'page_display_list_json');
+    if (!dl) return null;
     return await renderDisplayListToCanvas(dl, canvas, displayWidthPx);
   }
 
@@ -746,8 +823,7 @@ export class EngineAdapter {
    */
   getPageDisplayList(pageIndex) {
     if (!this.engine) return null;
-    const jsonStr = this.engine.page_display_list_json(pageIndex);
-    return jsonStr ? JSON.parse(jsonStr) : null;
+    return safeEngineJson(this.engine.page_display_list_json(pageIndex), 'page_display_list_json');
   }
 
   /**
@@ -790,8 +866,7 @@ export class EngineAdapter {
    */
   caretAt(page, xPt, yPt) {
     if (!this.engine) return null;
-    const jsonStr = this.engine.caret_at_json(page, xPt, yPt);
-    return jsonStr ? JSON.parse(jsonStr) : null;
+    return safeEngineJson(this.engine.caret_at_json(page, xPt, yPt), 'caret_at_json');
   }
 
   /**
@@ -799,8 +874,7 @@ export class EngineAdapter {
    */
   caretRect(para, cp) {
     if (!this.engine) return null;
-    const jsonStr = this.engine.caret_rect_json(para, cp);
-    return jsonStr ? JSON.parse(jsonStr) : null;
+    return safeEngineJson(this.engine.caret_rect_json(para, cp), 'caret_rect_json');
   }
 
   /**
@@ -815,8 +889,7 @@ export class EngineAdapter {
    */
   reflowStep() {
     if (!this.engine) return { settled: true, events: [] };
-    const str = this.engine.reflow_step_json();
-    return JSON.parse(str);
+    return safeEngineJson(this.engine.reflow_step_json(), 'reflow_step_json') || { settled: true, events: [] };
   }
 
   /**
@@ -827,8 +900,7 @@ export class EngineAdapter {
     const targetPara = para !== undefined ? Number(para) : (this.caret ? this.caret.para : 0);
     const targetCp = cp !== undefined ? Number(cp) : (this.caret ? this.caret.cp : 0);
     const mutation = buildInsertTextMutation(targetPara, targetCp, text);
-    const resStr = this.engine.apply_mutation_json(JSON.stringify(mutation));
-    const res = JSON.parse(resStr);
+    const res = engineMutationResult(this.engine.apply_mutation_json(JSON.stringify(mutation)), 'apply_mutation_json（InsertText）');
 
     if (res.ok) {
       this.isDirty = true;
@@ -857,8 +929,7 @@ export class EngineAdapter {
     }
 
     const mutation = buildDeleteRangeMutation(targetPara, targetCp - 1, targetCp);
-    const resStr = this.engine.apply_mutation_json(JSON.stringify(mutation));
-    const res = JSON.parse(resStr);
+    const res = engineMutationResult(this.engine.apply_mutation_json(JSON.stringify(mutation)), 'apply_mutation_json（DeleteRange）');
 
     if (res.ok) {
       this.isDirty = true;
@@ -879,8 +950,7 @@ export class EngineAdapter {
     const targetPara = para !== undefined ? Number(para) : (this.caret ? this.caret.para : 0);
     const targetCp = cp !== undefined ? Number(cp) : (this.caret ? this.caret.cp : 0);
     const mutation = buildInsertBreakMutation(targetPara, targetCp, 'LineWrapping');
-    const resStr = this.engine.apply_mutation_json(JSON.stringify(mutation));
-    const res = JSON.parse(resStr);
+    const res = engineMutationResult(this.engine.apply_mutation_json(JSON.stringify(mutation)), 'apply_mutation_json（InsertBreak）');
 
     if (res.ok) {
       this.isDirty = true;
@@ -896,8 +966,7 @@ export class EngineAdapter {
    */
   undo() {
     if (!this.engine) throw new Error('尚未開啟文件，無法復原');
-    const resStr = this.engine.undo_json();
-    const res = JSON.parse(resStr);
+    const res = engineMutationResult(this.engine.undo_json(), 'undo_json');
 
     if (res.ok && res.undone) {
       this.isDirty = true;
@@ -913,8 +982,7 @@ export class EngineAdapter {
    */
   redo() {
     if (!this.engine) throw new Error('尚未開啟文件，無法重做');
-    const resStr = this.engine.redo_json();
-    const res = JSON.parse(resStr);
+    const res = engineMutationResult(this.engine.redo_json(), 'redo_json');
 
     if (res.ok && res.redone) {
       this.isDirty = true;
@@ -988,8 +1056,7 @@ export class EngineAdapter {
     if (!this.engine) throw new Error('尚未開啟文件，無法格式化文字');
     const targetRange = range || this.getEffectiveRange();
     const mutation = buildFormatTextRangeMutation(targetRange, patch);
-    const resStr = this.engine.apply_mutation_json(JSON.stringify(mutation));
-    const res = JSON.parse(resStr);
+    const res = engineMutationResult(this.engine.apply_mutation_json(JSON.stringify(mutation)), 'apply_mutation_json（FormatTextRange）');
 
     if (res.ok) {
       this.isDirty = true;
@@ -1007,8 +1074,7 @@ export class EngineAdapter {
     if (!this.engine) throw new Error('尚未開啟文件，無法設定段落樣式');
     const targetRange = paraRange || this.getEffectiveParaRange();
     const mutation = buildSetParagraphStyleMutation(targetRange, patch);
-    const resStr = this.engine.apply_mutation_json(JSON.stringify(mutation));
-    const res = JSON.parse(resStr);
+    const res = engineMutationResult(this.engine.apply_mutation_json(JSON.stringify(mutation)), 'apply_mutation_json（SetParagraphStyle）');
 
     if (res.ok) {
       this.isDirty = true;
@@ -1031,14 +1097,25 @@ export class EngineAdapter {
       ? options.afterPara
       : (this.caret ? this.caret.para : 0);
     const mutation = buildInsertTableMutation(afterPara, rows, cols, options.colWidthsPt || null);
-    const resStr = this.engine.apply_mutation_json(JSON.stringify(mutation));
-    const res = JSON.parse(resStr);
+    const res = engineMutationResult(this.engine.apply_mutation_json(JSON.stringify(mutation)), 'apply_mutation_json（InsertTable）');
 
-    if (res.ok) {
+    if (res && res.ok) {
       this.isDirty = true;
       if (res.outcome && res.outcome.caret_after) {
         this.caret = { ...res.outcome.caret_after };
       }
+      // U4d L6：記下新表 root_slot——用引擎真索引反查（游標段落落點），不給
+      // 呼叫端 tableCount()-1 的盲設值。實測（U4d 探針 E）：root_slot 按 XML
+      // 文檔序排，游標在前段插表時新表可能落在**任何** slot（探針實錄：第二張
+      // 插的表拿到 root_slot 0，先插的反被擠到 1）——「新表在末張」只是觀察，
+      // 不是契約。契約只認反查真值：引擎回 caret_after（插表後游標落進新表首
+      // 格，探針實錄）、該段落反查命中哪張，哪張才是剛插的表；引擎未給回訊或
+      // 反查不可得時老實記 null（游標可能還停在舊表，沿用會誤記），由 UI 誠實
+      // 回報，絕不猜。
+      const caretReported = !!(res.outcome && res.outcome.caret_after);
+      const located = caretReported ? this.currentTableCell() : null;
+      this.lastInsertedRootSlot = located && Number.isInteger(located.rootSlot) ? located.rootSlot : null;
+      res.inserted = { rootSlot: this.lastInsertedRootSlot, afterPara };
     }
     return res;
   }
@@ -1047,66 +1124,124 @@ export class EngineAdapter {
   // U4：表格家族（M4.3／M4.4／M4.6）與圖片插入（M5.1）真接線
   //
   // 紀律：幾何全部由引擎側 quire_layout::table::TableInput 決定，本層只產
-  // 操作描述＋讀引擎回傳。下面所有「讀表格結構」的動作都靠引擎自己的誠實
-  // 拒絕回訊息（例：列序越界時回「列序 99 越界（共 2 列）」）——實測證明
-  // 該類探針零副作用、不入 undo 堆（探針八），因此不是 JS 端算欄寬／列高，
-  // 而是把引擎給的真值讀出來。wasm 殼目前未綁 table_count()／tables_json()
-  // （shells/web/src/lib.rs 無此導出），故暫以此途取結構，待補綁後替換。
+  // 操作描述＋讀引擎回傳。U4d 起，「讀表格結構」一律走引擎真索引（t_f91e5773
+  // 綁定，合併點 db865bf）：
+  //   張數      engine.table_count()
+  //   行列／欄數 engine.tables_summary_json()（每張根表 {root_slot, rows, grid_cols,…}）
+  //   游標落點  engine.table_locator_json(para) → {table_path, cell_path}
+  // 舊版在此處用「對越界 root_slot／列序發必然被拒的 Mutation、從錯誤訊息正則
+  // 反推行列數」的零副作用探針補位——那是在真索引缺席時的考古手段，且有致命
+  // 缺陷：引擎對 len()<=1 的表**先**回「不得刪除表格僅剩的一列／一欄」，訊息
+  // 不含「共 N 列」，單列／單欄表格的探針必失效（mutation_k29c.rs 列路徑與欄
+  // 路徑的 len()<=1 早退）。真索引落地後探針已全數撤除（U4d L1，紅燈考卷實錄
+  // 見 docs/word-ui-u4d-fixes-report.md）。
   // ---------------------------------------------------------------------
 
   /**
-   * 讀目前正文根表張數（探針：對越界 root_slot 發一筆必然被拒的變體，
-   * 從引擎錯誤訊息讀「共 N 張」）。回 null＝讀不到（非預期格式，如實回 null，
-   * 不猜數字）。
+   * 目前正文根表張數（引擎 canonical 投影，只讀）。回 null＝引擎未載入。
    */
   tableCount() {
     if (!this.engine) return null;
-    const res = JSON.parse(this.engine.apply_mutation_json(JSON.stringify({
-      DeleteTableColumn: { table: buildTablePath(1000000000), grid_col: 0 }
-    })));
-    const m = /共 (\d+) 張/.exec(res.error || '');
-    return m ? Number(m[1]) : null;
+    const n = this.engine.table_count();
+    return Number.isInteger(n) && n >= 0 ? n : null;
   }
 
   /**
-   * 讀指定根表的列數／網格欄數（同款探針，讀「共 N 列」／「共 N 欄」）。
+   * 引擎表格索引摘要（每張根表一筆：root_slot／rows／grid_cols／para_start／
+   * para_end…）。回傳字串壞掉時老實回 null，不猜。
+   * @returns {Array<Object>|null}
+   */
+  tableSummaries() {
+    if (!this.engine) return null;
+    const parsed = safeEngineJson(this.engine.tables_summary_json(), 'tables_summary_json');
+    if (!parsed) return null;
+    return Array.isArray(parsed) ? parsed : null;
+  }
+
+  /**
+   * 讀指定根表的列數／網格欄數——真索引版：在 tables_summary_json 的清單裡
+   * 找 root_slot 對應的那筆，直接讀 rows／grid_cols。單列／單欄表格與多列表格
+   * 同路徑，不再有「越界探針在 len()<=1 時失效」的死角。
    * @returns {{rows:number|null, cols:number|null, ok:boolean, error:string|null}}
    */
   tableShape(rootSlot = 0) {
     if (!this.engine) return { rows: null, cols: null, ok: false, error: '尚未開啟文件' };
-    const probe = (mutation) => JSON.parse(this.engine.apply_mutation_json(JSON.stringify(mutation)));
-    const rowRes = probe({ DeleteTableRow: { table: buildTablePath(rootSlot), row: 1000000000 } });
-    const rowMatch = /共 (\d+) 列/.exec(rowRes.error || '');
-    const colRes = probe({ DeleteTableColumn: { table: buildTablePath(rootSlot), grid_col: 1000000000 } });
-    const colMatch = /共 (\d+) 欄/.exec(colRes.error || '');
-    if (!rowMatch || !colMatch) {
-      // 讀不到就老實說讀不到（列數可能因 vMerge 使引擎訊息措辭不同，屆時由呼叫端決定不動作）
-      return { rows: null, cols: null, ok: false, error: rowRes.error || colRes.error || '無法讀取表格結構' };
+    const slot = Number(rootSlot);
+    if (!Number.isInteger(slot) || slot < 0) {
+      return { rows: null, cols: null, ok: false, error: `root_slot 需為非負整數，收到 ${rootSlot}` };
     }
-    return { rows: Number(rowMatch[1]), cols: Number(colMatch[1]), ok: true, error: null };
+    const summaries = this.tableSummaries();
+    if (summaries === null) {
+      return { rows: null, cols: null, ok: false, error: '無法讀取引擎表格索引（tables_summary_json 回傳異常）' };
+    }
+    const hit = summaries.find((s) => Number(s.root_slot) === slot);
+    if (!hit) {
+      return { rows: null, cols: null, ok: false, error: `根表序 ${slot} 不存在（文件共 ${summaries.length} 張根表）` };
+    }
+    return { rows: Number(hit.rows), cols: Number(hit.grid_cols), ok: true, error: null };
+  }
+
+  /**
+   * 游標段落 → 表格座標反查（引擎 table_locator_json，真索引）。
+   * @param {number} para - 段落序（省略＝目前游標）
+   * @returns {{rootSlot:number, row:number|null, cell:number|null, nestedSteps:Array, tablePath:Object, cellPath:Object}|null}
+   *          該段在表（含巢狀表）格內回結構；表外正文段或反查不可得回 null（null 不是錯誤）
+   */
+  locateTableCell(para) {
+    if (!this.engine) return null;
+    const target = para !== undefined && para !== null ? Number(para) : (this.caret ? this.caret.para : null);
+    if (!Number.isInteger(target) || target < 0) return null;
+    const raw = this.engine.table_locator_json(target);
+    if (raw === null || raw === undefined || raw === '') return null; // 表外正文段：引擎如實回 None
+    const loc = safeEngineJson(raw, 'table_locator_json');
+    if (!loc || !loc.table_path) return null;
+    return {
+      rootSlot: Number(loc.table_path.root_slot),
+      nestedSteps: Array.isArray(loc.table_path.nested_steps) ? loc.table_path.nested_steps : [],
+      row: loc.cell_path ? Number(loc.cell_path.row) : null,
+      cell: loc.cell_path ? Number(loc.cell_path.cell) : null,
+      tablePath: loc.table_path,
+      cellPath: loc.cell_path || null
+    };
+  }
+
+  /** 目前游標是否落在某張表的格內（省略座標的表格操作以此決定目標表）。 */
+  currentTableCell() {
+    return this.locateTableCell(this.caret ? this.caret.para : undefined);
   }
 
   /**
    * 套用一筆表格類 Mutation：呼叫引擎、解析 outcome、回傳原始結果給上層。
    * 上層（qword-ui）依 ok 決定是否重排，失敗一律如實回報，不得寫成成功。
+   *
+   * U4d L5（幽靈游標）：表格類 Mutation 的 outcome.caret_after 實測恆 null
+   * （引擎不給游標回訊），刪列後游標段落可能已隨 XML 縮掉而越界——之後打字
+   * 引擎會回「段落索引越界」（紅燈實錄）。這裡在成功且引擎未給游標回訊時
+   * 自查越界並重置到安全段落（末段起點），不讓游標留在不存在的位置。
    */
   _applyTableMutation(mutation) {
     if (!this.engine) throw new Error('尚未開啟文件，無法操作表格');
-    const res = JSON.parse(this.engine.apply_mutation_json(JSON.stringify(mutation)));
-    if (res.ok) {
+    const res = engineMutationResult(this.engine.apply_mutation_json(JSON.stringify(mutation)), 'apply_mutation_json（表格操作）');
+    if (res && res.ok) {
       this.isDirty = true;
       if (res.outcome && res.outcome.caret_after) {
         this.caret = { ...res.outcome.caret_after };
+      } else if (this.caret) {
+        const pc = this.paragraphCount();
+        if (this.caret.para >= pc) {
+          this.caret = { para: Math.max(0, pc - 1), cp: 0 };
+        }
       }
     }
     return res;
   }
 
   /**
-   * 解析目標表格路徑：payload 帶 rootSlot 用之；否則以游標段落後最近的根表
-   * （無從反查時退到最後一張根表，並回傳 discovered=true 供 UI 在狀態列說明）。
-   * 引擎未提供 caret→table 反查（wasm 殼未綁 tables_json），此處只用引擎給的
-   * 張數真值，不自行猜座標。
+   * 解析目標表格路徑：payload 帶 rootSlot 用之；否則用引擎真反查「游標落在
+   * 哪張表」（table_locator_json）；表外正文段時，文件只有一張表才退到 0
+   * （discovered=true 供 UI 於狀態列說明），多張表未指定一律誠實報錯——
+   * **禁止靜默退回 count-1**（U4d L6：插入錨點是游標段落，新表不必然排在
+   * 最後，盲設末張會操作到舊表）。
    */
   _resolveTablePath(rootSlot) {
     if (rootSlot !== undefined && rootSlot !== null && rootSlot !== '') {
@@ -1116,10 +1251,24 @@ export class EngineAdapter {
       }
       return { path: buildTablePath(n), error: null, rootSlot: n };
     }
+    const located = this.currentTableCell();
+    if (located && Number.isInteger(located.rootSlot) && located.rootSlot >= 0) {
+      return {
+        path: buildTablePath(located.rootSlot, located.nestedSteps),
+        error: null,
+        rootSlot: located.rootSlot,
+        discovered: true,
+        viaCaret: true
+      };
+    }
     const count = this.tableCount();
     if (count === null) return { path: null, error: '無法讀取文件中的表格張數' };
     if (count === 0) return { path: null, error: '文件中沒有表格，請先插入表格' };
-    return { path: buildTablePath(count - 1), error: null, rootSlot: count - 1, discovered: true };
+    if (count === 1) return { path: buildTablePath(0), error: null, rootSlot: 0, discovered: true };
+    return {
+      path: null,
+      error: `文件中有 ${count} 張表格且游標不在任何表格內，無法判定操作目標（請把游標移進目標表格，或明確指定 root_slot）`
+    };
   }
 
   /**
@@ -1262,13 +1411,25 @@ export class EngineAdapter {
   setCellProps(patch = {}, options = {}) {
     const resolved = this._resolveTablePath(options.rootSlot);
     if (resolved.error) return { ok: false, rejectedByShell: true, error: resolved.error };
-    const shape = this.tableShape(resolved.rootSlot);
 
     let row = options.row, cell = options.cell;
-    if ((row === undefined || row === null || row === '') || (cell === undefined || cell === null || cell === '')) {
-      if (!shape.ok) return { ok: false, rejectedByShell: true, error: `未帶 row／cell 且無法讀取表格結構：${shape.error}` };
-      if (row === undefined || row === null || row === '') row = shape.rows - 1;
-      if (cell === undefined || cell === null || cell === '') cell = shape.cols - 1;
+    const missingRow = row === undefined || row === null || row === '';
+    const missingCell = cell === undefined || cell === null || cell === '';
+    if (missingRow || missingCell) {
+      // 座標缺席才需要真值補座標——延遲觸發，不讓帶座標的操作被結構讀取連坐
+      // （U4d L1：舊版無條件讀 tableShape，探針失效時連帶把 setCellProps 一起打死）。
+      // 順序：游標反查（用戶點哪格＝哪格，且對 uneven 表格比「末格」安全）→
+      // summary 末格（rows-1／cols-1，引擎真值）。兩者皆不可得才誠實報錯。
+      const located = this.currentTableCell();
+      const inTarget = located && located.rootSlot === resolved.rootSlot;
+      if (row === undefined || row === null || row === '') row = inTarget ? located.row : null;
+      if (cell === undefined || cell === null || cell === '') cell = inTarget ? located.cell : null;
+      if (!Number.isInteger(row) || !Number.isInteger(cell)) {
+        const shape = this.tableShape(resolved.rootSlot);
+        if (!shape.ok) return { ok: false, rejectedByShell: true, error: `未帶 row／cell 且無法讀取表格結構：${shape.error}` };
+        if (!Number.isInteger(row)) row = shape.rows - 1;
+        if (!Number.isInteger(cell)) cell = shape.cols - 1;
+      }
     }
     row = Number(row); cell = Number(cell);
     if (!Number.isInteger(row) || row < 0 || !Number.isInteger(cell) || cell < 0) {
@@ -1336,31 +1497,37 @@ export class EngineAdapter {
       return { ok: false, rejectedByShell: true, error: `插入點需為非負整數，收到 para=${para} cp=${cp}` };
     }
 
-    // 尺寸：呼叫端指定就用；否則依圖片原始像素按 96dpi 換算 pt，並鉗在內容寬內
-    // （讀檔頭中繼資料，不是排版計算；排版仍由引擎決定）。
-    const paper = (() => {
-      try { return JSON.parse(this.engine.paper_json()); } catch { return null; }
-    })();
-    const contentWidthPt = paper ? Math.max(72, paper.page_w_pt - (paper.margin_left_pt || 72) - (paper.margin_right_pt || 72)) : 451;
+    // 尺寸：呼叫端指定就用；單邊指定必須按原始長寬比等比折算另一邊——實測
+    // 舊行為只給 widthPt 時高度取 natural 換算值不按 wPt 折算，2:1 圖給 100pt
+    // 寬會被撐成 100×75（U4d L4 紅燈實錄：非正方形圖拉伸）。兩邊都缺時依
+    // 96dpi 換算並鉗在內容寬內（讀檔頭中繼資料，不是排版計算；排版仍由引擎決定）。
+    const paper = safeEngineJson(this.engine.paper_json(), 'paper_json');
+    const contentWidthPt = paper
+      ? Math.max(72, paper.page_w_pt - (paper.margin_left_pt || 72) - (paper.margin_right_pt || 72))
+      : 451;
     const natural = readImageNaturalSize(bytes);
+    const naturalW = natural ? natural.w : 240;
+    const naturalH = natural ? natural.h : 160;
     let wPt = options.widthPt !== undefined && options.widthPt !== null ? Number(options.widthPt) : null;
     let hPt = options.heightPt !== undefined && options.heightPt !== null ? Number(options.heightPt) : null;
-    if ((wPt === null || hPt === null)) {
-      const baseW = natural ? natural.w : 240;
-      const baseH = natural ? natural.h : 160;
-      let w = (baseW * 72) / 96;
-      let h = (baseH * 72) / 96;
+    if (wPt !== null && hPt === null) {
+      // 單邊指定：另一邊 = 指定邊 × natural 長寬比（等比，不拉伸）
+      hPt = (wPt * naturalH) / naturalW;
+    } else if (hPt !== null && wPt === null) {
+      wPt = (hPt * naturalW) / naturalH;
+    } else if (wPt === null && hPt === null) {
+      let w = (naturalW * 72) / 96;
+      let h = (naturalH * 72) / 96;
       const maxW = contentWidthPt * 0.9;
       if (w > maxW) { h = (h * maxW) / w; w = maxW; }
-      if (wPt === null) wPt = w;
-      if (hPt === null) hPt = h;
+      wPt = w; hPt = h;
     }
     if (!Number.isFinite(wPt) || wPt <= 0 || !Number.isFinite(hPt) || hPt <= 0) {
       return { ok: false, rejectedByShell: true, error: `圖片尺寸需為正數，收到 ${options.widthPt}×${options.heightPt}` };
     }
 
     const mutation = buildInsertInlineImageMutation({ para, cp }, bytes, mime, wPt, hPt, options.altText ?? null);
-    const res = JSON.parse(this.engine.apply_mutation_json(JSON.stringify(mutation)));
+    const res = engineMutationResult(this.engine.apply_mutation_json(JSON.stringify(mutation)), 'apply_mutation_json（InsertInlineImage）');
     if (res.ok) {
       this.isDirty = true;
       if (res.outcome && res.outcome.caret_after) this.caret = { ...res.outcome.caret_after };
