@@ -103,7 +103,7 @@ PM 開 U4 考卷邊框重估卡給 ow-render／PM，或將 E 卡 redlight 的邊
 - 白名單：只改 `shells/web/editor/index.html`、`css/style.css`、`js/qword-core.js`、
   `js/qword-ui.js`（必要 js）＋本報告與證據檔（`docs/word-ui-u4c-*`）。
   `git diff 37ffbbb HEAD -- core/` = **0 行**（嚴禁碰 core/ 達標）。
-- **白名單偏离（主動如實報）**：新增探針落在
+- **白名單偏離（主動如實報）**：新增探針落在
   `shells/web/editor/tests/u4c_ribbon_probe.mjs`——`tests/` 未明文寫在卡面白名單。
   沿 U4b 先例（1bf87fd 將 `tests/u4b_e1_probe.mjs` 同位置入庫、PM 合併並寫明
   「證據檔歸位白名單」），驗收工具與證據同源、可重放。PM 合併時若認定該路徑
