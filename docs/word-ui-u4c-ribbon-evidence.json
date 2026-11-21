@@ -1,14 +1,14 @@
 {
   "meta": {
     "baseUrl": "http://127.0.0.1:8791/shells/web/editor/index.html",
-    "at": "2026-11-21T18:24:44.111Z",
+    "at": "2026-11-21T18:37:44.371Z",
     "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
   },
   "buttons": {
     "table:row-insert-above": {
       "selector": "[data-command=\"table:row-insert-above\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "before": {
         "total": 83,
@@ -78,7 +78,7 @@
     "table:row-insert-below": {
       "selector": "[data-command=\"table:row-insert-below\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "before": {
         "total": 83,
@@ -148,7 +148,7 @@
     "table:row-insert": {
       "selector": "[data-command=\"table:row-insert\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "before": {
         "total": 83,
@@ -218,7 +218,7 @@
     "table:row-delete": {
       "selector": "[data-command=\"table:row-delete\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "before": {
         "total": 83,
@@ -288,7 +288,7 @@
     "table:col-insert-left": {
       "selector": "[data-command=\"table:col-insert-left\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "before": {
         "total": 83,
@@ -358,7 +358,7 @@
     "table:col-insert-right": {
       "selector": "[data-command=\"table:col-insert-right\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "before": {
         "total": 83,
@@ -428,7 +428,7 @@
     "table:col-insert": {
       "selector": "[data-command=\"table:col-insert\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "before": {
         "total": 83,
@@ -498,7 +498,7 @@
     "table:col-delete": {
       "selector": "[data-command=\"table:col-delete\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "before": {
         "total": 83,
@@ -568,7 +568,7 @@
     "table:align-center": {
       "selector": "[data-command=\"table:align-center\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "before": {
         "total": 83,
@@ -616,7 +616,7 @@
     "table:align-right": {
       "selector": "[data-command=\"table:align-right\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "before": {
         "total": 83,
@@ -664,7 +664,7 @@
     "table:align-left": {
       "selector": "[data-command=\"table:align-left\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "path": "right→left 拉回（left=預設態，單點零位移屬 Word 同款語義）",
       "rightedMinTextX": 72,
@@ -702,7 +702,7 @@
     "table:width": {
       "selector": "[data-command=\"table:width\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "widthInputSeen": "120",
       "before": {
@@ -767,7 +767,7 @@
     "cell:shading-clear": {
       "selector": "[data-cell-shading-clear]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "live",
       "tintedRects": 1,
       "afterRects": 0,
@@ -854,7 +854,7 @@
     "table:shading": {
       "selector": "[data-command=\"table:shading\"]",
       "found": true,
-      "visible": false,
+      "visible": true,
       "req": "pending:engine-tblshading",
       "btnClickFpChanged": false,
       "directDispatch": {

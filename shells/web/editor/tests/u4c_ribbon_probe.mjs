@@ -118,6 +118,16 @@ async function runInPage(baseUrl) {
   };
 
   const tableShape = () => adapter().tableShape(0);
+  // 誠實用戶路徑：table 家族鈕在「插入」分頁、面板鈕需先開面板——隱藏態
+  // btn.click() 的事件鏈雖相同，但 visible=false 就不是「用戶看得見」的證據。
+  const showHome = () => shell().onCommand('tab:switch:tab-home', {});
+  const showInsert = () => shell().onCommand('tab:switch:tab-insert', {});
+  const openPropsPanel = () => {
+    const pop = document.getElementById('popover-table-props');
+    if (pop && pop.classList.contains('open')) return; // 冪等：已開不重複點（重點會關）
+    const t = document.querySelector('[data-popover-target="popover-table-props"]');
+    if (t) t.click();
+  };
   const clickBtn = (sel) => {
     const btn = document.querySelector(sel);
     if (!btn) return { found: false };
@@ -143,6 +153,9 @@ async function runInPage(baseUrl) {
 
   // 通用單鈕探針：基準態→真點擊→後態→diff→undo→還原態
   const probe = async (key, cmd, opts = {}) => {
+    if (opts.tab === 'insert') { showInsert(); await sleep(60); }
+    else if (opts.tab === 'home') { showHome(); await sleep(60); }
+    if (opts.propsPanel) { openPropsPanel(); await sleep(60); }
     if (opts.reenter) caretIntoCell(1, 1);
     const before = stateOf();
     const shape0 = opts.shape ? tableShape() : null;
@@ -172,20 +185,21 @@ async function runInPage(baseUrl) {
   };
 
   // ── 行列 8 顆：指紋位移＋行列數增減＋undo 逐位還原 ──
-  await probe('table:row-insert-above', 'table:row-insert-above', { shape: true, reenter: true });
-  await probe('table:row-insert-below', 'table:row-insert-below', { shape: true, reenter: true });
-  await probe('table:row-insert', 'table:row-insert', { shape: true, reenter: true });
-  await probe('table:row-delete', 'table:row-delete', { shape: true, reenter: true });
-  await probe('table:col-insert-left', 'table:col-insert-left', { shape: true, reenter: true });
-  await probe('table:col-insert-right', 'table:col-insert-right', { shape: true, reenter: true });
-  await probe('table:col-insert', 'table:col-insert', { shape: true, reenter: true });
-  await probe('table:col-delete', 'table:col-delete', { shape: true, reenter: true });
+  await probe('table:row-insert-above', 'table:row-insert-above', { shape: true, reenter: true, tab: 'insert' });
+  await probe('table:row-insert-below', 'table:row-insert-below', { shape: true, reenter: true, tab: 'insert' });
+  await probe('table:row-insert', 'table:row-insert', { shape: true, reenter: true, tab: 'insert' });
+  await probe('table:row-delete', 'table:row-delete', { shape: true, reenter: true, tab: 'insert' });
+  await probe('table:col-insert-left', 'table:col-insert-left', { shape: true, reenter: true, tab: 'insert' });
+  await probe('table:col-insert-right', 'table:col-insert-right', { shape: true, reenter: true, tab: 'insert' });
+  await probe('table:col-insert', 'table:col-insert', { shape: true, reenter: true, tab: 'insert' });
+  await probe('table:col-delete', 'table:col-delete', { shape: true, reenter: true, tab: 'insert' });
 
   // ── 表格對齊 3 顆：整表 Text 項 x 位移；left 走 right→left 拉回路徑 ──
-  await probe('table:align-center', 'table:align-center', { reenter: true });
-  await probe('table:align-right', 'table:align-right', { reenter: true });
+  await probe('table:align-center', 'table:align-center', { reenter: true, tab: 'insert', propsPanel: true });
+  await probe('table:align-right', 'table:align-right', { reenter: true, tab: 'insert', propsPanel: true });
   {
     // 先點 right 建立右移態（不 undo），再點 left 拉回基準——left 鈕的位移實據
+    showInsert(); await sleep(60); openPropsPanel(); await sleep(60);
     caretIntoCell(1, 1);
     const before = stateOf();
     clickBtn('[data-command="table:align-right"]');
@@ -214,6 +228,7 @@ async function runInPage(baseUrl) {
 
   // ── 表格寬度：面板 input 填 120pt → 套用寬度鈕（真點擊路徑）──
   {
+    showInsert(); await sleep(60); openPropsPanel(); await sleep(60);
     caretIntoCell(1, 1);
     const input = document.getElementById('table-width-input');
     const before = stateOf();
@@ -232,6 +247,7 @@ async function runInPage(baseUrl) {
 
   // ── 儲存格底紋：觸發鈕開面板→色塊真點擊→Rect +1→undo 還原 ──
   {
+    showInsert(); await sleep(60);
     caretIntoCell(1, 1);
     const before = stateOf();
     const trigger = document.querySelector('[data-command="cell:shading"]');
@@ -254,6 +270,7 @@ async function runInPage(baseUrl) {
   }
   // ── 清除底紋：先套色（基準+1 Rect）→ 清除鈕 → 指紋回基準（fill=auto）──
   {
+    showInsert(); await sleep(60);
     caretIntoCell(1, 1);
     const trigger = document.querySelector('[data-command="cell:shading"]');
     if (trigger) trigger.click();
@@ -262,6 +279,10 @@ async function runInPage(baseUrl) {
     if (swatch) swatch.click();
     await sleep(150);
     const tinted = stateOf();
+    // 誠實用戶路徑：套色後面板已關（swatch handler 收合），重新開面板再點清除
+    const trigger2 = document.querySelector('[data-command="cell:shading"]');
+    if (trigger2) trigger2.click();
+    await sleep(80);
     const click = clickBtn('[data-cell-shading-clear]');
     await sleep(150);
     const after = stateOf();
@@ -271,6 +292,7 @@ async function runInPage(baseUrl) {
   }
 
   // ── v-align 3 顆：固定列高 40pt 前置（自動列高時行高貼字、位移 0＝Word 同語義）──
+  showHome(); await sleep(60);
   {
     const ins = adapter().engine.apply_mutation_json(JSON.stringify({
       SetRowProps: { table: { target: 'Body', root_slot: 0, nested_steps: [] }, row: 1, patch: { height_pt: 40, header: null, cant_split: null } }
@@ -326,6 +348,7 @@ async function runInPage(baseUrl) {
 
   // ── table:shading：誠實 pending 三層證據（標籤／零發射／寫入真發射零）──
   {
+    showInsert(); await sleep(60);
     caretIntoCell(1, 1);
     const before = stateOf();
     const click = clickBtn('[data-command="table:shading"]');
