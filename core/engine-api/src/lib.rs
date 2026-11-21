@@ -58,13 +58,13 @@ mod mutation_k29c;
 // K29d（Slice 4）：M6 節／分節／頁首頁尾／註腳尾註家族＋SubDocTarget 完整路由。
 mod mutation_k29d;
 pub use mutation::{
-    BreakKind, ByteSpan, CellPropsPatch, DocPos, DocRange, FloatingAxisSpec, HfBindAction, HfKind,
-    HfSlotKind, InsertSide, InverseMutation, IrreversibleReason, ListAction, Mutation,
-    MutationError, MutationOutcome, NotePropsPatch, PageOrientation, ParaPropsPatch,
+    BorderSpec, BreakKind, ByteSpan, CellPropsPatch, DocPos, DocRange, FloatingAxisSpec,
+    HfBindAction, HfKind, HfSlotKind, InsertSide, InverseMutation, IrreversibleReason, ListAction,
+    Mutation, MutationError, MutationOutcome, NotePropsPatch, PageOrientation, ParaPropsPatch,
     PartLifecycleInverse, ReversibilityLevel, RowPropsPatch, RunDirectPatch, SectionColsPatch,
     SectionPropsPatch, SectionStartKind, SemanticInverseOp, StrikeKind, StyleType, SubDocTarget,
-    TablePath, TablePropsPatch, UnderlineKind, UndoEntry, VMergeState, WrapModeSpec, XmlBytePatch,
-    XmlReversePatch,
+    TableBordersPatch, TablePath, TablePropsPatch, UnderlineKind, UndoEntry, VMergeState,
+    WrapModeSpec, XmlBytePatch, XmlReversePatch,
 };
 pub use quire_ooxml::diff_untouched;
 // K29e：上下標型別 re-export——`RunDirectPatch::vert_align` 直接沿用級聯層
