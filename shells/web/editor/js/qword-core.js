@@ -86,6 +86,7 @@ export const DEPENDENCY_MAP = {
   'pending:engine-page': { name: '引擎缺口：頁面版面面', desc: '紙張絕對尺寸、裝訂線（gutter）、頁面框線（pgBorders）、文件背景（w:background）、行號（lnNumType）、自動連字設定欄未實作；需引擎切片' },
   'pending:engine-theme': { name: '引擎缺口：主題與預設值面', desc: 'theme1.xml（色彩／字型／效果集）與 docDefaults 寫入無引擎變體（僅只讀解析）；需引擎切片' },
   'pending:engine-para': { name: '引擎缺口：字元段落直接格式殘餘', desc: 'w:bidi 寫入欄未實作；底線形態族（w:u/@w:val 五形態）寫入真實但解析層折成布林、發射層一態，屬解析＋發射雙層缺口' },
+  'pending:engine-table': { name: '引擎缺口：表格層發射面', desc: '表格層底紋（SetTableProps.shading_fill）XML 寫入真實但顯示列表零發射（LO 25.8 七變體探針實錄，t_f0cbc25d）；需引擎發射切片，引擎卡修好後轉 live' },
   'pending:ext': { name: '外部資源依賴', desc: '需詞庫／翻譯服務等外部資源；比對結果落地走既有 M1.1 InsertText／M1.2 DeleteRange 路徑，引擎 Mutation 面無缺口' },
   'pending:K29s': { name: 'K29s 視窗與多重視圖', desc: '多視窗檢視、視窗重排與分割' },
   'pending:K29m': { name: 'K29m 巨集與腳本擴充', desc: '巨集錄製與腳本自動化' },
@@ -106,9 +107,9 @@ export const DEPENDENCY_MAP = {
  * - SetCellProps    patch{width_pt／shading_fill／vertical_align／grid_span／v_merge}
  *                                                  （mutation.rs:201-219）
  *
- * 「邊框」不在表內：TablePropsPatch／CellPropsPatch 查無任何 border 欄位，
- * 引擎目前無 `w:tblBorders` 寫入面（證據見 docs/word-ui-u4-wiring-report.md），
- * 接上去只會產出「引擎回 ok=true 但顯示列表零變化」的假成功。
+ * 「邊框」不在本批表內：引擎已補 borders 欄位（TablePropsPatch／CellPropsPatch
+ * 的 TableBordersPatch，E 卡 2cb6a18 入 main，Rule 發射實測 0→2），但外殼邊框
+ * 接線屬 U4d 之外的新工作面（白名單外），由 PM 另卡處理——本表不得先行宣稱。
  */
 export const U4_TABLE_ROW_COMMANDS = {
   'table:row-insert-above': { mutation: 'InsertTableRow', indexKeys: ['row', 'at_row', 'atRow'], positionKey: 'position', fixedPosition: 'Before' },
@@ -125,9 +126,12 @@ export const U4_TABLE_COL_COMMANDS = {
 };
 
 export const U4_TABLE_PROPS_COMMANDS = {
-  // 底紋（shading_fill）＋對齊（alignment）＋寬度（width_pt）：三個引擎真實存在
-  // 且可在 page_display_list 驗證的效果。
-  'table:shading': { mutation: 'SetTableProps', fillKey: 'fill' },
+  // 對齊（alignment）＋寬度（width_pt）：引擎真實存在且可在 page_display_list
+  // 驗證效果。底紋（shading_fill）**不同**：引擎真的寫入 XML（w:shd），但表格層
+  // 底紋在發射層零發射（t_f0cbc25d／eb45e78 的 LO 25.8 七變體探針實測表層底紋
+  // 零渲染）——掛 live 就是「引擎說成功、畫面沒東西」的假宣稱，故誠實降標
+  // pending:engine-table，引擎補發射後再轉 live（U4d L7）。
+  'table:shading': { mutation: 'SetTableProps', fillKey: 'fill', engineGap: 'pending:engine-table' },
   'table:align-left': { mutation: 'SetTableProps', alignKey: 'alignment', patch: { alignment: 'left' } },
   'table:align-center': { mutation: 'SetTableProps', alignKey: 'alignment', patch: { alignment: 'center' } },
   'table:align-right': { mutation: 'SetTableProps', alignKey: 'alignment', patch: { alignment: 'right' } },
@@ -698,9 +702,11 @@ export class QWordCore {
         this._notify('table:row-col-rejected', { cmdId, problems });
       }
     } else if (U4_TABLE_PROPS_COMMANDS[cmdId]) {
-      // M4.6（表格面）：底紋＋對齊＋寬度三個引擎真實存在且可在顯示列表驗證的
-      // 效果。邊框不在表內——TablePropsPatch／CellPropsPatch 查無 border 欄位，
-      // 接上去只會得到「引擎回 ok=true 但顯示列表零變化」的假成功（U4 報告存證）。
+      // M4.6（表格面）：對齊＋寬度是顯示列表可驗證的真效果；底紋例外——引擎寫
+      // XML 但發射層零發射（t_f0cbc25d），命令仍受理（XML 真的改），但標籤誠實
+      // 掛 spec.engineGap（pending:engine-table），不得沿用 live 宣稱（U4d L7）。
+      // 邊框也不在表內——本卡白名單不含邊框接線；引擎已有 borders 欄位（E 卡
+      // 2cb6a18）屬外殼新工作面，由 PM 另卡處理。
       const spec = U4_TABLE_PROPS_COMMANDS[cmdId];
       const slot = pickRootSlot(payload);
       const problems = [];
@@ -728,7 +734,9 @@ export class QWordCore {
       if (Object.keys(patch).length === 0) problems.push('未帶任何可套用的屬性');
       if (problems.length === 0) {
         handled = true;
-        req = 'live';
+        // U4d L7：spec 帶 engineGap（表格層底紋零發射）時，命令照樣受理——引擎
+        // 真的寫 XML——但標籤誠實掛缺口卡，不沿用呼叫端的 live 宣稱。
+        req = spec.engineGap || 'live';
         this._notify('table:props-apply', {
           cmdId,
           mutation: spec.mutation,
