@@ -1,0 +1,1000 @@
+{
+  "meta": {
+    "baseUrl": "http://127.0.0.1:8791/shells/web/editor/index.html",
+    "at": "2026-11-21T18:37:44.371Z",
+    "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
+  },
+  "buttons": {
+    "table:row-insert-above": {
+      "selector": "[data-command=\"table:row-insert-above\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "before": {
+        "total": 83,
+        "texts": 83,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "after": {
+        "total": 86,
+        "texts": 86,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 10,
+          "before": "T|這是一份用於 CI 的最|72.00|139.20|sz12|f0|cff000000",
+          "after": "T||77.40|139.20|sz12|f0|cff000000"
+        },
+        {
+          "i": 11,
+          "before": "T|The quick br|72.00|156.00|sz12|f0|cff000000",
+          "after": "T||177.40|139.20|sz12|f0|cff000000"
+        },
+        {
+          "i": 12,
+          "before": "T|頓的專業排版。第 1 段|72.00|172.80|sz12|f0|cff000000",
+          "after": "T||277.40|139.20|sz12|f0|cff000000"
+        },
+        {
+          "i": 13,
+          "before": "T|文書處理器，目標是不卡頓|72.00|189.60|sz12|f0|cff000000",
+          "after": "T|這是一份用於 CI 的最|72.00|156.00|sz12|f0|cff000000"
+        }
+      ],
+      "shapeBefore": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "shapeAfter": {
+        "rows": 4,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "shapeDelta": {
+        "rows": 1,
+        "cols": 0
+      },
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true,
+        "total": 83
+      },
+      "undoShape": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      }
+    },
+    "table:row-insert-below": {
+      "selector": "[data-command=\"table:row-insert-below\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "before": {
+        "total": 83,
+        "texts": 83,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "after": {
+        "total": 86,
+        "texts": 86,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 10,
+          "before": "T|這是一份用於 CI 的最|72.00|139.20|sz12|f0|cff000000",
+          "after": "T||77.40|139.20|sz12|f0|cff000000"
+        },
+        {
+          "i": 11,
+          "before": "T|The quick br|72.00|156.00|sz12|f0|cff000000",
+          "after": "T||177.40|139.20|sz12|f0|cff000000"
+        },
+        {
+          "i": 12,
+          "before": "T|頓的專業排版。第 1 段|72.00|172.80|sz12|f0|cff000000",
+          "after": "T||277.40|139.20|sz12|f0|cff000000"
+        },
+        {
+          "i": 13,
+          "before": "T|文書處理器，目標是不卡頓|72.00|189.60|sz12|f0|cff000000",
+          "after": "T|這是一份用於 CI 的最|72.00|156.00|sz12|f0|cff000000"
+        }
+      ],
+      "shapeBefore": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "shapeAfter": {
+        "rows": 4,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "shapeDelta": {
+        "rows": 1,
+        "cols": 0
+      },
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true,
+        "total": 83
+      },
+      "undoShape": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      }
+    },
+    "table:row-insert": {
+      "selector": "[data-command=\"table:row-insert\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "before": {
+        "total": 83,
+        "texts": 83,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "after": {
+        "total": 86,
+        "texts": 86,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 10,
+          "before": "T|這是一份用於 CI 的最|72.00|139.20|sz12|f0|cff000000",
+          "after": "T||77.40|139.20|sz12|f0|cff000000"
+        },
+        {
+          "i": 11,
+          "before": "T|The quick br|72.00|156.00|sz12|f0|cff000000",
+          "after": "T||177.40|139.20|sz12|f0|cff000000"
+        },
+        {
+          "i": 12,
+          "before": "T|頓的專業排版。第 1 段|72.00|172.80|sz12|f0|cff000000",
+          "after": "T||277.40|139.20|sz12|f0|cff000000"
+        },
+        {
+          "i": 13,
+          "before": "T|文書處理器，目標是不卡頓|72.00|189.60|sz12|f0|cff000000",
+          "after": "T|這是一份用於 CI 的最|72.00|156.00|sz12|f0|cff000000"
+        }
+      ],
+      "shapeBefore": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "shapeAfter": {
+        "rows": 4,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "shapeDelta": {
+        "rows": 1,
+        "cols": 0
+      },
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true,
+        "total": 83
+      },
+      "undoShape": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      }
+    },
+    "table:row-delete": {
+      "selector": "[data-command=\"table:row-delete\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "before": {
+        "total": 83,
+        "texts": 83,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "after": {
+        "total": 80,
+        "texts": 80,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 7,
+          "before": "T||77.40|122.40|sz12|f0|cff000000",
+          "after": "T|這是一份用於 CI 的最|72.00|122.40|sz12|f0|cff000000"
+        },
+        {
+          "i": 8,
+          "before": "T||177.40|122.40|sz12|f0|cff000000",
+          "after": "T|The quick br|72.00|139.20|sz12|f0|cff000000"
+        },
+        {
+          "i": 9,
+          "before": "T||277.40|122.40|sz12|f0|cff000000",
+          "after": "T|頓的專業排版。第 1 段|72.00|156.00|sz12|f0|cff000000"
+        },
+        {
+          "i": 10,
+          "before": "T|這是一份用於 CI 的最|72.00|139.20|sz12|f0|cff000000",
+          "after": "T|文書處理器，目標是不卡頓|72.00|172.80|sz12|f0|cff000000"
+        }
+      ],
+      "shapeBefore": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "shapeAfter": {
+        "rows": 2,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "shapeDelta": {
+        "rows": -1,
+        "cols": 0
+      },
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true,
+        "total": 83
+      },
+      "undoShape": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      }
+    },
+    "table:col-insert-left": {
+      "selector": "[data-command=\"table:col-insert-left\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "before": {
+        "total": 83,
+        "texts": 83,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "after": {
+        "total": 86,
+        "texts": 86,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 2,
+          "before": "T||177.40|88.80|sz12|f0|cff000000",
+          "after": "T||152.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 3,
+          "before": "T||277.40|88.80|sz12|f0|cff000000",
+          "after": "T||227.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 4,
+          "before": "T||77.40|105.60|sz12|f0|cff000000",
+          "after": "T||302.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 5,
+          "before": "T||177.40|105.60|sz12|f0|cff000000",
+          "after": "T||77.40|105.60|sz12|f0|cff000000"
+        }
+      ],
+      "shapeBefore": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "shapeAfter": {
+        "rows": 3,
+        "cols": 4,
+        "ok": true,
+        "error": null
+      },
+      "shapeDelta": {
+        "rows": 0,
+        "cols": 1
+      },
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true,
+        "total": 83
+      },
+      "undoShape": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      }
+    },
+    "table:col-insert-right": {
+      "selector": "[data-command=\"table:col-insert-right\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "before": {
+        "total": 83,
+        "texts": 83,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "after": {
+        "total": 86,
+        "texts": 86,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 2,
+          "before": "T||177.40|88.80|sz12|f0|cff000000",
+          "after": "T||152.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 3,
+          "before": "T||277.40|88.80|sz12|f0|cff000000",
+          "after": "T||227.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 4,
+          "before": "T||77.40|105.60|sz12|f0|cff000000",
+          "after": "T||302.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 5,
+          "before": "T||177.40|105.60|sz12|f0|cff000000",
+          "after": "T||77.40|105.60|sz12|f0|cff000000"
+        }
+      ],
+      "shapeBefore": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "shapeAfter": {
+        "rows": 3,
+        "cols": 4,
+        "ok": true,
+        "error": null
+      },
+      "shapeDelta": {
+        "rows": 0,
+        "cols": 1
+      },
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true,
+        "total": 83
+      },
+      "undoShape": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      }
+    },
+    "table:col-insert": {
+      "selector": "[data-command=\"table:col-insert\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "before": {
+        "total": 83,
+        "texts": 83,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "after": {
+        "total": 86,
+        "texts": 86,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 2,
+          "before": "T||177.40|88.80|sz12|f0|cff000000",
+          "after": "T||152.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 3,
+          "before": "T||277.40|88.80|sz12|f0|cff000000",
+          "after": "T||227.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 4,
+          "before": "T||77.40|105.60|sz12|f0|cff000000",
+          "after": "T||302.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 5,
+          "before": "T||177.40|105.60|sz12|f0|cff000000",
+          "after": "T||77.40|105.60|sz12|f0|cff000000"
+        }
+      ],
+      "shapeBefore": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "shapeAfter": {
+        "rows": 3,
+        "cols": 4,
+        "ok": true,
+        "error": null
+      },
+      "shapeDelta": {
+        "rows": 0,
+        "cols": 1
+      },
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true,
+        "total": 83
+      },
+      "undoShape": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      }
+    },
+    "table:col-delete": {
+      "selector": "[data-command=\"table:col-delete\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "before": {
+        "total": 83,
+        "texts": 83,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "after": {
+        "total": 80,
+        "texts": 80,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 2,
+          "before": "T||177.40|88.80|sz12|f0|cff000000",
+          "after": "T||227.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 3,
+          "before": "T||277.40|88.80|sz12|f0|cff000000",
+          "after": "T||77.40|105.60|sz12|f0|cff000000"
+        },
+        {
+          "i": 4,
+          "before": "T||77.40|105.60|sz12|f0|cff000000",
+          "after": "T||227.40|105.60|sz12|f0|cff000000"
+        },
+        {
+          "i": 5,
+          "before": "T||177.40|105.60|sz12|f0|cff000000",
+          "after": "T||77.40|122.40|sz12|f0|cff000000"
+        }
+      ],
+      "shapeBefore": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "shapeAfter": {
+        "rows": 3,
+        "cols": 2,
+        "ok": true,
+        "error": null
+      },
+      "shapeDelta": {
+        "rows": 0,
+        "cols": -1
+      },
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true,
+        "total": 83
+      },
+      "undoShape": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      }
+    },
+    "table:align-center": {
+      "selector": "[data-command=\"table:align-center\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "before": {
+        "total": 83,
+        "texts": 83,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "after": {
+        "total": 83,
+        "texts": 83,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 1,
+          "before": "T||77.40|88.80|sz12|f0|cff000000",
+          "after": "T||152.90|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 2,
+          "before": "T||177.40|88.80|sz12|f0|cff000000",
+          "after": "T||252.90|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 3,
+          "before": "T||277.40|88.80|sz12|f0|cff000000",
+          "after": "T||352.90|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 4,
+          "before": "T||77.40|105.60|sz12|f0|cff000000",
+          "after": "T||152.90|105.60|sz12|f0|cff000000"
+        }
+      ],
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true,
+        "total": 83
+      }
+    },
+    "table:align-right": {
+      "selector": "[data-command=\"table:align-right\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "before": {
+        "total": 83,
+        "texts": 83,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "after": {
+        "total": 83,
+        "texts": 83,
+        "rects": 0,
+        "rules": 0,
+        "minTextX": 72
+      },
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 1,
+          "before": "T||77.40|88.80|sz12|f0|cff000000",
+          "after": "T||228.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 2,
+          "before": "T||177.40|88.80|sz12|f0|cff000000",
+          "after": "T||328.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 3,
+          "before": "T||277.40|88.80|sz12|f0|cff000000",
+          "after": "T||428.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 4,
+          "before": "T||77.40|105.60|sz12|f0|cff000000",
+          "after": "T||228.40|105.60|sz12|f0|cff000000"
+        }
+      ],
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true,
+        "total": 83
+      }
+    },
+    "table:align-left": {
+      "selector": "[data-command=\"table:align-left\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "path": "right→left 拉回（left=預設態，單點零位移屬 Word 同款語義）",
+      "rightedMinTextX": 72,
+      "backedMinTextX": 72,
+      "rightShifted": true,
+      "leftPullsBack": true,
+      "backToBaselineFp": true,
+      "diffHead": [
+        {
+          "i": 1,
+          "before": "T||228.40|88.80|sz12|f0|cff000000",
+          "after": "T||77.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 2,
+          "before": "T||328.40|88.80|sz12|f0|cff000000",
+          "after": "T||177.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 3,
+          "before": "T||428.40|88.80|sz12|f0|cff000000",
+          "after": "T||277.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 4,
+          "before": "T||228.40|105.60|sz12|f0|cff000000",
+          "after": "T||77.40|105.60|sz12|f0|cff000000"
+        }
+      ],
+      "cleanupUndo": [
+        true,
+        true
+      ]
+    },
+    "table:width": {
+      "selector": "[data-command=\"table:width\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "widthInputSeen": "120",
+      "before": {
+        "total": 83,
+        "minTextX": 72
+      },
+      "after": {
+        "total": 83,
+        "minTextX": 72
+      },
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 2,
+          "before": "T||177.40|88.80|sz12|f0|cff000000",
+          "after": "T||117.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 3,
+          "before": "T||277.40|88.80|sz12|f0|cff000000",
+          "after": "T||157.40|88.80|sz12|f0|cff000000"
+        },
+        {
+          "i": 5,
+          "before": "T||177.40|105.60|sz12|f0|cff000000",
+          "after": "T||117.40|105.60|sz12|f0|cff000000"
+        },
+        {
+          "i": 6,
+          "before": "T||277.40|105.60|sz12|f0|cff000000",
+          "after": "T||157.40|105.60|sz12|f0|cff000000"
+        }
+      ],
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true
+      }
+    },
+    "cell:shading": {
+      "selector": "#popover-cell-shading .qword-color-grid [data-color]",
+      "triggerFound": true,
+      "swatchFound": true,
+      "swatchColor": "#ffffff",
+      "popoverPresent": true,
+      "before": {
+        "total": 83,
+        "rects": 0
+      },
+      "after": {
+        "total": 84,
+        "rects": 1
+      },
+      "rectDelta": 1,
+      "fpChanged": true,
+      "newRect": "R|172.00|105.60|100.00|16.80|ffffffff",
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true,
+        "rects": 0
+      }
+    },
+    "cell:shading-clear": {
+      "selector": "[data-cell-shading-clear]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "tintedRects": 1,
+      "afterRects": 0,
+      "clearsToBaseline": true
+    },
+    "cell:v-align-bottom": {
+      "selector": "[data-command=\"cell:v-align-bottom\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "cellParas": [
+        5
+      ],
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 5,
+          "before": "T||177.40|105.60|sz12|f0|cff000000",
+          "after": "T||277.40|105.60|sz12|f0|cff000000"
+        },
+        {
+          "i": 6,
+          "before": "T||277.40|105.60|sz12|f0|cff000000",
+          "after": "T||177.40|139.20|sz12|f0|cff000000"
+        }
+      ],
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true
+      }
+    },
+    "cell:v-align-center": {
+      "selector": "[data-command=\"cell:v-align-center\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "cellParas": [
+        5
+      ],
+      "fpChanged": true,
+      "diffHead": [
+        {
+          "i": 5,
+          "before": "T||177.40|105.60|sz12|f0|cff000000",
+          "after": "T||277.40|105.60|sz12|f0|cff000000"
+        },
+        {
+          "i": 6,
+          "before": "T||277.40|105.60|sz12|f0|cff000000",
+          "after": "T||177.40|122.40|sz12|f0|cff000000"
+        }
+      ],
+      "undo": {
+        "dispatched": true,
+        "restoredFp": true
+      }
+    },
+    "cell:v-align-top": {
+      "selector": "[data-command=\"cell:v-align-top\"]",
+      "found": true,
+      "visible": true,
+      "req": "live",
+      "path": "bottom→top 拉回（top=引擎預設態，單點零位移屬 Word 同款語義）",
+      "bottomShifted": true,
+      "topPullsBack": true,
+      "backToBaselineFp": true,
+      "diffHead": [
+        {
+          "i": 5,
+          "before": "T||277.40|105.60|sz12|f0|cff000000",
+          "after": "T||177.40|105.60|sz12|f0|cff000000"
+        },
+        {
+          "i": 6,
+          "before": "T||177.40|139.20|sz12|f0|cff000000",
+          "after": "T||277.40|105.60|sz12|f0|cff000000"
+        }
+      ],
+      "cleanupUndo": [
+        true,
+        true
+      ]
+    },
+    "table:shading": {
+      "selector": "[data-command=\"table:shading\"]",
+      "found": true,
+      "visible": true,
+      "req": "pending:engine-tblshading",
+      "btnClickFpChanged": false,
+      "directDispatch": {
+        "handled": true,
+        "requirement": "live"
+      },
+      "directFpChanged": false,
+      "directRects": {
+        "before": 0,
+        "after": 0
+      },
+      "xmlHasShd": true,
+      "honestPendingProof": true,
+      "cleanupUndo": true
+    }
+  },
+  "notes": {
+    "setup": {
+      "dispatchHandled": true,
+      "tableCount": 1,
+      "shape": {
+        "rows": 3,
+        "cols": 3,
+        "ok": true,
+        "error": null
+      },
+      "paragraphs": 23
+    },
+    "baseline": {
+      "total": 83,
+      "texts": 83,
+      "rects": 0,
+      "rules": 0,
+      "minTextX": 72
+    },
+    "rowHeightPrecondition": true,
+    "finalDrain": {
+      "loops": 1,
+      "restoredToBaseline": true
+    },
+    "inventory": {
+      "commandButtons": [
+        {
+          "cmd": "cell:v-align-top",
+          "req": "live"
+        },
+        {
+          "cmd": "cell:v-align-center",
+          "req": "live"
+        },
+        {
+          "cmd": "cell:v-align-bottom",
+          "req": "live"
+        },
+        {
+          "cmd": "table:row-insert-above",
+          "req": "live"
+        },
+        {
+          "cmd": "table:row-insert-below",
+          "req": "live"
+        },
+        {
+          "cmd": "table:row-insert",
+          "req": "live"
+        },
+        {
+          "cmd": "table:row-delete",
+          "req": "live"
+        },
+        {
+          "cmd": "table:col-insert-left",
+          "req": "live"
+        },
+        {
+          "cmd": "table:col-insert-right",
+          "req": "live"
+        },
+        {
+          "cmd": "table:col-insert",
+          "req": "live"
+        },
+        {
+          "cmd": "table:col-delete",
+          "req": "live"
+        },
+        {
+          "cmd": "cell:shading",
+          "req": "live"
+        },
+        {
+          "cmd": "table:shading",
+          "req": "pending:engine-tblshading"
+        },
+        {
+          "cmd": "table:align-left",
+          "req": "live"
+        },
+        {
+          "cmd": "table:align-center",
+          "req": "live"
+        },
+        {
+          "cmd": "table:align-right",
+          "req": "live"
+        },
+        {
+          "cmd": "table:width",
+          "req": "live"
+        }
+      ],
+      "uniqueCommands": [
+        "cell:shading",
+        "cell:v-align-bottom",
+        "cell:v-align-center",
+        "cell:v-align-top",
+        "table:align-center",
+        "table:align-left",
+        "table:align-right",
+        "table:col-delete",
+        "table:col-insert",
+        "table:col-insert-left",
+        "table:col-insert-right",
+        "table:row-delete",
+        "table:row-insert",
+        "table:row-insert-above",
+        "table:row-insert-below",
+        "table:shading",
+        "table:width"
+      ],
+      "auxButtons": {
+        "propsPanelTrigger": true,
+        "shadingClear": true
+      },
+      "pendingTagged": [
+        {
+          "cmd": "table:shading",
+          "req": "pending:engine-tblshading"
+        }
+      ]
+    }
+  }
+}

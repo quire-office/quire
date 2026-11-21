@@ -164,6 +164,13 @@ export class QWordUI {
         this.handleInlineImageInsert(data);
       } else if (type === 'image:pick-request') {
         this.requestImageFilePick();
+      } else if (type === 'table:row-col-rejected' || type === 'table:props-rejected') {
+        // U4c：core 驗證層降標（如游標不在表格格內、參數非法）不得靜默——
+        // 用戶看得見「按了沒反應」就是另一種粉飾，如實告知缺什麼。
+        const isCellScoped = /^cell:/.test(String(data?.cmdId || ''));
+        this.showErrorModal('操作未送出',
+          `${data?.cmdId || '表格命令'} 未被受理：${(data?.problems || []).join('；') || '參數不完整'}。`
+          + (isCellScoped ? ' 儲存格級命令需把游標放在目標格內（點一下該格再操作）。' : ''));
       } else if (type === 'page:change') {
         this.scrollToPage(data.currentPage - 1);
       }
@@ -181,7 +188,12 @@ export class QWordUI {
 
       const cmdId = btn.getAttribute('data-command');
       const req = btn.getAttribute('data-requirement') || 'live';
-      this.dispatchCommand(cmdId, {}, req);
+      // U4c：表格／儲存格家族鈕帶上「游標反查」座標當 payload（E 卡
+      // table_locator_json 綁定）；游標不在任何根表格格內時回空物件，由 core
+      // 驗證層依各命令真實需求決定降級或請呼叫端補座標——外殼不猜座標。
+      // 帶 data-popover-target 的鈕（cell:shading 等）在 initPopovers 已
+      // stopPropagation，不會走到這裡雙重下單（insert:table 同款先例）。
+      this.dispatchCommand(cmdId, this._tableCommandPayload(cmdId), req);
     });
 
     // 2. Ribbon 標籤切換與鍵盤導航
@@ -1006,7 +1018,58 @@ export class QWordUI {
   //    畫面與狀態列反映的是引擎重算後的顯示列表，JS 端零幾何推算。
 
   /**
-   * 決定本次操作作用於哪張根表格（TablePath.root_slot）。
+   * U4c：游標→儲存格反查（E 卡 table_locator_json 綁定）。
+   * 回 null＝游標不在根表格格內／引擎殼未帶此綁定（舊 pkg），呼叫端據實降級，
+   * 不猜座標。巢狀表（nested_steps 非空）本輪白名單外：不猜、如實回 null。
+   */
+  _caretCellTarget() {
+    const eng = this.adapter?.engine;
+    if (!eng || typeof eng.table_locator_json !== 'function' || !this.adapter.caret) return null;
+    let raw = null;
+    try { raw = eng.table_locator_json(this.adapter.caret.para); } catch { return null; }
+    if (!raw) return null;
+    let loc = null;
+    try { loc = JSON.parse(raw); } catch { return null; }
+    const path = loc.table_path;
+    const cp = loc.cell_path;
+    if (!path || !cp) return null;
+    if (path.target !== 'Body' || (Array.isArray(path.nested_steps) && path.nested_steps.length > 0)) return null;
+    if (!Number.isInteger(path.root_slot) || !Number.isInteger(cp.row) || !Number.isInteger(cp.cell)) return null;
+    return {
+      rootSlot: path.root_slot,
+      row: cp.row,
+      cell: cp.cell,
+      gridCol: Number.isInteger(cp.grid_col_start) ? cp.grid_col_start : null
+    };
+  }
+
+  /**
+   * U4c：組裝表格／儲存格家族 Ribbon 鈕的 payload。
+   * 座標全部來自引擎反查（游標所在段→(table,row,col,grid_col)），外殼零猜測；
+   * 游標不在根表格格內時回空物件，由 core 驗證層決定降級（誠實分層契約）。
+   */
+  _tableCommandPayload(cmdId) {
+    const payload = {};
+    if (!/^(table|cell):/.test(String(cmdId))) return payload;
+    const t = this._caretCellTarget();
+    if (t) {
+      payload.rootSlot = t.rootSlot;
+      payload.row = t.row;
+      payload.cell = t.cell;
+      if (t.gridCol !== null) payload.gridCol = t.gridCol;
+    }
+    // 「插入列／插入欄」兩顆通用鈕在 core 命令表沒有 fixedPosition（同名單一
+    // 命令只有一個落點語義）——鈕面 title 已寫明「游標列下方／游標欄右側」，
+    // 這裡據鈕面語義補 position，非外殼自作主張：無 position 該鈕必被 core 擋。
+    if (cmdId === 'table:row-insert' || cmdId === 'table:col-insert') payload.position = 'After';
+    if (cmdId === 'table:width') {
+      const input = document.getElementById('table-width-input');
+      if (input && input.value !== '') payload.widthPt = Number(input.value);
+    }
+    return payload;
+  }
+
+  /** 決定本次操作作用於哪張根表格（TablePath.root_slot）。
    *
    * 誠實說明這個缺口的由來：引擎有 `table_map.rs` 的表格索引，但
    * `shells/web/src/lib.rs` 沒有把「依游標／依座標反查 root_slot」綁進 wasm，
@@ -1540,6 +1603,13 @@ export class QWordUI {
         swatch.setAttribute('data-color', col);
         swatch.addEventListener('click', () => {
           const mode = palette.getAttribute('data-color-target') || 'font';
+          if (mode === 'cell-shading') {
+            // U4c：儲存格底紋走 M4.6 SetCellProps（fill 由游標反查格接收），
+            // 非字元面 format:color 路——兩條引擎路徑不同，不可共用事件。
+            this.dispatchCommand('cell:shading', { fill: col, ...this._tableCommandPayload('cell:shading') }, 'live');
+            this.closeAllPopovers();
+            return;
+          }
           // U4b：highlight 模式的引擎欄位（RunDirectPatch::highlight）已入庫
           // ＋三側接線完成，原寫死的 pending:K29b 是失效標籤，兩模式同為 live。
           this.dispatchCommand(`format:color:${mode}`, { color: col }, 'live');
@@ -1548,6 +1618,16 @@ export class QWordUI {
         palette.appendChild(swatch);
       });
     });
+
+    // 4.（U4c）儲存格底紋面板的「清除底紋」：走同款 SetCellProps 路，
+    //    fill=auto＝引擎 w:shd 置 auto（實測 Rect 發射數回零）。
+    const cellShadingClear = document.querySelector('[data-cell-shading-clear]');
+    if (cellShadingClear) {
+      cellShadingClear.addEventListener('click', () => {
+        this.dispatchCommand('cell:shading', { fill: 'auto', ...this._tableCommandPayload('cell:shading') }, 'live');
+        this.closeAllPopovers();
+      });
+    }
   }
 
   openPopover(trigger, popover) {
