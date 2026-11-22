@@ -804,7 +804,7 @@ fn eppr_lamp14_replaced_pstyle_stays_first_ahead_of_inherited_unknown() {
 
     assert!(
         ppr.starts_with(r#"<w:pPr><w:pStyle w:val="Heading2"/>"#),
-        "w:pStyle 是 CT_PPrBase 首位宣告：替換後必須緊接 pPr 開標籤，未知元素不得靠隨前件 rank 0 抢位，實測 pPr = {ppr}"
+        "w:pStyle 是 CT_PPrBase 首位宣告：替換後必須緊接 pPr 開標籤，未知元素不得靠隨前件 rank 0 搶位，實測 pPr = {ppr}"
     );
     assert!(
         ppr.contains(r#"<w15:foo w:val="bar"/>"#),
