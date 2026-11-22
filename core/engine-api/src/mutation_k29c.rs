@@ -1803,9 +1803,17 @@ impl Engine {
         let text = text_of(&xml)?;
         let (table_start, _) = self.locate_table_verified(text, &table)?;
         let grid_cols = grid_col_spans(text, table_start);
+        // E-3 S2-2（`at_grid_col + 1`）：wasm32（32 位 usize）上 usize::MAX
+        // +1 在 debug 直接 panic＝瀏覽器 abort；release 回繞成 0 ⇒「插入點
+        // 0」合法 ⇒ 靜默插到頭欄、越界檢查被繞過。checked_add 溢位＝誠實
+        // 回拒（越界語義：插入點根本不存在）。
         let insert_at = match position {
             InsertSide::Before => at_grid_col,
-            InsertSide::After => at_grid_col + 1,
+            InsertSide::After => at_grid_col.checked_add(1).ok_or_else(|| {
+                MutationError::InvalidTableOperation {
+                    detail: format!("欄插入點越界（at_grid_col {at_grid_col} 加一溢位）"),
+                }
+            })?,
         };
         if insert_at > grid_cols.len() {
             return Err(MutationError::InvalidTableOperation {
@@ -1856,7 +1864,24 @@ impl Engine {
                         None => "",
                     };
                     let old_span = cell.span;
-                    let new_tcpr = set_gridspan_in_tcpr(tcpr, old_span + 1);
+                    // E-3 S2-2（`old_span + 1`）：雙重防線——
+                    // ① checked_add 擋 wasm32（32 位 usize）debug panic／
+                    //    release 回繞 0（set_gridspan(0) 是非法宣告）；
+                    // ② 寫回值必須落在 **u32 可表示域**——canonical
+                    //    `CellProps::grid_span()` 以 u32 解析（>u32::MAX 讀回
+                    //    ＝1），64 位 host 直接寫 "4294967296" 會再造同義
+                    //    兩制（發射面讀 1、mutation 面讀 MAX）。兩態皆誠實
+                    //    回拒，不寫錯值。
+                    let new_span = old_span
+                        .checked_add(1)
+                        .filter(|v| *v <= u32::MAX as usize)
+                        .ok_or_else(|| MutationError::InvalidTableOperation {
+                            detail: format!(
+                                "跨欄數 {old_span} 加一超出可表示域（欄 {insert_at} \
+                                 插入遭拒）"
+                            ),
+                        })?;
+                    let new_tcpr = set_gridspan_in_tcpr(tcpr, new_span);
                     let (s, e) = cell.tcpr.unwrap_or((cell.start, cell.start));
                     let rep = if cell.tcpr.is_some() {
                         (ByteSpan { start: s, end: e }, new_tcpr.into_bytes())
@@ -1992,7 +2017,17 @@ impl Engine {
                 detail: format!("合併底列 {bottom_row} 越界"),
             });
         }
-        let span_w = right_grid_col - left_grid_col + 1;
+        // E-3 S2-2（`right_grid_col - left_grid_col + 1`）：wasm32（32 位
+        // usize）上該加法 debug panic／release 回繞——回繞寬度既繞過嚴格涵蓋
+        // 檢查又會經 set_gridspan 寫回非法宣告。checked_add 擋位寬溢位；
+        // 另封 u32 上界（寫回的 `w:gridSpan/@w:val` 必須落在 canonical
+        // `CellProps::grid_span()` 的 u32 解析域，否則又是同義兩制）。
+        let span_w = (right_grid_col - left_grid_col)
+            .checked_add(1)
+            .filter(|v| *v <= u32::MAX as usize)
+            .ok_or_else(|| MutationError::InvalidTableOperation {
+                detail: "合併矩形寬度超出可表示域（右欄過大）".to_string(),
+            })?;
         let mut reps = Vec::new();
         let mut top_content = String::new();
         let mut have_top_content = false;
@@ -2012,15 +2047,23 @@ impl Engine {
                 });
             }
             // 嚴格涵蓋：任何與矩形相交的格必須完整落在矩形內。
+            // E-3 S2-2（L2002-2009）：兩側皆改 saturating_add——裸加法在
+            // wasm32（32 位 usize）debug panic／release 回繞；回繞把「跨出
+            // 邊界」的比較繞成假通過＝靜默合併越界格。saturating 對一切
+            // 合法值逐位元組等值，且只朝**飽和（更嚴）**方向偏，永不朝
+            // 回繞（更鬆）方向偏。
             for c in &selected {
-                if c.col_start < left_grid_col || c.col_start + c.span > left_grid_col + span_w {
+                if c.col_start < left_grid_col
+                    || c.col_start.saturating_add(c.span)
+                        > left_grid_col.saturating_add(span_w)
+                {
                     return Err(MutationError::InvalidTableOperation {
                         detail: format!(
                             "第 {r} 列儲存格跨出合併邊界（格 {}..{}，矩形 {}..{}）",
                             c.col_start,
-                            c.col_start + c.span,
+                            c.col_start.saturating_add(c.span),
                             left_grid_col,
-                            left_grid_col + span_w
+                            left_grid_col.saturating_add(span_w)
                         ),
                     });
                 }

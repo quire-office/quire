@@ -119,8 +119,13 @@ fn compute_cond_gates(t: &Table) -> Vec<Vec<CellConds>> {
                 a[5] = horz == 2;
                 // 縱帶序同理排除 firstCol／lastCol 特殊欄（與橫帶對稱口徑；
                 // corpus 無縱帶活例可實證——fdo68607 noVBand=1，老實標明）。
+                // E-3 S2-2：`start + 1` 必須 saturating——`start` 是 **u32**
+                // （與 host 位寬無關，64 位 debug 照炸），畸形 gridSpan
+                // 讓上面的 `col.saturating_add(span)` 把它推到 u32::MAX 後，
+                // 裸 `start + 1` 在此 `attempt to add with overflow`
+                // ＝wasm 邊 panic＝瀏覽器 abort（實錄：本卡紅燈 B4）。
                 let v_ord = if l.v_band && ncols > 0 && !a[2] && !a[3] {
-                    Some((start + 1) % 2)
+                    Some((start.saturating_add(1)) % 2)
                 } else {
                     None
                 };

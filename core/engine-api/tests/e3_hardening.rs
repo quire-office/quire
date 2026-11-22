@@ -283,6 +283,175 @@ fn e3_s2_1_lampA0_fixture_form_is_self_proving() {
     );
 }
 
+// ===========================================================================
+// S2-2：wasm32（32-bit usize）裸加法溢出防線
+// ===========================================================================
+//
+// 紅燈用 `u32::MAX` 級畸形 `gridSpan`／`usize::MAX` 級 `at_grid_col` 探針；
+// host 態斷言**回拒且零波及**，不依賴 panic（wasm32 debug 的
+// `attempt to add with overflow` 在 64 位 host 無感，但回繞／超域寫回
+// 在 host 同樣是「算出錯值」——同樣必紅）。
+
+const OVERFLOW_GRIDSPAN_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:tbl><w:tblPr><w:tblW w:w="6000" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>
+<w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:gridSpan w:val="4294967295"/></w:tcPr><w:p><w:r><w:t>溢位格</w:t></w:r></w:p></w:tc></w:tr>
+<w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>底左格</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>底右格</w:t></w:r></w:p></w:tc></w:tr>
+</w:tbl>
+</w:body></w:document>"#;
+
+#[test]
+fn e3_s2_2_lampB1_insert_column_into_u32max_span_rejects_not_miscomputes() {
+    // `old_span + 1`（L1845）：wasm32 debug panic／release 回繞 0 ⇒
+    // set_gridspan(0) 錯值；64 位 host 寫出 u32 裝不下的 4294967296——
+    // canonical `CellProps::grid_span()` 以 u32 解析讀回＝1（同義兩制）。
+    // 修後斷言＝回拒 InvalidTableOperation 且存檔位元組零波及。
+    let e0 = open_docx(OVERFLOW_GRIDSPAN_FIXTURE);
+    let base_saved = e0.save_docx().expect("基線存檔");
+    let (_, hit) = locate_cell(&e0, 0, 0);
+    let mut e = open_docx(OVERFLOW_GRIDSPAN_FIXTURE);
+    let res = e.apply_mutation(Mutation::InsertTableColumn {
+        table: path_of(&hit),
+        // 插入點 1 落在 span=u32::MAX 的格**內部**（0 < 1 < saturating 右緣）
+        // ⇒ 走 `old_span + 1` 分支——這正是缺陷載體路徑。
+        at_grid_col: 1,
+        position: InsertSide::Before,
+        width_pt: 20.0,
+    });
+    let err = match res {
+        Ok(_) => panic!(
+            "u32::MAX 級畸形 gridSpan 的格內插欄必須回拒——成功＝把跨度寫成 \
+             u32 裝不下的錯值（host）或回繞值（wasm32）"
+        ),
+        Err(err) => format!("{err:?}"),
+    };
+    assert!(
+        err.contains("InvalidTableOperation"),
+        "溢位必須回 InvalidTableOperation（誠實回拒），實得: {err}"
+    );
+    assert_eq!(
+        e.save_docx().expect("拒絕後存檔"),
+        base_saved,
+        "拒絕必須零波及（位元組級）"
+    );
+}
+
+#[test]
+fn e3_s2_2_lampB2_merge_cells_span_w_overflow_rejects_not_bypasses_bounds() {
+    // `right_grid_col - left_grid_col + 1`（L1981）與
+    // `c.col_start + c.span > left_grid_col + span_w`（L2002-2009）：
+    // wasm32 上兩側同時回繞 ⇒「嚴格涵蓋」檢查被繞過 ⇒ 靜默把超寬格合併、
+    // 寫回回繞 gridSpan；64 位 host 上 span_w 巨大 ⇒ 涵蓋通過 ⇒
+    // set_gridspan(span_w) 寫出 u32 裝不下的宣告。修後＝回拒且零波及。
+    let e0 = open_docx(OVERFLOW_GRIDSPAN_FIXTURE);
+    let base_saved = e0.save_docx().expect("基線存檔");
+    let (_, hit) = locate_cell(&e0, 0, 0);
+    let mut e = open_docx(OVERFLOW_GRIDSPAN_FIXTURE);
+    let res = e.apply_mutation(Mutation::MergeTableCells {
+        table: path_of(&hit),
+        top_row: 0,
+        bottom_row: 1,
+        left_grid_col: 0,
+        right_grid_col: usize::MAX / 2,
+    });
+    let err = match res {
+        Ok(_) => panic!(
+            "合併矩形寬度超出 gridSpan 可表示域必須回拒——成功＝寫回 u32 裝不下的\
+             gridSpan（host）或回繞值（wasm32）"
+        ),
+        Err(err) => format!("{err:?}"),
+    };
+    assert!(
+        err.contains("InvalidTableOperation"),
+        "矩形溢位面必須回 InvalidTableOperation，實得: {err}"
+    );
+    assert_eq!(
+        e.save_docx().expect("拒絕後存檔"),
+        base_saved,
+        "拒絕必須零波及（位元組級）"
+    );
+}
+
+#[test]
+fn e3_s2_2_lampB3_insert_column_after_huge_at_grid_col_rejects_cleanly() {
+    // `at_grid_col + 1`（L1794）：usize::MAX 在 64 位 host 回繞成 0——
+    // 「插入點 0」合法 ⇒ 靜默插到頭欄（錯值執行、越界檢查被繞過）；
+    // wasm32 debug 直接 panic。修後斷言＝回拒且訊息帶越界語義（不誘導
+    // 使用者以為要重選插入點位置以外的東西）。
+    let e0 = open_docx(OVERFLOW_GRIDSPAN_FIXTURE);
+    let base_xml = doc_xml(&e0);
+    let base_saved = e0.save_docx().expect("基線存檔");
+    let (_, hit) = locate_cell(&e0, 1, 0);
+    let mut e = open_docx(OVERFLOW_GRIDSPAN_FIXTURE);
+    let res = e.apply_mutation(Mutation::InsertTableColumn {
+        table: path_of(&hit),
+        at_grid_col: usize::MAX,
+        position: InsertSide::After,
+        width_pt: 20.0,
+    });
+    let err = match res {
+        Ok(_) => panic!(
+            "at_grid_col=usize::MAX 的回繞值 0 是合法插入點——修前在此靜默插頭欄；\
+             修後必須在溢位處直接回拒"
+        ),
+        Err(err) => format!("{err:?}"),
+    };
+    assert!(
+        err.contains("InvalidTableOperation"),
+        "必須回 InvalidTableOperation，實得: {err}"
+    );
+    assert!(
+        err.contains("越界"),
+        "溢位插入點的拒絕訊息必須帶越界語義，實得: {err}"
+    );
+    assert_eq!(doc_xml(&e), base_xml, "拒絕後 document.xml 零變化");
+    assert_eq!(
+        e.save_docx().expect("拒絕後存檔"),
+        base_saved,
+        "拒絕必須零波及（位元組級）"
+    );
+}
+
+/// 燈 B4（`table_map.rs::compute_cond_gates` L123，u32 運算＝host debug
+/// 也炸）：畸形 `gridSpan w:val="4294967295"` 讓 `col.saturating_add(span)`
+/// 把 `start` 推到 u32::MAX，第二格 `(start + 1) % 2` 在 **u32**（與 host
+/// 位寬無關）溢出 ⇒ debug panic＝wasm 瀏覽器 abort。條件：表格帶
+/// `w:tblStyle`（style_id Some）＋縱帶開（`w:noVBand="0"`）⇒
+/// `compute_cond_gates` 在開檔 build_slots 就執行。修後＝開檔零 panic。
+const COND_GATE_STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:style w:type="table" w:styleId="E3Band"><w:name w:val="E3Band"/>
+<w:tblStylePr w:type="band1Vert"><w:rPr><w:color w:val="FF0000"/></w:rPr></w:tblStylePr>
+</w:style>
+</w:styles>"#;
+
+const COND_GATE_OVERFLOW_DOC: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:tbl><w:tblPr><w:tblStyle w:val="E3Band"/><w:tblW w:w="6000" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblLook w:val="00000021" w:noVBand="0"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>
+<w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:gridSpan w:val="4294967295"/></w:tcPr><w:p><w:r><w:t>溢位格</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>第二格</w:t></w:r></w:p></w:tc></w:tr>
+</w:tbl>
+</w:body></w:document>"#;
+
+#[test]
+fn e3_s2_2_lampB4_cond_gate_start_plus_one_must_not_overflow_on_open() {
+    // 修前紅：開檔即在 compute_cond_gates 的 `(start + 1) % 2` 上
+    // `attempt to add with overflow` panic（wasm 態＝瀏覽器 abort）。
+    // 修後綠：開檔、反查、顯示列表全綠（零 panic 由「能跑完」證明）。
+    let e = open_docx_with(&[
+        ("[Content_Types].xml", CT_XML),
+        ("_rels/.rels", ROOT_RELS),
+        ("word/_rels/document.xml.rels", DOC_RELS),
+        ("word/styles.xml", COND_GATE_STYLES),
+        ("word/document.xml", COND_GATE_OVERFLOW_DOC),
+    ]);
+    let _ = e.tables_summary_json();
+    let _ = e.tables_json();
+    for p in 0..e.paragraph_count() + 2 {
+        let _ = locate(&e, p);
+    }
+    let _ = e.page_display_list(0);
+}
+
 #[test]
 fn e3_s2_1_delete_restart_row_promotes_continuation_even_with_gridspan_prefix() {
     // 修前紅：首個 w:val 讀到 gridSpan 的 "2" ⇒ restart 誤判 false ⇒
