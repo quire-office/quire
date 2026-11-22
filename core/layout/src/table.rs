@@ -1072,7 +1072,25 @@ pub fn layout_table(
     m: &TextMeasurer,
     depth: usize,
 ) -> TableLayout {
-    let line_h = line_h.max(1.0);
+    // U4f 根因 A（跑版）：舊 `line_h.max(1.0)` 是 Phase3-1b（粗帶尺時代，帶尺
+    // 恆 ≥16.8pt）的防呆鉗，當時恆等 noop。K6 帶尺細化後全域帶尺可低至 0.25pt
+    // （用戶實測檔 0.69285715pt/帶），本鉗把表格**內部**帶尺無條件復辟成
+    // 1pt/帶，而 pack_run 用**全域**帶尺換算切片 y 並按帶數計帳（lib.rs
+    // pack_run FlowItem::Table 分支）——同一帶數、兩套單位：表格按 1pt/帶畫高、
+    // 按 0.69pt/帶計帳 ⇒ 高度少計 30.7%，表格之後的正文行從「表格還沒畫完」
+    // 的 y 起排 ⇒ 表格列與正文段同 y 區交疊發射（用戶截圖實態）。
+    // 修法＝表格內部帶尺與全域同源（嚴禁平行另造尺）；防呆改擋非有限/非正值
+    // （原鉗的真正防呆語義），細帶尺原樣穿透。粗帶尺（≥1pt）路徑逐位元組不變。
+    // 回塞鎖（比照 R2_BUGGY／R6_CLIP_BUGGY 口徑）：`U4F_TABLE_LINEH_BUGGY=1`
+    // ⇒ 整支退回修前 `max(1.0)` 復辟 ⇒ u4f 燈 1／燈 2 必紅（鑑別力證據）。
+    let buggy_revert = std::env::var_os("U4F_TABLE_LINEH_BUGGY").is_some();
+    let line_h = if !line_h.is_finite() || line_h <= 0.0 {
+        1.0
+    } else if buggy_revert {
+        line_h.max(1.0)
+    } else {
+        line_h
+    };
     // M1-band：格內一行文字的帶數（細尺下＝宣告行高等分份數；粗尺＝1＝舊行為）。
     let lref = input.line_ref_bands.max(1);
     let avail_w = avail_w.max(1.0);
