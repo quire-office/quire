@@ -2,7 +2,7 @@
   "meta": {
     "baseUrl": "http://127.0.0.1:8791/shells/web/editor/index.html",
     "buggy": false,
-    "at": "2026-11-22T18:26:43.474Z",
+    "at": "2026-11-22T18:35:07.985Z",
     "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
   },
   "e2e": {
@@ -878,6 +878,7 @@
   "notes": {
     "grownSizePt": 26,
     "drained": 14,
+    "mosaic": "word-ui-u4g-canvas-evidence.mosaic.good.png",
     "rawFileField": {
       "raw": "wavy"
     },

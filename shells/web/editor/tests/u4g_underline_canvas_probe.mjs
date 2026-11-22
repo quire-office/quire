@@ -399,6 +399,58 @@ async function runInPage(baseUrl, buggy, opts) {
   R.synth.unknownLiteral = await fingerprintSynthetic('dashLongHeavy');
   R.synth.omitField = await fingerprintSynthetic('__OMIT__');       // 未宣告兜底單線
 
+  // B2) 逐形態拼圖（視覺證據面：同一 renderer 入口直出、逐行標字形態，
+  //     good/buggy 兩態各出一張 PNG——形態是否真有像素差異，肉眼可覆核）
+  try {
+    const ROWS = [
+      ['flags=0（無底線基準）', '__NOFLAG__'],
+      ["'single'", 'single'],
+      ["'double'", 'double'],
+      ["'thick'", 'thick'],
+      ["'dotted'", 'dotted'],
+      ["'dashed'", 'dashed'],
+      ["'off'（旗標點亮仍不畫）", 'off'],
+      ["{raw:'wavy'}（降級單線）", { raw: 'wavy' }],
+      ["未宣告欄（兜底單線）", '__OMIT__'],
+    ];
+    const rowH = 52, pad = 8, labelW = 250;
+    const strip = document.createElement('canvas');
+    strip.width = labelW + 560;
+    strip.height = ROWS.length * rowH + pad;
+    const sctx = strip.getContext('2d');
+    sctx.fillStyle = '#ffffff';
+    sctx.fillRect(0, 0, strip.width, strip.height);
+    for (let i = 0; i < ROWS.length; i += 1) {
+      const [label, val] = ROWS[i];
+      const cv = document.createElement('canvas');
+      cv.__u4gWidthPt = PAGE_W_PT;
+      const item = {
+        x: 72, y: 90, size_pt: SYNTH_PT, flags: 4, color_argb: 0xff000000, text: SYNTH_TEXT,
+      };
+      if (val === '__NOFLAG__') item.flags = 0;
+      else if (val !== '__OMIT__') item.underline = val;
+      await renderer.renderDisplayListToCanvas(
+        { width_pt: PAGE_W_PT, height_pt: PAGE_H_PT, items: [{ Text: item }] }, cv, RENDER_W_PX,
+      );
+      // 裁出文字下半＋底線帶（pt 98..130：基線≈t.y+size=116pt，double 下緣≈122.5pt、
+      // thick/dotted/dashed≈119.9pt，全落在窗內；裁錯帶會令兩態同圖＝證據失效）
+      const sy0 = Math.floor(98 * (cv.height / PAGE_H_PT));
+      const sy1 = Math.ceil(130 * (cv.height / PAGE_H_PT));
+      sctx.drawImage(cv, 0, sy0, cv.width, sy1 - sy0, labelW, i * rowH + pad / 2, 540, rowH - pad);
+      sctx.fillStyle = '#111111';
+      sctx.font = '13px sans-serif';
+      sctx.fillText(label, 8, i * rowH + rowH / 2 + 4);
+      sctx.strokeStyle = '#dddddd';
+      sctx.beginPath();
+      sctx.moveTo(0, (i + 1) * rowH + pad / 2);
+      sctx.lineTo(strip.width, (i + 1) * rowH + pad / 2);
+      sctx.stroke();
+    }
+    R.notes.mosaic = strip.toDataURL('image/png');
+  } catch (e) {
+    R.notes.mosaicError = String((e && e.message) || e);
+  }
+
   // C1) 讀取端保形 Raw 真檔（node 端產 fixture；真 docx 帶 w:u w:val="wavy"）
   try {
     const before = (window.__u4gErrors || []).length;
@@ -489,6 +541,12 @@ async function main() {
   }
   const v = out.result.value;
   const tag = BUGGY ? 'buggy' : 'good';
+  // 拼圖落 PNG（肉眼可覆核的形態差異證據面），JSON 內只留檔名免膨脹
+  if (v.notes && typeof v.notes.mosaic === 'string' && v.notes.mosaic.startsWith('data:image/png;base64,')) {
+    const mosaicPath = OUT.replace(/\.json$/, `.mosaic.${tag}.png`);
+    fs.writeFileSync(mosaicPath, Buffer.from(v.notes.mosaic.split(',')[1], 'base64'));
+    v.notes.mosaic = path.basename(mosaicPath);
+  }
   fs.writeFileSync(OUT.replace(/\.json$/, `.${tag}.json`), JSON.stringify(v, null, 2));
   if (!BUGGY) fs.writeFileSync(OUT, JSON.stringify(v, null, 2));
   console.log(`證據檔 → ${OUT.replace(/\.json$/, `.${tag}.json`)}（態=${tag}）`);
