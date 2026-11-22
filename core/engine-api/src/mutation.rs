@@ -1483,6 +1483,33 @@ fn element_inner(el: &str, name: &str) -> String {
     }
 }
 
+/// 取元素 `<{name}…>` 的**開標籤明文**，並正規化成「非自閉合」形態。
+///
+/// 用途：`patch_ppr` 重組時要沿用原開標籤，不得把帶屬性的 `<w:pPr pt14:Unid=
+/// "…">`（語料 400 檔實測 215 處）正規化成裸 `<w:pPr>` 而把廠商擴充屬性洗掉。
+/// 自閉合 `<w:pPr/>` 的產物去掉尾斜棒 → `<w:pPr>`（重組必寫成成對形態，內容
+/// 由呼叫端給）。找不到／名稱邊界不符（`<w:pPrChange`）＝`None`。
+fn element_open_tag(el: &str, name: &str) -> Option<String> {
+    let open = format!("<{name}");
+    let rel = el.find(&open)?;
+    let after_open = &el[rel + open.len()..];
+    let boundary_ok = after_open
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_whitespace() || c == '>' || c == '/');
+    if !boundary_ok {
+        return None;
+    }
+    let gt_rel = el[rel..].find('>')?;
+    let gt = rel + gt_rel;
+    let tag = &el[rel..=gt];
+    Some(match tag.trim_end().strip_suffix("/>") {
+        // 自閉合：去掉 `/>` 換成 `>`（屬性等其餘部分逐字保留）。
+        Some(head) => format!("{head}>"),
+        None => tag.to_string(),
+    })
+}
+
 /// `w:rPr` 子元素的 ECMA-376 §17.3.2.27（CT_RPr／EG_RPrBase）宣告序。
 ///
 /// 鍵名是 [`tag_local`] 的產出＝**已去命名空間前綴**（`<w:bCs/>` → `bCs`）；
@@ -1577,28 +1604,120 @@ fn top_level_children(inner: &str) -> Vec<String> {
 }
 
 /// E-1 併入器：既有宣告（`preserved`）＋補丁新宣告（`added`）→ 依 CT_RPr
-/// 宣告序重組的 rPr 內文。
-///
-/// 規則：
-/// - 每個子元素 token 依其開標籤取 rank（[`rpr_child_rank`]）；
-/// - **未知元素**隨前件（沿用前一個已知 token 的 rank）；尚未出現任何已知
-///   元素前的未知 token 取 rank 0（與 `w:rStyle` 同級，靠穩定排序保留其原始
-///   相對位置）——不可取 −1：那會把未知擴展元素（如 `w14:` 系）**提調**到
-///   `w:rStyle` 之前，違反 CT_RPr 首位宣告契約（agy 第二意見實抓）。
-/// - 同 rank 以**穩定序**排列（既有宣告在前、補丁新宣告在後——同族已先經
-///   `remove_element` 清過，同 rank 並存只發生在 `w:strike`＋`w:dstrike`
-///   與未知前件群這類本來就該相鄰的情形）；
-/// - 未觸碰的宣告逐字元原樣（含元素間空白），零正規化重寫。
-///
-/// 已知取捨（與本檔既有字串掃描口徑一致，語料零實例）：掃描 `>` 時不識別
-/// 屬性值內字面 `>` 與 XML 註解內 `>`——真需要時應整檔改走事件式解析器，
-/// 不在本卡範圍。
+/// 宣告序重組的 rPr 內文。規則見 [`merge_children_ordered`]。
 fn merge_rpr_children(preserved: &str, added: &str) -> String {
+    merge_children_ordered(preserved, added, &[], rpr_child_rank)
+}
+
+/// 取 token 的**開標籤明文**（`<w:numPr …>`）。跳過前導雜訊，並排除閉標籤／
+/// 註解／宣告處理指令（那些不是「一個子宣告的開始」）。
+fn token_open_tag(token: &str) -> Option<&str> {
+    let lt = token.find('<')?;
+    let gt = token[lt..].find('>')?;
+    let tag = &token[lt..=lt + gt];
+    if tag.starts_with("</") || tag.starts_with("<!") || tag.starts_with("<?") {
+        return None;
+    }
+    Some(tag)
+}
+
+/// 從開標籤明文取**全名**（含命名空間前綴，如 `w:numPr`）。與 [`tag_local`]
+/// 的差別是本函式**保留**前綴——段落側併入器要靠全名做「同族剔除」的比對鍵，
+/// 比 `b`／`bCs` 這類同前綴兄弟名時不會誤傷。
+fn tag_full_name(tag: &str) -> &str {
+    debug_assert!(tag.starts_with('<') && tag.ends_with('>'));
+    let inner = tag[1..tag.len() - 1].trim_end_matches('/');
+    inner.split_whitespace().next().unwrap_or("")
+}
+
+/// 取 token 開標籤的**全名**（含命名空間前綴，如 `w:numPr`）。
+fn token_tag_name(token: &str) -> Option<&str> {
+    token_open_tag(token).map(tag_full_name)
+}
+
+/// `w:pPr` 子元素的 ECMA-376 §17.3.1.26（CT_PPr／EG_PPrBase）宣告序。
+///
+/// **不可複用 [`rpr_child_rank`]**：兩張表鍵名重疊（`snapToGrid`／`shd`／
+/// `spacing`／`bidi`／`rPr`…）但序不同——`snapToGrid` 在 rPr 是第 15、在 pPr
+/// 是第 20（`adjustRightInd` 之後）；把 pPr 拿去吃 rPr 表會把 `spacing` 排到
+/// `jc` 之後、`shd` 排到 `tabs` 之前，破 schema 序（Word 直接判文件毀損）。
+/// 鍵名同样是 [`tag_local`] 產出＝**已去命名空間前綴**。未知元素回 `None`
+/// （由 [`merge_children_ordered`] 以「隨前件」規則安置）。
+fn ppr_child_rank(name: &str) -> Option<i32> {
+    let rank = match name {
+        "pStyle" => 0,
+        "keepNext" => 1,
+        "keepLines" => 2,
+        "pageBreakBefore" => 3,
+        "framePr" => 4,
+        "widowControl" => 5,
+        "numPr" => 6,
+        "suppressLineNumbers" => 7,
+        "pBdr" => 8,
+        "shd" => 9,
+        "tabs" => 10,
+        "suppressAutoHyphens" => 11,
+        "kinsoku" => 12,
+        "wordWrap" => 13,
+        "overflowPunct" => 14,
+        "topLinePunct" => 15,
+        "autoSpaceDE" => 16,
+        "autoSpaceDN" => 17,
+        "bidi" => 18,
+        "adjustRightInd" => 19,
+        "snapToGrid" => 20,
+        "spacing" => 21,
+        "ind" => 22,
+        "contextualSpacing" => 23,
+        "mirrorIndents" => 24,
+        "suppressOverlap" => 25,
+        "jc" => 26,
+        "textDirection" => 27,
+        "textAlignment" => 28,
+        "textboxTightWrap" => 29,
+        "outlineLvl" => 30,
+        "divId" => 31,
+        "cnfStyle" => 32,
+        // 段落標記 `rPr`／段內分節 `sectPr` 恆在 EG_PPrBase 之後（CT_PPr 尾段）。
+        "rPr" => 33,
+        "sectPr" => 34,
+        // `pPrChange` 同 `rPrChange`：追蹤修訂標記恆在末位，高位釘死，不給它
+        // 高位會被補丁新增的 `jc`／`spacing` 擠進中間，破 schema 尾段序。
+        "pPrChange" => 1000,
+        _ => return None,
+    };
+    Some(rank)
+}
+
+/// 宣告序併入器的共用核心（`merge_rpr_children` 與段落側同吃一份，紀律一致）。
+///
+/// 規則與 [`merge_rpr_children`] 相同（未知元素隨前件、同 rank 穩定序、未觸碰
+/// 宣告逐字元原樣），另加一條 `drop`：**既有側**開標籤全名命中 `drop` 的頂層
+/// 子元素直接剔除（同族覆寫前的清理）。
+///
+/// 以**頂層 token** 粒度剔除是決定性的：`remove_element` 是字串全域掃描，會
+/// 順手掃進巢裝容器內部——`w:pPrChange` 內含第二顆 `w:pPr`（ECMA-376 §17.13.5.30
+/// 的追蹤修訂快照），對齊補丁掃 `w:jc` 時會把快照裡的 `<w:jc w:val="both"/>`
+/// 一起抹掉（修訂歷史被改寫）。本函式只看頂層，巢裝內容連同其父 token 原樣
+/// 搬運，零觸碰。
+fn merge_children_ordered(
+    preserved: &str,
+    added: &str,
+    drop: &[&str],
+    rank_of: fn(&str) -> Option<i32>,
+) -> String {
     let mut ranked: Vec<(i32, bool, String)> = Vec::new();
     for (is_add, src) in [(false, preserved), (true, added)] {
         let mut last_rank = 0i32;
         for token in top_level_children(src) {
-            let rank = match token_rank(&token) {
+            if !is_add
+                && drop
+                    .iter()
+                    .any(|name| token_tag_name(&token) == Some(*name))
+            {
+                continue;
+            }
+            let rank = match token_open_tag(&token).and_then(|tag| rank_of(tag_local(tag))) {
                 Some(r) => {
                     last_rank = r;
                     r
@@ -1613,15 +1732,11 @@ fn merge_rpr_children(preserved: &str, added: &str) -> String {
     ranked.into_iter().map(|(_, _, token)| token).collect()
 }
 
-/// 取 token 開標籤的元素名並查 rank（跳過前導雜訊字串，取首個 `<`）。
-fn token_rank(token: &str) -> Option<i32> {
-    let lt = token.find('<')?;
-    let gt = token[lt..].find('>')?;
-    let tag = &token[lt..=lt + gt];
-    if tag.starts_with("</") || tag.starts_with("<!") || tag.starts_with("<?") {
-        return None;
-    }
-    rpr_child_rank(tag_local(tag))
+/// 取元素內文裡首個**頂層**同族子元素的明文（含元素前雜訊）；無則 `None`。
+fn top_level_element(inner: &str, name: &str) -> Option<String> {
+    top_level_children(inner)
+        .into_iter()
+        .find(|token| token_tag_name(token) == Some(name))
 }
 
 fn make_text_tag(text: &str, preserve_hint: bool) -> String {
@@ -2030,25 +2145,44 @@ fn highlight_named_color(rgb: u32) -> Option<&'static str> {
     })
 }
 
+/// 段落補丁的既有宣告族剔除表：`Some` 欄位對應的頂層同族宣告，交由併入器在
+/// **頂層**粒度剔除（巢裝 `w:pPrChange` 快照內的同族不被波及）。
+fn ppr_drop_families(patch: &ParaPropsPatch) -> Vec<&'static str> {
+    let mut drop = Vec::new();
+    if patch.style_id.is_some() {
+        drop.push("w:pStyle");
+    }
+    if patch.page_break_before.is_some() {
+        drop.push("w:pageBreakBefore");
+    }
+    if patch.line_spacing.is_some() {
+        drop.push("w:spacing");
+    }
+    if patch.alignment.is_some() {
+        drop.push("w:jc");
+    }
+    drop
+}
+
 fn patch_ppr(ppr: &str, patch: &ParaPropsPatch) -> String {
+    // E-1 同源的根因修正（本卡）：取「既有宣告內文」必須用 `element_inner`
+    // （取元素**內文**），不可用 `strip_leading_element`（摘掉開頭元素、保留
+    // 其餘）——後者對 `leading_element` 的產物（元素本身）恆回空字串，于是
+    // 每次重組都把既有 pStyle／numPr／spacing／pageBreakBefore 全數丟掉，欄位
+    // `None` 因此不是「不碰 XML」而是「連別人寫的也一起抹除」——設對齊 →
+    // 段落樣式／清單編號／行距／分頁前全部消失（用戶可見形態）。
+    //
+    // 零意圖硬閂（同 `patch_rpr` 紀律）：全 `None` 補丁＝原字串原樣返回。零
+    // pPr 段落因此不會被材料化成空 `<w:pPr></w:pPr>`（該形態是 k29d 拆分節
+    // 「空段整節移除」判定的依賴項，不可無謂材料化），有 pPr 段落零位元組位移。
+    if patch == &ParaPropsPatch::default() {
+        return ppr.to_string();
+    }
     let inner = if ppr.is_empty() {
         String::new()
     } else {
-        strip_leading_element(ppr, "w:pPr")
+        element_inner(ppr, "w:pPr")
     };
-    let mut body = inner;
-    if patch.style_id.is_some() {
-        body = remove_element(&body, "w:pStyle");
-    }
-    if patch.page_break_before.is_some() {
-        body = remove_element(&body, "w:pageBreakBefore");
-    }
-    if patch.line_spacing.is_some() {
-        body = remove_element(&body, "w:spacing");
-    }
-    if patch.alignment.is_some() {
-        body = remove_element(&body, "w:jc");
-    }
 
     let mut add = String::new();
     if let Some(style) = &patch.style_id {
@@ -2070,27 +2204,56 @@ fn patch_ppr(ppr: &str, patch: &ParaPropsPatch) -> String {
     if let Some(jc) = &patch.alignment {
         add.push_str(&format!(r#"<w:jc w:val="{}"/>"#, xml_escape(jc)));
     }
-    format!("<w:pPr>{body}{add}</w:pPr>")
+
+    // 開標籤沿用原文明（帶廠商擴充屬性的 `<w:pPr pt14:Unid="…">` 語料實測
+    // 215 處，不可被正規化成裸標籤）。
+    let open = element_open_tag(ppr, "w:pPr").unwrap_or_else(|| "<w:pPr>".to_string());
+    let drop = ppr_drop_families(patch);
+    format!(
+        "{open}{}</w:pPr>",
+        merge_children_ordered(&inner, &add, &drop, ppr_child_rank)
+    )
 }
 
 fn patch_numpr(ppr: &str, action: &ListAction) -> String {
+    // 根因與 `patch_ppr` 同源（見彼處註解）：`strip_leading_element` 對
+    // `leading_element` 產物恆回空字串 ⇒ 設清單編號時既有 pStyle／spacing／jc
+    // 全數蒸發。取內文一律走 `element_inner`。
     let inner = if ppr.is_empty() {
         String::new()
     } else {
-        strip_leading_element(ppr, "w:pPr")
+        element_inner(ppr, "w:pPr")
     };
-    let body = remove_element(&inner, "w:numPr");
+    // numPr 只認**頂層**那一顆：`w:pPrChange` 快照裡也可能有一顆 numPr，全域
+    // 字串掃描會把快照的 numId 誤當成本段現行值（ChangeLevel 因此沿用錯號）。
+    let existing_numpr = top_level_element(&inner, "w:numPr");
+
+    if let ListAction::RemoveNumbering = action {
+        // 段頂本來就沒有 numPr ＝零意圖：原字串原樣返回（不材料化空 pPr、
+        // 不重排既有宣告）。
+        if existing_numpr.is_none() {
+            return ppr.to_string();
+        }
+    }
+
     let add = match action {
         ListAction::AttachExisting { num_id, ilvl } => {
             format!(r#"<w:numPr><w:ilvl w:val="{ilvl}"/><w:numId w:val="{num_id}"/></w:numPr>"#)
         }
         ListAction::ChangeLevel { ilvl } => {
-            let num = extract_num_id(&inner).unwrap_or(0);
+            let num = existing_numpr
+                .as_deref()
+                .and_then(extract_num_id)
+                .unwrap_or(0);
             format!(r#"<w:numPr><w:ilvl w:val="{ilvl}"/><w:numId w:val="{num}"/></w:numPr>"#)
         }
         ListAction::RemoveNumbering => String::new(),
     };
-    format!("<w:pPr>{body}{add}</w:pPr>")
+    let open = element_open_tag(ppr, "w:pPr").unwrap_or_else(|| "<w:pPr>".to_string());
+    format!(
+        "{open}{}</w:pPr>",
+        merge_children_ordered(&inner, &add, &["w:numPr"], ppr_child_rank)
+    )
 }
 
 fn extract_num_id(ppr: &str) -> Option<u32> {
