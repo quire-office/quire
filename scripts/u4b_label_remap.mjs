@@ -64,7 +64,7 @@ const MAP = {
   },
   'format:underline-style': {
     req: 'live', title: '底線形態選單（E-2 解析保形態＋E-2b 共型寫入端真通）：單條／雙條／粗條／點狀／虛線／無六形態逐字寫入 w:u/@w:val，切換即存檔件逐字對。wavy／words 等未支援形態寫入端誠實拒絕，不入選單值域',
-    basis: 'U4f 轉 live（原 U4b 記帳「styles.rs 折 Option<bool>＋發射一態」前提由 E-2（t_b5a4d0bf，docs/word-ui-e2-underline-report.md）＋E-2b（t_5e62f3b5，docs/word-ui-e2b-underline-shared-type-report.md）推翻，非外殼自修）：查一：qword-ui.js initPopovers 底線選單填充（值域=adapter UNDERLINE_KINDS）＋handleFormatUnderlineStyle→adapter.formatUnderline→apply_mutation_json；查二：RunDirectPatch.underline＝render-trait Underline 共型六形態；查三：patch_rpr() 寫入臂 <w:u w:val="{as_u_val()}"/> 逐形態真通＋閉環背書 shells/web/editor/tests/u4f_underline_style_live_probe.mjs（真 DOM click→存檔件 w:u/@w:val 逐字對＋wavy 誠實拒）'
+    basis: 'U4f 轉 live（原 U4b 記帳「styles.rs 折 Option<bool>＋發射一態」前提由 E-2（t_b5a4d0bf，docs/word-ui-e2-underline-report.md）＋E-2b（t_5e62f3b5，docs/word-ui-e2b-underline-shared-type-report.md）推翻，非外殼自修）：查一：qword-ui.js initPopovers 底線選單填充（值域=adapter UNDERLINE_KINDS）＋handleFormatUnderlineStyle→adapter.formatUnderline→apply_mutation_json；查二：RunDirectPatch.underline＝render-trait Underline 共型六形態；查三：patch_rpr() 寫入臂 <w:u w:val="{as_u_val()}"/> 逐形態真通＋閉環背書 shells/web/editor/tests/u4f_underline_style_live_probe.mjs（真 DOM click→存檔件 w:u/@w:val 逐字對＋wavy 誠實拒三層）'
   },
   'format:strikethrough': {
     req: 'live', title: `${LIVE_T}：strike（M2.1 RunDirectPatch）`,
