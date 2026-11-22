@@ -33,7 +33,9 @@
 //! ＝編輯後事實）＋ `word/document.xml` 明文掃描雙軌。拒絕態必驗**零波及**
 //! （存檔位元組與基線相同）。
 
-use quire_engine::{Engine, HfSlotKind, InsertSide, Mutation, RowPropsPatch, SubDocTarget, TablePath};
+use quire_engine::{
+    Engine, HfSlotKind, InsertSide, Mutation, RowPropsPatch, SubDocTarget, TablePath,
+};
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -180,9 +182,7 @@ fn locate(e: &Engine, para: usize) -> Option<Value> {
 fn path_of(hit: &Value) -> TablePath {
     TablePath {
         target: SubDocTarget::Body,
-        root_slot: hit["table_path"]["root_slot"]
-            .as_u64()
-            .expect("root_slot") as usize,
+        root_slot: hit["table_path"]["root_slot"].as_u64().expect("root_slot") as usize,
         nested_steps: hit["table_path"]["nested_steps"]
             .as_array()
             .expect("nested_steps 是陣列")
@@ -260,7 +260,7 @@ const VMERGE_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone=
 </w:body></w:document>"#;
 
 #[test]
-fn e3_s2_1_lampA0_fixture_form_is_self_proving() {
+fn e3_s2_1_lamp_a0_fixture_form_is_self_proving() {
     let xml = doc_xml(&open_docx(VMERGE_FIXTURE));
     let gs = xml
         .find(r#"<w:gridSpan w:val="2"/>"#)
@@ -277,7 +277,10 @@ fn e3_s2_1_lampA0_fixture_form_is_self_proving() {
     assert_eq!(e.table_count(), 1, "fixture 恰一張根表");
     let t = root_table(&e, 0);
     assert_eq!(
-        t["rows"][0]["cells"].as_array().expect("cells 是陣列").len(),
+        t["rows"][0]["cells"]
+            .as_array()
+            .expect("cells 是陣列")
+            .len(),
         1,
         "頂列恰一格（跨 2 欄）"
     );
@@ -301,7 +304,7 @@ const OVERFLOW_GRIDSPAN_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" 
 </w:body></w:document>"#;
 
 #[test]
-fn e3_s2_2_lampB1_insert_column_into_u32max_span_rejects_not_miscomputes() {
+fn e3_s2_2_lamp_b1_insert_column_into_u32max_span_rejects_not_miscomputes() {
     // `old_span + 1`（L1845）：wasm32 debug panic／release 回繞 0 ⇒
     // set_gridspan(0) 錯值；64 位 host 寫出 u32 裝不下的 4294967296——
     // canonical `CellProps::grid_span()` 以 u32 解析讀回＝1（同義兩制）。
@@ -337,7 +340,7 @@ fn e3_s2_2_lampB1_insert_column_into_u32max_span_rejects_not_miscomputes() {
 }
 
 #[test]
-fn e3_s2_2_lampB2_merge_cells_span_w_overflow_rejects_not_bypasses_bounds() {
+fn e3_s2_2_lamp_b2_merge_cells_span_w_overflow_rejects_not_bypasses_bounds() {
     // `right_grid_col - left_grid_col + 1`（L1981）與
     // `c.col_start + c.span > left_grid_col + span_w`（L2002-2009）：
     // wasm32 上兩側同時回繞 ⇒「嚴格涵蓋」檢查被繞過 ⇒ 靜默把超寬格合併、
@@ -373,7 +376,7 @@ fn e3_s2_2_lampB2_merge_cells_span_w_overflow_rejects_not_bypasses_bounds() {
 }
 
 #[test]
-fn e3_s2_2_lampB3_insert_column_after_huge_at_grid_col_rejects_cleanly() {
+fn e3_s2_2_lamp_b3_insert_column_after_huge_at_grid_col_rejects_cleanly() {
     // `at_grid_col + 1`（L1794）：usize::MAX 在 64 位 host 回繞成 0——
     // 「插入點 0」合法 ⇒ 靜默插到頭欄（錯值執行、越界檢查被繞過）；
     // wasm32 debug 直接 panic。修後斷言＝回拒且訊息帶越界語義（不誘導
@@ -433,7 +436,7 @@ const COND_GATE_OVERFLOW_DOC: &str = r#"<?xml version="1.0" encoding="UTF-8" sta
 </w:body></w:document>"#;
 
 #[test]
-fn e3_s2_2_lampB4_cond_gate_start_plus_one_must_not_overflow_on_open() {
+fn e3_s2_2_lamp_b4_cond_gate_start_plus_one_must_not_overflow_on_open() {
     // 修前紅：開檔即在 compute_cond_gates 的 `(start + 1) % 2` 上
     // `attempt to add with overflow` panic（wasm 態＝瀏覽器 abort）。
     // 修後綠：開檔、反查、顯示列表全綠（零 panic 由「能跑完」證明）。
@@ -475,7 +478,7 @@ const INS_WRAPPED_ROW_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" st
 </w:body></w:document>"#;
 
 #[test]
-fn e3_s2_3_lampC0_fixture_has_canonical_raw_row_count_divergence() {
+fn e3_s2_3_lamp_c0_fixture_has_canonical_raw_row_count_divergence() {
     let e = open_docx(INS_WRAPPED_ROW_FIXTURE);
     let t = root_table(&e, 0);
     assert_eq!(
@@ -502,7 +505,7 @@ fn e3_s2_3_lampC0_fixture_has_canonical_raw_row_count_divergence() {
 }
 
 #[test]
-fn e3_s2_3_lampC1_row_level_ins_wrapper_must_not_silently_edit_wrong_row() {
+fn e3_s2_3_lamp_c1_row_level_ins_wrapper_must_not_silently_edit_wrong_row() {
     let e0 = open_docx(INS_WRAPPED_ROW_FIXTURE);
     let base_xml = doc_xml(&e0);
     let (_, hit) = locate_cell(&e0, 1, 0); // canonical 中段（藏在 w:ins 內）
@@ -532,7 +535,8 @@ fn e3_s2_3_lampC1_row_level_ins_wrapper_must_not_silently_edit_wrong_row() {
                 "列級透明包裝錯位的拒絕必須點名『路徑與文件不符（透明包裝）』，實得: {s}"
             );
             assert_eq!(
-                doc_xml(&e), base_xml,
+                doc_xml(&e),
+                base_xml,
                 "拒絕後 document.xml 必須零變化（零半寫）"
             );
         }
@@ -548,7 +552,7 @@ const TCPARCHANGE_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" standa
 </w:body></w:document>"#;
 
 #[test]
-fn e3_s2_3_lampC2_tcprchange_old_value_must_not_leak_into_grid_span() {
+fn e3_s2_3_lamp_c2_tcprchange_old_value_must_not_leak_into_grid_span() {
     // canonical 側（core/ooxml/src/table.rs，E-2 禁改面）把 tcPrChange 的
     // 內層 tcPr 也當 TcPr 幀、讀到舊值 "2"——本燈**不依賴**其對錯，只鎖
     // mutation 側行為：現行宣告無直屬 gridSpan ⇒ 有效跨欄數必為 1 ⇒ 插入點
@@ -570,8 +574,7 @@ fn e3_s2_3_lampC2_tcprchange_old_value_must_not_leak_into_grid_span() {
     .expect("正常插欄不得失敗");
     let t = root_table(&e, 0);
     assert_eq!(
-        t["rows"][0]["cells"][0]["props"]["grid_span_raw"],
-        baseline_span,
+        t["rows"][0]["cells"][0]["props"]["grid_span_raw"], baseline_span,
         "tcPrChange 修訂前舊值不得洩漏進現行 span 計算：插欄後修訂格的 \
          grid_span_raw 必須與基線一致（修前態＝被改寫成 \"3\"）"
     );
@@ -600,7 +603,7 @@ const TWO_ROOTS_ONE_WRAPPED: &str = r#"<?xml version="1.0" encoding="UTF-8" stan
 </w:body></w:document>"#;
 
 #[test]
-fn e3_s3_4_lampD1_subdoc_not_found_must_keep_its_identity() {
+fn e3_s3_4_lamp_d1_subdoc_not_found_must_keep_its_identity() {
     let mut e = open_docx(TWO_ROOTS_ONE_WRAPPED);
     let path = TablePath {
         target: SubDocTarget::Header {
@@ -626,7 +629,7 @@ fn e3_s3_4_lampD1_subdoc_not_found_must_keep_its_identity() {
 }
 
 #[test]
-fn e3_s3_4_lampD2_genuine_root_overrun_must_stay_overrun() {
+fn e3_s3_4_lamp_d2_genuine_root_overrun_must_stay_overrun() {
     let mut e = open_docx(VMERGE_FIXTURE);
     let path = TablePath {
         target: SubDocTarget::Body,
@@ -669,7 +672,7 @@ const ZERO_PARA_INS_ROW_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" 
 </w:body></w:document>"#;
 
 #[test]
-fn e3_s2_3_lampC3_zero_paragraph_table_still_pairs_row_counts() {
+fn e3_s2_3_lamp_c3_zero_paragraph_table_still_pairs_row_counts() {
     let e0 = open_docx(ZERO_PARA_INS_ROW_FIXTURE);
     let t = root_table(&e0, 0);
     assert_eq!(
@@ -685,7 +688,10 @@ fn e3_s2_3_lampC3_zero_paragraph_table_still_pairs_row_counts() {
         nested_steps: Vec::new(),
     };
     let mut e = open_docx(ZERO_PARA_INS_ROW_FIXTURE);
-    let err = match e.apply_mutation(Mutation::DeleteTableRow { table: path, row: 1 }) {
+    let err = match e.apply_mutation(Mutation::DeleteTableRow {
+        table: path,
+        row: 1,
+    }) {
         Ok(_) => panic!(
             "零段落表的列級包裝錯位（raw 直屬 1 列 vs canonical 2 列）若成功＝\
              刪錯列（raw 直屬列 1 不存在，但 canonical 列 1 存在）"
@@ -699,7 +705,7 @@ fn e3_s2_3_lampC3_zero_paragraph_table_still_pairs_row_counts() {
 }
 
 #[test]
-fn e3_s3_4_lampD3_wrapped_subtable_must_be_classified_as_transparent_wrapper() {
+fn e3_s3_4_lamp_d3_wrapped_subtable_must_be_classified_as_transparent_wrapper() {
     let e0 = open_docx(NESTED_INS_FIXTURE);
     // 反查面取「帶巢狀步」的那條路徑（包內子表段落）——零第二輪翻譯。
     let hit = (0..e0.paragraph_count())

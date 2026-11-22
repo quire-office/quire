@@ -430,12 +430,7 @@ fn table_identity_error(
         }
         let row_span = *rows.get(*row).ok_or_else(mismatch)?;
         let cells = direct_children(text, row_span.0, "tc");
-        let canonical_cells = cur
-            .rows
-            .get(*row)
-            .ok_or_else(mismatch)?
-            .cells
-            .len();
+        let canonical_cells = cur.rows.get(*row).ok_or_else(mismatch)?.cells.len();
         if cells.len() != canonical_cells {
             return Err(mismatch());
         }
@@ -1627,11 +1622,7 @@ impl Engine {
             None => return false,
         };
         for (row, cell, sub) in &path.nested_steps {
-            let Some(cell) = cur
-                .rows
-                .get(*row)
-                .and_then(|r| r.cells.get(*cell))
-            else {
+            let Some(cell) = cur.rows.get(*row).and_then(|r| r.cells.get(*cell)) else {
                 return false;
             };
             let Some(next) = cell
@@ -1922,14 +1913,15 @@ impl Engine {
         // +1 在 debug 直接 panic＝瀏覽器 abort；release 回繞成 0 ⇒「插入點
         // 0」合法 ⇒ 靜默插到頭欄、越界檢查被繞過。checked_add 溢位＝誠實
         // 回拒（越界語義：插入點根本不存在）。
-        let insert_at = match position {
-            InsertSide::Before => at_grid_col,
-            InsertSide::After => at_grid_col.checked_add(1).ok_or_else(|| {
-                MutationError::InvalidTableOperation {
-                    detail: format!("欄插入點越界（at_grid_col {at_grid_col} 加一溢位）"),
-                }
-            })?,
-        };
+        let insert_at =
+            match position {
+                InsertSide::Before => at_grid_col,
+                InsertSide::After => at_grid_col.checked_add(1).ok_or_else(|| {
+                    MutationError::InvalidTableOperation {
+                        detail: format!("欄插入點越界（at_grid_col {at_grid_col} 加一溢位）"),
+                    }
+                })?,
+            };
         if insert_at > grid_cols.len() {
             return Err(MutationError::InvalidTableOperation {
                 detail: format!("欄插入點 {insert_at} 越界（網格 {} 欄）", grid_cols.len()),
@@ -2024,9 +2016,7 @@ impl Engine {
                 // ⇒ 孤兒 `<w:tc>` 游離在列外：canonical 解析（列直屬才認）
                 // 看不見這格 ⇒ 網格多一欄但列格數不變、發射面少一格（靜默
                 // 丟欄）。插入點必須落在 `</w:tr>` **之前**（列內尾部）。
-                let tail = text[..row.end]
-                    .rfind("</w:tr>")
-                    .unwrap_or(row.end);
+                let tail = text[..row.end].rfind("</w:tr>").unwrap_or(row.end);
                 reps.push((
                     ByteSpan {
                         start: tail,
@@ -2177,8 +2167,7 @@ impl Engine {
             // 回繞（更鬆）方向偏。
             for c in &selected {
                 if c.col_start < left_grid_col
-                    || c.col_start.saturating_add(c.span)
-                        > left_grid_col.saturating_add(span_w)
+                    || c.col_start.saturating_add(c.span) > left_grid_col.saturating_add(span_w)
                 {
                     return Err(MutationError::InvalidTableOperation {
                         detail: format!(
