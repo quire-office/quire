@@ -1745,8 +1745,22 @@ impl Engine {
                     Some((s, e)) => &text[s..e],
                     None => continue,
                 };
-                let restart = attr_in_tag(tcpr, "w:val").as_deref() == Some("restart");
-                if !restart || !tcpr.contains("<w:vMerge") {
+                // E-3 S2-1：restart 判定**必須先定位 `<w:vMerge` 開標籤、再在
+                // 該標籤內取 w:val**（比照同檔 `cell_grid_span` 的修法）。
+                // 舊寫法 `attr_in_tag(tcpr, "w:val")` 對**整段 tcPr** 取首個
+                // `w:val`——依 ECMA-376 §17.4.103 子元素序，`w:cnfStyle`／
+                // `w:gridSpan` 等自帶 `w:val` 的子女排在 `w:vMerge` 之前，
+                // `<w:gridSpan w:val="2"/>…<w:vMerge w:val="restart"/>` 時
+                // 恆讀到 "2" ⇒ restart 誤判 false ⇒ 刪列後延續格漏晉升、
+                // 變孤兒 continue（使用者可見：刪列後併格斷鏈）。
+                let restart = match find_local_tag(tcpr, "vMerge") {
+                    Some(at) => {
+                        attr_in_tag(&tag_open_string(tcpr, at), "w:val").as_deref()
+                            == Some("restart")
+                    }
+                    None => false,
+                };
+                if !restart {
                     continue;
                 }
                 for ncell in &next_layout.cells {
