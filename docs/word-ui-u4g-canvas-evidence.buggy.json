@@ -1,0 +1,900 @@
+{
+  "meta": {
+    "baseUrl": "http://127.0.0.1:8791/shells/web/editor/index.html",
+    "buggy": true,
+    "at": "2026-11-22T18:35:15.816Z",
+    "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
+  },
+  "e2e": {
+    "baseline": {
+      "clusters": [],
+      "strokeCount": 0,
+      "penThickness": 0,
+      "solidRun": 0,
+      "dashBest": {
+        "row": 0,
+        "ratio": 38,
+        "runGaps": 38,
+        "maxRun": 15,
+        "runs": 55
+      },
+      "dashRowCount": 1,
+      "totalInk": 156,
+      "ratios": [
+        38,
+        26,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 586,
+      "H": 8,
+      "px": 16.01,
+      "sizePt": 12,
+      "flags": 0,
+      "underlineField": null,
+      "textHead": "這是一份用於"
+    },
+    "cleanAtSize": {
+      "clusters": [],
+      "strokeCount": 0,
+      "penThickness": 0,
+      "solidRun": 0,
+      "dashBest": {
+        "row": 14,
+        "ratio": 37,
+        "runGaps": 41,
+        "maxRun": 11,
+        "runs": 44
+      },
+      "dashRowCount": 15,
+      "totalInk": 3330,
+      "ratios": [
+        61,
+        50,
+        39,
+        37,
+        39,
+        47,
+        48,
+        35,
+        37,
+        43,
+        41,
+        49,
+        48,
+        41,
+        37
+      ],
+      "W": 563,
+      "H": 15,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 0,
+      "underlineField": null,
+      "textHead": "這是一份用於"
+    },
+    "single": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 4,
+          "thickness": 3
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 3,
+      "solidRun": 563,
+      "dashBest": {
+        "row": 14,
+        "ratio": 37,
+        "runGaps": 41,
+        "maxRun": 11,
+        "runs": 44
+      },
+      "dashRowCount": 12,
+      "totalInk": 4372,
+      "ratios": [
+        61,
+        50,
+        100,
+        100,
+        100,
+        47,
+        48,
+        35,
+        37,
+        43,
+        41,
+        49,
+        48,
+        41,
+        37
+      ],
+      "W": 563,
+      "H": 15,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "single",
+      "textHead": "這是一份用於",
+      "clicked": true
+    },
+    "double": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 4,
+          "thickness": 3
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 3,
+      "solidRun": 563,
+      "dashBest": {
+        "row": 14,
+        "ratio": 37,
+        "runGaps": 41,
+        "maxRun": 11,
+        "runs": 44
+      },
+      "dashRowCount": 12,
+      "totalInk": 4372,
+      "ratios": [
+        61,
+        50,
+        100,
+        100,
+        100,
+        47,
+        48,
+        35,
+        37,
+        43,
+        41,
+        49,
+        48,
+        41,
+        37
+      ],
+      "W": 563,
+      "H": 15,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "double",
+      "textHead": "這是一份用於",
+      "clicked": true
+    },
+    "thick": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 4,
+          "thickness": 3
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 3,
+      "solidRun": 563,
+      "dashBest": {
+        "row": 14,
+        "ratio": 37,
+        "runGaps": 41,
+        "maxRun": 11,
+        "runs": 44
+      },
+      "dashRowCount": 12,
+      "totalInk": 4372,
+      "ratios": [
+        61,
+        50,
+        100,
+        100,
+        100,
+        47,
+        48,
+        35,
+        37,
+        43,
+        41,
+        49,
+        48,
+        41,
+        37
+      ],
+      "W": 563,
+      "H": 15,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "thick",
+      "textHead": "這是一份用於",
+      "clicked": true
+    },
+    "dotted": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 4,
+          "thickness": 3
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 3,
+      "solidRun": 563,
+      "dashBest": {
+        "row": 14,
+        "ratio": 37,
+        "runGaps": 41,
+        "maxRun": 11,
+        "runs": 44
+      },
+      "dashRowCount": 12,
+      "totalInk": 4372,
+      "ratios": [
+        61,
+        50,
+        100,
+        100,
+        100,
+        47,
+        48,
+        35,
+        37,
+        43,
+        41,
+        49,
+        48,
+        41,
+        37
+      ],
+      "W": 563,
+      "H": 15,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "dotted",
+      "textHead": "這是一份用於",
+      "clicked": true
+    },
+    "dashed": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 4,
+          "thickness": 3
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 3,
+      "solidRun": 563,
+      "dashBest": {
+        "row": 14,
+        "ratio": 37,
+        "runGaps": 41,
+        "maxRun": 11,
+        "runs": 44
+      },
+      "dashRowCount": 12,
+      "totalInk": 4372,
+      "ratios": [
+        61,
+        50,
+        100,
+        100,
+        100,
+        47,
+        48,
+        35,
+        37,
+        43,
+        41,
+        49,
+        48,
+        41,
+        37
+      ],
+      "W": 563,
+      "H": 15,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "dashed",
+      "textHead": "這是一份用於",
+      "clicked": true
+    },
+    "beforeOff": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 4,
+          "thickness": 3
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 3,
+      "solidRun": 563,
+      "dashBest": {
+        "row": 14,
+        "ratio": 37,
+        "runGaps": 41,
+        "maxRun": 11,
+        "runs": 44
+      },
+      "dashRowCount": 12,
+      "totalInk": 4372,
+      "ratios": [
+        61,
+        50,
+        100,
+        100,
+        100,
+        47,
+        48,
+        35,
+        37,
+        43,
+        41,
+        49,
+        48,
+        41,
+        37
+      ],
+      "W": 563,
+      "H": 15,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "double",
+      "textHead": "這是一份用於"
+    },
+    "afterOff": {
+      "clusters": [],
+      "strokeCount": 0,
+      "penThickness": 0,
+      "solidRun": 0,
+      "dashBest": {
+        "row": 14,
+        "ratio": 37,
+        "runGaps": 41,
+        "maxRun": 11,
+        "runs": 44
+      },
+      "dashRowCount": 15,
+      "totalInk": 3330,
+      "ratios": [
+        61,
+        50,
+        39,
+        37,
+        39,
+        47,
+        48,
+        35,
+        37,
+        43,
+        41,
+        49,
+        48,
+        41,
+        37
+      ],
+      "W": 563,
+      "H": 15,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 0,
+      "underlineField": null,
+      "textHead": "這是一份用於"
+    },
+    "afterDrain": {
+      "clusters": [],
+      "strokeCount": 0,
+      "penThickness": 0,
+      "solidRun": 0,
+      "dashBest": {
+        "row": 0,
+        "ratio": 38,
+        "runGaps": 38,
+        "maxRun": 15,
+        "runs": 55
+      },
+      "dashRowCount": 1,
+      "totalInk": 156,
+      "ratios": [
+        38,
+        26,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 586,
+      "H": 8,
+      "px": 16.01,
+      "sizePt": 12,
+      "flags": 0,
+      "underlineField": null,
+      "textHead": "這是一份用於"
+    },
+    "rawWavyFile": {
+      "clusters": [
+        {
+          "from": 0,
+          "to": 1,
+          "thickness": 2
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 2,
+      "solidRun": 586,
+      "dashBest": null,
+      "dashRowCount": 0,
+      "totalInk": 590,
+      "ratios": [
+        100,
+        100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 586,
+      "H": 8,
+      "px": 16.01,
+      "sizePt": 12,
+      "flags": 4,
+      "underlineField": {
+        "raw": "wavy"
+      },
+      "textHead": "這是一份用於",
+      "opened": true,
+      "newErrors": []
+    }
+  },
+  "synth": {
+    "blankFlag0": {
+      "clusters": [],
+      "strokeCount": 0,
+      "penThickness": 0,
+      "solidRun": 0,
+      "dashBest": null,
+      "dashRowCount": 0,
+      "totalInk": 1,
+      "ratios": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 423,
+      "H": 16,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 0,
+      "underlineField": null,
+      "textHead": "QUICKB",
+      "rendered": true,
+      "newErrors": []
+    },
+    "single": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 5,
+          "thickness": 4
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 4,
+      "solidRun": 423,
+      "dashBest": null,
+      "dashRowCount": 0,
+      "totalInk": 1693,
+      "ratios": [
+        1,
+        0,
+        100,
+        100,
+        100,
+        100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 423,
+      "H": 16,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "single",
+      "textHead": "QUICKB",
+      "rendered": true,
+      "newErrors": []
+    },
+    "double": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 5,
+          "thickness": 4
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 4,
+      "solidRun": 423,
+      "dashBest": null,
+      "dashRowCount": 0,
+      "totalInk": 1693,
+      "ratios": [
+        1,
+        0,
+        100,
+        100,
+        100,
+        100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 423,
+      "H": 16,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "double",
+      "textHead": "QUICKB",
+      "rendered": true,
+      "newErrors": []
+    },
+    "thick": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 5,
+          "thickness": 4
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 4,
+      "solidRun": 423,
+      "dashBest": null,
+      "dashRowCount": 0,
+      "totalInk": 1693,
+      "ratios": [
+        1,
+        0,
+        100,
+        100,
+        100,
+        100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 423,
+      "H": 16,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "thick",
+      "textHead": "QUICKB",
+      "rendered": true,
+      "newErrors": []
+    },
+    "dotted": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 5,
+          "thickness": 4
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 4,
+      "solidRun": 423,
+      "dashBest": null,
+      "dashRowCount": 0,
+      "totalInk": 1693,
+      "ratios": [
+        1,
+        0,
+        100,
+        100,
+        100,
+        100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 423,
+      "H": 16,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "dotted",
+      "textHead": "QUICKB",
+      "rendered": true,
+      "newErrors": []
+    },
+    "dashed": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 5,
+          "thickness": 4
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 4,
+      "solidRun": 423,
+      "dashBest": null,
+      "dashRowCount": 0,
+      "totalInk": 1693,
+      "ratios": [
+        1,
+        0,
+        100,
+        100,
+        100,
+        100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 423,
+      "H": 16,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "dashed",
+      "textHead": "QUICKB",
+      "rendered": true,
+      "newErrors": []
+    },
+    "offFlagOn": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 5,
+          "thickness": 4
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 4,
+      "solidRun": 423,
+      "dashBest": null,
+      "dashRowCount": 0,
+      "totalInk": 1693,
+      "ratios": [
+        1,
+        0,
+        100,
+        100,
+        100,
+        100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 423,
+      "H": 16,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "off",
+      "textHead": "QUICKB",
+      "rendered": true,
+      "newErrors": []
+    },
+    "rawWavy": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 5,
+          "thickness": 4
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 4,
+      "solidRun": 423,
+      "dashBest": null,
+      "dashRowCount": 0,
+      "totalInk": 1693,
+      "ratios": [
+        1,
+        0,
+        100,
+        100,
+        100,
+        100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 423,
+      "H": 16,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": {
+        "raw": "wavy"
+      },
+      "textHead": "QUICKB",
+      "rendered": true,
+      "newErrors": []
+    },
+    "unknownLiteral": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 5,
+          "thickness": 4
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 4,
+      "solidRun": 423,
+      "dashBest": null,
+      "dashRowCount": 0,
+      "totalInk": 1693,
+      "ratios": [
+        1,
+        0,
+        100,
+        100,
+        100,
+        100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 423,
+      "H": 16,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": "dashLongHeavy",
+      "textHead": "QUICKB",
+      "rendered": true,
+      "newErrors": []
+    },
+    "omitField": {
+      "clusters": [
+        {
+          "from": 2,
+          "to": 5,
+          "thickness": 4
+        }
+      ],
+      "strokeCount": 1,
+      "penThickness": 4,
+      "solidRun": 423,
+      "dashBest": null,
+      "dashRowCount": 0,
+      "totalInk": 1693,
+      "ratios": [
+        1,
+        0,
+        100,
+        100,
+        100,
+        100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "W": 423,
+      "H": 16,
+      "px": 34.7,
+      "sizePt": 26,
+      "flags": 4,
+      "underlineField": null,
+      "textHead": "QUICKB",
+      "rendered": true,
+      "newErrors": []
+    }
+  },
+  "notes": {
+    "grownSizePt": 26,
+    "drained": 14,
+    "mosaic": "word-ui-u4g-canvas-evidence.mosaic.buggy.png",
+    "rawFileField": {
+      "raw": "wavy"
+    },
+    "rawFileFlags": 4,
+    "rawFileSizePt": 12,
+    "geomSource": {
+      "double": "double: { offsets: [0.13, 0.25], width: 0.055, dash: null }",
+      "thick": "thick: { offsets: [0.15], width: 0.13, dash: null }",
+      "dotted": "dotted: { offsets: [0.15], width: 0.09, dash: [1.0, 2.0] }",
+      "dashed": "dashed: { offsets: [0.15], width: 0.075, dash: [4.0, 2.0] }",
+      "single": "UNDERLINE_SINGLE_GEOM = { offsets: [0.12], width: 0.07, dash: null }"
+    },
+    "uncaughtTotal": 0,
+    "errors": []
+  }
+}

@@ -1751,11 +1751,17 @@ export class EngineAdapter {
   //         ＋`<w:u w:val="{as_u_val()}"/>`、`w:strike`＋`w:dstrike`、
   //         `w:vertAlign`、`w:highlight`／`w:shd` 雙族、`w:rFonts` 四欄同族名。
   //
-  // 誠實斷點（故 `format:underline-style` 不得掛 live，見報告 §2.3）：
-  //   解析層 `core/ooxml/src/styles.rs` 把 `w:u` 折成 `Option<bool>`，形態不進
-  //   `RunStyle`；發射層 `run_style()` 只能發 FLAG_UNDERLINE（4）一態。五形態
-  //   寫進 XML 是真的、存檔讀回也是真的，但「用戶看見那層」無差異 ⇒ 鈕留
-  //   pending（引擎面缺口，非外殼可修）。
+  // 誠實斷點血緣（U4f 記帳）：原 U4b 時代「解析層 styles.rs 把 w:u 折成
+  //   Option<bool>、形態不進 RunStyle、發射層 FLAG_UNDERLINE 一態」的斷點已由
+  //   E-2（t_b5a4d0bf，docs/word-ui-e2-underline-report.md：w:u/@w:val 保形態進
+  //   RunStyle＋SVG 發幾何底線）＋E-2b（t_5e62f3b5，共型寫入端）消除，非外殼自修。
+  //   `format:underline-style` 據真閉環證據（u4f_underline_style_live_probe.mjs
+  //   逐形態 click→存檔件 w:u/@w:val 逐字對）轉 live。渲染面血緣（U4g 記帳）：
+  //   web 殼 canvas 渲染器（vendor/renderer.js）自 U4g（t_d0a46cec）起消費
+  //   DrawItem::Text.underline 繪形態幾何（resolveUnderlineGeom()，真值源＝SVG
+  //   端 uline_geom 取樣；像素指紋考卷 u4g_underline_canvas_probe＋回塞鎖
+  //   u4g_underline_canvas_buggy_replay）——形態差異的用戶可見面自本卡起包含
+  //   canvas 像素；存檔件檔契約逐字＋開關態證據面維持不變。
   // ==========================================================================
 
   /**

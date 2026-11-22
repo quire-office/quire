@@ -19,9 +19,10 @@
  *      format:underline, format:strikethrough,
  *      format:subscript, format:superscript, format:highlight,
  *      format:highlight-palette, font:family, font:clear-formatting
- *    - 誠實維持 pending（引擎面缺口）: format:underline-style（解析折 bool＋
- *      發射一態，禁止假 live）, paragraph:bullets, paragraph:numbering,
+ *    - 誠實維持 pending（引擎面缺口）: paragraph:bullets, paragraph:numbering,
  *      paragraph:multilevel（清單家族引擎無欄位）
+ *      （U4f 考卷重估：format:underline-style 已隨 E-2/E-2b 引擎面全通轉 live，
+ *       見下方檢查 4(c) 血緣記帳與 u4f_underline_style_live_probe.mjs）
  * 5. 真引擎無 DOM 純邏輯層閉環驗證：
  *    - 粗體閉環：選取 -> format:bold -> apply_mutation_json -> 顯示列表 flags 帶 bold -> undo -> 消失
  *    - 斜體閉環：選取 -> format:italic -> 顯示列表 flags 帶 italic -> undo -> 消失
@@ -220,12 +221,15 @@ for (const cmd of REQUIRED_LIVE_BUTTONS) {
 }
 
 // 產品誠實紅線：K29e 已入 main（66460e4）且 U4b 完成三側接線——原「嚴格維持
-// pending:K29b」清單的前提（引擎欄位不存在）已失效。斷言精確收窄成兩組：
+// pending:K29b」清單的前提（引擎欄位不存在）已失效。斷言精確收窄成三組：
 //   (a) K29e 六欄族必須是 live，且由檢查 5 的閉環探針為其真實性背書；
 //   (b) 引擎仍無欄位者（段落清單族）必須維持 pending:K29b；
-//   (c) 底線形態鈕（underline-style）是引擎解析＋發射雙層缺口，禁止 live——
-//       這把鎖比原斷言更強（原斷言只鎖「不許 live」的新標籤面，這裡逐字鎖死
-//       「不許掛 live」且允許任何 pending:* 真實缺口標籤）。
+//   (c) 底線形態鈕（underline-style）自 U4f 起必須是 live（考卷重估，E-2 同款
+//       口徑）：原「解析折 bool＋發射一態」前提已被 E-2（t_b5a4d0bf 解析保形態）
+//       ＋E-2b（t_5e62f3b5 共型寫入端）推翻，閉環背書＝
+//       shells/web/editor/tests/u4f_underline_style_live_probe.mjs（逐形態真 DOM
+//       click→存檔件 w:u/@w:val 逐字對＋wavy 誠實拒三層）。誠實紅線雙向：
+//       真能力掛 pending＝低報，與假 live 同罪。
 const K29E_LIVE_BUTTONS = [
   'format:underline',
   'format:strikethrough',
@@ -265,16 +269,18 @@ for (const cmd of REQUIRED_PENDING_BUTTONS) {
   }
 }
 
-// 底線形態鈕：引擎解析層（styles.rs 折 bool）＋發射層（FLAG_UNDERLINE 一態）
-// 雙層缺口，用戶看不見五形態差異——掛 live 即假宣稱。只准 pending:*。
+// 底線形態鈕（U4f 考卷重估）：原「styles.rs 折 bool＋發射 FLAG_UNDERLINE 一態」
+// 雙層缺口已被 E-2（t_b5a4d0bf）＋E-2b（t_5e62f3b5）消除（引擎面考卷 e2/e2b 卷＋
+// e2b_underline_shared_probe 20/20＋u4f_underline_style_live_probe 真瀏覽器閉環
+// 背書）。真能力掛 pending 屬低報違規——現行斷言鎖死「必須 live」。
 {
   const reg = new RegExp(`<(?:button|select)[^>]+data-command=["']format:underline-style["'][^>]*>`, 'i');
   const match = htmlContent.match(reg);
   assert(match !== null, '未在 HTML 中找到按鈕/控制項: [format:underline-style]');
   if (match) {
-    const isHonestPending = /data-requirement=["']pending:[^"']+["']/i.test(match[0]);
-    assert(isHonestPending, `紅線違規：format:underline-style 屬引擎解析＋發射缺口，禁止掛 live，實際為: ${match[0]}`);
-    console.log('  ✓ 按鈕 [format:underline-style] 誠實掛 pending（引擎形態缺口，假 live 回塞鎖）');
+    const isLive = /data-requirement=["']live["']/i.test(match[0]);
+    assert(isLive, `紅線違規：format:underline-style 的引擎面缺口已由 E-2/E-2b 消除（閉環證據 u4f_underline_style_live_probe），掛 pending＝低報假缺口，實際為: ${match[0]}`);
+    console.log('  ✓ 按鈕 [format:underline-style] live（E-2 解析保形態＋E-2b 共型寫入端，U4f 瀏覽器閉環背書）');
   }
 }
 

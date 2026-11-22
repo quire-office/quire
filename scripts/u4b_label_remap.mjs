@@ -63,8 +63,8 @@ const MAP = {
     basis: '查一：qword-core.js format:underline 分支＋qword-ui.js handleFormatUnderline＋adapter.formatUnderline→buildFormatTextRangeMutation→apply_mutation_json；查二：mutation.rs RunDirectPatch.underline: Option<UnderlineKind>；查三：patch_rpr() 寫入臂 remove_element("w:u")＋<w:u w:val="{as_u_val()}"/>'
   },
   'format:underline-style': {
-    req: 'pending:engine-para', title: '底線形態選單中斷點在引擎解析層：w:u/@w:val 五形態寫入真實，但 styles.rs 把 w:u 折成 Option<bool>——形態不進 RunStyle，發射層繪不出單條／雙條／點／虛線差異（用戶看見那層零變化，不可假 live）',
-    basis: '查一：js 無形態選擇 handler（無面板入口）；查二：UnderlineKind 五變體宣告真實；查三：消費鏈斷點實讀 core/ooxml/src/styles.rs `b"u" => rs.underline = Some(toggle_on_attr(e))`——形態不進 RunStyle，發射層 run_style() 僅 FLAG_UNDERLINE(4) 一態。引擎面缺口（解析＋發射兩層），依 U4 邊框同例另開引擎卡'
+    req: 'live', title: '底線形態選單（E-2 解析保形態＋E-2b 共型寫入端真通）：單條／雙條／粗條／點狀／虛線／無六形態逐字寫入 w:u/@w:val，切換即存檔件逐字對。wavy／words 等未支援形態寫入端誠實拒絕，不入選單值域',
+    basis: 'U4f 轉 live（原 U4b 記帳「styles.rs 折 Option<bool>＋發射一態」前提由 E-2（t_b5a4d0bf，docs/word-ui-e2-underline-report.md）＋E-2b（t_5e62f3b5，docs/word-ui-e2b-underline-shared-type-report.md）推翻，非外殼自修）：查一：qword-ui.js initPopovers 底線選單填充（值域=adapter UNDERLINE_KINDS）＋handleFormatUnderlineStyle→adapter.formatUnderline→apply_mutation_json；查二：RunDirectPatch.underline＝render-trait Underline 共型六形態；查三：patch_rpr() 寫入臂 <w:u w:val="{as_u_val()}"/> 逐形態真通＋閉環背書 shells/web/editor/tests/u4f_underline_style_live_probe.mjs（真 DOM click→存檔件 w:u/@w:val 逐字對＋wavy 誠實拒三層）'
   },
   'format:strikethrough': {
     req: 'live', title: `${LIVE_T}：strike（M2.1 RunDirectPatch）`,
