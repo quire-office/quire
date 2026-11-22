@@ -7,7 +7,7 @@
 
 use quire_layout::{
     breaks_from_pages, section_capacity, CaretPos, ContentBox, LayoutEngine, LayoutParams,
-    LineFlow, Page, ParaGrid, SectionGeometry, SectionSpec, TableSlot, TextMeasurer, MARGIN_BOTTOM,
+    LineFlow, Page, ParaGrid, SectionGeometry, SectionSpec, TableSlot, MARGIN_BOTTOM,
     MARGIN_LEFT, MARGIN_TOP,
 };
 use quire_ooxml::{
@@ -22,8 +22,13 @@ use thiserror::Error;
 
 // shells 需要顯示列表型別但只能 import 本 crate：在此 re-export（分層鐵律的唯一合法通道）。
 pub use quire_layout::{FLAG_DIR_EAVERT, FLAG_DIR_VERT, FLAG_DIR_VERT270};
+// E-2：渲染端幾何底線需要與排版同尺的文字寬度（同一 TextMeasurer 真值源，
+// 渲染殼不直接 import quire-layout——分層鐵律唯一合法通道）。本 crate 內部
+// 的 `TextMeasurer` 即此 re-export（原私有 import 已併入，避免同名二義）。
+pub use quire_layout::TextMeasurer;
 pub use quire_render_trait::{
-    DrawItem, PageDisplayList, Renderer, FLAG_BOLD, FLAG_ITALIC, FLAG_STRIKE, FLAG_UNDERLINE,
+    DrawItem, PageDisplayList, Renderer, Underline, FLAG_BOLD, FLAG_ITALIC, FLAG_STRIKE,
+    FLAG_UNDERLINE,
 };
 
 // 表格 canonical model（Phase3-1a）：型別定義在 quire-ooxml（PM 補正 5），
@@ -1428,6 +1433,8 @@ impl Engine {
                 bold: first.is_some_and(|r| r.bold),
                 italic: first.is_some_and(|r| r.italic),
                 underline: first.is_some_and(|r| r.underline),
+                // E-2：首 run 形態透傳（EntryStyle 單樣式拍平口徑，同 bold/italic）。
+                underline_kind: first.map(run_underline_emit).unwrap_or(None),
                 strike: first.is_some_and(|r| r.strike),
                 family: first
                     .and_then(|r| select_text_family(r.effective_fonts.as_ref(), ""))
@@ -1867,6 +1874,8 @@ impl Engine {
                     flags: 0,
                     color_argb: m.color_argb,
                     family: m.family.clone(),
+                    // 記號（編號標記）無底線宣告（flags 恆 0，E-2 零位移）。
+                    underline: None,
                     text: m.text.clone(),
                 });
             }
@@ -1910,6 +1919,8 @@ impl Engine {
                         flags,
                         color_argb: run.color_argb,
                         family: run.family.clone(),
+                        // E-2：註腳條目 run 形態透傳（EntryStyle 同源）。
+                        underline: run.underline_kind.clone(),
                         text: run.text.clone(),
                     });
                 }
@@ -1925,6 +1936,8 @@ impl Engine {
                 flags: 0,
                 color_argb: m.color_argb,
                 family: m.family.clone(),
+                // 記號（編號標記）無底線宣告（E-2 零位移）。
+                underline: None,
                 text: m.text.clone(),
             });
         }
@@ -1949,6 +1962,8 @@ impl Engine {
                 flags: 0,
                 color_argb: m.color_argb,
                 family: m.family.clone(),
+                // 記號（編號標記）無底線宣告（E-2 零位移）。
+                underline: None,
                 text: m.text.clone(),
             })
             .collect()
@@ -1993,6 +2008,8 @@ impl Engine {
                         flags,
                         color_argb: run.color_argb,
                         family: run.family.clone(),
+                        // E-2：尾註條目 run 形態透傳（同註腳臂）。
+                        underline: run.underline_kind.clone(),
                         text: run.text.clone(),
                     });
                 }
@@ -3650,7 +3667,13 @@ fn cascade_paragraphs(
             // 標記在解析期不打進 direct，正為不冒充直接格式越過級聯其他欄位。
             r2.bold = eff.bold.unwrap_or(false);
             r2.italic = eff.italic.unwrap_or(false);
-            r2.underline = eff.underline.unwrap_or(false) || r.rev_insert;
+            r2.underline = eff.underline.as_ref().is_some_and(|u| u.on()) || r.rev_insert;
+            // E-2：烘焙有效形態供發射端多態繪製。規則（PM 補正 5／卡面任務 3）：
+            // - 級聯 off（旗標已熄滅）→ None（不帶形態，發射端無從畫起）；
+            // - 級聯未宣告而修訂插入線點亮旗標 → None（發射端見旗標兜底單線，
+            //   與舊行為逐位元組同形——修訂線是繪製層註解，無 w:val 形態可言）；
+            // - 有形態 → 原樣帶上（含未支援 Raw，發射端降級單線＋TODO）。
+            r2.effective_underline = eff.underline.clone().filter(|u| u.on());
             r2.strike = eff.strike.unwrap_or(false) || r.rev_delete;
             if eff.color_set {
                 // 宣告 w:color（含 auto/非法→明確黑）以級聯為準；
@@ -3797,7 +3820,9 @@ fn cascade_paragraphs(
                 let mut r2 = r.clone();
                 r2.bold = eff.bold.unwrap_or(false);
                 r2.italic = eff.italic.unwrap_or(false);
-                r2.underline = eff.underline.unwrap_or(false);
+                r2.underline = eff.underline.as_ref().is_some_and(|u| u.on());
+                // E-2：框內 run 與正文同一條烘焙規則（無修訂臂，off→None）。
+                r2.effective_underline = eff.underline.clone().filter(|u| u.on());
                 r2.strike = eff.strike.unwrap_or(false);
                 if eff.color_set {
                     r2.color = eff.color;
@@ -4152,6 +4177,8 @@ fn emit_txbx_texts(
                         DEFAULT_TEXT_COLOR_ARGB,
                         None,
                     ));
+                    // E-2：豎排臂同樣透傳底線形態（首 run 口徑，同 flags）。
+                    let underline = own_runs.first().map(run_underline_emit).unwrap_or(None);
                     let fam = own_runs
                         .first()
                         .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
@@ -4172,6 +4199,7 @@ fn emit_txbx_texts(
                             flags: flags | FLAG_DIR_EAVERT,
                             color_argb,
                             family: fam.clone(),
+                            underline: underline.clone(),
                             text: c.to_string(),
                         });
                         yy += step;
@@ -4204,6 +4232,8 @@ fn emit_txbx_texts(
                         DEFAULT_TEXT_COLOR_ARGB,
                         None,
                     ));
+                    // E-2：豎排臂同樣透傳底線形態（首 run 口徑，同 flags）。
+                    let underline = own_runs.first().map(run_underline_emit).unwrap_or(None);
                     let fam = own_runs
                         .first()
                         .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
@@ -4230,6 +4260,7 @@ fn emit_txbx_texts(
                         flags: flags | FLAG_DIR_VERT270,
                         color_argb,
                         family: fam,
+                        underline,
                         text: t.clone(),
                     });
 
@@ -4263,6 +4294,8 @@ fn emit_txbx_texts(
                         DEFAULT_TEXT_COLOR_ARGB,
                         None,
                     ));
+                    // E-2：豎排臂同樣透傳底線形態（首 run 口徑，同 flags）。
+                    let underline = own_runs.first().map(run_underline_emit).unwrap_or(None);
                     let fam = own_runs
                         .first()
                         .and_then(|r| select_text_family(r.effective_fonts.as_ref(), &r.text));
@@ -4298,6 +4331,7 @@ fn emit_txbx_texts(
                             flags: flags | FLAG_DIR_VERT,
                             color_argb,
                             family: fam.clone(),
+                            underline: underline.clone(),
                             text: l,
                         });
                         if is_hyperlink_doc {
@@ -4479,6 +4513,8 @@ fn emit_txbx_texts(
                                 flags,
                                 color_argb,
                                 family: fam,
+                                // E-2：自由文字形 own run 底線形態透傳。
+                                underline: run_underline_emit(r),
                                 text: r.text.clone(),
                             });
                             xx += TextMeasurer::new(sz_eff).text_width(&r.text);
@@ -5713,6 +5749,8 @@ fn push_chart_items(
                 flags: 0,
                 color_argb: tick_color,
                 family: None,
+                // 圖表軸刻度標籤無底線宣告（E-2 零位移）。
+                underline: None,
                 text: s,
             });
         }
@@ -5731,6 +5769,8 @@ fn push_chart_items(
                 flags: 0,
                 color_argb: cat_color,
                 family: None,
+                // 圖表類別標籤無底線宣告（E-2 零位移）。
+                underline: None,
                 text: c.clone(),
             });
         }
@@ -5747,6 +5787,8 @@ fn push_chart_items(
             flags: 0,
             color_argb: 0xFF00_0000,
             family: None,
+            // 圖表標題無底線宣告（E-2 零位移）。
+            underline: None,
             text: title.clone(),
         });
     }
@@ -6082,7 +6124,20 @@ fn run_style(r: &quire_ooxml::Run) -> (u8, u32, Option<f32>) {
     (flags, color_argb, r.size_pt)
 }
 
-/// 行內同質段：(起始碼點, 結束碼點, flags, color_argb, 級聯字級, 級聯字型族, tab_count, highlight, vert_align)。
+/// E-2：發射端底線形態取值（單一判據，正文／格內／註腳各發射點共用）。
+/// - 旗標熄滅 → `None`（渲染端不畫；級聯 off 贏過上層的結果）；
+/// - 旗標亮但無烘焙形態 → `None`（＝級聯未宣告的繪製層註解，典型＝修訂插入
+///   線；渲染端見 `FLAG_UNDERLINE` 自行兜底單線，與舊渲染逐位元組同形——
+///   零位移守門：無 `w:u` 宣告的檔案顯示列表 JSON 多出不了欄位）；
+/// - 旗標亮且有烘焙形態 → 原樣透傳（含未支援 `Raw`，渲染端降級單線＋TODO）。
+fn run_underline_emit(r: &quire_ooxml::Run) -> Option<quire_ooxml::Underline> {
+    if !r.underline {
+        return None;
+    }
+    r.effective_underline.clone()
+}
+
+/// 行內同質段：(起始碼點, 結束碼點, flags, color_argb, 級聯字級, 級聯字型族, tab_count, highlight, vert_align, underline)。
 type LineSegment = (
     usize,
     usize,
@@ -6093,6 +6148,7 @@ type LineSegment = (
     usize,
     Option<u32>,
     Option<quire_ooxml::VertAlign>,
+    Option<quire_ooxml::Underline>,
 );
 
 /// 將單行文字與所屬段落的 `Run` 邊界（依 char offset 累積）求交集，
@@ -6118,12 +6174,18 @@ fn emit_line_run_items(
     let line_len_cp = char_indices.len();
     if line_len_cp == 0 {
         let first = para.and_then(|p| p.runs.first());
-        let (flags, color_argb, sz, family) = match first {
+        let (flags, color_argb, sz, family, underline) = match first {
             Some(r) => {
                 let (f, c, s) = run_style(r);
-                (f, c, s, select_text_family(r.effective_fonts.as_ref(), ""))
+                (
+                    f,
+                    c,
+                    s,
+                    select_text_family(r.effective_fonts.as_ref(), ""),
+                    run_underline_emit(r),
+                )
             }
-            None => (0, DEFAULT_TEXT_COLOR_ARGB, None, None),
+            None => (0, DEFAULT_TEXT_COLOR_ARGB, None, None, None),
         };
         items.push(DrawItem::Text {
             x: base_x,
@@ -6132,6 +6194,7 @@ fn emit_line_run_items(
             flags,
             color_argb,
             family,
+            underline,
             text: String::new(),
         });
         return;
@@ -6155,7 +6218,8 @@ fn emit_line_run_items(
                         fonts: Option<quire_ooxml::RunFonts>,
                         tab_count: usize,
                         highlight: Option<u32>,
-                        vert_align: Option<quire_ooxml::VertAlign>| {
+                        vert_align: Option<quire_ooxml::VertAlign>,
+                        underline: Option<quire_ooxml::Underline>| {
         if s >= e {
             return;
         }
@@ -6164,7 +6228,10 @@ fn emit_line_run_items(
                 // 相鄰且樣式相同時合併為單一可繪段。
                 // 只有在無 tab、無 highlight、無上標的普通同質文字時，才允許跨微調字級合併
                 // （避免首字母大寫等微小字級變動把整行文字切碎，守住 render-lab 0.987 基線）。
-                let same_special = last.7 == highlight && last.8 == vert_align;
+                // E-2：底線形態入合併鍵（段合併鍵判別鐵律：新欄位入鍵）——
+                // 同為「有底線」的 double 與 single 相鄰不得併段。
+                let same_special =
+                    last.7 == highlight && last.8 == vert_align && last.9 == underline;
                 if same_special
                     && last.1 == s
                     && last.2 == flags
@@ -6177,6 +6244,8 @@ fn emit_line_run_items(
                 // 若當前段為純空白，且無 tab、無 highlight、無上標：
                 // 空白字元無實質墨跡，在普通文字流中不應因孤立的粗體/字級標記將物理行割裂。
                 // 直接併入前一個普通文字段（保留前段樣式），維持自然斷行與行盒完整性。
+                // （E-2 零回退：本臂今天就不比 flags——粗體/底線旗標不同的空白
+                // 照樣併前段，形態欄維持同款有損口徑，既有渲染零位移。）
                 if last.1 == s
                     && highlight.is_none()
                     && vert_align.is_none()
@@ -6194,7 +6263,7 @@ fn emit_line_run_items(
             }
         }
         segments.push((
-            s, e, flags, color, size, fonts, tab_count, highlight, vert_align,
+            s, e, flags, color, size, fonts, tab_count, highlight, vert_align, underline,
         ));
     };
 
@@ -6226,6 +6295,7 @@ fn emit_line_run_items(
                         0,
                         None,
                         None,
+                        None,
                     );
                 }
                 let (f, c, sz) = run_style(r);
@@ -6241,6 +6311,7 @@ fn emit_line_run_items(
                     tabs,
                     r.highlight,
                     r.vert_align,
+                    run_underline_emit(r),
                 );
                 covered = rel_e;
             }
@@ -6257,12 +6328,23 @@ fn emit_line_run_items(
             0,
             None,
             None,
+            None,
         );
     }
 
     let mut x_off = 0.0f32;
-    for (rel_s, rel_e, flags, color_argb, run_size, run_fonts, tab_count, highlight, vert_align) in
-        segments
+    for (
+        rel_s,
+        rel_e,
+        flags,
+        color_argb,
+        run_size,
+        run_fonts,
+        tab_count,
+        highlight,
+        vert_align,
+        underline,
+    ) in segments
     {
         let seg_text = &line.text[byte_of(rel_s)..byte_of(rel_e)];
         let base_seg_size = run_size.unwrap_or(size_pt);
@@ -6355,6 +6437,7 @@ fn emit_line_run_items(
             flags,
             color_argb,
             family: seg_fam,
+            underline,
             text: seg_text.to_string(),
         });
         x_off += seg_w;
@@ -6376,11 +6459,11 @@ fn resolve_cell_line_style(
     canon_tbl: Option<&CanonicalTable>,
     paragraphs: &[quire_ooxml::Paragraph],
     line_text: &str,
-) -> (u8, u32, Option<String>) {
+) -> (u8, u32, Option<String>, Option<quire_ooxml::Underline>) {
     if line_text.is_empty() {
-        return (0, DEFAULT_TEXT_COLOR_ARGB, None);
+        return (0, DEFAULT_TEXT_COLOR_ARGB, None, None);
     }
-    let match_in_para = |p: &quire_ooxml::Paragraph| -> Option<(u8, u32, Option<String>)> {
+    let match_in_para = |p: &quire_ooxml::Paragraph| -> Option<(u8, u32, Option<String>, Option<quire_ooxml::Underline>)> {
         let full: String = p.runs.iter().map(|r| r.text.as_str()).collect();
         let byte_pos = full.find(line_text)?;
         let start_cp = full[..byte_pos].chars().count();
@@ -6388,6 +6471,10 @@ fn resolve_cell_line_style(
         let mut flags = 0u8;
         let mut color = None;
         let mut family = None;
+        // E-2：底線形態——首個覆蓋本行的 run 決定形態（選族同款口徑）；
+        // 行內多 run 形態不一時老實取首個（單樣式整行路徑的既有近似，
+        // 多樣式行走 CellRun 段級透傳不經此函數）。
+        let mut underline: Option<quire_ooxml::Underline> = None;
         let mut run_cp = 0usize;
         for r in &p.runs {
             let r_len = r.text.chars().count();
@@ -6405,9 +6492,12 @@ fn resolve_cell_line_style(
                 if family.is_none() && !r.text.is_empty() {
                     family = select_text_family(r.effective_fonts.as_ref(), line_text);
                 }
+                if underline.is_none() {
+                    underline = run_underline_emit(r);
+                }
             }
         }
-        Some((flags, color.unwrap_or(DEFAULT_TEXT_COLOR_ARGB), family))
+        Some((flags, color.unwrap_or(DEFAULT_TEXT_COLOR_ARGB), family, underline))
     };
     if let Some(cc) = canon_cell {
         for b in &cc.blocks {
@@ -6435,7 +6525,7 @@ fn resolve_cell_line_style(
             }
         }
     }
-    (0, DEFAULT_TEXT_COLOR_ARGB, None)
+    (0, DEFAULT_TEXT_COLOR_ARGB, None, None)
 }
 
 /// K4e2 格內文字框配對池：(文字框候選, 消費旗標)。消費式配對——同一框只
@@ -6522,7 +6612,7 @@ fn push_frag_items(
                 if t.runs.is_empty() {
                     // TODO(CardA): 表格格內文字本輪維持整格單樣式發射（不拆分為多個 DrawItem::Text），
                     // 待後續表格卡在 CellText 攜帶段落與字元偏移後，再與正文行共用跨 run 樣式拆段。
-                    let (flags, color_argb, family) =
+                    let (flags, color_argb, family, underline) =
                         resolve_cell_line_style(canon_cell, canon_tbl, paragraphs, &t.text);
                     // K23 回塞鎖（修 A）：`K23_CELL_FAMILY_BUGGY=1` ⇒ 退回「格內
                     // 文字恆不宣告族」的舊態（紅燈 k23 燈 1b／1c 必紅）。
@@ -6544,6 +6634,7 @@ fn push_frag_items(
                         // 的 K7-cal 水平尺收斂，發射必須同 face 宣告，否則
                         // 渲染端 wide fallback 把行拉寬 → 視覺爆欄（fdo68607）。
                         family,
+                        underline,
                         text: t.text.clone(),
                     });
                     continue;
@@ -6582,6 +6673,8 @@ fn push_frag_items(
                         // K23：格內 run 級字型族（原「未透傳＝None」，同單樣式
                         // 路徑的理由：斷行尺與發射宣告必須同 face）。
                         family,
+                        // E-2：段級底線形態（CellRun 透傳，來源端已按 run 標注）。
+                        underline: r.underline.clone(),
                         text: seg.to_string(),
                     });
                     // 零漂移口徑（emit_line_run_items 同款）：未宣告段與整行
@@ -7249,6 +7342,8 @@ impl Engine {
                     flags: flags | FLAG_DIR_VERT270,
                     color_argb,
                     family: fam,
+                    // E-2：豎排 270 底線形態透傳（首 run 口徑同 run_style）。
+                    underline: own.first().map(run_underline_emit).unwrap_or(None),
                     text: shown,
                 });
                 cur_x += col_w;

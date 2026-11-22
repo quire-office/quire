@@ -724,11 +724,21 @@ fn cell_run_spans(paras: &[quire_ooxml::Paragraph]) -> HashMap<usize, Vec<CellRu
             }
             let from = cp;
             cp += n;
+            // E-2：底線形態（旗標熄滅→None；未宣告的繪製層註解→None 兜底
+            // 單線；有形態→透傳，含未支援 Raw）。正文 run_underline_emit
+            // 同判據——此處 r 已是級聯烘焙後的投影 run。
+            let underline = crate::run_underline_emit(r);
             if let Some(last) = spans.last_mut() {
                 // 相鄰同鍵併段（沿用正文 `emit_line_run_items` 合併鍵口徑：
                 // 字型宣告不入鍵——選族屬後續卡，否則同款式 run 只因字型
                 // 不同就被拆開，違反零版面變動契約）。
-                if last.flags == flags && last.size_pt == r.size_pt && last.color_argb == r.color {
+                // E-2：形態入合併鍵（段合併鍵判別鐵律：新欄位入鍵）——
+                // double 與 single 相鄰不得併段。
+                if last.flags == flags
+                    && last.size_pt == r.size_pt
+                    && last.color_argb == r.color
+                    && last.underline == underline
+                {
                     last.to = cp;
                     continue;
                 }
@@ -739,6 +749,7 @@ fn cell_run_spans(paras: &[quire_ooxml::Paragraph]) -> HashMap<usize, Vec<CellRu
                 flags,
                 size_pt: r.size_pt,
                 color_argb: r.color,
+                underline,
             });
         }
         if spans.len() >= 2 {

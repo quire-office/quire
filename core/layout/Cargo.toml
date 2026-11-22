@@ -7,6 +7,10 @@ description = "Line breaking + budgeted pagination (platform-free; real shaping 
 
 [dependencies]
 serde = { workspace = true }
+# E-2：CellRun 承載底線形態枚舉 `Underline`（單一真值源在 render-trait，
+# 顯示列表契約定義處）——與 quire-odf 對 render-trait 的既有依賴同款合法
+# 向下邊（render-trait 零 core 依賴；check-layering.sh 只禁 core→shells）。
+quire-render-trait = { workspace = true }
 # 真字型 shaping（harfbuzz 級）：連字、標點壓縮、組合字都如實反映在 advances。
 # default-features=false：不准系統字型探索——分頁一致性只准來自內嵌子集
 # （wasm32 上也沒有系統字型可用）。

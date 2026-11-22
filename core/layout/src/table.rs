@@ -107,6 +107,12 @@ pub struct CellRun {
     pub size_pt: Option<f32>,
     #[serde(default)]
     pub color_argb: Option<u32>,
+    /// 底線形態（E-2：`w:u/@w:val` 保形態透傳，正文 `LineSegment` 同款口徑）。
+    /// `None`＝級聯未宣告（發射端見 `FLAG_UNDERLINE` 兜底單線）；serde
+    /// default＋None 不外露＝舊快照／舊構造零位移（goldens tables.jsonl 的
+    /// 自訂序列化器本就不寫 runs，零擾動）。斷行／分頁／存檔不消費本欄。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline: Option<quire_render_trait::Underline>,
 }
 
 /// 格內流式 block：文字段落或巢狀表，**保持文件序**（ECMA-376 §17.4.66：
@@ -805,6 +811,8 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                                             flags: r.flags,
                                             size_pt: r.size_pt,
                                             color_argb: r.color_argb,
+                                            // E-2：底線形態隨段透傳（交集不改形態）。
+                                            underline: r.underline.clone(),
                                         })
                                     })
                                     .collect()

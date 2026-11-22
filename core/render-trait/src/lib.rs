@@ -10,6 +10,48 @@ pub const FLAG_ITALIC: u8 = 2;
 pub const FLAG_UNDERLINE: u8 = 4;
 pub const FLAG_STRIKE: u8 = 8;
 
+/// 底線形態（ECMA-376 §17.3.2.41 `w:u/@w:val` ST_UnderlineValues 子集）。
+///
+/// 單一真值源（E-2）：解析層級聯（`quire_ooxml::RunStyle::underline`）與
+/// 發射層（[`DrawItem::Text::underline`]）共用本型——讀取端與繪製端零口徑
+/// 漂移。三態語義向 `bold`/`italic` 靠攏，由外層 `Option` 表達「未宣告」：
+/// - `Option::None`＝未宣告（級聯繼承，發射端以 `FLAG_UNDERLINE` 旗標兜底）；
+/// - [`Underline::Off`]＝明確關閉（`w:val="none"/"false"/"0"/"off"`），必須
+///   能熄滅樣式層宣告（`toggle_attr_on` 語義銜接）；
+/// - 其餘變體＝開啟＋形態。
+///
+/// serde 表示＝`w:val` 小寫字面（`"single"`…），`Raw` 以外部標籤形
+/// `{"raw":"wavy"}` 保形——JSON 線契約逐字鎖死於 E-2 考卷。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Underline {
+    /// 明確關閉（`none`／`false`／`0`／`off` 四種拼法歸一於解析層）。
+    Off,
+    /// `single`：單條底線（無 `@w:val` 時的 ECMA 預設）。
+    Single,
+    /// `double`：雙條底線。
+    Double,
+    /// `thick`：粗單線。
+    Thick,
+    /// `dotted`：點狀底線。
+    Dotted,
+    /// `dashed`：虛線底線（Word 相容別名 `dash` 於解析層歸一，corpus
+    /// phpword 四檔實見）。
+    Dashed,
+    /// 未支援形態的 raw 保形通道（ECMA 全集其餘值如 `wavy`／`words`，
+    /// corpus fdo61343 實見 `words`）。發射端**降級單線＋TODO，禁 panic**，
+    /// 原字面保留待後續卡補繪製配方。
+    Raw(String),
+}
+
+impl Underline {
+    /// 是否為「有底線」（`Off` 以外皆真）。`FLAG_UNDERLINE` 旗標的判準。
+    pub fn on(&self) -> bool {
+        !matches!(self, Underline::Off)
+    }
+}
+
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DrawItem {
     Text {
@@ -24,6 +66,13 @@ pub enum DrawItem {
         /// `None`＝文件未宣告（渲染端用自身預設），舊顯示列表 JSON 照解析。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         family: Option<String>,
+        /// 底線形態（E-2：`w:u/@w:val` 保形態；ECMA-376 §17.3.2.41）。
+        /// `None`＝級聯未宣告（渲染端見 `FLAG_UNDERLINE` 時畫單線兜底——修訂
+        /// 插入線等繪製層註解走此路），舊顯示列表 JSON 照解析且零位移。
+        /// `Some(Off)` 理論上不進發射（旗標由 `Underline::on()` 點亮），渲染端
+        /// 遇 `Some(Off)` 一律不畫。未支援 `Raw(_)` 降級單線（禁 panic）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        underline: Option<Underline>,
         text: String,
     },
     Rect {
@@ -136,6 +185,8 @@ mod tests {
             flags: 0,
             color_argb: default_opaque_black(),
             family: None,
+            // E-2：底線形態欄（None＝未宣告，serde 跳欄；本測鎖 family 欄）。
+            underline: None,
             text: "舊格式".to_string(),
         };
         let json = serde_json::to_string(&item).unwrap();
