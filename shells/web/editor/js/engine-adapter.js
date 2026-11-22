@@ -351,29 +351,67 @@ export function buildInsertTableMutation(afterPara, rows, cols, colWidthsPt = nu
  * @param {Array<Array<number>|{row_idx:number,cell_idx:number,sub_table_idx:number}>} [nestedSteps]
  *        巢狀步進，預設空陣列＝根表
  */
+/**
+ * 錯誤訊息安全字串化（agy 二審問題5加固配套）：JSON.stringify 對循環引用／
+ * BigInt 會自爆 TypeError，把守門語意覆蓋成序列化器報錯——失敗退回
+ * Object.prototype.toString，守門 Error 的欄位名訊息不得被搶話筒。
+ */
+function safeRepr(value) {
+  try { return JSON.stringify(value); } catch { return Object.prototype.toString.call(value); }
+}
+
+/**
+ * U4e S4：usize 索引欄的嚴格轉型守門。
+ *
+ * 為何必須擋在轉型前：`Number(null)===Number("")===Number(false)===0`——
+ * `[{row_idx:null, cell_idx:""}]` 這種壞形態若不擋會被靜默正規化成 [0,0,0]
+ * 送進引擎（agy 審查實錄坐實），用戶的壞座標變成「操作第 0 格」的假成功。
+ * 這裡把 boolean／bigint／object／空串先行排除，再用 Number.isSafeInteger＋
+ * usize 上界 0xFFFFFFFF 收口；任何不合規的值直接拋錯，絕不靜默轉 0。
+ * bigint 也要在 Number() 前擋下——Number(2n) 自己會拋 TypeError。
+ *
+ * @param {unknown} value - 待轉型的索引值
+ * @param {string} label - 錯誤訊息裡的欄位名
+ * @returns {number} 0..0xFFFFFFFF 的安全整數
+ */
+function coerceUsizeIndex(value, label) {
+  const repr = safeRepr(value);
+  if (typeof value === 'boolean' || typeof value === 'bigint' || value === null || typeof value === 'object') {
+    throw new Error(`${label} 需為 0..0xFFFFFFFF 的整數，收到 ${repr}`);
+  }
+  if (typeof value === 'string' && value.trim() === '') {
+    throw new Error(`${label} 不可為空字串`);
+  }
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n < 0 || n > 0xFFFFFFFF) {
+    throw new Error(`${label} 需為 0..0xFFFFFFFF 的安全整數，收到 ${repr}`);
+  }
+  return n;
+}
+
 export function buildTablePath(rootSlot, nestedSteps = []) {
   if (!Array.isArray(nestedSteps)) {
     throw new Error(`nested_steps 需為陣列，收到 ${JSON.stringify(nestedSteps)}`);
   }
   const steps = nestedSteps.map((step, i) => {
     if (Array.isArray(step)) {
-      if (step.length !== 3 || step.some((v) => !Number.isInteger(Number(v)) || Number(v) < 0)) {
-        throw new Error(`nested_steps[${i}] 需為 [row_idx, cell_idx, sub_table_idx] 三個非負整數，收到 ${JSON.stringify(step)}`);
+      if (step.length !== 3) {
+        throw new Error(`nested_steps[${i}] 需為 [row_idx, cell_idx, sub_table_idx] 三個非負整數，收到 ${safeRepr(step)}`);
       }
-      return step.map(Number);
+      return step.map((v) => coerceUsizeIndex(v, `nested_steps[${i}]`));
     }
     if (step && typeof step === 'object') {
-      const triple = [step.row_idx, step.cell_idx, step.sub_table_idx].map(Number);
-      if (triple.some((v) => !Number.isInteger(v) || v < 0)) {
-        throw new Error(`nested_steps[${i}] 物件形態需齊備 row_idx／cell_idx／sub_table_idx 非負整數，收到 ${JSON.stringify(step)}`);
+      if (!('row_idx' in step) || !('cell_idx' in step) || !('sub_table_idx' in step)) {
+        throw new Error(`nested_steps[${i}] 物件形態需齊備 row_idx／cell_idx／sub_table_idx 非負整數，收到 ${safeRepr(step)}`);
       }
-      return triple;
+      return [step.row_idx, step.cell_idx, step.sub_table_idx]
+        .map((v) => coerceUsizeIndex(v, `nested_steps[${i}]`));
     }
-    throw new Error(`nested_steps[${i}] 形態非法（三元組陣列或具名欄位物件）：${JSON.stringify(step)}`);
+    throw new Error(`nested_steps[${i}] 形態非法（三元組陣列或具名欄位物件）：${safeRepr(step)}`);
   });
   return {
     target: 'Body',
-    root_slot: Number(rootSlot),
+    root_slot: coerceUsizeIndex(rootSlot, 'root_slot'),
     nested_steps: steps
   };
 }
@@ -792,6 +830,13 @@ export class EngineAdapter {
       this.engine = new WasmEngine(bytes);
       this.fileName = fileName;
       this.caret = { para: 0, cp: 0 };
+      // U4e S3：換檔必清上一檔的表格狀態殘留。舊版只重置 caret——
+      // lastInsertedRootSlot／selection 帶著上一檔的槽號／選區進新檔，
+      // 新檔多表＋游標表外時，UI 端 resolveRootSlot 的
+      // `activeTableSlot < count` 分支會命中舊槽號，繞過 U4d L6 防線
+      // 靜默操作新檔裡用戶根本沒點的表（agy 審查坐實）。
+      this.lastInsertedRootSlot = null;
+      this.selection = null;
       this.isDirty = false;
       return this.engine;
     } catch (e) {
@@ -972,6 +1017,13 @@ export class EngineAdapter {
       this.isDirty = true;
       if (res.outcome && res.outcome.caret_after) {
         this.caret = { ...res.outcome.caret_after };
+      } else {
+        // U4e S2：引擎 undo 的 caret_after 實測恆 null，undo 撤掉插表後
+        // 游標段落可能已隨 XML 縮掉——舊版此處零校正，幽靈游標立即重現
+        // （實錄：插表後 caret={para:14}，undo 後 paraCount 20→14，緊接
+        // 打字引擎回「段落索引越界: 請求 14，總段數 14」）。統一夾限見
+        // _clampCaretAndSelection。
+        this._clampCaretAndSelection();
       }
     }
     return res;
@@ -988,6 +1040,9 @@ export class EngineAdapter {
       this.isDirty = true;
       if (res.outcome && res.outcome.caret_after) {
         this.caret = { ...res.outcome.caret_after };
+      } else {
+        // U4e S2：同 undo——redo 的 caret_after 亦為 null，路徑同檢。
+        this._clampCaretAndSelection();
       }
     }
     return res;
@@ -1211,6 +1266,51 @@ export class EngineAdapter {
   }
 
   /**
+   * U4e S2：游標／選區越界校正的統一出口（caret_after 缺席路徑共用）。
+   *
+   * 收攏三件事（舊版 _applyTableMutation 只做第一件的 para 半件）：
+   * 1. caret.para < paragraphCount()，越界重置到末段起點；
+   * 2. caret.cp <= 該段字元碼點數（Array.from 計數，與打字路徑同口徑），
+   *    越界夾到段尾——cp 越界時打字會被引擎拒或錯位；
+   * 3. selection 任一端越界（段號或 cp）整筆重置 null——越界選區讓
+   *    getEffectiveRange／getEffectiveParaRange 組出壞 mutation，寧可降回
+   *    游標整段，也不帶病操作。界內選區原樣保留，不得連坐清空。
+   */
+  _clampCaretAndSelection() {
+    const pc = this.paragraphCount();
+    if (this.caret) {
+      let para = Number.isInteger(this.caret.para) ? this.caret.para : 0;
+      let paraClamped = false;
+      if (para >= pc) { para = Math.max(0, pc - 1); paraClamped = true; }
+      if (para < 0) { para = 0; paraClamped = true; }
+      // agy 二審問題2：段落越界＝原位置已不存在，回「末段起點」（cp=0，與
+      // U4d L5 原契約一致）；段落仍在、只有 cp 越界才夾到段尾保留。
+      let cp;
+      if (paraClamped) {
+        cp = 0;
+      } else {
+        const len = Array.from(this.paragraphText(para) || '').length;
+        cp = Number.isInteger(this.caret.cp) ? this.caret.cp : 0;
+        if (cp > len) cp = len;
+        if (cp < 0) cp = 0;
+      }
+      if (para !== this.caret.para || cp !== this.caret.cp) {
+        this.caret = { para, cp };
+      }
+    }
+    if (this.selection) {
+      const end = this.selection.end || this.selection.start;
+      const outOfRange = (pos) => !pos
+        || !Number.isInteger(pos.para) || pos.para < 0 || pos.para >= pc
+        || !Number.isInteger(pos.cp) || pos.cp < 0
+        || pos.cp > Array.from(this.paragraphText(pos.para) || '').length;
+      if (outOfRange(this.selection.start) || outOfRange(end)) {
+        this.selection = null;
+      }
+    }
+  }
+
+  /**
    * 套用一筆表格類 Mutation：呼叫引擎、解析 outcome、回傳原始結果給上層。
    * 上層（qword-ui）依 ok 決定是否重排，失敗一律如實回報，不得寫成成功。
    *
@@ -1218,6 +1318,8 @@ export class EngineAdapter {
    * （引擎不給游標回訊），刪列後游標段落可能已隨 XML 縮掉而越界——之後打字
    * 引擎會回「段落索引越界」（紅燈實錄）。這裡在成功且引擎未給游標回訊時
    * 自查越界並重置到安全段落（末段起點），不讓游標留在不存在的位置。
+   * U4e S2：校正升格為 _clampCaretAndSelection（para＋cp＋selection 三面），
+   * 並與 undo()／redo() 共用同一出口。
    */
   _applyTableMutation(mutation) {
     if (!this.engine) throw new Error('尚未開啟文件，無法操作表格');
@@ -1226,12 +1328,11 @@ export class EngineAdapter {
       this.isDirty = true;
       if (res.outcome && res.outcome.caret_after) {
         this.caret = { ...res.outcome.caret_after };
-      } else if (this.caret) {
-        const pc = this.paragraphCount();
-        if (this.caret.para >= pc) {
-          this.caret = { para: Math.max(0, pc - 1), cp: 0 };
-        }
       }
+      // agy 二審問題3加固：caret_after 在場時引擎回訊先落地再夾限——合法回訊
+      // 在場夾限是 no-op（游標零變動），但越界 selection 不再被成功路徑完全
+      // 跳過（幽靈選區同屬幽靈狀態，不得只有缺席路徑清）。
+      this._clampCaretAndSelection();
     }
     return res;
   }
@@ -1244,31 +1345,42 @@ export class EngineAdapter {
    * 最後，盲設末張會操作到舊表）。
    */
   _resolveTablePath(rootSlot) {
-    if (rootSlot !== undefined && rootSlot !== null && rootSlot !== '') {
-      const n = Number(rootSlot);
-      if (!Number.isInteger(n) || n < 0) {
-        return { path: null, error: `root_slot 需為非負整數，收到 ${rootSlot}` };
+    // U4e S4：構造器／反查的 throw 路徑必須在此收斂為 {path:null, error}。
+    // 舊版整條呼叫鏈無 try/catch：locator 回壞結構或 buildTablePath 對壞
+    // 座標拋錯時，未捕獲例外直接洩漏給 Ribbon 按鈕的 onclick（實錄：
+    // 引擎 locator 拋「引擎炸了」時 insertTableRow 把例外原樣吐給呼叫端）。
+    try {
+      if (rootSlot !== undefined && rootSlot !== null && rootSlot !== '') {
+        // agy 二審問題1：入口不得先 Number(rootSlot) 過關——Number(false)=0、
+        // Number([])=0 會在守門前先被洗白成合法索引。直接走 coerceUsizeIndex
+        // （其拋錯由本 try/catch 收斂為 {path:null, error}，語意不變）。
+        const n = coerceUsizeIndex(rootSlot, 'root_slot');
+        return { path: buildTablePath(n), error: null, rootSlot: n };
       }
-      return { path: buildTablePath(n), error: null, rootSlot: n };
-    }
-    const located = this.currentTableCell();
-    if (located && Number.isInteger(located.rootSlot) && located.rootSlot >= 0) {
+      const located = this.currentTableCell();
+      if (located && Number.isInteger(located.rootSlot) && located.rootSlot >= 0) {
+        return {
+          path: buildTablePath(located.rootSlot, located.nestedSteps),
+          error: null,
+          rootSlot: located.rootSlot,
+          discovered: true,
+          viaCaret: true
+        };
+      }
+      const count = this.tableCount();
+      if (count === null) return { path: null, error: '無法讀取文件中的表格張數' };
+      if (count === 0) return { path: null, error: '文件中沒有表格，請先插入表格' };
+      if (count === 1) return { path: buildTablePath(0), error: null, rootSlot: 0, discovered: true };
       return {
-        path: buildTablePath(located.rootSlot, located.nestedSteps),
-        error: null,
-        rootSlot: located.rootSlot,
-        discovered: true,
-        viaCaret: true
+        path: null,
+        error: `文件中有 ${count} 張表格且游標不在任何表格內，無法判定操作目標（請把游標移進目標表格，或明確指定 root_slot）`
       };
+    } catch (e) {
+      // agy 二審問題6加固：收斂不吞除錯線索——真例外進 console.warn（含堆疊），
+      // 呼叫端照樣拿到 {path:null, error} 的誠實回傳。
+      console.warn('[EngineAdapter] _resolveTablePath 捕獲例外:', e);
+      return { path: null, error: `表格路徑解析失敗：${e && e.message ? e.message : String(e)}` };
     }
-    const count = this.tableCount();
-    if (count === null) return { path: null, error: '無法讀取文件中的表格張數' };
-    if (count === 0) return { path: null, error: '文件中沒有表格，請先插入表格' };
-    if (count === 1) return { path: buildTablePath(0), error: null, rootSlot: 0, discovered: true };
-    return {
-      path: null,
-      error: `文件中有 ${count} 張表格且游標不在任何表格內，無法判定操作目標（請把游標移進目標表格，或明確指定 root_slot）`
-    };
   }
 
   /**

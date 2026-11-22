@@ -33,6 +33,8 @@ export class QWordUI {
     this.activePopover = null;
     this.rulerDragState = null;
     this.pageWrappers = [];
+    // U4e S1：巢狀表游標拒絕旗標（resolveRootSlot 記、_requireTableTarget 消費）
+    this._nestedCaretBlocked = false;
 
     // 將核心、外殼與引擎適配器掛載至 window 供探針與外部腳本呼叫
     window.QWordCore = this.core;
@@ -589,6 +591,14 @@ export class QWordUI {
     try {
       await this.adapter.init();
       this.adapter.openFile(bytes, fileName);
+      // U4e S3：換檔必清上一檔殘留的 UI 端表格狀態。openFile 只重置引擎側
+      // 狀態，UI 的 activeTableSlot 帶著上一檔的槽號進新檔——新檔多表＋游標
+      // 表外時命中 resolveRootSlot 的 `activeTableSlot < count` 分支，繞過
+      // U4d L6 防線靜默操作新檔的舊槽號表（agy 審查坐實）。圖片選取態與
+      // 巢狀拒絕旗標同理不得跨檔殘留；拖放 drop 路徑同走本函數，一站收口。
+      this.activeTableSlot = null;
+      this._nestedCaretBlocked = false;
+      this.resetImagePickMode();
       await this.renderDocument();
       this.syncEngineStats();
       console.log(`[QWordUI] 成功載入文件: ${fileName}`);
@@ -1102,8 +1112,19 @@ export class QWordUI {
    * 「無法判定目標表格」——**禁止靜默退回 count-1**：插入錨點是游標段落，
    * 新表不必然排在最後，末張猜測會操作到用戶沒點的表（agy 覆核坐實，紅燈
    * 實錄見 docs/word-ui-u4d-fixes-report.md L6）。
+   *
+   * U4e S1（巢狀表跨層守衛）：游標落在**巢狀表**格內時，locator 反查回來的
+   * rootSlot 是**外層根表**的槽號、巢狀座標全在 nestedSteps 裡。舊版直接取
+   * rootSlot 丟棄 nestedSteps 以純整數傳下去——用戶游標在巢狀表裡點「刪除列」，
+   * 實際靜默刪掉外層根表末列，零提示（agy 審查實錄：resolveRootSlot 實得 0，
+   * deleteTableRow(0,1) ok=true，外層 rows 2→1）。本輪白名單不做巢狀操作支援：
+   * nestedSteps 非空一律回 null 並記 _nestedCaretBlocked 旗標，由
+   * _requireTableTarget 誠實拒＋彈窗說明（誠實拒勝過靜默改錯表）。
+   * engine-adapter._resolveTablePath 的 buildTablePath(rootSlot, nestedSteps)
+   * 分支保留——那是真巢狀支援的引擎側後路，本卡不動。
    */
   resolveRootSlot(requested) {
+    this._nestedCaretBlocked = false;
     if (Number.isInteger(requested) && requested >= 0) {
       this.activeTableSlot = requested;
       return requested;
@@ -1111,6 +1132,10 @@ export class QWordUI {
     const located = typeof this.adapter.currentTableCell === 'function'
       ? this.adapter.currentTableCell()
       : null;
+    if (located && Array.isArray(located.nestedSteps) && located.nestedSteps.length > 0) {
+      this._nestedCaretBlocked = true;
+      return null;
+    }
     if (located && Number.isInteger(located.rootSlot) && located.rootSlot >= 0) {
       this.activeTableSlot = located.rootSlot;
       return located.rootSlot;
@@ -1288,6 +1313,15 @@ export class QWordUI {
       return null;
     }
     const slot = this.resolveRootSlot(requested);
+    // U4e S1：巢狀表游標的誠實拒分支（resolveRootSlot 記旗標於此消費）——
+    // 不得讓巢狀座標被降階成外層根表操作，也不得只丟一句通用「無法定位」。
+    if (this._nestedCaretBlocked) {
+      this._nestedCaretBlocked = false;
+      const why = '游標目前在巢狀表格（表格裡的表格）內。巢狀表內的操作尚未支援，請直接點外層表格後再操作。';
+      this.showErrorModal('巢狀表操作尚未支援', why);
+      this._reportEngineRejection(cmdId, payload, { error: why, rejectedByShell: true });
+      return null;
+    }
     if (slot === null) {
       const count = this.adapter.tableCount();
       const why = count === 0
