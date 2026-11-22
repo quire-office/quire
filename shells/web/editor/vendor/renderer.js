@@ -161,6 +161,74 @@ function decodeImageItem(img) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// 底線形態幾何（U4g）
+//
+// 真值源鐵律（禁憑空自創）：五組常數逐字取自 `shells/native/src/render_svg.rs`
+// 的 `uline_geom()`（E-2 t_b5a4d0bf 落的底線形態發射配方），含註解宣稱的
+// 「12pt 字：單線 ≈0.7pt、粗線 ≈1.8pt」視覺常態。座標倍率口徑兩端相同：
+// offsets／width 皆為「×字級」倍率，dash 段長再乘筆寬（SVG 端 d*sw、本端
+// d*筆寬px）。改任何一組數字前先改 SVG 端並同步，否則兩端繪製漂移。
+//
+// single 例外：SVG 端 Single 回 None＝走 `text-decoration="underline"` 舊路徑，
+// 因此**沒有** SVG 端 single 倍率可取樣。本端 single 沿用在庫單線畫法
+// （offset 0.12／筆寬 0.07，px 保底 1）＝修前逐字元行為，零位移向後相容。
+// ---------------------------------------------------------------------------
+const ULINE_GEOM = {
+  double: { offsets: [0.13, 0.25], width: 0.055, dash: null },
+  thick: { offsets: [0.15], width: 0.13, dash: null },
+  dotted: { offsets: [0.15], width: 0.09, dash: [1.0, 2.0] },
+  dashed: { offsets: [0.15], width: 0.075, dash: [4.0, 2.0] },
+};
+/** single 與未支援形態降級單線所用的倍率（見上：在庫單線畫法，非 SVG 端取樣）。 */
+const UNDERLINE_SINGLE_GEOM = { offsets: [0.12], width: 0.07, dash: null };
+/** 修前單線保底：字級再小也不細於 1px（零位移相容）。 */
+const UNDERLINE_MIN_PX = 1;
+
+/**
+ * BUGGY 回塞鎖（k21/g1/E-2/E-2b 同款 env 慣例；隨貨
+ * scripts/u4g_underline_canvas_buggy_replay.sh）：`U4G_UNDERLINE_BUGGY=1` 把
+ * 形態分派塞回修前行為——修前本檔只唸 `flags & FLAG_UNDERLINE`、完全不讀
+ * underline 欄，故回塞態一律走單線直線（含 Off）。讀 `process.env` 僅 node
+ * 探針態有意義，瀏覽器端 `typeof process === "undefined"` 故恆為假；探針經
+ * 注入 `window.process = { env: … }` 驅動本鎖（CDP 閉環）。考卷
+ * u4g_underline_canvas_probe 的形態指紋盞（double 雙線／thick 加粗／dotted
+ * 點級 dash／dashed 段級 dash／off 不畫）據此鑑別回紅。
+ */
+function underlineBuggy() {
+  return (
+    typeof process !== "undefined" &&
+    process &&
+    process.env &&
+    process.env.U4G_UNDERLINE_BUGGY != null
+  );
+}
+
+/**
+ * 解析 `DrawItem::Text.underline` → 繪製配方。回傳 null＝一筆底線都不畫。
+ *
+ * 三態口徑（render-trait 欄位註解同口徑，禁憑空自創）：
+ * - `null`／`undefined`（級聯未宣告）→ 回 single 配方：見 `FLAG_UNDERLINE`
+ *   時畫單線兜底，且走修前同一組倍率（向後相容零位移）。
+ * - `"off"`（明確關閉）→ 回 null，一律不畫。
+ * - `"single"` → single 配方；`"double"|"thick"|"dotted"|"dashed"` → 上表。
+ * - 其餘（`{"raw":"wavy"}` 保形通道、未知字面、壞形）→ 降級 single，
+ *   不得擲出例外。
+ *
+ * @param {string|{raw:string}|null|undefined} kind
+ * @returns {{offsets:number[], width:number, dash:number[]|null}|null}
+ */
+export function resolveUnderlineGeom(kind) {
+  if (underlineBuggy()) return UNDERLINE_SINGLE_GEOM; // 回塞＝修前只唸旗標畫單線
+  if (kind == null) return UNDERLINE_SINGLE_GEOM; // 未宣告：旗標兜底單線
+  const name = typeof kind === "string" ? kind.toLowerCase() : null;
+  if (name === "off") return null; // Some(Off)：能熄滅樣式層宣告
+  if (Object.prototype.hasOwnProperty.call(ULINE_GEOM, name)) {
+    return ULINE_GEOM[name];
+  }
+  return UNDERLINE_SINGLE_GEOM; // Raw(_)/未宣告字面：降級單線，禁擲例外
+}
+
 // 渲染代次記號：分頁快速連點時，舊一輪的異步解碼完成後不得再繪到新內容上。
 let renderToken = 0;
 
@@ -270,22 +338,36 @@ export async function renderDisplayListToCanvas(dl, canvas, displayWidthPx = DEF
       const baselineY = (t.y + t.size_pt) * scale;
       ctx.fillText(t.text, x, baselineY);
 
-      // Canvas2D 無原生底線與刪除線：由 flags 計算手動劃線
+      // Canvas2D 無原生底線與刪除線：由 flags／underline 欄計算手動劃線
       // FLAG_UNDERLINE = 4, FLAG_STRIKE = 8
-      if (flags & (4 | 8)) {
+      // U4g：底線形態消費 DrawItem::Text.underline（E-2 發射的形態欄；serde
+      // 線契約 'off'|'single'|'double'|'thick'|'dotted'|'dashed'／{raw:...}）。
+      // Some(Off) 一律不畫（能熄滅樣式層宣告）；Raw(_)/未宣告字面降級單線、
+      // 禁拋錯（口徑同引擎 render-trait 欄位註解；細則見 resolveUnderlineGeom）。
+      const ulGeom = flags & 4 ? resolveUnderlineGeom(t.underline) : null;
+      if (ulGeom || (flags & 8)) {
         const w = ctx.measureText(t.text).width;
         ctx.save();
         ctx.strokeStyle = colorCss;
-        ctx.lineWidth = Math.max(1, px * 0.07);
         ctx.setLineDash([]);
-        if (flags & 4) {
-          const uy = baselineY + px * 0.12;
-          ctx.beginPath();
-          ctx.moveTo(x, uy);
-          ctx.lineTo(x + w, uy);
-          ctx.stroke();
+        if (ulGeom) {
+          const penPx = Math.max(UNDERLINE_MIN_PX, px * ulGeom.width);
+          ctx.lineWidth = penPx;
+          if (ulGeom.dash) {
+            // dash 尺隨筆寬縮放（與 SVG 發射層 d*sw 同倍率口徑）。
+            ctx.setLineDash(ulGeom.dash.map((v) => v * penPx));
+          }
+          for (const off of ulGeom.offsets) {
+            const uy = baselineY + px * off;
+            ctx.beginPath();
+            ctx.moveTo(x, uy);
+            ctx.lineTo(x + w, uy);
+            ctx.stroke();
+          }
+          ctx.setLineDash([]);
         }
         if (flags & 8) {
+          ctx.lineWidth = Math.max(UNDERLINE_MIN_PX, px * 0.07);
           const sy = baselineY - px * 0.3;
           ctx.beginPath();
           ctx.moveTo(x, sy);
