@@ -19,8 +19,10 @@
  * - 表格沒有「Table」型別的顯示列表項目：插表增加的是儲存格段落 Text 項。
  * - 儲存格底紋 → 多一筆 Rect（fill_argb 精確可比）。
  * - 表格層底紋（SetTableProps.shading_fill）→ XML 寫入但顯示列表零發射。
- * - 邊框：引擎 Mutation 欄位不存在（TablePropsPatch／CellPropsPatch 無任何
- *   border 欄），serde 吞未知欄回 ok=true——嚴禁外殼宣稱成功。
+ * - 邊框（U4d 重估，E 卡 2cb6a18 入 main 後實態）：TablePropsPatch／CellPropsPatch
+ *   已具 `borders: Option<TableBordersPatch>`，合規 patch 有 Rule 發射（實錄
+ *   0→3）；serde 仍靜默吞**未知**欄位（bogus_field ok=true 零發射）。外殼邊框
+ *   接線屬 PM 新工作面，本卡未接——外殼仍不得放行邊框參數冒充成功。
  */
 
 import fs from 'node:fs';
@@ -141,14 +143,18 @@ assert(tablePatchFields?.includes('shading_fill'), 'TablePropsPatch 應含 shadi
 assert(tablePatchFields?.includes('alignment') && tablePatchFields?.includes('width_pt'), 'TablePropsPatch 應含 alignment／width_pt');
 assert(cellPatchFields?.includes('shading_fill') && cellPatchFields?.includes('vertical_align'), 'CellPropsPatch 應含 shading_fill／vertical_align');
 
-// 邊框缺欄證據（誠實紀律的地基）：patch 結構體不得有 border 類欄位，
-// 且全 mutation.rs 查無 border 宣告。若哪天引擎補上，本斷言會紅並要求重估。
+// 邊框欄位實態（U4d 更新：E 卡 2cb6a18 已把 borders 欄位送進引擎）：
+// TablePropsPatch／CellPropsPatch 現帶 `borders: Option<TableBordersPatch>`，
+// 真引擎探針實錄——合規 TableBordersPatch 使顯示列表 Rule 0→3→10（有發射）。
+// 本考卷從「確認缺欄」改鎖「欄位存在且為具型別結構體」＋「外殼仍未接線、
+// 不得接受邊框參數冒充成功」（外殼面屬新工作面，見 qword-core.js L110 註解）。
 for (const [name, fields] of [['TablePropsPatch', tablePatchFields], ['CellPropsPatch', cellPatchFields]]) {
-  const borderish = (fields || []).filter(f => /border|rule_line|edge/i.test(f));
-  assert(borderish.length === 0, `${name} 出現邊框欄位 ${JSON.stringify(borderish)}：引擎已支援邊框，請重估 U4 邊框判定`);
+  assert((fields || []).includes('borders'),
+    `${name} 應含 E 卡 borders 欄位（引擎實態已變：缺欄判定由 U4d 重估為具欄判定）`);
 }
-assert(!/\bborders?\s*:/.test(mutationRs), 'mutation.rs 出現 border 欄位宣告：邊框判定需重估');
-console.log('  ✓ 邊框確認缺欄：TablePropsPatch／CellPropsPatch 零 border 欄（外殼不得宣稱邊框成功）');
+assert(/pub\s+borders:\s*Option<TableBordersPatch>/.test(mutationRs),
+  'mutation.rs 的 borders 欄位需為具型別 TableBordersPatch（若退化成自由欄位代表引擎契約又變了，需重估）');
+console.log('  ✓ 邊框欄位實態：TablePropsPatch／CellPropsPatch 具 borders: Option<TableBordersPatch>（E 卡），外殼仍未接線');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // [檢查 3] adapter build*Mutation 契約（欄位名逐欄核）
@@ -181,8 +187,13 @@ if (typeof buildTablePath === 'function') {
   const tp = buildTablePath(2);
   assert(tp.target === 'Body' && tp.root_slot === 2 && Array.isArray(tp.nested_steps) && tp.nested_steps.length === 0,
     'TablePath 形態需為 { target: Body, root_slot, nested_steps }');
+  // U4d L3：引擎 serde 契約是 Vec<(usize,usize,usize)>＝JSON 必須是三元組陣列。
+  // 舊版這行把「物件形態原樣送出去」當成正確契約（假通過），真傳物件會被引擎
+  // 拒（invalid type: map, expected a tuple of size 3，U4d 實錄）。buildTablePath
+  // 現行契約＝具名欄位正規化為數值三元組，考卷照實收窄。
   const nested = buildTablePath(1, [{ row_idx: 0, cell_idx: 1, sub_table_idx: 0 }]);
-  assert(nested.nested_steps.length === 1 && nested.nested_steps[0].sub_table_idx === 0, 'nested_steps 應可帶巢裝表格定位');
+  assert(nested.nested_steps.length === 1 && JSON.stringify(nested.nested_steps[0]) === '[0,1,0]',
+    `nested_steps 需正規化為數值三元組（引擎 serde 契約；實得 ${JSON.stringify(nested.nested_steps[0])}）`);
   console.log('  ✓ TablePath（正文路由 target=Body＋巢裝 nested_steps 三欄）形態正確');
 }
 
@@ -300,9 +311,10 @@ function staticWiringLocks(sources) {
   if (!/qword-file-input/.test(ui)) fails.push('UI 未使用既有 #qword-file-input 檔案選取路徑');
   if (!/imagePickMode/.test(ui)) fails.push('UI 未區分圖片選取模式（檔案管線會被開檔請求搶走）');
 
-  // (d) 誠實紅線：邊框不得被宣稱；行列操作失敗必須補日誌
+  // (d) 誠實紅線：外殼邊框尚未接線（引擎已有欄位但接線屬 PM 新工作面）→
+  // 本考卷仍禁止 adapter 出現邊框 Mutation，防止半套假接線
   if (/build\w*Border\w*Mutation|SetTableProps[^]{0,80}border/i.test(adapter)) {
-    fails.push('adapter 出現邊框 Mutation：引擎無邊框欄位，屬假接線');
+    fails.push('adapter 出現邊框 Mutation：外殼邊框接線未在本卡工作面，屬半套假接線');
   }
   if (!/_reportEngineRejection\s*\(/.test(ui)) fails.push('UI 缺 _reportEngineRejection（引擎拒絕會靜默消失）');
   return fails;
@@ -494,20 +506,35 @@ const badCol = c7.insertTableColumn('After', { rootSlot: 0, atGridCol: 0, widthP
 assert(badCol.ok === false, `負寬度必須被擋（實際 ${badCol.ok}）`);
 console.log('  ✓ 非法參數一律外殼擋下（引擎的 ok=true 假成功不可外泄）');
 
-// 5.8 邊框：引擎無欄位、serde 靜默吞 → 外殼不得產生宣稱成功的路徑
+// 5.8 邊框（U4d 重估：E 卡 2cb6a18 後引擎已有具型別 borders 欄位）：
+//   a) serde 仍靜默吞**未知**欄位（bogus_field 回 ok=true 零發射）→ 誠實紅線照舊；
+//   b) borders 現為具型別 TableBordersPatch——字串形態被 serde 型別拒絕（實錄）；
+//   c) 合規 TableBordersPatch 引擎真寫入且有 Rule 發射（U4d 探針實錄 0→3）；
+//   d) 外殼尚未接線（屬 PM 新工作面），setTableProps 仍不得放行邊框參數。
 const c8 = await openFresh();
 c8.insertTable(2, 3);
-const ruleBefore = (() => { let n = 0; for (let p = 0; p < c8.pageCount(); p++) for (const it of c8.getPageDisplayList(p).items) if (it.Rule) n++; return n; })();
-const borderAttempt = JSON.parse(c8.engine.apply_mutation_json(JSON.stringify({
-  SetTableProps: { table: { target: 'Body', root_slot: 0, nested_steps: [] }, patch: { border_pt: 3, borders: 'single' } }
+const ruleCount = (x) => { let n = 0; for (let p = 0; p < x.pageCount(); p++) for (const it of x.getPageDisplayList(p).items) if (it.Rule) n++; return n; };
+const ruleBefore = ruleCount(c8);
+const bogusAttempt = JSON.parse(c8.engine.apply_mutation_json(JSON.stringify({
+  SetTableProps: { table: { target: 'Body', root_slot: 0, nested_steps: [] }, patch: { bogus_field: 123 } }
 })));
-let ruleAfter = 0;
-for (let p = 0; p < c8.pageCount(); p++) for (const it of c8.getPageDisplayList(p).items) if (it.Rule) ruleAfter++;
-assert(borderAttempt.ok === true && ruleAfter === ruleBefore,
-  '探針前提失效：引擎對臆造邊框欄位應回 ok=true 且零發射（此斷言紅代表引擎行為已變，U4 邊框判定需重估）');
+assert(bogusAttempt.ok === true && ruleCount(c8) === ruleBefore,
+  `誠實紅線前提：引擎對未知欄位仍靜默吞（ok=true＋零發射），實得 ${JSON.stringify(bogusAttempt).slice(0, 90)}`);
+const strBorders = JSON.parse(c8.engine.apply_mutation_json(JSON.stringify({
+  SetTableProps: { table: { target: 'Body', root_slot: 0, nested_steps: [] }, patch: { borders: 'single' } }
+})));
+assert(strBorders.ok === false && /expected struct TableBordersPatch|invalid type/.test(strBorders.error || ''),
+  `borders 現為具型別欄位：字串形態應被 serde 型別拒絕（實得 ${JSON.stringify(strBorders).slice(0, 120)}）`);
+const realBorders = JSON.parse(c8.engine.apply_mutation_json(JSON.stringify({
+  SetTableProps: { table: { target: 'Body', root_slot: 0, nested_steps: [] }, patch: { borders: { top: { style: 'single', width_pt: 3 } } } }
+})));
+assert(realBorders.ok === true && ruleCount(c8) > ruleBefore,
+  `合規 TableBordersPatch 引擎應真寫入且有 Rule 發射（Rule ${ruleBefore}→${ruleCount(c8)}，實得 ${JSON.stringify(realBorders).slice(0, 90)}）`);
 const shellBorder = c8.setTableProps({ borderPt: 3 }, { rootSlot: 0 });
-assert(shellBorder.ok === false, '外殼不得接受邊框參數（會造成「引擎說成功、畫面沒東西」的假成功）');
-console.log(`  ✓ 邊框誠實紅線：引擎臆造欄回 ok=true 但 Rule ${ruleBefore}→${ruleAfter}（零發射），外殼拒絕邊框參數不冒充成功`);
+assert(shellBorder.ok === false, '外殼尚未接邊框線：setTableProps 不得接受邊框參數（接線屬 PM 新工作面，屆時本斷言紅並要求重估）');
+const shellBorders2 = c8.setTableProps({ borders: { top: { style: 'single', width_pt: 3 } } }, { rootSlot: 0 });
+assert(shellBorders2.ok === false, '外殼不得放行 borders 物件參數冒充成功（未接線＝引擎說成功、畫面不該宣稱）');
+console.log(`  ✓ 邊框誠實紅線（E 卡後重估版）：未知欄仍吞／具型別拒字串／合規發射 Rule ${ruleBefore}→${ruleCount(c8)}／外殼拒絕邊框參數`);
 
 // 5.9 表格層底紋：引擎寫 XML 但發射面零發射 → 必須如實回報「無可見效果」
 const c9 = await openFresh();
@@ -522,7 +549,7 @@ assert(!/shadingFill[^]{0,120}要求?\s*live|table:shading[^]{0,60}live/.test(ui
   '表格層底紋無可見效果，外殼不得把它掛成可見成功（誠實標籤由 PM 決定）');
 console.log(`  ✓ 表格層底紋：引擎受理（XML 層真實寫入）但顯示列表 ${tblShdBefore}→${tblShdAfter} 零發射，外殼不冒充可見效果`);
 
-// 5.10 圖片插入：Image 項＋真像素＋存檔媒體檔（不准只畫佔位框）
+// 5.10 圖片插入：Image 項＋真像素＋存檔媒體檔（不準只畫佔位框）
 const c10 = await openFresh();
 const png = makePng(6, 4, [0xFF, 0x33, 0x00]);
 const imgBefore = imgsOf(c10).length;
@@ -620,7 +647,7 @@ console.log('\n[檢查 6] 禁區與 vendor 紀律...');
 const editorJsDir = path.join(ROOT_DIR, 'shells/web/editor/js');
 const jsFiles = fs.readdirSync(editorJsDir).filter(f => f.endsWith('.js'));
 assert(jsFiles.length >= 3, `editor/js 檔案數異常（${jsFiles.length}）`);
-// 表格幾何不得在 JS 端自建：不准出現自行算欄寬／列高的排版式運算痕跡
+// 表格幾何不得在 JS 端自建：不準出現自行算欄寬／列高的排版式運算痕跡
 const fakeLayout = adapterSrc.match(/colWidths?\s*=\s*\[[^\]]{0,200}\]\.map|function\s+\w*(layoutTable|computeTable|measureTable)/i);
 assert(!fakeLayout, 'adapter 疑似自行運算表格幾何（嚴禁平行另造排版器）');
 // 顯示列表繪製器由 vendor 提供，本卡若未改繪製器則不需 SYNC.md 登記

@@ -691,7 +691,7 @@
             </div>
             <div class="qword-btn-column">
               <button type="button" class="qword-btn qword-btn-small" data-popover-target="popover-cell-shading" data-command="cell:shading" data-requirement="live" aria-label="儲存格底紋" title="儲存格底紋（M4.3 SetCellProps→w:shd）：游標反查 (table,row,col) 寫入，套色後該格色塊真實入顯示列表">
-                <svg class="qword-icon"><use href="#icon-shading-color"></use></svg>
+                <svg class="qword-icon"><use href="#icon-shading"></use></svg>
                 <span>儲存格底紋</span>
               </button>
               <button type="button" class="qword-btn qword-btn-small" data-popover-target="popover-table-props" data-requirement="live" aria-label="表格屬性" title="表格屬性面板：對齊（M4.2 MutateTable→w:tblPr/w:jc）與寬度（w:tblW）本輪上線，底紋見同排待實裝鈕">
@@ -699,7 +699,7 @@
                 <span>表格屬性</span>
               </button>
               <button type="button" class="qword-btn qword-btn-small" data-command="table:shading" data-requirement="pending:engine-tblshading" aria-label="表格底紋" title="表格底紋：引擎 MutateTable.set_tbl_props 有 w:tblPr/w:shd 寫入欄（MutationCommand 落盤 w:tblPr/w:shd），但表格層底紋發射缺欄——core/layout/src/table.rs 色塊僅唸 w:tcPr/w:shd 單格路徑，w:tblPr/w:shd 讀而後丟，重排後顯示列表項數與色位雜湊 0 位移（實測），使用者看不見，依誠實紅線不準標 live">
-                <svg class="qword-icon"><use href="#icon-shading-color"></use></svg>
+                <svg class="qword-icon"><use href="#icon-shading"></use></svg>
                 <span>表格底紋</span>
               </button>
             </div>
