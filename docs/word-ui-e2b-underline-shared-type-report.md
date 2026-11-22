@@ -113,8 +113,11 @@ good 態全綠＋`git status` 零殘留。
 
 ## 5. 合併態
 
-收案前 `git merge main` 進分支、合併態重跑全閘 fail=0（PM 發車紀律 1）。
-本卡基線即 main tip，合併為快進確認（無漂移）。
+基線自證＝main tip `8484404`（起手）。收案前 main 又前進（E-3 t_81e69488 合併
+`62e893c`），依 PM 發車紀律 1 再 `git merge main` 進分支（合併 commit `235fe45`，
+零衝突——E-3 檔面 mutation_k29c/table_map/e3_* 與本卡 mutation.rs/render-trait/
+外殼互斥，PM 併行核可坐實）並重跑全閘 **fail=0**（worktree 綠不算綠，合併態
+才算數）。
 
 ## 6. 未做面／後續卡（老實記帳）
 
