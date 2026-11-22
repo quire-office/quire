@@ -171,6 +171,7 @@ dependencies = [
 name = "quire-layout"
 version = "0.1.0"
 dependencies = [
+ "quire-render-trait",
  "serde",
  "swash",
  "unicode-linebreak",
@@ -196,6 +197,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "quick-xml",
+ "quire-render-trait",
  "serde",
  "serde_json",
  "thiserror",

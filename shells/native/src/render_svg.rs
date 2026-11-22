@@ -4,10 +4,105 @@
 //! 目的：headless 環境下不需要任何字型 shaping 就能拿到位圖/向量輸出，供 LO 基線對照。
 
 use quire_engine::{
-    DrawItem, PageDisplayList, FLAG_BOLD, FLAG_DIR_VERT, FLAG_DIR_VERT270, FLAG_ITALIC,
-    FLAG_STRIKE, FLAG_UNDERLINE,
+    DrawItem, PageDisplayList, TextMeasurer, Underline, FLAG_BOLD, FLAG_DIR_VERT, FLAG_DIR_VERT270,
+    FLAG_ITALIC, FLAG_STRIKE, FLAG_UNDERLINE,
 };
 use std::fmt::Write as _;
+
+/// 底線幾何參數（pt，相對字級）：基線偏移＋筆寬＋dash 圖樣。
+/// 數值取自 Word/LO 視覺常態（12pt 字：單線 ≈0.7pt、粗線 ≈1.8pt）。
+struct ULineGeom {
+    /// 距基線的下偏移倍率（×字級）。
+    offsets: &'static [f32],
+    /// 筆寬倍率（×字級）。
+    width: f32,
+    /// `stroke-dasharray` 圖樣（None＝實線）。
+    dash: Option<(f32, f32)>,
+}
+
+fn uline_geom(kind: &Underline) -> Option<ULineGeom> {
+    // BUGGY 回塞鎖（同 e2_underline_kind 的 `E2_UNDERLINE_BUGGY`；隨貨
+    // scripts/e2_underline_buggy_replay.sh）：置位時本函式一律回 None＝修前
+    // 全形態走 `text-decoration="underline"` 單線的舊行為。發射層考卷
+    // e2_underline_emit 燈 2（double 雙 path／dotted 點級 dash／dashed 段級
+    // dash／thick 加粗）必紅，證明那四條斷言真在比幾何、不是比旗標。
+    if std::env::var_os("E2_UNDERLINE_BUGGY").is_some() {
+        return None;
+    }
+    match kind {
+        // Single 走 `text-decoration="underline"` 舊路徑（零位移），不發幾何。
+        Underline::Single | Underline::Off => None,
+        // double：雙平行線。SVG 1.1 的 text-decoration 對重複值渲染未定義
+        // （瀏覽器只畫一條），故走幾何——這是本渲染器「座標全來自 layout」
+        // 哲學下的唯一老實畫法。
+        Underline::Double => Some(ULineGeom {
+            offsets: &[0.13, 0.25],
+            width: 0.055,
+            dash: None,
+        }),
+        // thick：SVG 無粗底線語法，幾何單線加粗（≈單線 2.4 倍）。
+        Underline::Thick => Some(ULineGeom {
+            offsets: &[0.15],
+            width: 0.13,
+            dash: None,
+        }),
+        // dotted：點狀——dash 段長＝筆寬（點），間距兩倍。
+        Underline::Dotted => Some(ULineGeom {
+            offsets: &[0.15],
+            width: 0.09,
+            dash: Some((1.0, 2.0)),
+        }),
+        // dashed：段狀——段長 4 倍筆寬、間距 2 倍。
+        Underline::Dashed => Some(ULineGeom {
+            offsets: &[0.15],
+            width: 0.075,
+            dash: Some((4.0, 2.0)),
+        }),
+        // TODO(E-2 後續卡)：ECMA 全集其餘形態（wavy/words/dottedHeavy/
+        // dashLongHeavy/thinThick…）缺繪製配方。鐵律：降級單線＋不 panic，
+        // 原字面已在 `Underline::Raw` 保形（顯示列表欄不折損），渲染端此處
+        // 回 None＝交回 `text-decoration="underline"` 舊單線路徑（＝修前
+        // 全形態的舊行為，老實降級），待配方落地直接在 uline_geom 接上。
+        Underline::Raw(_) => None,
+    }
+}
+
+/// 真正發射底線 `<path>`（在對應 `<text>` 行之後）。
+fn emit_underline_paths(
+    s: &mut String,
+    x: f32,
+    baseline: f32,
+    size_pt: f32,
+    text_w: f32,
+    color_argb: u32,
+    kind: &Underline,
+) {
+    let Some(g) = uline_geom(kind) else {
+        return;
+    };
+    let w = text_w.max(size_pt * 0.3); // 空段保底：至少一個字寬
+    let a = (color_argb >> 24) & 0xFF;
+    let r = (color_argb >> 16) & 0xFF;
+    let gg = (color_argb >> 8) & 0xFF;
+    let b = color_argb & 0xFF;
+    let sw = (g.width * size_pt).max(0.35);
+    for off in g.offsets {
+        let y = baseline + off * size_pt;
+        let _ = write!(
+            s,
+            "<path d=\"M {x:.1} {y:.1} H {:.1}\" fill=\"none\" stroke=\"#{r:02x}{gg:02x}{b:02x}\" stroke-width=\"{sw:.2}\"",
+            x + w
+        );
+        if let Some((d, gap)) = g.dash {
+            // dash 尺隨筆寬縮放（倍率常數在 uline_geom）。
+            let _ = write!(s, " stroke-dasharray=\"{:.2} {:.2}\"", d * sw, gap * sw);
+        }
+        if a < 255 {
+            let _ = write!(s, " stroke-opacity=\"{:.3}\"", a as f64 / 255.0);
+        }
+        s.push_str("/>\n");
+    }
+}
 
 fn esc(s: &str, out: &mut String) {
     for c in s.chars() {
@@ -41,9 +136,11 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
                 flags,
                 color_argb,
                 family,
+                underline,
                 text,
             } => {
                 // baseline = y + 字級：讓 y 語義接近「行頂」，與 display list 座標系一致。
+                let baseline = y + size_pt;
                 let a = (*color_argb >> 24) & 0xFF;
                 let r = (*color_argb >> 16) & 0xFF;
                 let g = (*color_argb >> 8) & 0xFF;
@@ -89,7 +186,22 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
                 if flags & FLAG_ITALIC != 0 {
                     s.push_str(" font-style=\"italic\"");
                 }
-                match (flags & FLAG_UNDERLINE != 0, flags & FLAG_STRIKE != 0) {
+                // E-2：形態底線走幾何 `<path>`（本渲染器哲學：座標全來自
+                // layout，繪製不依賴渲染器對 text-decoration 重複值的未定義
+                // 行為）。`Single`/未宣告/Raw 回 None＝舊宣告式路徑逐位元組
+                // 保持（零位移鐵律）。豎排三口徑不發幾何：底線方向需隨行向
+                // 旋轉，屬另卡範圍，維持修前 text-decoration 行為。
+                let vertical =
+                    flags & (FLAG_DIR_VERT | FLAG_DIR_VERT270 | quire_engine::FLAG_DIR_EAVERT) != 0;
+                let geo = if vertical {
+                    None
+                } else {
+                    underline.as_ref().and_then(uline_geom)
+                };
+                match (
+                    flags & FLAG_UNDERLINE != 0 && geo.is_none(),
+                    flags & FLAG_STRIKE != 0,
+                ) {
                     (true, true) => s.push_str(" text-decoration=\"underline line-through\""),
                     (true, false) => s.push_str(" text-decoration=\"underline\""),
                     (false, true) => s.push_str(" text-decoration=\"line-through\""),
@@ -98,6 +210,12 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
                 s.push_str(" xml:space=\"preserve\">");
                 esc(text, &mut s);
                 s.push_str("</text>\n");
+                if let Some(kind) = underline.as_ref().filter(|_| geo.is_some()) {
+                    // 段寬取排版同尺的 TextMeasurer（分層鐵律：經 quire-engine
+                    // re-export 取用，殼層不直接 import quire-layout）。
+                    let tw = TextMeasurer::new(*size_pt).text_width(text);
+                    emit_underline_paths(&mut s, *x, baseline, *size_pt, tw, *color_argb, kind);
+                }
             }
             DrawItem::Rect {
                 x,

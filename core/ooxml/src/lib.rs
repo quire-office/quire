@@ -47,6 +47,10 @@ pub use sectpr::{
 pub use styles::{
     Align, CondShading, LineSpacing, ParaStyle, RunFonts, RunStyle, StyleTable, VertAlign,
 };
+// E-2：底線形態枚舉 re-export（單一真值源在 quire-render-trait；解析層級聯
+// 與發射層共用同型）。下游（engine／外殼）經本 crate 取用，不直接 import
+// render-trait 的內容模型型別。
+pub use quire_render_trait::Underline;
 pub use table::{
     Block, BodyTable, Border, Borders, CellProps, EffectiveLook, GridCol, Margins, RowProps,
     Shading, Table, TableCell, TableLook, TableProps, TableRow, TblWidth,
@@ -173,6 +177,14 @@ pub struct Run {
     /// 上標／下標宣告（`w:vertAlign`；供發射層字級縮放與基線偏移消費）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vert_align: Option<styles::VertAlign>,
+    /// 級聯合成的**有效底線形態**（E-2；engine 開啟文件時烘焙寫入，仿
+    /// `size_pt`／`effective_fonts` 的做法）。`None`＝級聯未宣告（發射端見
+    /// `underline` 旗標兜底單線——修訂插入線屬此路）；`Some(Off)` 不出現於
+    /// 烘焙結果（旗標已熄滅，無需再帶形態）。純派生欄位：顯示列表／SVG 消費
+    /// 它，測量／分頁／存檔完全不經它（版面零變動）；serde default＋None
+    /// 不外露＝舊快照相容、零 JSON 位移。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_underline: Option<Underline>,
 }
 
 fn is_zero_f32(v: &f32) -> bool {
@@ -566,7 +578,10 @@ fn apply_style_tag(
         }
         b"u" => {
             if let Some(r) = cur_run.as_mut() {
-                r.underline = toggle_attr_on(e);
+                // E-2：bool 欄位＝形態三態的有損投影（「有底線」判準＝非明確
+                // 關閉；未支援 Raw 形態照舊算「有」，發射端降級單線）。形態
+                // 的完整語義走 direct 三態快照（上一段 styles::apply_run_tag）。
+                r.underline = styles::underline_of(e).on();
             }
         }
         b"strike" => {
@@ -2210,7 +2225,7 @@ mod tests {
             Some(0xFF00_00FF),
             "Hyperlink 字元樣式的 0000FF 必須勝過解析器合成預設色"
         );
-        assert_eq!(eff.underline, Some(true));
+        assert_eq!(eff.underline, Some(Underline::Single));
     }
 
     // ---------------- 主題色查表（w:themeColor → theme1.xml clrScheme） ----------------
@@ -2318,7 +2333,7 @@ mod tests {
         let eff = StyleTable::resolve_run(base, run.direct.clone().unwrap_or_default())
             .with_hyperlink_default(run.hyperlink_default);
         assert_eq!(eff.color, Some(HYPERLINK_DEFAULT_COLOR_ARGB));
-        assert_eq!(eff.underline, Some(true));
+        assert_eq!(eff.underline, Some(Underline::Single));
     }
 
     /// 直接格式仍贏過一切：run 自帶 `w:color`／`w:u` 時，末端兜底不得覆蓋。
@@ -2350,7 +2365,11 @@ mod tests {
         let eff = StyleTable::resolve_run(base, run.direct.clone().unwrap_or_default())
             .with_hyperlink_default(run.hyperlink_default);
         assert_eq!(eff.color, Some(0xFFFF_0000), "直接色贏過樣式與兜底");
-        assert_eq!(eff.underline, Some(false), "直接 u=none 明確關閉底線");
+        assert_eq!(
+            eff.underline,
+            Some(Underline::Off),
+            "直接 u=none 明確關閉底線"
+        );
     }
 
     /// Hyperlink 樣式已有 `w:u` 宣告（含 none）時，末端兜底不得重複合成底線。
@@ -2385,7 +2404,11 @@ mod tests {
         }
         let eff = StyleTable::resolve_run(b, run.direct.clone().unwrap_or_default())
             .with_hyperlink_default(run.hyperlink_default);
-        assert_eq!(eff.underline, Some(false), "樣式宣告 u=none 即不合成");
+        assert_eq!(
+            eff.underline,
+            Some(Underline::Off),
+            "樣式宣告 u=none 即不合成"
+        );
         assert_eq!(eff.color, Some(HYPERLINK_DEFAULT_COLOR_ARGB), "色仍兜底");
     }
 
@@ -2415,7 +2438,7 @@ mod tests {
             .expect("自閉合標籤必須收進 p.prun（與成對寫法同義）");
         assert_eq!(prun.bold, Some(true));
         assert_eq!(prun.italic, Some(true));
-        assert_eq!(prun.underline, Some(true));
+        assert_eq!(prun.underline, Some(Underline::Single));
         assert_eq!(prun.strike, Some(true));
         assert!(prun.color_set, "color 宣告必須置 color_set");
         assert_eq!(prun.color, Some(0xFFFF_0000));

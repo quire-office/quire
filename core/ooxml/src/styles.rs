@@ -41,6 +41,7 @@
 use std::collections::HashMap;
 
 use quick_xml::events::Event;
+use quire_render_trait::Underline;
 use serde::{Deserialize, Serialize};
 
 use crate::theme::{self, ThemeColors, ThemeFonts};
@@ -115,7 +116,15 @@ pub struct RunStyle {
     /// 熄滅上層的開啟，如 Word「Normal 粗體＋直接格式 b=0」）；`None`＝繼承。
     pub bold: Option<bool>,
     pub italic: Option<bool>,
-    pub underline: Option<bool>,
+    /// 底線（E-2 保形態）。三態語義同 `bold`/`italic`，形態由 [`Underline`]
+    /// 承載（單一真值源在 quire-render-trait，發射層共用同型）：
+    /// - `None`＝本層未宣告（繼承）；
+    /// - `Some(Underline::Off)`＝本層明確宣告關閉（`w:val="none"/"false"/"0"/"off"`），
+    ///   可熄滅上層的形態宣告；
+    /// - `Some(Single|Double|Thick|Dotted|Dashed|Raw(_))`＝開啟＋形態，
+    ///   未支援形態以 `Raw` 保形（發射端降級單線＋TODO，禁 panic）。
+    #[serde(default)]
+    pub underline: Option<Underline>,
     pub strike: Option<bool>,
     /// 文字顏色（0xAARRGGBB）。`color_set` 區分「未宣告」（inherit）與
     /// 「宣告 auto/非法」（明確黑）——後者不得誤當前者繼承樣式色。
@@ -163,7 +172,7 @@ impl RunStyle {
                 self.color_set = true;
             }
             if self.underline.is_none() {
-                self.underline = Some(true);
+                self.underline = Some(Underline::Single);
             }
         }
         self
@@ -177,7 +186,13 @@ impl RunStyle {
                 $(if self.$f.is_none() { self.$f = upper.$f; })*
             };
         }
-        fill!(size_pt, bold, italic, underline, strike, highlight, vert_align);
+        fill!(size_pt, bold, italic, strike, highlight, vert_align);
+        // E-2：underline 承載 `Underline::Raw(String)`（未支援形態保形）故非
+        // Copy，單獨 clone 一支——三態語義與其他欄逐字相同（本層已宣告者贏，
+        // `Some(Off)` 同樣壓過上層的形態宣告）。
+        if self.underline.is_none() {
+            self.underline = upper.underline.clone();
+        }
         if !self.color_set {
             self.color = upper.color;
             self.color_set = upper.color_set;
@@ -424,6 +439,44 @@ fn toggle_on_attr(e: &quick_xml::events::BytesStart) -> bool {
     crate::toggle_attr_on(e)
 }
 
+/// `w:u/@w:val` 形態判讀（E-2 保形態；ECMA-376 §17.3.2.41 ST_UnderlineValues）。
+/// 與 `toggle_attr_on` 同家語義：無 `w:val`＝開啟（ECMA 預設 `single`）；
+/// `none`/`false`/`0`/`off`＝明確關閉（[`Underline::Off`]，可熄滅上層宣告——
+/// 四拼法歸一，與 b/i/strike 的開關口徑逐字一致）。`dash` 是 `dashed` 的
+/// Word 相容別名（ECMA 枚舉只有 `dashed`；corpus phpword 四檔實見 `dash`），
+/// 解析層歸一，發射端才認得。ST_UnderlineValues 其餘值（`wavy`／`words`／
+/// `dottedHeavy`…）以 [`Underline::Raw`] 保形保留原字面——發射端降級單線
+/// ＋TODO，禁 panic、禁折損丟形（未支援≠不存在）。
+/// `pub(crate)`：document.xml 的 run 直接格式（lib.rs `apply_style_tag`）共用
+/// 同一判據——讀取端口徑只許有一份。
+pub(crate) fn underline_of(e: &quick_xml::events::BytesStart) -> Underline {
+    // BUGGY 回塞鎖（k21/g1 同款 env 慣例；隨貨 scripts/e2_underline_buggy_replay.sh）：
+    // `E2_UNDERLINE_BUGGY=1` 把本函式塞回修前的布林語義——任何「有底線」值一律
+    // 折成 Single、關閉值折成 Off（＝修前 `Option<bool>` 的有損投影）。解析層
+    // 考卷 e2_underline_kind 燈 1／2／5（double/thick/dotted/dashed/words 保形）
+    // 必紅，證明那三盞燈真在比形態、不是比有無。
+    let collapsed = std::env::var_os("E2_UNDERLINE_BUGGY").is_some();
+    let Some(raw) = attr_val(e, "val") else {
+        return Underline::Single; // 無 w:val＝toggle 開啟，ECMA 預設 single。
+    };
+    let trimmed = raw.trim();
+    match trimmed.to_ascii_lowercase().as_str() {
+        "none" | "false" | "0" | "off" => Underline::Off,
+        "single" => Underline::Single,
+        "double" if collapsed => Underline::Single,
+        "thick" if collapsed => Underline::Single,
+        "dotted" if collapsed => Underline::Single,
+        "dashed" | "dash" if collapsed => Underline::Single,
+        "double" => Underline::Double,
+        "thick" => Underline::Thick,
+        "dotted" => Underline::Dotted,
+        // Word 相容讀取端也吃 `dash`（mutation.rs K29e `UnderlineKind` 同口徑）。
+        "dashed" | "dash" => Underline::Dashed,
+        _ if collapsed => Underline::Single,
+        _ => Underline::Raw(trimmed.to_string()),
+    }
+}
+
 /// 套用單個 run 屬性標籤（Start/Empty 共用）。未支援標籤靜默略過（模組頭清單）。
 /// `pub(crate)`：document.xml 的直接格式 `w:pPr/w:rPr` 共用同一判據。
 ///
@@ -440,7 +493,7 @@ pub(crate) fn apply_run_tag(
     match name {
         b"b" => rs.bold = Some(toggle_on_attr(e)),
         b"i" => rs.italic = Some(toggle_on_attr(e)),
-        b"u" => rs.underline = Some(toggle_on_attr(e)),
+        b"u" => rs.underline = Some(underline_of(e)),
         b"strike" => rs.strike = Some(toggle_on_attr(e)),
         b"sz" => {
             if let Some(v) = half_point_pt(attr_val(e, "val").as_deref()) {
@@ -1788,13 +1841,13 @@ mod tests {
         // 段落基底：sz=12（docDefaults）＋u（pPrDefault/rPr）。
         let (base, para) = t.effective_para(None, ParaStyle::default());
         assert_eq!(base.size_pt, Some(12.0));
-        assert_eq!(base.underline, Some(true));
+        assert_eq!(base.underline, Some(Underline::Single));
         assert_eq!(para.line, Some(LineSpacing::Auto(1.25)));
         // 字元樣式疊加：sz 覆蓋、u 保留。
         let cs = t.effective_char("Emph").unwrap();
         let eff = StyleTable::resolve_run(base, cs);
         assert_eq!(eff.size_pt, Some(24.0));
-        assert_eq!(eff.underline, Some(true));
+        assert_eq!(eff.underline, Some(Underline::Single));
     }
 
     #[test]

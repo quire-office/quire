@@ -386,7 +386,9 @@ fn cascade_paragraphs(
             let mut r2 = r.clone();
             r2.bold = eff.bold.unwrap_or(false);
             r2.italic = eff.italic.unwrap_or(false);
-            r2.underline = eff.underline.unwrap_or(false);
+            // E-2：級聯形態降投影成有無旗標（line-metrics 純行量測，不發射
+            // 形態；bool 口徑與修前逐走相同）。
+            r2.underline = eff.underline.as_ref().is_some_and(|u| u.on());
             r2.strike = eff.strike.unwrap_or(false);
             if eff.color_set {
                 // 宣告 w:color（含 auto/非法→明確黑）以級聯為準；

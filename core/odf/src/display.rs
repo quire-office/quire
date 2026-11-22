@@ -172,6 +172,9 @@ pub fn push_frag_items(
                         flags: 0,
                         color_argb: DEFAULT_TEXT_COLOR_ARGB,
                         family: None,
+                        // E-2：ODF 端底線形態未採集（同 family 紀律）→ None＝
+                        // serde 跳欄，渲染端見旗標兜底單線。
+                        underline: None,
                         text: t.text.clone(),
                     });
                     continue;
@@ -198,6 +201,8 @@ pub fn push_frag_items(
                         flags: r.flags,
                         color_argb: r.color_argb.unwrap_or(DEFAULT_TEXT_COLOR_ARGB),
                         family: None,
+                        // E-2：ODF 端底線形態未採集（同 family 紀律）→ None。
+                        underline: None,
                         text: seg.to_string(),
                     });
                     x_off += quire_layout::TextMeasurer::new(seg_size).text_width(seg);
@@ -487,6 +492,8 @@ fn text_item(x: f32, y: f32, size_pt: f32, bold: bool, text: String) -> DrawItem
         // 字型族名未採集（ODF `style:font-name` 屬 D1b）→ None＝serde 跳欄，
         // 渲染端用自己的字型（Canvas2D 端 "Noto Sans TC" 串）。
         family: None,
+        // E-2：底線形態未採集（同 family 紀律）→ None＝serde 跳欄。
+        underline: None,
         text,
     }
 }

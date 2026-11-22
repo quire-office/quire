@@ -62,6 +62,10 @@ pub struct EntryStyle {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    /// 底線形態（E-2；首 run 口徑同 `underline` 旗標）。`None`＝級聯未宣告
+    /// （發射端見旗標兜底單線）；serde default＋None 不外露＝舊快照零位移。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline_kind: Option<quire_ooxml::Underline>,
     pub strike: bool,
     pub family: Option<String>,
 }
@@ -94,6 +98,10 @@ pub struct NoteRun {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    /// 底線形態（E-2；隨 `underline` 旗標自 EntryStyle 透傳，編號前綴與內文
+    /// 同形態）。`None`＝見旗標兜底單線；serde default＋None 不外露。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline_kind: Option<quire_ooxml::Underline>,
     pub strike: bool,
     pub family: Option<String>,
     /// 上標（編號前綴）：發射端把本 run 行頂上移 `SUP_RISE × 條目行高`。
@@ -280,6 +288,7 @@ pub fn layout_entry(entry: &NoteEntry, band_pt: f32, avail_pt: f32) -> NoteItem 
                 bold: st.bold,
                 italic: st.italic,
                 underline: st.underline,
+                underline_kind: st.underline_kind.clone(),
                 strike: st.strike,
                 family: st.family.clone(),
                 superscript: true,
@@ -298,6 +307,7 @@ pub fn layout_entry(entry: &NoteEntry, band_pt: f32, avail_pt: f32) -> NoteItem 
                 bold: st.bold,
                 italic: st.italic,
                 underline: st.underline,
+                underline_kind: st.underline_kind.clone(),
                 strike: st.strike,
                 family: st.family.clone(),
                 superscript: false,
@@ -1039,6 +1049,7 @@ mod tests {
                 bold: false,
                 italic: false,
                 underline: false,
+                underline_kind: None,
                 strike: false,
                 family: Some("serif".to_string()),
             },

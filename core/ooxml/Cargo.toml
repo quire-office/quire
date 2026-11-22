@@ -9,6 +9,11 @@ description = "DOCX(zip+OOXML) reader skeleton with lossless part preservation"
 quick-xml = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+# E-2：底線形態枚舉 `Underline` 的單一真值源在 render-trait（發射契約層）——
+# 解析層級聯與發射層共用同型，讀取端與繪製端零口徑漂移。ooxml→render-trait
+# 屬合法向下邊（render-trait 零 core 依賴，見 scripts/check-layering.sh 同款
+# 論證），wasm 鏈路上兩 crate 皆已在場，無體積增量。
+quire-render-trait = { workspace = true }
 # zip 讀寫由 zip_struct.rs 自己實作（byte-level 無損 round-trip 的代價與理由見該檔頭註解）：
 # 不再依賴 zip crate，wasm 體積與攻擊面都更小。
 flate2 = { workspace = true }
