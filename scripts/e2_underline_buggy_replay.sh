@@ -6,7 +6,7 @@
 #   bash scripts/e2_underline_buggy_replay.sh good    # 正常態：兩張考卷必綠
 #
 # 口徑（本卡採 k21_soft_br／g1_anchor_relativity 的 **env 回塞鎖**慣例，
-# 非 k29e 的字串置換慣例——理由：本卡缺陷點是「形態判讀函式折損」，两处
+# 非 k29e 的字串置換慣例——理由：本卡缺陷點是「形態判讀函式折損」，兩處
 # 生產碼各自內建 `E2_UNDERLINE_BUGGY` 開關（styles.rs `underline_of` 折回
 # 布林語義；render_svg.rs `uline_geom` 恆 None＝全形態退回 text-decoration
 # 單線舊路徑），回塞＝置變數，零改檔、零還原風險，禁 checkout/reset 鐵律

@@ -63,7 +63,7 @@ fn svg_of(engine: &Engine, page: usize) -> String {
 /// dotted/dashed` 改發**幾何 `<path>`**（宣告式 text-decoration 對重複值
 /// 渲染未定義，見 render_svg.rs `uline_geom`），只有 `single`／未支援形態
 /// 仍走宣告式舊路徑。舊斷言把「底線證據」寫死成子串 `underline`，在形態
-/// 升級後成了過期前提（底線仍在、畫得更對，卻因換了画法而假紅）。
+/// 升級後成了過期前提（底線仍在、畫得更對，卻因換了畫法而假紅）。
 /// 本 helper 把「底線證據」重定義為兩條路徑的**無條件析取**：宣告式子串
 /// `underline`，或該 `<text>` 行緊接的幾何 `<path>` 行——只增強不弱化
 /// （修前幾何路徑永不存在，故本口徑對修前行為零放鬆）。
@@ -618,7 +618,7 @@ fn k29e_lamp6_removal_falls_back_to_style_cascade() {
     // 渲染端口徑：SVG 該段不再帶底線裝飾（其他段不受累）。
     let svg = svg_of(&engine, 0);
     // E-2 前提補正：顯式移除後必須「兩條路徑皆無證據」——既無宣告式
-    // `underline` 子串、也無幾何 `<path>`（E-2 後底線有兩種画法，只查子串
+    // `underline` 子串、也無幾何 `<path>`（E-2 後底線有兩種畫法，只查子串
     // 會漏放行，故本斷言比修前更嚴）。
     let (tag, removed_paths) = svg_text_and_underline_paths(&svg, "六欄目標段");
     assert!(

@@ -115,7 +115,7 @@ GOOD 態通過（env 鎖零改檔，工作區乾淨）
 
 `cargo test --workspace` 首跑出現 2 盞 **k29e_char_format** 紅燈，根因非缺陷，
 而是既有斷言把「底線證據」寫死成 `text-decoration` 子串——E-2 後 `dotted`
-改發幾何 `<path>`，底線仍在、畫得更對，卻因換画法假紅：
+改發幾何 `<path>`，底線仍在、畫得更對，卻因換畫法假紅：
 
 - `k29e_lamp1`（`Dotted` 寫入段）：改吃**雙路徑析取**（宣告式子串或緊接
   `<path>`）；`line-through`／`font-family` 斷言原樣保留。
