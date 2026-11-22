@@ -2758,13 +2758,47 @@ impl LayoutEngine {
         let line_h = self.params.font_size_pt * self.params.line_spacing;
         let band = (((y_pt - p.margin_top_pt) / line_h).floor().max(0.0)) as u32;
         // y→帶→行陣列索引：有表格的頁 band ≠ 陣標（`line_bands` 才是映射，
-        // caret_rect 正向走同一映射）。點在表格帶／空帶上命中不到文字行 →
-        // None（表格內 caret 不在 v1 範圍）。無表格頁 line_bands＝0..n，
-        // position 命中恆等索引，舊行為逐位元組不變。
+        // caret_rect 正向走同一映射）。
+        //
+        // U4f 根因 B（caret 全面死區）：舊制是「起帶完全相等」判定制——
+        // `line_bands.iter().position(|&b| b == band)?`。粗帶尺（每行 1 帶）下
+        // line_bands 恆為連續 0..n，任何 y 都命中，判定制看起來無害；K6 帶尺
+        // 細化後每行佔 `para_band` 帶（用戶實測檔 23 帶/行），line_bands 遂成
+        // 稀疏點集（0,23,46,69,...），點擊 y 換算出的帶幾乎必然落在兩行之間
+        // ⇒ 整頁 None ⇒ 外殼 pointerdown 拿不到 caret ⇒ 打字/退格/選取全失效。
+        //
+        // 修法＝把「點的帶是否**落在某行的行高跨度內**」作為判定制：行的文字
+        // 跨度＝[起帶, 起帶＋該段每行帶數)。語義邊界老實守住：
+        //   · 表格帶／段前段後距帶／空帶仍回 None（點在沒有文字的地方不落 caret，
+        //     與修前契約同向，既有「表格帶必 None」考卷零擾動）；
+        //   · 粗帶尺（每行 1 帶）下跨度退化為單帶 ⇒ 與修前逐位元組全等。
+        // 正逆映射同源印證：正向 `caret_rect` 用 `line_bands[li]×line_h` 出 y，
+        // 本函數用同一 `line_bands` 與同一 `line_h` 反查，且行的起帶恆落在自身
+        // 跨度內 ⇒ caret_rect 給出的每一點反查必還原同段（互逆考卷 u4f 燈 3(b)）。
+        // 回塞鎖（比照 R2_BUGGY／U4F_TABLE_LINEH_BUGGY 口徑）：
+        // `U4F_CARET_AT_BUGGY=1` ⇒ 整支退回修前「起帶完全相等」判制
+        // ⇒ u4f 燈 3 必紅（鑑別力證據）。
+        let buggy_exact = std::env::var_os("U4F_CARET_AT_BUGGY").is_some();
         let li = if p.line_bands.is_empty() {
             band as usize // 舊快照無 line_bands：退回陣標（與 caret_rect 同策）
-        } else {
+        } else if buggy_exact {
             p.line_bands.iter().position(|&b| b == band)?
+        } else {
+            // 取首條跨度涵蓋點擊帶的行（與修前 `position()` 的首條命中同調：
+            // 多欄頁兩欄同行可同帶，舊制取左欄，本制亦取先登録的第一條——零擾動）。
+            let mut hit: Option<usize> = None;
+            for (i, &b) in p.line_bands.iter().enumerate() {
+                if b > band {
+                    break;
+                }
+                // 行的文字跨度（帶）：該段每行佔用帶數，恆 ≥1。
+                let span = self.grid.bands_of(p.lines[i].para_index);
+                if band < b.saturating_add(span) {
+                    hit = Some(i);
+                    break;
+                }
+            }
+            hit?
         };
         let line = p.lines.get(li)?;
         let rel = (x_pt - p.margin_left_pt).max(0.0);
