@@ -1021,6 +1021,28 @@ body, html {
   line-height: 1.3;
 }
 
+/* U4f 底線形態選單（popover-underline-style）：六項直列，純文字零 emoji */
+.qword-underline-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.qword-underline-item {
+  text-align: left;
+  font-size: 11px;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 2px;
+  cursor: pointer;
+  color: var(--qw-text-primary, #222);
+}
+
+.qword-underline-item:hover {
+  background: rgba(0, 120, 215, 0.12);
+}
+
 /* 特殊字元面板 */
 .qword-symbol-picker {
   display: flex;

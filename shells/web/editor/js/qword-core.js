@@ -89,7 +89,7 @@ export const DEPENDENCY_MAP = {
   'pending:engine-drawing': { name: '引擎缺口：圖形物件面', desc: '圖層 z 序調整、群組、旋轉、自訂繞排點無引擎欄位（M5.2 僅尺寸／定位／繞排模式）；需引擎切片' },
   'pending:engine-page': { name: '引擎缺口：頁面版面面', desc: '紙張絕對尺寸、裝訂線（gutter）、頁面框線（pgBorders）、文件背景（w:background）、行號（lnNumType）、自動連字設定欄未實作；需引擎切片' },
   'pending:engine-theme': { name: '引擎缺口：主題與預設值面', desc: 'theme1.xml（色彩／字型／效果集）與 docDefaults 寫入無引擎變體（僅只讀解析）；需引擎切片' },
-  'pending:engine-para': { name: '引擎缺口：字元段落直接格式殘餘', desc: 'w:bidi 寫入欄未實作；底線形態族（w:u/@w:val 五形態）寫入真實但解析層折成布林、發射層一態，屬解析＋發射雙層缺口' },
+  'pending:engine-para': { name: '引擎缺口：字元段落直接格式殘餘', desc: 'w:bidi 寫入欄未實作（文字方向鈕掛本標籤）。底線形態族殘餘缺口已由 E-2（解析保形態）＋E-2b（共型寫入端）消除，format:underline-style 已轉 live（U4f）' },
   // PM 衝突解（U4c×U4d 雙 key 共存）：tblshading 為 U4c 鈕標籤 key（index.html
   // data-requirement 與 u4c_ribbon_probe 依賴，本卡禁改面白名單碰不得）；
   // engine-table 為 U4d L7 擴面 key（core spec.engineGap 依賴，含格文字 DL 缺口）。
@@ -222,6 +222,16 @@ function normalizeVerticalAlign(value) {
   const s = String(value).trim().toLowerCase();
   return ['top', 'center', 'bottom'].includes(s) ? s : null;
 }
+
+/**
+ * U4f：`format:underline-style` 的受理值域＝引擎 canonical 六形態（E-2b 共型後
+ * serde 小寫）。本層零 DOM／零 wasm 依賴（檔頭契約），不得 import engine-adapter
+ * （它拖載 pkg ESM），故本地聲明——跨檔一致性由探針 u4f_underline_style_live_probe.mjs
+ * 逐字鎖死 `adapter.UNDERLINE_KINDS` 與本表等值（單一真值源在引擎側
+ * render-trait::Underline，本表與 adapter 表皆為其下游鏡像）。
+ * wavy／words 等未列入：引擎可讀保形但寫入端誠實拒（XmlPatchRejected）。
+ */
+export const UNDERLINE_STYLE_CANONICAL = ['single', 'double', 'thick', 'dotted', 'dashed', 'off'];
 
 export class QWordCore {
   constructor(options = {}) {
@@ -542,11 +552,25 @@ export class QWordCore {
       req = 'live';
       this._notify('format:underline', payload);
     } else if (cmdId === 'format:underline-style') {
-      // 誠實缺口（引擎面，外殼修不了）：五形態寫入是真的（w:u/@w:val 進 XML），
-      // 但解析層 core/ooxml/src/styles.rs 把 w:u 折成 Option<bool>，形態不進
-      // RunStyle → 發射層繪不出單條／雙條／點／虛線差異，用戶看見那層零變化。
-      // 掛 live＝假宣稱，故受理=false、標籤維持呼叫端傳入的真實缺口值。
-      handled = false;
+      // U4f 轉 live（血緣：斷點由 E-2（t_b5a4d0bf）解析保形態＋E-2b（t_5e62f3b5）
+      // 共型寫入端消除，非外殼自修；原 U4b 時代「styles.rs 把 w:u 折成
+      // Option<bool>、形態不進 RunStyle」前提已被 E-2 推翻，見
+      // docs/word-ui-e2-underline-report.md 與 word-ui-e2b-underline-shared-type-report.md）。
+      // 本層職責：形態合法性閘門＋事件匯流。值域＝canonical 六形態（engine-adapter
+      // 的 UNDERLINE_KINDS／normalizeUnderlineKind 單一真值源）；wavy／words 等
+      // 引擎可讀但寫入端誠實拒（XmlPatchRejected）的形態**不得代收**——本層先拒、
+      // handler 不進落地層，掛 live 就是假宣稱（誠實紀律）。
+      const style = payload?.style;
+      const valid = typeof style === 'string' && UNDERLINE_STYLE_CANONICAL.includes(style.toLowerCase());
+      handled = valid;
+      if (valid) {
+        req = 'live';
+        this._notify('format:underline-style', { style });
+      } else {
+        // 非法／未帶形態：不受理，且不得沿用呼叫端帶入的 live 宣稱（同款先例：
+        // table:grid-select 尺寸非法強制降標籤）。
+        req = String(requirement || '') === 'live' ? 'pending:shell' : (requirement || 'pending:shell');
+      }
     } else if (cmdId === 'format:strikethrough') {
       handled = true;
       req = 'live';

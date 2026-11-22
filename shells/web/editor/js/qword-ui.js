@@ -13,7 +13,7 @@
  */
 
 import { QWordCore, TABS, DEPENDENCY_MAP } from './qword-core.js';
-import { EngineAdapter, getDefaultSampleBytes } from './engine-adapter.js';
+import { EngineAdapter, getDefaultSampleBytes, UNDERLINE_KINDS } from './engine-adapter.js';
 
 /**
  * 檔名副檔名 → MIME（僅在瀏覽器未給 file.type 時備援使用）。
@@ -137,6 +137,9 @@ export class QWordUI {
         this.handleFormatColor(data);
       } else if (type === 'format:underline') {
         this.handleFormatUnderline(data);
+      } else if (type === 'format:underline-style') {
+        // U4f：core 臂已驗過形態合法性（canonical 六形態才匯流），本層只管落地。
+        this.handleFormatUnderlineStyle(data);
       } else if (type === 'format:strikethrough') {
         this.handleFormatStrikethrough(data);
       } else if (type === 'format:vert-align') {
@@ -808,6 +811,22 @@ export class QWordUI {
       this.syncEngineStats();
     } else {
       this.core.recordCommandFailure('format:underline');
+    }
+  }
+
+  // U4f：底線形態下拉落地層（Ribbon split-arrow 選單）。core 臂已擋非法形態，
+  // adapter.formatUnderline 再做一次正規化閘門（雙層都不代收 wavy／words）；
+  // res.ok=false 補失敗日誌（U4 誠實紀律同款）。
+  async handleFormatUnderlineStyle(payload) {
+    if (!this.adapter.engine) return;
+    const res = this.adapter.formatUnderline(payload?.style);
+    if (res.ok) {
+      await this.refreshPages();
+      this.renderCaret();
+      this.renderSelection();
+      this.syncEngineStats();
+    } else {
+      this.core.recordCommandFailure('format:underline-style', payload || {}, String(res.error || ''), 'live');
     }
   }
 
@@ -1721,6 +1740,36 @@ export class QWordUI {
         this.dispatchCommand('cell:shading', { fill: 'auto', ...this._tableCommandPayload('cell:shading') }, 'live');
         this.closeAllPopovers();
       });
+    }
+
+    // 5.（U4f）底線形態選單填充：值域直接吃 engine-adapter 的 UNDERLINE_KINDS
+    //    （單一真值源＝引擎側 render-trait::Underline，本殼不另造清單）。
+    //    wavy／words 天生不在表內——寫入端誠實拒的形態禁入選單（誠實紀律）。
+    const underlineMenu = document.querySelector('[data-underline-menu]');
+    if (underlineMenu) {
+      const LABELS = {
+        single: '單條底線', double: '雙條底線', thick: '粗條底線',
+        dotted: '點狀底線', dashed: '虛線底線', off: '無底線'
+      };
+      underlineMenu.innerHTML = '';
+      for (const kind of UNDERLINE_KINDS) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'qword-underline-item';
+        item.setAttribute('data-underline-style', kind);
+        item.setAttribute('data-requirement', 'live');
+        item.setAttribute('role', 'menuitem');
+        item.setAttribute('aria-label', LABELS[kind] || kind);
+        item.textContent = LABELS[kind] || kind;
+        // 專屬 listener 帶 { style } payload（全域委派只給空 payload，core 臂
+        // 會依「未帶形態」拒收）＋stopPropagation 防雙重下單——U4c 色塊同款先例。
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.dispatchCommand('format:underline-style', { style: kind }, 'live');
+          this.closeAllPopovers();
+        });
+        underlineMenu.appendChild(item);
+      }
     }
   }
 

@@ -418,7 +418,7 @@
                   <button type="button" class="qword-btn qword-btn-icon-only qword-split-main" data-command="format:underline" data-requirement="live" aria-label="底線 (Ctrl+U)" title="引擎已支援（K29e 字元格式切片），外殼接線完成：underline（M2.1 RunDirectPatch）">
                     <svg class="qword-icon"><use href="#icon-underline"></use></svg>
                   </button>
-                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-command="format:underline-style" data-requirement="pending:engine-para" aria-label="底線樣式" title="底線形態選單中斷點在引擎解析層：w:u/@w:val 五形態寫入真實，但 styles.rs 把 w:u 折成 Option<bool>——形態不進 RunStyle，發射層繪不出單條／雙條／點／虛線差異（用戶看見那層零變化，不可假 live）">
+                  <button type="button" class="qword-btn qword-btn-icon-only qword-split-arrow" data-popover-target="popover-underline-style" data-command="format:underline-style" data-requirement="live" aria-label="底線樣式" title="底線形態選單（E-2 解析保形態＋E-2b 共型寫入端真通）：單條／雙條／粗條／點狀／虛線／無六形態逐字寫入 w:u/@w:val，切換即存檔件逐字對。wavy／words 等未支援形態寫入端誠實拒絕，不入選單值域">
                     <svg class="qword-icon" style="width:8px;height:8px;"><use href="#icon-chevron-down"></use></svg>
                   </button>
                 </div>
@@ -1594,7 +1594,7 @@
                   <td>常用 (Home)</td>
                   <td>剪貼簿、字型、段落、樣式、儲存格、編輯 (6)</td>
                   <td>字體選擇、粗斜底、色盤、對齊、行距、儲存格垂直對齊</td>
-                  <td>live / pending:shell / pending:K29b / pending:engine-para</td>
+                  <td>live / pending:shell / pending:K29b（底線形態族已由 E-2/E-2b 轉 live，見 U4f）</td>
                 </tr>
                 <tr>
                   <td>插入 (Insert)</td>
@@ -1763,6 +1763,16 @@
       <div class="qword-props-field qword-props-actions">
         <button type="button" class="qword-btn qword-btn-small qword-props-apply" data-cell-shading-clear data-requirement="live" aria-label="清除儲存格底紋">清除底紋</button>
       </div>
+    </div>
+  </div>
+
+  <!-- 4d. 底線形態選單（U4f：E-2 解析保形態＋E-2b 共型寫入端真通後轉 live。
+       值域＝engine-adapter UNDERLINE_KINDS canonical 六形態，qword-ui.js 動態填充；
+       wavy／words 等未支援形態寫入端誠實拒，禁入選單） -->
+  <div class="qword-popover" id="popover-underline-style" role="menu" aria-label="底線形態選單">
+    <div class="qword-props-panel">
+      <div class="qword-color-section-title">底線樣式</div>
+      <div class="qword-underline-menu" data-underline-menu></div>
     </div>
   </div>
 
