@@ -9,12 +9,13 @@
  *   字級 0.58×base、上標基線 −0.35×base、下標 +1.0pt@11pt（=+0.0909×base）、
  *   **行高不膨脹**（sup/sub 行的 auto 行距 pitch 與純正文行逐行全等 12.65pt）。
  * - 存檔面另驗 XML 真的落地（ZIP deflate 解壓後才准搜尋，latin1 直搜會假陰性）。
- * - 底線形態（underline-style）U4f 考卷重估：原「解析層折成布林、渲染無差異」
+ * - 底線形態（underline-style）U4f/U4g 考卷重估：原「解析層折成布林、渲染無差異」
  *   前提已被 E-2（t_b5a4d0bf 解析保形態，w:u/@w:val 進 RunStyle＋DrawItem::Text
- *   .underline 幾何透傳）＋E-2b（t_5e62f3b5 共型寫入端）推翻，鈕已轉 live（閉環
- *   背書 shells/web/editor/tests/u4f_underline_style_live_probe.mjs）。檢查 8 保留
- *   三形態 flags／幾何全等的實測（web canvas 渲染器仍只唸 FLAG_UNDERLINE 兜底單線
- *   ＝vendor/renderer.js 未做面，另卡追），但其消費鏈結論按現況改寫。
+ *   .underline 幾何透傳）＋E-2b（t_5e62f3b5 共型寫入端）＋U4g（t_d0a46cec
+ *   web 殼渲染器消費形態欄繪幾何）逐層推翻，鈕已轉 live（閉環背書
+ *   shells/web/editor/tests/u4f_underline_style_live_probe.mjs＋
+ *   u4g_underline_canvas_probe.mjs）。檢查 8 按「可收窄不可弱化」口徑同步重估：
+ *   原「三形態幾何全等＝渲染器未做面」斷言反轉為形態欄契約＋渲染器分派鎖。
  *
  * 用法：node scripts/u4b_selfcheck.mjs（repo 根執行）
  */
@@ -271,7 +272,7 @@ console.log('\n[檢查 7] 清除直接格式：七欄一次寫入＋樣式級聯
 }
 
 // --------------------------------------------------------------------------
-console.log('\n[檢查 8] 底線形態三層實測（U4f 考卷重估）：寫入真＋引擎保形態＋web canvas 渲染器未消費形態（發射面殘留）');
+console.log('\n[檢查 8] 底線形態四層實測（U4g 考卷重估）：寫入真＋引擎保形態＋渲染器消費形態欄（像素差異由 u4g 探針背書）');
 {
   const mk = async (kind) => {
     const a = new EngineAdapter();
@@ -288,8 +289,30 @@ console.log('\n[檢查 8] 底線形態三層實測（U4f 考卷重估）：寫�
     && /w:u w:val="dotted"/.test(dotted.xml), '寫入端：單條／雙條／點線三種 w:u/@w:val 真的進 XML');
   ok(single.t.flags === double.t.flags && double.t.flags === dotted.t.flags,
     `渲染端：三形態 Text.flags 全等（${single.t.flags}）——flags 本來就只承載「有無底線」開關；形態自 E-2 起在 Text.underline 欄`);
+  // 考卷重估（U4g t_d0a46cec，血緣記帳：本斷言原鎖「三形態幾何全等＝渲染器未
+  // 做面」，該前提已由 U4g 消除——vendor/renderer.js resolveUnderlineGeom() 消費
+  // DrawItem::Text.underline 分派五形態幾何，真值源＝SVG 端 uline_geom 逐字取樣；
+  // 像素級形態差異的用戶可見證據面＝u4g_underline_canvas_probe（真 Chrome CDP 像素
+  // 聚簇指紋，good 全綠 23 盞＋buggy 回塞 11 盞紅）。按「可收窄不可弱化」口徑反轉：
+  // (1) 形態欄逐形態流到顯示列表（渲染器的輸入契約）；
+  // (2) 渲染器源碼真的分派五形態＋Off 不畫（非只唸旗標）；
+  // (3) 原 x/y 全等斷言保留但語義改寫：形態不位移排版幾何（底線是繪製層筆畫，
+  //     不動文字項座標——這是正確行為，位移反而是缺陷），比修前更嚴。
+  ok(single.t.underline === 'single' && double.t.underline === 'double' && dotted.t.underline === 'dotted',
+    `渲染端輸入契約：形態欄逐形態流到顯示列表（single=${single.t.underline}/double=${double.t.underline}/dotted=${dotted.t.underline}）`);
+  {
+    const rendererSrc = fs.readFileSync(path.join(ROOT_DIR, 'shells/web/editor/vendor/renderer.js'), 'utf-8');
+    const dispatch = /resolveUnderlineGeom/.test(rendererSrc)
+      && /double:\s*\{[^}]*offsets:\s*\[0\.13,\s*0\.25\]/.test(rendererSrc)
+      && /thick:\s*\{[^}]*width:\s*0\.13/.test(rendererSrc)
+      && /dotted:\s*\{[^}]*dash:\s*\[1\.0,\s*2\.0\]/.test(rendererSrc)
+      && /dashed:\s*\{[^}]*dash:\s*\[4\.0,\s*2\.0\]/.test(rendererSrc)
+      && /name === "off"\) return null/.test(rendererSrc)
+      && /setLineDash\(ulGeom\.dash/.test(rendererSrc);
+    ok(dispatch, '渲染端：vendor/renderer.js 分派五形態幾何（double 雙 offset／thick 加粗／dotted・dashed setLineDash／Off 不畫——非只唸旗標兜底）');
+  }
   ok(single.t.y === double.t.y && single.t.x === double.t.x,
-    '渲染端：三形態幾何全等——web canvas 渲染器（vendor/renderer.js）只唸 FLAG_UNDERLINE 兜底單線、未消費 DrawItem::Text.underline 形態（E-2 記帳未做面，另卡追）');
+    '排版幾何零位移：三形態 Text 項座標全等（形態差異在繪製層筆畫，不在文字位移——u4g 探針像素面背書形態差異真實存在）');
   // 存檔重開（真 round-trip）：E-2 保形態後 underline 欄應隨檔讀回（非僅旗標）
   const bytes = Buffer.from(double.a.save());
   const c = new EngineAdapter();
@@ -297,7 +320,7 @@ console.log('\n[檢查 8] 底線形態三層實測（U4f 考卷重估）：寫�
   c.openFile(new Uint8Array(bytes), 'reopen.docx');
   ok(textsOf(c)[1].flags === 4, '存檔重開後底線旗標 FLAG_UNDERLINE(4) 讀回');
   ok(textsOf(c)[1].underline === 'double', `存檔重開後形態欄讀回（underline=${JSON.stringify(textsOf(c)[1].underline)}，E-2 保形態回歸基準）`);
-  notes.push('format:underline-style 自 U4f 轉 live：E-2 解析保形態＋E-2b 共型寫入端（e2b_underline_shared_type 7/7＋瀏覽器閉環 u4f_underline_style_live_probe）；web canvas 形態繪製殘留屬渲染器未做面，另卡');
+  notes.push('format:underline-style 自 U4f 轉 live：E-2 解析保形態＋E-2b 共型寫入端（e2b_underline_shared_type 7/7＋瀏覽器閉環 u4f_underline_style_live_probe）；web canvas 形態繪製自 U4g（t_d0a46cec）落地：vendor/renderer.js 消費形態欄，像素指紋考卷 u4g_underline_canvas_probe＋回塞鎖 u4g_underline_canvas_buggy_replay');
 }
 
 // --------------------------------------------------------------------------
