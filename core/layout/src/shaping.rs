@@ -232,7 +232,7 @@ pub fn shape_advances_scaled(text: &str, size_pt: f32, scale: f32) -> Vec<Cluste
 /// 不動 `size_pt`（KP 取 clusters 一律經本器，caret/發射路徑各自另製）。
 /// `punct_arm`＝宣告族→LO 渲染 face 的「1.0 em 全形標點」覆寫臂（見
 /// [`crate::punct_advance`]）；`PUNCT_ARM_NONE`＝舊行為逐位元組不變。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextMeasurer {
     size_pt: f32,
     advance_scale: f32,

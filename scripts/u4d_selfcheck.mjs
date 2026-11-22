@@ -307,13 +307,22 @@ await lamp('檢查 5｜L5 刪列後游標校正（幽靈游標）', async () => 
   const typed = a.typeAt(a.caret.para, a.caret.cp, '甲');
   assert(typed.ok === true, `刪列後緊接打字必須成功（實得 ${J({ ok: typed.ok, error: typed.error })}）`);
   // 真值斷言＝引擎回讀：幽靈游標修好的定義是「打字落在游標那段且引擎存到」。
-  // 顯示列表對「表格儲存格文字」零發射屬引擎顯示缺口（t_f0cbc25d 同族，U4d 探針
-  // 實錄：全新 2x2 表游標正常打「己」→ paragraph_text 有字但 DL 命中 0，對照組
-  // body 段打「甲」會進 DL），非本卡游標校正的範圍（core/ 在白名單外）。故本燈
-  // 驗引擎真值，DL 缺口寫進附註與報告，不假裝綠。
   assert((a.paragraphText(a.caret.para) || '').includes('甲'),
     `校正後打字必須真的寫進游標段落（引擎回讀實得 ${J(a.paragraphText(a.caret.para).slice(0, 30))}）`);
-  note('表格儲存格文字 DL 零發射＝引擎顯示缺口（實錄：全新表打字 DL 命中 0／body 打字會發射），屬 t_f0cbc25d 同族，本卡白名單外');
+  // DL 斷言補回（t_c2bbcb38 修好後加嚴；考卷可收窄不可弱化）。U4d 當年的實錄是
+  // 「全新 2x2 表打字 → paragraph_text 有字、全頁 DL Text 命中 0」（引擎顯示缺口，
+  // 本燈因此只鎖引擎回讀）。該缺口已由 t_c2bbcb38 修掉——切片文字隨打字刷新——
+  // 故此燈從「只鎖回讀」升級為「回讀＋DL 雙鎖」：缺口復發時本燈立即紅。
+  {
+    const cellTexts = [];
+    for (let p = 0; p < a.pageCount(); p++) {
+      for (const it of a.getPageDisplayList(p).items) if (it.Text) cellTexts.push(it.Text.text);
+    }
+    assert(cellTexts.some((t) => t.includes('甲')),
+      `表格儲存格打的「甲」必須出現在顯示列表 Text 項（引擎回讀有字、畫面卻看不見＝S1；` +
+      `t_c2bbcb38 缺口，本燈 DL 文字項 ${cellTexts.length} 條零命中）`);
+    okLog('  ✓ 表格儲存格文字 DL 命中（t_c2bbcb38 修復後補回的加嚴斷言）');
+  }
   const b = await fresh();
   b.insertTable(2, 2);
   b.caret = { para: 0, cp: 0 };
