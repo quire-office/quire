@@ -22,13 +22,15 @@
 //! - 未支援形態（ECMA ST_UnderlineValues 其餘值，如 `wavy`/`words`）以
 //!   `{"raw":"<原字面>"}` 保形保留（發射端降級單線＋TODO，禁 panic）。
 //!
-//! # corpus 實掃（卡面任務 1，口徑：unzip 全部 word/*.xml 後 grep 'w:u ' 帶
-//! 'w:val=' 的命中；分母＝corpus 全 400 個 .docx）
-//! - 含 `w:u/@w:val` 宣告的檔案：44/400；
-//! - 值分佈（全 xml part 計）：single×1286、none×131、thick×5（FDO77715
+//! # corpus 實掃（卡面任務 1；本 run 重掃複核，口徑如下，分母＝corpus 全
+//! 400 個 .docx，以 `unzip -p` 解出明文後 grep `w:u w:val=`）
+//! - 卡面口徑（只掃 `word/document.xml`）：**44/400** 檔含 `w:u/@w:val` 宣告；
+//!   全 part 口徑（掃 `word/*.xml`，含 styles/footnotes/endnotes）：**160/400**。
+//! - 值分佈（全 word/*.xml 計）：single×1286、none×131、thick×5（FDO77715
 //!   styles.xml）、dash×5（phpword 四檔 document.xml）、words×1（fdo61343
 //!   styles.xml）、double×1（fdo61343 styles.xml）、dotted×1（xopt
-//!   SolarOverview document.xml）。
+//!   SolarOverview document.xml）。僅掃 document.xml 時為：single×909、
+//!   none×8、dash×5、dotted×1（thick／double／words 全落在 styles.xml）。
 //!   ⇒ 非 single 形態在 corpus **有真實命中**（非零命中），本卡屬實測缺口修復。
 //!   `dash` 為 Word 相容讀取端的 `dashed` 別名（mutation.rs K29e 註解同口徑）。
 
