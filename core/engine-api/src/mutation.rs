@@ -1439,48 +1439,78 @@ fn strip_leading_element(inner: &str, name: &str) -> String {
 /// 與 [`strip_leading_element`] 的差別是決定性的：後者的語義是「把開頭的
 /// 元素摘掉、保留**其餘**」——拆段路徑（`split_paragraph_xml`）傳進來的是
 /// 段落內文（pPr＋正文），摘掉 pPr 留正文正確；但 `patch_rpr`／`patch_ppr`
-/// 傳進來的是那顆元素**本身**（`leading_element` 的產物），「其餘」恆為空
-/// 字串 ⇒ 每次重組都把既有宣告全部丟掉、只寫回本次補丁的欄位，分次單欄
-/// 呼叫因此互相覆蓋（先點底線再點粗體 → 底線蒸發）。重組路徑要的是本函式
-/// 的「取內文」語義。
+/// 傳進來的是那顆元素**本身**（`leading_element` 或 `analyze_paragraph` 切片
+/// 的產物），「其餘」恆為空字串 ⇒ 每次重組都把既有宣告全部丟掉、只寫回本次
+/// 補丁的欄位，分次單欄呼叫因此互相覆蓋（先點底線再點粗體 → 底線蒸發）。
+/// 重組路徑要的是本函式的「取內文」語義。
 ///
 /// 自閉合形態（`<w:rPr/>`）回空字串；病態輸入（找不到開／閉標籤）老實回空
 /// 字串＝退回「無既有宣告」，不虛構內容。
 ///
-/// 閉標籤以 `rfind`（尾錨）而非 `find` 定位：`w:rPrChange` 內含巢裝 `w:rPr`
-/// 時，首個 `</w:rPr>` 是**內層**的，用 `find` 會再次截斷（E-1 燈 8 實測）。
-/// 搭配已改深度計數的 [`leading_element`]，`el` 是完整平衡元素，尾錨即其
-/// 自己的閉標籤。
+/// 閉標籤以**深度計數**定位，不可用 `find`／`rfind` 首尾錨：`w:rPrChange`／
+/// `w:pPrChange` 內含巢裝同族（`<w:pPrChange><w:pPr>…</w:pPr></w:pPrChange>`），
+/// 首個 `</w:pPr>` 是**內層**的（`find` 截斷），末個亦可能在畸形輸入裡落到
+/// 巢裝之外（`rfind` 越界，E-1 燈 8 實測）。深度計數對兩種失配都免疫，且
+/// 不要求呼叫端保證 `el` 已是平衡元素。
+///
+/// 已知取捨（與本檔既有字串掃描口徑一致，語料零實例）：不解析 XML 註解／
+/// CDATA，故註解內若字面出現同名標籤會誤計深度。
 fn element_inner(el: &str, name: &str) -> String {
     let open = format!("<{name}");
-    let Some(rel) = el.find(&open) else {
-        return String::new();
+    // 游標式續掃（同 `remove_element` 的假配對紀律）：首個 `<w:rPr` 可能是
+    // `<w:rPrChange` 這類同前綴假配對，必須越過它續找真開標籤，不可見非邊界
+    // 即放棄整題（否則合法宣告被誤判成「無既有宣告」）。
+    let mut cursor = 0usize;
+    let (rel, gt) = loop {
+        let Some(rel) = el[cursor..].find(&open) else {
+            return String::new();
+        };
+        let rel = cursor + rel;
+        // 名稱邊界守衛（同 remove_element／leading_element 紀律）：`<w:rPr` 也會
+        // 前綴配對 `<w:rPrChange`——名稱後必須是空白／`>`／`/`。
+        let boundary_ok = el[rel + open.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_whitespace() || c == '>' || c == '/');
+        let Some(gt_rel) = el[rel..].find('>') else {
+            return String::new();
+        };
+        let gt = rel + gt_rel;
+        if boundary_ok {
+            break (rel, gt);
+        }
+        cursor = rel + open.len();
     };
-    // 名稱邊界守衛（同 remove_element／leading_element 紀律）：`<w:rPr` 也會
-    // 前綴配對 `<w:rPrChange`——名稱後必須是空白／`>`／`/`。
-    let after_open = &el[rel + open.len()..];
-    let boundary_ok = after_open
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_whitespace() || c == '>' || c == '/');
-    if !boundary_ok {
-        return String::new();
-    }
-    let Some(gt_rel) = el[rel..].find('>') else {
-        return String::new();
-    };
-    let gt = rel + gt_rel;
     // 自閉合判定用**半開**區間 `rel..gt`（排除 `>`）：閉區間 `rel..=gt` 末位
     // 恆為 `>`，`ends_with('/')` 永假＝防線死碼（agy 第二意見實抓，對齊
     // leading_element `t[..gt]` 的既有口徑）。
     if el[rel..gt].trim_end().ends_with('/') {
         return String::new();
     }
-    let close = format!("</{name}>");
-    match el[gt + 1..].rfind(&close) {
-        Some(close_rel) => el[gt + 1..gt + 1 + close_rel].to_string(),
-        None => String::new(),
+    let local = name.rsplit(':').next().unwrap_or(name);
+    let mut depth = 1usize;
+    let mut cursor = gt + 1;
+    while let Some(lt_rel) = el[cursor..].find('<') {
+        let lt = cursor + lt_rel;
+        let Some(ngt_rel) = el[lt..].find('>') else {
+            return String::new();
+        };
+        let ngt = lt + ngt_rel;
+        let tag = &el[lt..=ngt];
+        if tag_local(tag) == local {
+            if tag.starts_with("</") {
+                depth -= 1;
+                if depth == 0 {
+                    // 平衡閉標籤的 `<` 之前＝本元素的內文。
+                    return el[gt + 1..lt].to_string();
+                }
+            } else if !tag.ends_with("/>") {
+                depth += 1;
+            }
+        }
+        cursor = ngt + 1;
     }
+    String::new()
 }
 
 /// 取元素 `<{name}…>` 的**開標籤明文**，並正規化成「非自閉合」形態。
@@ -1491,23 +1521,26 @@ fn element_inner(el: &str, name: &str) -> String {
 /// 由呼叫端給）。找不到／名稱邊界不符（`<w:pPrChange`）＝`None`。
 fn element_open_tag(el: &str, name: &str) -> Option<String> {
     let open = format!("<{name}");
-    let rel = el.find(&open)?;
-    let after_open = &el[rel + open.len()..];
-    let boundary_ok = after_open
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_whitespace() || c == '>' || c == '/');
-    if !boundary_ok {
-        return None;
+    // 游標式續掃（同 element_inner／remove_element 假配對紀律）：越過
+    // `<w:pPrChange` 這類同前綴假配對續找真開標籤。
+    let mut cursor = 0usize;
+    loop {
+        let rel = el[cursor..].find(&open)? + cursor;
+        let boundary_ok = el[rel + open.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_whitespace() || c == '>' || c == '/');
+        let gt = rel + el[rel..].find('>')?;
+        if boundary_ok {
+            let tag = &el[rel..=gt];
+            return Some(match tag.trim_end().strip_suffix("/>") {
+                // 自閉合：去掉 `/>` 換成 `>`（屬性等其餘部分逐字保留）。
+                Some(head) => format!("{head}>"),
+                None => tag.to_string(),
+            });
+        }
+        cursor = rel + open.len();
     }
-    let gt_rel = el[rel..].find('>')?;
-    let gt = rel + gt_rel;
-    let tag = &el[rel..=gt];
-    Some(match tag.trim_end().strip_suffix("/>") {
-        // 自閉合：去掉 `/>` 換成 `>`（屬性等其餘部分逐字保留）。
-        Some(head) => format!("{head}>"),
-        None => tag.to_string(),
-    })
 }
 
 /// `w:rPr` 子元素的 ECMA-376 §17.3.2.27（CT_RPr／EG_RPrBase）宣告序。
@@ -1691,15 +1724,22 @@ fn ppr_child_rank(name: &str) -> Option<i32> {
 
 /// 宣告序併入器的共用核心（`merge_rpr_children` 與段落側同吃一份，紀律一致）。
 ///
-/// 規則與 [`merge_rpr_children`] 相同（未知元素隨前件、同 rank 穩定序、未觸碰
-/// 宣告逐字元原樣），另加一條 `drop`：**既有側**開標籤全名命中 `drop` 的頂層
-/// 子元素直接剔除（同族覆寫前的清理）。
+/// 規則：
+/// - 每個子元素 token 依其開標籤取 rank；**未知元素**隨前件（沿用前一個已知
+///   token 的 rank）；尚未出現任何已知元素前的未知 token 取 rank 0——不可取
+///   −1：那會把未知擴展元素（如 `w14:` 系）**提調**到首位宣告之前（agy 第二
+///   意見實抓）。
+/// - 隨前件的 rank 由「前件」定義，**與前件是否被剔除無關**：被同族覆寫剔除
+///   的宣告仍定義其後未知元素的鄰域（agy 第二意見 P1 實抓：先 `continue` 再
+///   記 rank 會讓未知元素斷鏈往前漂）。
+/// - 同 rank 以「補丁新宣告在前、既有宣告在後」排列，兩側內部各保穩定序——
+///   新 `w:pStyle`／`w:rStyle`（rank 0）必須贏過「隨前件漂到 rank 0」的既有
+///   未知元素，否則首位宣告契約破防（agy 第二意見 P2 實抓）。
+/// - 未觸碰的宣告逐字元原樣（含元素間空白），零正規化重寫。
 ///
-/// 以**頂層 token** 粒度剔除是決定性的：`remove_element` 是字串全域掃描，會
-/// 順手掃進巢裝容器內部——`w:pPrChange` 內含第二顆 `w:pPr`（ECMA-376 §17.13.5.30
-/// 的追蹤修訂快照），對齊補丁掃 `w:jc` 時會把快照裡的 `<w:jc w:val="both"/>`
-/// 一起抹掉（修訂歷史被改寫）。本函式只看頂層，巢裝內容連同其父 token 原樣
-/// 搬運，零觸碰。
+/// 已知取捨（與本檔既有字串掃描口徑一致，語料零實例）：掃描 `>` 時不識別
+/// 屬性值內字面 `>` 與 XML 註解內 `>`——真需要時應整檔改走事件式解析器，
+/// 不在本卡範圍。
 fn merge_children_ordered(
     preserved: &str,
     added: &str,
@@ -1710,13 +1750,12 @@ fn merge_children_ordered(
     for (is_add, src) in [(false, preserved), (true, added)] {
         let mut last_rank = 0i32;
         for token in top_level_children(src) {
-            if !is_add
+            let dropped = !is_add
                 && drop
                     .iter()
-                    .any(|name| token_tag_name(&token) == Some(*name))
-            {
-                continue;
-            }
+                    .any(|name| token_tag_name(&token) == Some(*name));
+            // rank 必須在剔除判定**之前**更新：被覆寫的舊宣告仍是其後未知元素
+            // 的前件（隨前件鄰域由原文位置決定，不由存活與否決定）。
             let rank = match token_open_tag(&token).and_then(|tag| rank_of(tag_local(tag))) {
                 Some(r) => {
                     last_rank = r;
@@ -1724,11 +1763,15 @@ fn merge_children_ordered(
                 }
                 None => last_rank,
             };
+            if dropped {
+                continue;
+            }
             ranked.push((rank, is_add, token));
         }
     }
-    // 穩定排序：同 rank 保持插入序（preserved 先、added 後）。
-    ranked.sort_by_key(|(rank, _, _)| *rank);
+    // 穩定排序：同 rank 時補丁新宣告（is_add=true）在前、既有宣告在後；兩側
+    // 內部保持插入序。
+    ranked.sort_by_key(|(rank, is_add, _)| (*rank, !*is_add));
     ranked.into_iter().map(|(_, _, token)| token).collect()
 }
 
@@ -2167,7 +2210,7 @@ fn ppr_drop_families(patch: &ParaPropsPatch) -> Vec<&'static str> {
 fn patch_ppr(ppr: &str, patch: &ParaPropsPatch) -> String {
     // E-1 同源的根因修正（本卡）：取「既有宣告內文」必須用 `element_inner`
     // （取元素**內文**），不可用 `strip_leading_element`（摘掉開頭元素、保留
-    // 其餘）——後者對 `leading_element` 的產物（元素本身）恆回空字串，于是
+    // 其餘）——後者對 `leading_element` 的產物（元素本身）恆回空字串，於是
     // 每次重組都把既有 pStyle／numPr／spacing／pageBreakBefore 全數丟掉，欄位
     // `None` 因此不是「不碰 XML」而是「連別人寫的也一起抹除」——設對齊 →
     // 段落樣式／清單編號／行距／分頁前全部消失（用戶可見形態）。
@@ -2228,12 +2271,12 @@ fn patch_numpr(ppr: &str, action: &ListAction) -> String {
     // 字串掃描會把快照的 numId 誤當成本段現行值（ChangeLevel 因此沿用錯號）。
     let existing_numpr = top_level_element(&inner, "w:numPr");
 
-    if let ListAction::RemoveNumbering = action {
-        // 段頂本來就沒有 numPr ＝零意圖：原字串原樣返回（不材料化空 pPr、
-        // 不重排既有宣告）。
-        if existing_numpr.is_none() {
-            return ppr.to_string();
-        }
+    // 段頂本來就沒有 numPr ⇒ AttachExisting 以外都是零意圖：原字串原樣返回。
+    // RemoveNumbering 無號可摘、ChangeLevel 無層可改——後者若照常重組會合成
+    // `<w:numId w:val="0"/>` 的寡人宣告（agy 第二意見 P3 實抓），兩者的合法
+    // 產物都是零位元組位移（不材料化空 pPr、不重排既有宣告）。
+    if existing_numpr.is_none() && !matches!(action, ListAction::AttachExisting { .. }) {
+        return ppr.to_string();
     }
 
     let add = match action {

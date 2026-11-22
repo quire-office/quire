@@ -1,15 +1,15 @@
 """E-1 同源返修（t_e32ac1cd）BUGGY 回塞鑑別腳本（支援 buggy / good 兩態）。
 
 用法：
-  bash scripts/e_ppr_buggy_replay.sh buggy   # 塞回同源缺陷，e_ppr_patch_merge 必紅
-  bash scripts/e_ppr_buggy_replay.sh good    # 以字串置換完全逆轉，並與 HEAD 逐位元組對照
+  python3 scripts/e_ppr_buggy_replay.py buggy   # 塞回同源缺陷，e_ppr_patch_merge 必紅
+  python3 scripts/e_ppr_buggy_replay.py good    # 以字串置換完全逆轉，並與 HEAD 逐位元組對照
 
 規範守衛（k29e／k29c 腳本同款紀律）：
 - 嚴禁 git checkout / reset / clean / stash，走字串就地置換。
-- 每處置換錨點必唯一，失配即報警退出（不靜默跳過）。
+- 每處置換錨點必唯一（同點多處時宣告預期次數），失配即報警退出（不靜默跳過）。
 - good 態末了以 `git diff` 對照 HEAD 驗證逐位元組一致。
 
-瑕疵注入（還原本卡修正前的三個同源缺陷形態，單行翻轉、可完全逆轉）：
+瑕疵注入（還原本卡修正前的缺陷形態，字串置換、可完全逆轉）：
   P1 `patch_ppr`／`patch_numpr` 取既有宣告內文退回 `strip_leading_element`
      （對 `leading_element` 產物恆回空字串）→ 燈 1／2／3／4／5／6／6b／7／8／
      9／10／11 全數轉紅（既有段落宣告每次重組全數蒸發）。
@@ -17,6 +17,10 @@
      被材料化」形態（k29d 拆分節判定的依賴項）。
   P3 numPr 改回全域字串掃描（不看頂層）→ 燈 6b 拍出「ChangeLevel 沿用
      pPrChange 快照內的錯號 numId」。
+  P4 段落側偷吃 rPr 那份 rank 表（卡面點名的「鍵名重疊但序不同」陷阱，
+     a＝patch_ppr 臂／b＝patch_numpr 臂）→ 燈 7／11 拍出宣告序退化。
+  P5 ChangeLevel 零意圖硬閂退回「只護 RemoveNumbering」→ 燈 15 拍出無 numPr
+     段落被合成 numId=0 寡人宣告（agy 第二意見 P3）。
 """
 
 import subprocess
@@ -58,6 +62,12 @@ REVERTS = [
         "P4b_NUMPR_RANK_TABLE_BUGGY",
         '&["w:numPr"], ppr_child_rank)',
         '&["w:numPr"], rpr_child_rank)',
+        1,
+    ),
+    (
+        "P5_CHANGELEVEL_ZERO_INTENT_BUGGY",
+        "    if existing_numpr.is_none() && !matches!(action, ListAction::AttachExisting { .. }) {",
+        "    if existing_numpr.is_none() && matches!(action, ListAction::RemoveNumbering) {",
         1,
     ),
 ]

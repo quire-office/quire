@@ -97,7 +97,9 @@ const STYLES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes
     <w:name w:val="heading 1"/>
     <w:pPr><w:keepNext/><w:spacing w:line="240" w:lineRule="auto"/></w:pPr>
   </w:style>
-  <w:style w:type="paragraph" w:styleId="Heading2"/>
+  <w:style w:type="paragraph" w:styleId="Heading2">
+    <w:name w:val="heading 2"/>
+  </w:style>
 </w:styles>"#;
 
 /// `abstractNum`＋`num` 對得上 numId 的最小編號件（父卡探針缺的就是這件）。
@@ -726,6 +728,114 @@ fn eppr_lamp11_paragraph_mark_rpr_and_sectpr_keep_tail_position() {
     assert!(
         pos(r#"<w:jc w:val="center"/>"#) < pos("<w:rPr>"),
         "CT_PPr 序：jc(26) 必須在 rPr(33) 之前，實測 pPr = {ppr}"
+    );
+}
+
+/// 燈 13（agy 第二意見 P1）：被覆寫剔除的宣告仍定義其後未知元素的「隨前件」
+/// 鄰域——未知元素不可因前件被 drop 而斷鏈往前漂。
+#[test]
+fn eppr_lamp13_unknown_element_follows_dropped_predecessor() {
+    // 原序：pStyle → spacing(360) → w15:foo → tabs。發 line_spacing=Some(2.0)：
+    // 舊 spacing 被同族剔除，新 spacing(480) 由補丁寫回。w15:foo 的前件是那顆
+    // **被剔除的** spacing——隨前件紀律要求它留在 spacing 鄰域（tabs 之後），
+    // 不可斷鏈退回 pStyle 之後（agy 實抓：drop 的 continue 發生在 last_rank
+    // 更新之前，未知元素因此漂到文首）。
+    let inner = r#"<w:pStyle w:val="Heading1"/><w:spacing w:line="360" w:lineRule="auto"/><w15:foo w:val="bar"/><w:tabs><w:tab w:val="left" w:pos="720"/></w:tabs>"#;
+    let mut engine = engine_from_body(&three_para(inner), false);
+
+    para_props(
+        &mut engine,
+        1,
+        ParaPropsPatch {
+            line_spacing: Some(2.0),
+            ..Default::default()
+        },
+    );
+
+    let ppr = ppr_of_para(&para_xml_containing(&doc_xml(&engine), "這是一份"));
+    println!("=== 燈 13 實測 ===\npPr = {ppr}");
+
+    assert!(
+        ppr.contains(r#"<w:spacing w:line="480" w:lineRule="auto"/>"#)
+            && ppr.contains(r#"<w15:foo w:val="bar"/>"#)
+            && ppr.contains(r#"<w:tab w:val="left" w:pos="720"/>"#),
+        "新 spacing(480)／w15:foo／tabs 必須俱在，實測 pPr = {ppr}"
+    );
+    let pos = |n: &str| ppr.find(n).unwrap_or_else(|| panic!("pPr 應含 {n}：{ppr}"));
+    // 斷鏈的病態形態＝w15:foo 退回 pStyle 之後（前件被 drop 後 last_rank 未更新）
+    // ——它必須留在 spacing 鄰域（tabs 之後），且與新 spacing 相鄰（同 rank 組，
+    // 兩者的先後由「補丁新宣告在前」紀律決定，不在本燈斷言範圍）。
+    assert!(
+        pos(r#"<w:pStyle w:val="Heading1"/>"#) < pos("<w:tabs>")
+            && pos("<w:tabs>") < pos("<w15:foo")
+            && pos("<w:tabs>") < pos(r#"<w:spacing w:line="480""#),
+        "w15:foo 必須留在被覆寫前件（spacing）的鄰域、不得斷鏈漂回 tabs 之前，實測 pPr = {ppr}"
+    );
+    let (a, b) = (pos("<w15:foo"), pos(r#"<w:spacing w:line="480""#));
+    let gap = if a < b {
+        ppr[a..b].find("<w:tabs>").is_none() && ppr[a..b].find("pStyle").is_none()
+    } else {
+        ppr[b..a].find("<w:tabs>").is_none() && ppr[b..a].find("pStyle").is_none()
+    };
+    assert!(
+        gap,
+        "w15:foo 必須與 spacing 相鄰（其間不得插入其他已知宣告），實測 pPr = {ppr}"
+    );
+}
+
+/// 燈 14（agy 第二意見 P2）：`pStyle` 覆寫後必須仍居 pPr 首位——同 rank 並存時
+/// 補丁新宣告要贏過「隨前件漂移到 rank 0」的既有未知元素（CT_PPrBase 首位契約）。
+#[test]
+fn eppr_lamp14_replaced_pstyle_stays_first_ahead_of_inherited_unknown() {
+    let inner = r#"<w:pStyle w:val="Heading1"/><w15:foo w:val="bar"/>"#;
+    let mut engine = engine_from_body(&three_para(inner), false);
+
+    para_props(
+        &mut engine,
+        1,
+        ParaPropsPatch {
+            style_id: Some("Heading2".to_string()),
+            ..Default::default()
+        },
+    );
+
+    let ppr = ppr_of_para(&para_xml_containing(&doc_xml(&engine), "這是一份"));
+    println!("=== 燈 14 實測 ===\npPr = {ppr}");
+
+    assert!(
+        ppr.starts_with(r#"<w:pPr><w:pStyle w:val="Heading2"/>"#),
+        "w:pStyle 是 CT_PPrBase 首位宣告：替換後必須緊接 pPr 開標籤，未知元素不得靠隨前件 rank 0 抢位，實測 pPr = {ppr}"
+    );
+    assert!(
+        ppr.contains(r#"<w15:foo w:val="bar"/>"#),
+        "w15:foo 必須存活，實測 pPr = {ppr}"
+    );
+}
+
+/// 燈 15（agy 第二意見 P3）：`ChangeLevel` 對**無 numPr** 的段落是零意圖——
+/// 不得合成 `numId="0"` 的寡人宣告、不得材料化 pPr（同 RemoveNumbering 紀律）。
+#[test]
+fn eppr_lamp15_change_level_without_numpr_is_zero_intent() {
+    let inner = r#"<w:pStyle w:val="Heading1"/><w:jc w:val="left"/>"#;
+    let bytes = docx_from_body(&three_para(inner), true);
+    let mut engine = Engine::from_docx_bytes(&bytes).expect("開啟失敗");
+    settle(&mut engine);
+    let before = engine.save_docx().expect("存檔失敗");
+
+    numbering(&mut engine, 1, ListAction::ChangeLevel { ilvl: 2 });
+
+    let after = engine.save_docx().expect("存檔失敗");
+    let ppr = ppr_of_para(&para_xml_containing(&doc_xml(&engine), "這是一份"));
+    println!("=== 燈 15 實測 ===\npPr = {ppr}");
+
+    assert_eq!(
+        ppr,
+        format!("<w:pPr>{inner}</w:pPr>"),
+        "無 numPr 段落發 ChangeLevel 必須零位元組變動（不可合成 numId=0 寡人宣告）"
+    );
+    assert_eq!(
+        before, after,
+        "零意圖 ChangeLevel 存檔面亦須 byte-identical"
     );
 }
 
