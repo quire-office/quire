@@ -222,7 +222,7 @@ fn e2_lamp3_single_default_and_dash_alias() {
     assert_eq!(
         direct_underline_json(&docx),
         json!("single"),
-        "無 @w:val＝ECMA 預設 single（toggle 開啟語義不变）"
+        "無 @w:val＝ECMA 預設 single（toggle 開啟語義不變）"
     );
     let docx = make_docx(&para_with_u(r#"<w:u w:val="dash"/>"#), None);
     assert_eq!(

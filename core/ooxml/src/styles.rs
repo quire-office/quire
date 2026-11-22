@@ -450,6 +450,12 @@ fn toggle_on_attr(e: &quick_xml::events::BytesStart) -> bool {
 /// `pub(crate)`：document.xml 的 run 直接格式（lib.rs `apply_style_tag`）共用
 /// 同一判據——讀取端口徑只許有一份。
 pub(crate) fn underline_of(e: &quick_xml::events::BytesStart) -> Underline {
+    // BUGGY 回塞鎖（k21/g1 同款 env 慣例；隨貨 scripts/e2_underline_buggy_replay.sh）：
+    // `E2_UNDERLINE_BUGGY=1` 把本函式塞回修前的布林語義——任何「有底線」值一律
+    // 折成 Single、關閉值折成 Off（＝修前 `Option<bool>` 的有損投影）。解析層
+    // 考卷 e2_underline_kind 燈 1／2／5（double/thick/dotted/dashed/words 保形）
+    // 必紅，證明那三盞燈真在比形態、不是比有無。
+    let collapsed = std::env::var_os("E2_UNDERLINE_BUGGY").is_some();
     let Some(raw) = attr_val(e, "val") else {
         return Underline::Single; // 無 w:val＝toggle 開啟，ECMA 預設 single。
     };
@@ -457,11 +463,16 @@ pub(crate) fn underline_of(e: &quick_xml::events::BytesStart) -> Underline {
     match trimmed.to_ascii_lowercase().as_str() {
         "none" | "false" | "0" | "off" => Underline::Off,
         "single" => Underline::Single,
+        "double" if collapsed => Underline::Single,
+        "thick" if collapsed => Underline::Single,
+        "dotted" if collapsed => Underline::Single,
+        "dashed" | "dash" if collapsed => Underline::Single,
         "double" => Underline::Double,
         "thick" => Underline::Thick,
         "dotted" => Underline::Dotted,
         // Word 相容讀取端也吃 `dash`（mutation.rs K29e `UnderlineKind` 同口徑）。
         "dashed" | "dash" => Underline::Dashed,
+        _ if collapsed => Underline::Single,
         _ => Underline::Raw(trimmed.to_string()),
     }
 }

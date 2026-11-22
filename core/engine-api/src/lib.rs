@@ -7,8 +7,8 @@
 
 use quire_layout::{
     breaks_from_pages, section_capacity, CaretPos, ContentBox, LayoutEngine, LayoutParams,
-    LineFlow, Page, ParaGrid, SectionGeometry, SectionSpec, TableSlot, MARGIN_BOTTOM,
-    MARGIN_LEFT, MARGIN_TOP,
+    LineFlow, Page, ParaGrid, SectionGeometry, SectionSpec, TableSlot, MARGIN_BOTTOM, MARGIN_LEFT,
+    MARGIN_TOP,
 };
 use quire_ooxml::{
     diff_zip_structure, parse, parse_header_footer_part_with_fonts, read_even_and_odd_headers,

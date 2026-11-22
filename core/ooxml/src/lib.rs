@@ -2404,7 +2404,11 @@ mod tests {
         }
         let eff = StyleTable::resolve_run(b, run.direct.clone().unwrap_or_default())
             .with_hyperlink_default(run.hyperlink_default);
-        assert_eq!(eff.underline, Some(Underline::Off), "樣式宣告 u=none 即不合成");
+        assert_eq!(
+            eff.underline,
+            Some(Underline::Off),
+            "樣式宣告 u=none 即不合成"
+        );
         assert_eq!(eff.color, Some(HYPERLINK_DEFAULT_COLOR_ARGB), "色仍兜底");
     }
 

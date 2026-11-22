@@ -51,7 +51,6 @@ impl Underline {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DrawItem {
     Text {

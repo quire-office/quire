@@ -21,6 +21,14 @@ struct ULineGeom {
 }
 
 fn uline_geom(kind: &Underline) -> Option<ULineGeom> {
+    // BUGGY 回塞鎖（同 e2_underline_kind 的 `E2_UNDERLINE_BUGGY`；隨貨
+    // scripts/e2_underline_buggy_replay.sh）：置位時本函式一律回 None＝修前
+    // 全形態走 `text-decoration="underline"` 單線的舊行為。發射層考卷
+    // e2_underline_emit 燈 2（double 雙 path／dotted 點級 dash／dashed 段級
+    // dash／thick 加粗）必紅，證明那四條斷言真在比幾何、不是比旗標。
+    if std::env::var_os("E2_UNDERLINE_BUGGY").is_some() {
+        return None;
+    }
     match kind {
         // Single 走 `text-decoration="underline"` 舊路徑（零位移），不發幾何。
         Underline::Single | Underline::Off => None,
@@ -183,7 +191,8 @@ viewBox=\"0 0 {w:.0} {h:.0}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#fff
                 // 行為）。`Single`/未宣告/Raw 回 None＝舊宣告式路徑逐位元組
                 // 保持（零位移鐵律）。豎排三口徑不發幾何：底線方向需隨行向
                 // 旋轉，屬另卡範圍，維持修前 text-decoration 行為。
-                let vertical = flags & (FLAG_DIR_VERT | FLAG_DIR_VERT270 | quire_engine::FLAG_DIR_EAVERT) != 0;
+                let vertical =
+                    flags & (FLAG_DIR_VERT | FLAG_DIR_VERT270 | quire_engine::FLAG_DIR_EAVERT) != 0;
                 let geo = if vertical {
                     None
                 } else {

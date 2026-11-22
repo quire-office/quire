@@ -5,14 +5,14 @@
 //! # 卡面缺口（任務 3：發射多態）
 //! 修前發射鏈只有布林旗標：`RunStyle.underline: Option<bool>` → engine 烘焙
 //! `Run::underline: bool` → `DrawItem::Text.flags` 的 `FLAG_UNDERLINE` 位元 →
-//! SVG 端 `text-decoration="underline"`（恒單線）。`double/thick/dotted/dashed`
+//! SVG 端 `text-decoration="underline"`（恆單線）。`double/thick/dotted/dashed`
 //! 在解析層就被折損，發射端無形態可繪。
 //!
 //! # 斷言層口徑（卡面鐵律；K29e 同規）
 //! 主斷言打渲染端 SVG 產物（`shells/native/src/render_svg.rs` 的 `page_to_svg`，
 //! 與 `quire-cli render` 同一支發射器）。渲染端採「幾何底線」配方——本渲染器
 //! 是骨架級幾何直譯（座標全來自 layout），底線用 `<path>` 畫在對應 `<text>`
-//! 行的緊接行（段级關聯＝相鄰行）：
+//! 行的緊接行（段級關聯＝相鄰行）：
 //! - `double`   → 兩條平行 `<path>`（雙線；SVG 1.1 text-decoration 對重複值
 //!   渲染未定義，瀏覽器只畫一條，宣告式多值不可依賴）；
 //! - `thick`    → 單條 `<path>`，`stroke-width` ≈ 字級×0.13（加粗）；
@@ -22,14 +22,17 @@
 //!   與單線段輸出與修前逐位元組相同，`<path>` 一條不發）；
 //! - 未支援 `Raw("wavy")` → 降級走 `text-decoration="underline"` 單線舊路徑
 //!   ＋不 panic（考卷鎖「渲染不炸＋照畫單線」，TODO 在發射端源碼）。
-//! 輔助證據＝顯示列表 `DrawItem::Text.underline` 欄（形態透傳，JSON 零位移
-//! 守門：未宣告/未見 w:u 的檔案該欄 None 不外露）。
+//!   輔助證據＝顯示列表 `DrawItem::Text.underline` 欄（形態透傳，JSON 零位移
+//!   守門：未宣告/未見 w:u 的檔案該欄 None 不外露）。
 //!
-//! # 紅燈口徑（Phase A 拍紅形态折損；Phase B 全綠）
+//! # 紅燈口徑（Phase A 拍紅形態折損；Phase B 全綠）
 //! 修前 `DrawItem::Text` 無 `underline` 欄、SVG 對 double/thick/dotted/dashed
 //! 一律 `text-decoration="underline"`——形態斷言全紅。
 
-use quire_engine::{DrawItem, Engine, Underline, FLAG_UNDERLINE};
+use quire_engine::{
+    DocPos, DocRange, DrawItem, Engine, Mutation, RunDirectPatch, SubDocTarget, Underline,
+    UnderlineKind, FLAG_UNDERLINE,
+};
 
 #[path = "../../../shells/native/src/render_svg.rs"]
 mod render_svg;
@@ -167,9 +170,7 @@ fn fixture_bytes() -> Vec<u8> {
 </Relationships>"#,
     );
     let para = |u_tag: &str, text: &str| -> String {
-        format!(
-            "<w:p><w:r><w:rPr>{u_tag}</w:rPr><w:t>{text}</w:t></w:r></w:p>"
-        )
+        format!("<w:p><w:r><w:rPr>{u_tag}</w:rPr><w:t>{text}</w:t></w:r></w:p>")
     };
     let doc = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -207,8 +208,8 @@ fn svg_of(engine: &Engine, page: usize) -> String {
     render_svg::page_to_svg(&dl)
 }
 
-/// 渲染端段级關聯＝底線 `<path>` 緊接其 `<text>` 行（相鄰行）。回傳
-/// 「含 needle 的 `<text>` 行＋其後連續的 `<path>` 行」整段（段级斷言用）。
+/// 渲染端段級關聯＝底線 `<path>` 緊接其 `<text>` 行（相鄰行）。回傳
+/// 「含 needle 的 `<text>` 行＋其後連續的 `<path>` 行」整段（段級斷言用）。
 fn svg_block(svg: &str, needle: &str) -> String {
     let v: Vec<&str> = svg.lines().collect();
     for i in 0..v.len() {
@@ -230,10 +231,7 @@ fn svg_block(svg: &str, needle: &str) -> String {
 }
 
 /// 顯示列表裡第一條含 `needle` 的 Text 項 (flags, underline 欄)。
-fn text_item_with(
-    engine: &Engine,
-    needle: &str,
-) -> (u8, Option<Underline>) {
+fn text_item_with(engine: &Engine, needle: &str) -> (u8, Option<Underline>) {
     let dl = engine
         .page_display_list(0)
         .expect("第 0 頁顯示列表必須存在");
@@ -275,7 +273,11 @@ fn e2e_lamp1_kinds_reach_display_list() {
 
 /// 取 block 內 `<path>` 行（底線幾何行）。
 fn path_lines(block: &str) -> Vec<String> {
-    block.lines().filter(|l| l.starts_with("<path")).map(String::from).collect()
+    block
+        .lines()
+        .filter(|l| l.starts_with("<path"))
+        .map(String::from)
+        .collect()
 }
 
 /// 解析 `stroke-dasharray="a b"` 的首段長（pt）。
@@ -285,7 +287,8 @@ fn first_dash(block: &str) -> f32 {
         .expect("必須帶 stroke-dasharray");
     let rest = &block[i + "stroke-dasharray=\"".len()..];
     let head = rest.split([' ', '"']).next().expect("dash 首段");
-    head.parse::<f32>().unwrap_or_else(|_| panic!("dash 首段非數值：{head}"))
+    head.parse::<f32>()
+        .unwrap_or_else(|_| panic!("dash 首段非數值：{head}"))
 }
 
 /// 燈 2：SVG 渲染端消費形態——double 落兩條平行 `<path>`、dotted/dashed
@@ -340,7 +343,10 @@ fn e2e_lamp2_svg_renders_kinds() {
     let dot_len = first_dash(&dot);
     let dash_len = first_dash(&dash);
     assert!(dot_len < 3.0, "dotted 段長應點級（<3pt；實得 {dot_len}）");
-    assert!(dash_len >= 3.0, "dashed 段長應段級（≥3pt；實得 {dash_len}）");
+    assert!(
+        dash_len >= 3.0,
+        "dashed 段長應段級（≥3pt；實得 {dash_len}）"
+    );
     assert!(
         dash_len > dot_len,
         "dashed 段長必須比 dotted 長（實得 dot={dot_len} dash={dash_len}）"
@@ -417,9 +423,9 @@ fn e2e_lamp4_json_zero_displacement_when_undeclared() {
         .items
         .iter()
         .find_map(|it| match it {
-            DrawItem::Text { text, underline, .. } if text.contains("純文字段") => {
-                Some(underline.clone())
-            }
+            DrawItem::Text {
+                text, underline, ..
+            } if text.contains("純文字段") => Some(underline.clone()),
             _ => None,
         })
         .expect("顯示列表必須含該段");
@@ -428,6 +434,97 @@ fn e2e_lamp4_json_zero_displacement_when_undeclared() {
     assert!(
         !json.contains("underline"),
         "None 欄不得外露進 JSON（零位移鐵律）：{json}"
+    );
+}
+
+/// 燈 6（卡面任務 4：圓環）：寫入端 `UnderlineKind`（mutation.rs K29e，本卡
+/// 白名單外）與解析端 `Underline`（E-2）的**口徑閉環**——同一 ECMA `w:u/@w:val`
+/// 字面，經「寫入→存檔→重解析→發射」必須落回同形態，且讀取端改動不改寫位元組。
+///
+/// 共型取捨（老實記帳，非迴避）：`UnderlineKind` 定義在
+/// `core/engine-api/src/mutation.rs`——本卡白名單明令勿碰（E-1／活體卡
+/// territory），且它是 `pub` 線契約（shells/web 序列化路徑已消費其 serde
+/// 形），就地換型會越界改寫入端契約。故本燈不改型別，改以**語義等價閉環**
+/// 鎖死兩制：逐值斷言寫入端的 `w:val` 字面經解析端讀成對應 `Underline`
+/// 變體（single/double/dotted/dashed/none↔Off 五值全走一遍）。兩者的serde
+/// 形本就不同（`Underline` 走小寫字面＋`Raw` 外部標籤，`UnderlineKind` 走
+/// 變體名），共型屬另卡（需同時動 mutation.rs 與外殼序列化），本卡只證
+/// 「口徑不漂移」。
+#[test]
+fn e2e_lamp6_write_read_roundtrip_kind_parity() {
+    // (a) 寫入端四形態 + 明確關閉：逐值 → 存檔件字面 → 重解析形態 → 發射。
+    for (kind, want_val, want_kind) in [
+        (UnderlineKind::Single, "single", Some(Underline::Single)),
+        (UnderlineKind::Double, "double", Some(Underline::Double)),
+        (UnderlineKind::Dotted, "dotted", Some(Underline::Dotted)),
+        (UnderlineKind::Dashed, "dashed", Some(Underline::Dashed)),
+        (UnderlineKind::None, "none", None),
+    ] {
+        let mut engine = fixture_engine();
+        engine
+            .apply_mutation(Mutation::FormatTextRange {
+                range: DocRange {
+                    target: SubDocTarget::Body,
+                    start: DocPos { para: 0, cp: 0 },
+                    end: DocPos { para: 0, cp: 5 },
+                },
+                patch: RunDirectPatch {
+                    underline: Some(kind),
+                    ..Default::default()
+                },
+            })
+            .expect("套用 FormatTextRange（底線形態）失敗");
+        settle(&mut engine);
+
+        let saved = engine.save_docx().expect("存檔失敗");
+        let reopened = Engine::from_docx_bytes(&saved).expect("重開失敗");
+        let xml = String::from_utf8(
+            reopened
+                .part("word/document.xml")
+                .expect("重開件必須有 document.xml")
+                .to_vec(),
+        )
+        .expect("UTF-8");
+        let tag = format!(r#"<w:u w:val="{want_val}"/>"#);
+        assert!(
+            xml.contains(&tag),
+            "寫入端 {kind:?} 必須寫出 {tag}；document.xml 前 600 字元：{}",
+            &xml[..xml.len().min(600)]
+        );
+
+        // 重解析讀回的形態必須與寫入端同義（單線段被覆寫後的目標段）。
+        let (flags, ul) = text_item_with(&reopened, "單線段");
+        if want_kind.is_some() {
+            assert_ne!(flags & FLAG_UNDERLINE, 0, "{kind:?} 必須點亮旗標");
+        } else {
+            assert_eq!(flags & FLAG_UNDERLINE, 0, "none 必須熄滅旗標");
+        }
+        assert_eq!(
+            ul, want_kind,
+            "{kind:?} 經存檔重解析必須讀回同形態（口徑閉環，禁折損）"
+        );
+    }
+
+    // (b) 讀取端改動不改寫位元組：未動過的合成件，存檔件的 word/document.xml
+    // 必須與來源逐位元組相同（corpus roundtrip --check 的逐檔口徑在本合成件
+    // 同款成立——形態欄是純派生，不得回寫 XML）。
+    let bytes = fixture_bytes();
+    let origin = Engine::from_docx_bytes(&bytes).expect("開啟來源件失敗");
+    let want = origin
+        .part("word/document.xml")
+        .expect("來源件必須有 document.xml")
+        .to_vec();
+    let mut engine = Engine::from_docx_bytes(&bytes).expect("開啟失敗");
+    settle(&mut engine);
+    let saved = engine.save_docx().expect("存檔失敗");
+    let reopened = Engine::from_docx_bytes(&saved).expect("重開失敗");
+    let got = reopened
+        .part("word/document.xml")
+        .expect("存檔件必須有 document.xml")
+        .to_vec();
+    assert_eq!(
+        got, want,
+        "讀取端形態改動後，未編輯件的 document.xml 必須逐位元組保持（零位元組位移）"
     );
 }
 
