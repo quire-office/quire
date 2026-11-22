@@ -485,8 +485,35 @@ pub struct CellContentGeom {
     pub border_left_pt: f32,
 }
 
-/// 表格完整排版（列帶分配完成；跨頁切片由 [`TableLayout::fragment`] 產出）。
+/// 建槽時的排版輸入快照（t_c2bbcb38：格內文字打字後重排的唯一資料來源）。
+///
+/// 為何要存：格內文字在排版層是**斷行當下的快照**（`CellBlockGeom::Text.lines`
+/// 與切片 `CellText.text` 都是字串副本），而編輯面打字只改 `texts[para]`。
+/// 表格內部段落「流失權」（其文字由切片繪製，不進正文流），於是打字後切片
+/// 仍帶舊字串——OOXML 與 canonical model 都真實更新了，畫面卻零發射。修法
+/// 就是在打字落地時以本快照重跑 [`layout_table`]（同一支、已通過全部金樣的
+/// 排版管線），而不是另開第二條「只改字串」的捷徑路徑——捷徑必然與建槽路徑
+/// 分岔（斷行、列高、vMerge、valign 全會走樣）。
+///
+/// `None`＝非 [`layout_table`] 產物（外部手搓的 `TableLayout`），刷新一律回
+/// false＝誠實 noop（不虛構幾何）。
 #[derive(Debug, Clone, PartialEq)]
+pub struct TableSrc {
+    /// 建槽輸入（巢狀表在 `CellBlock::Table` 內，遞迴）。
+    pub input: TableInput,
+    /// 建槽可用寬（已鉗 ≥1pt 的生效值，重播必與建槽同值）。
+    pub avail_w: f32,
+    /// 建槽量測器（重播同尺，含 advance 尺與標點覆寫臂）。
+    pub m: TextMeasurer,
+    /// 建槽巢狀深度（重播同深度，`MAX_NEST_DEPTH` 判定復現）。
+    pub depth: usize,
+}
+
+/// 表格完整排版（列帶分配完成；跨頁切片由 [`TableLayout::fragment`] 產出）。
+///
+/// 相等語義＝**幾何相同**（見下方手寫 `PartialEq`）；`src` 是重播用的輸入快取，
+/// 不屬幾何身分，刻意不入比較。
+#[derive(Debug, Clone)]
 pub struct TableLayout {
     /// 表格左緣（相對可用區左緣：tblInd／jc 已計入）。
     pub x_off: f32,
@@ -501,9 +528,118 @@ pub struct TableLayout {
     /// M1-band：格內一行文字所佔帶數（=`TableInput::line_ref_bands` 夾 ≥1）。
     /// 粗尺（未細化）＝1，與舊「一行＝一帶」口徑逐位元組相同。
     line_ref: u32,
+    /// 建槽輸入快照（t_c2bbcb38；見 [`TableSrc`]）。
+    /// 裝箱：`TableSrc` 含整份 `TableInput`，就地內嵌會把 `CellBlock::Table`
+    /// 撐爆 `clippy::large_enum_variant`（本結構是巢狀表列成員，尺寸敏感）。
+    src: Option<Box<TableSrc>>,
+}
+
+/// 以文件序走訪 `input` 的所有文字 block（巢狀表在其所屬格內**原位**遞迴，
+/// 與 engine 側 `table_map::table_input` 的映射序逐字一致）。只有「序號命中
+/// **且**現值等於 `expect_old`」才換字——雙重身分驗證是索引漂移的煞車：
+/// 對不上就一格都不動（誠實 noop），絕不把字寫進錯的格子。
+///
+/// 座標系＝「表內第幾個文字 block（文件序）」，與扁平段落索引逐一對號
+/// （`para_start + i`）——解析器對 `w:p` 用單一計數器（自閉合 `<w:p/>` 兩邊
+/// 都不計），表格子樹內的段落索引天然連續，故「block 序＝段內偏移」成立。
+fn retext_walk(
+    input: &mut TableInput,
+    cursor: &mut usize,
+    target: usize,
+    expect_old: &str,
+    new_text: &str,
+    touched: &mut bool,
+) {
+    for row in input.rows.iter_mut() {
+        for cell in row.cells.iter_mut() {
+            for (bi, b) in cell.blocks.iter_mut().enumerate() {
+                match b {
+                    CellBlock::Text(t) => {
+                        if *cursor == target && *t == expect_old && *t != new_text {
+                            *t = new_text.to_string();
+                            *touched = true;
+                            // run 級標注同步退場：整段置換後舊碼點區間不再
+                            // 可信（`layout_table` 有 `to <= 段長` 的 debug
+                            // 斷言，硬留會炸）。清空＝退回單樣式發射，與
+                            // engine 側 `replace_paragraph_text`「新文字全
+                            // 進首個有字 run、其餘清空」的契約同源。
+                            if let Some(spans) = cell.run_spans.get_mut(bi) {
+                                spans.clear();
+                            }
+                        }
+                        *cursor += 1;
+                    }
+                    CellBlock::Table(n) => {
+                        retext_walk(n, cursor, target, expect_old, new_text, touched)
+                    }
+                    CellBlock::Image { .. } => {}
+                }
+            }
+        }
+    }
+}
+
+/// `PartialEq` 語義＝**幾何與內容相同**（切片／排版輸出的身分），故刻意排除
+/// `src`：`src` 只是「能否重播」的輸入快取（t_c2bbcb38），兩條來源不同、宣告
+/// 預設不同（如 `cell_margins: None` vs `Some(0)`）而產出逐位元組相同幾何的表，
+/// 在既有防回歸斷言（`zero_vertical_margins_match_undeclared_geometry`）裡必須
+/// 判等——把快取納入比較會讓那些斷言假紅。
+impl PartialEq for TableLayout {
+    fn eq(&self, other: &Self) -> bool {
+        self.x_off == other.x_off
+            && self.width == other.width
+            && self.row_units == other.row_units
+            && self.rows == other.rows
+            && self.row_base == other.row_base
+            && self.total_bands == other.total_bands
+            && self.line_h == other.line_h
+            && self.line_ref == other.line_ref
+    }
 }
 
 impl TableLayout {
+    /// 表內第 `text_idx` 個文字 block（文件序）由 `expect_old` 換成
+    /// `new_text`，並以**建槽快照**重播整條排版管線（t_c2bbcb38：格內打字後
+    /// 切片文字的正確性來源）。
+    ///
+    /// 為何重播而非就地改字串：`CellText.text` 只是斷行結果的副本，就地改
+    /// 會跳過斷行、列高、vMerge 餘額、valign 位移——那正是「改了卻不對」的
+    /// 第二條路徑。重播走的是與建槽同一支 [`layout_table`]（全部金樣驗證過），
+    /// 巢狀表在快照內原位換字、由外層重排自然重建，零第二實作。
+    ///
+    /// 回傳：`true`＝已實質變動並完成重排；`false`＝序號越界／現值不等於
+    /// `expect_old`（索引漂移，煞車）／新舊同字／無快照（非 [`layout_table`]
+    /// 產物，外部手搓的幾何）——四者皆零擾動。
+    pub fn retext_block(&mut self, text_idx: usize, expect_old: &str, new_text: &str) -> bool {
+        // 取走輸入快取（不另拷貝：打字是逐字元高頻路徑，一次深拷貝就夠）。
+        let mut stored = match self.src.take() {
+            Some(s) => s,
+            None => return false,
+        };
+        let mut cursor = 0usize;
+        let mut touched = false;
+        retext_walk(
+            &mut stored.input,
+            &mut cursor,
+            text_idx,
+            expect_old,
+            new_text,
+            &mut touched,
+        );
+        if !touched {
+            // 序號越界／現值不等於 `expect_old`（索引漂移煞車）／新舊同字／
+            // 無快照 ⇒ 原物放回，零擾動。
+            self.src = Some(stored);
+            return false;
+        }
+        let (avail_w, m, depth) = (stored.avail_w, stored.m, stored.depth);
+        // `line_h` 取本槽生效值（`layout_table` 內部 `.max(1.0)` 冪等，重播同尺）。
+        let line_h = self.line_h;
+        let fresh = layout_table(&stored.input, avail_w, line_h, &m, depth);
+        *self = fresh;
+        true
+    }
+
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty() || self.total_bands == 0
     }
@@ -1136,6 +1272,13 @@ pub fn layout_table(
         total_bands: 0,
         line_h,
         line_ref: lref,
+        // t_c2bbcb38：留存建槽輸入（打字落地時重播同一條排版管線的資料來源）。
+        src: Some(Box::new(TableSrc {
+            input: input.clone(),
+            avail_w,
+            m: *m,
+            depth,
+        })),
     };
     compute_row_heights(&mut tl, input);
     tl.rebuild_base();

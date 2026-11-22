@@ -2495,14 +2495,55 @@ impl LayoutEngine {
         let pl = self.break_para(para);
         self.cache[para] = Some(pl);
 
-        // 段落 → 流項：表格內部段落（流失權）改了也不動版面切片——老實 noop
-        // （顯示列表不經 Line 途徑，切片文字由 engine 重建槽時更新）。
-        let Some(fi) = self
+        // 段落 → 流項：正文段落命中 `FlowItem::Text`。表格內部段落「流失權」
+        // （其文字由切片繪製、不進正文流），命中不了 Text 項——但它們的文字
+        // 是**建槽當時的斷行快照**（`CellText.text` 只是字串副本），打字只改
+        // `texts[para]` 就等於只改資料不改畫面：OOXML 與 canonical model 都
+        // 真實更新了，顯示列表照發舊字（t_c2bbcb38：用戶端是「打字完全沒反
+        // 應」級 S1）。正確修法＝先刷新該槽（以建槽快照重播同一條 `layout_table`
+        // 管線），再從該表的流項起重排——切片由刷新後的槽重新產出，零第二實作。
+        let fi = match self
             .flow
             .iter()
             .position(|it| matches!(it, FlowItem::Text { para: p } if *p == para))
-        else {
-            return evs;
+        {
+            Some(fi) => fi,
+            None => {
+                let Some(si) = self
+                    .tables
+                    .iter()
+                    .position(|t| t.para_start <= para && para < t.para_end)
+                else {
+                    // 既不在流、也不在任何表內：真·無歸屬段落，老實 noop。
+                    return evs;
+                };
+                // 槽內「文字 block 文件序」＝段內偏移（解析器對 `w:p` 用單一
+                // 計數器，表格子樹內的段落索引連續；見 `retext_walk` 注）。
+                // 越界／現值對不上（索引漂移）＝刷新回 false，誠實 noop，
+                // 絕不把字寫進錯的格子。
+                let idx = para - self.tables[si].para_start;
+                if !self.tables[si]
+                    .layout
+                    .retext_block(idx, &old_text, new_text)
+                {
+                    return evs;
+                }
+                match self
+                    .flow
+                    .iter()
+                    .position(|it| matches!(it, FlowItem::Table { slot: s } if *s == si))
+                {
+                    Some(fi) => fi,
+                    None => {
+                        // 槽不在流（正常不可達；病態輸入保底）：整篇重建，
+                        // 寧可慢不可畫錯。
+                        self.rebuild_full();
+                        evs.push(Invalidation::Paragraph(para));
+                        evs.extend((0..self.pages.len()).map(Invalidation::Page));
+                        return evs;
+                    }
+                }
+            }
         };
         // 錨點 a＝包含編輯項首行的那頁：[0, a) 各頁全部來自更前面的流項
         // （未動），原樣保留；掃描從 (fi,0,0) 所在頁起重新打包。
@@ -4036,15 +4077,51 @@ mod tests {
     fn incremental_with_tables_matches_full_rebuild() {
         // 表格存在下打字：增量 packer（FlowItem::Table 分支＋收斂重用）與
         // 整篇重建逐頁全等（含 TablePlacement 切片、line_bands、starts）。
-        let (texts, p, tables) = cross_page_fixture();
+        let (texts, p, mut tables) = cross_page_fixture();
         let mut eng = LayoutEngine::with_tables(&texts, p.clone(), Vec::new(), tables.clone());
         assert_eq!(eng.page_count(), 2);
 
-        // 表格內部段落（流失權）：編輯必 noop——版面零變動。
-        let snapshot = eng.pages().to_vec();
+        // 表格內部段落：t_c2bbcb38 之後**不再是 noop**。舊斷言「流失權段改了不動
+        // 版面」正是本卡修掉的 S1（打字進引擎、畫面看不見）——格內打字必須刷新
+        // 切片並回報髒頁，否則用戶永遠看不見新字。
+        let mut changed = eng.texts.clone();
+        changed[3] = "表格內改字".to_string();
         let evs = eng.replace_paragraph_text(3, "表格內改字");
-        assert!(evs.is_empty(), "流失權段改了不動版面：{evs:?}");
-        assert_eq!(eng.pages(), snapshot.as_slice());
+        assert!(
+            evs.iter().any(|e| matches!(e, Invalidation::Page(_))),
+            "格內打字必須回報髒頁（不回報＝發射面永遠沿用舊切片）：{evs:?}"
+        );
+        // 等價基準＝同條管線重播：拿建槽快照做同一次 retext 後整篇重建，版面必全等。
+        let mut replay_tables = tables.clone();
+        assert!(
+            replay_tables[0].layout.retext_block(2, "列2", "表格內改字"),
+            "基準端 retext 必須受理（para_start=1 ⇒ 表內第 2 個文字 block＝「列2」）"
+        );
+        let fresh =
+            LayoutEngine::with_tables(&changed, p.clone(), Vec::new(), replay_tables.clone());
+        assert_eq!(
+            eng.pages(),
+            fresh.pages(),
+            "格內打字的增量版面與重播重建不符"
+        );
+        assert_eq!(eng.page_starts(), fresh.page_starts());
+        // 基準端同步：往後的「整篇重建」基準必須帶著同一次格內改字的內容真值，
+        // 否則基準仍是舊快照、比對會把正確的一方判成錯（假紅）。
+        tables[0].layout.retext_block(2, "列2", "表格內改字");
+        // 發射面真值（本卡紅燈判準）：切片文字必須帶上新字，而不是只剩舊快照。
+        let emitted: Vec<String> = eng
+            .pages()
+            .iter()
+            .flat_map(|pg| pg.tables.iter())
+            .flat_map(|t| t.frag.rows.iter())
+            .flat_map(|r| r.cells.iter())
+            .flat_map(|c| c.texts.iter())
+            .map(|x| x.text.clone())
+            .collect();
+        assert!(
+            emitted.iter().any(|t| t.contains("表格內改字")),
+            "表格切片發射必須含新字（實得 {emitted:?}）"
+        );
 
         let edits: Vec<(usize, String)> = vec![
             (
