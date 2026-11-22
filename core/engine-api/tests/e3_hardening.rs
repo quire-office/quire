@@ -253,8 +253,8 @@ fn vmerge_state_of_cell(xml: &str, cell_needle: &str) -> Option<bool> {
 const VMERGE_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
 <w:tbl><w:tblPr><w:tblW w:w="6000" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>
-<w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:gridSpan w:val="2"/><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>甲顶格</w:t></w:r></w:p></w:tc></w:tr>
-<w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:gridSpan w:val="2"/><w:vMerge/></w:tcPr><w:p><w:r><w:t>甲续格</w:t></w:r></w:p></w:tc></w:tr>
+<w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:gridSpan w:val="2"/><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>甲頂格</w:t></w:r></w:p></w:tc></w:tr>
+<w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:gridSpan w:val="2"/><w:vMerge/></w:tcPr><w:p><w:r><w:t>甲續格</w:t></w:r></w:p></w:tc></w:tr>
 <w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>底左格</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>底右格</w:t></w:r></w:p></w:tc></w:tr>
 </w:tbl>
 </w:body></w:document>"#;
@@ -452,6 +452,288 @@ fn e3_s2_2_lampB4_cond_gate_start_plus_one_must_not_overflow_on_open() {
     let _ = e.page_display_list(0);
 }
 
+// ===========================================================================
+// S2-3：table_identity_error 漏 tr／tc 透明包裝層
+// ===========================================================================
+//
+// 燈 C1（核心紅燈）：列級 `<w:ins>` 包裝列（`<w:tbl>…<w:ins><w:tr>…`）——
+// canonical 穿透包裝照收（rows=3），raw `direct_children("tr")` 只認直屬 2
+// 列 ⇒ 反查報 canonical row 1 的路徑餵給 M4 後，raw 側 `rows.get(1)` 拿到的
+// 是**底列**（界內錯位）。修前：首段識別子仍落在 `<w:tbl>` 界內 ⇒ 放行 ⇒
+// 靜默改錯列；修後：補驗列數／逐列格數配對 ⇒ 誠實拒絕且零波及。
+//
+// 燈 C2：`cell_grid_span` 的 `find_local_tag` 不看深度 ⇒ 穿透
+// `<w:tcPrChange><w:tcPr>` 讀到修訂前舊值。
+
+const INS_WRAPPED_ROW_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:tbl><w:tblPr><w:tblW w:w="6000" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>
+<w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>頂左格</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>頂右格</w:t></w:r></w:p></w:tc></w:tr>
+<w:ins w:id="7" w:author="稽核" w:date="2026-01-01T00:00:00Z"><w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>中左格</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>中右格</w:t></w:r></w:p></w:tc></w:tr></w:ins>
+<w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>底左格</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>底右格</w:t></w:r></w:p></w:tc></w:tr>
+</w:tbl>
+</w:body></w:document>"#;
+
+#[test]
+fn e3_s2_3_lampC0_fixture_has_canonical_raw_row_count_divergence() {
+    let e = open_docx(INS_WRAPPED_ROW_FIXTURE);
+    let t = root_table(&e, 0);
+    assert_eq!(
+        t["rows"].as_array().expect("rows 是陣列").len(),
+        3,
+        "canonical 口徑：列級 w:ins 包裝的列照收（穿透幀）"
+    );
+    let xml = doc_xml(&e);
+    assert_eq!(
+        xml.matches("<w:tr>").count(),
+        3,
+        "fixture 自證：全檔 3 個 <w:tr> 開標籤"
+    );
+    assert!(
+        xml.contains("<w:ins ") && xml.contains("</w:ins>"),
+        "fixture 自證：w:ins 列級包裝在場（拿掉包裝時本燈先紅，燈 C1 不失指）"
+    );
+    let (_, hit) = locate_cell(&e, 1, 0);
+    assert_eq!(
+        hit["cell_path"]["row"].as_u64(),
+        Some(1),
+        "中段反查必須報 canonical row 1（此路徑餵 M4 即錯位載體）"
+    );
+}
+
+#[test]
+fn e3_s2_3_lampC1_row_level_ins_wrapper_must_not_silently_edit_wrong_row() {
+    let e0 = open_docx(INS_WRAPPED_ROW_FIXTURE);
+    let base_xml = doc_xml(&e0);
+    let (_, hit) = locate_cell(&e0, 1, 0); // canonical 中段（藏在 w:ins 內）
+    let mut e = open_docx(INS_WRAPPED_ROW_FIXTURE);
+    match e.apply_mutation(Mutation::SetRowProps {
+        table: path_of(&hit),
+        row: 1,
+        patch: RowPropsPatch {
+            cant_split: Some(true),
+            ..Default::default()
+        },
+    }) {
+        Ok(_) => {
+            let xml = doc_xml(&e);
+            let at = xml.find("底左格").expect("底左格在場");
+            let row_at = xml[..at].rfind("<w:tr>").expect("底左格前要有 <w:tr>");
+            assert!(
+                !xml[row_at..at].contains("<w:cantSplit"),
+                "列級 w:ins 錯位檔：trPr 絕不得靜默落在『底』列（raw 界內錯位＝\
+                 改錯列）；修後唯一合法的另一出口是誠實拒絕"
+            );
+        }
+        Err(err) => {
+            let s = format!("{err:?}");
+            assert!(
+                s.contains("路徑與文件不符") && s.contains("透明包裝"),
+                "列級透明包裝錯位的拒絕必須點名『路徑與文件不符（透明包裝）』，實得: {s}"
+            );
+            assert_eq!(
+                doc_xml(&e), base_xml,
+                "拒絕後 document.xml 必須零變化（零半寫）"
+            );
+        }
+    }
+}
+
+const TCPARCHANGE_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:tbl><w:tblPr><w:tblW w:w="6000" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>
+<w:tr><w:tc><w:tcPr><w:tcW w:w="6000" w:type="dxa"/><w:tcPrChange w:id="9" w:author="稽核" w:date="2026-01-01T00:00:00Z"><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:gridSpan w:val="2"/></w:tcPr></w:tcPrChange></w:tcPr><w:p><w:r><w:t>修訂格</w:t></w:r></w:p></w:tc></w:tr>
+<w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>底左格</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>底右格</w:t></w:r></w:p></w:tc></w:tr>
+</w:tbl>
+</w:body></w:document>"#;
+
+#[test]
+fn e3_s2_3_lampC2_tcprchange_old_value_must_not_leak_into_grid_span() {
+    // canonical 側（core/ooxml/src/table.rs，E-2 禁改面）把 tcPrChange 的
+    // 內層 tcPr 也當 TcPr 幀、讀到舊值 "2"——本燈**不依賴**其對錯，只鎖
+    // mutation 側行為：現行宣告無直屬 gridSpan ⇒ 有效跨欄數必為 1 ⇒ 插入點
+    // 1 落在該格**右緣**（非內部）⇒ 該格宣告不得被動、列尾新增一格。
+    // 修前態：cell_grid_span 的 find_local_tag 不看深度、穿透 tcPrChange
+    // 讀到舊值 2 ⇒ 走「格內拆分」分支把 gridSpan 改寫成 3（宣告被污染）。
+    let e0 = open_docx(TCPARCHANGE_FIXTURE);
+    let t0 = root_table(&e0, 0);
+    let baseline_span = t0["rows"][0]["cells"][0]["props"]["grid_span_raw"].clone();
+    let baseline_cells = t0["rows"][0]["cells"].as_array().expect("cells").len();
+    let (_, hit) = locate_cell(&e0, 1, 0);
+    let mut e = open_docx(TCPARCHANGE_FIXTURE);
+    e.apply_mutation(Mutation::InsertTableColumn {
+        table: path_of(&hit),
+        at_grid_col: 1,
+        position: InsertSide::Before,
+        width_pt: 20.0,
+    })
+    .expect("正常插欄不得失敗");
+    let t = root_table(&e, 0);
+    assert_eq!(
+        t["rows"][0]["cells"][0]["props"]["grid_span_raw"],
+        baseline_span,
+        "tcPrChange 修訂前舊值不得洩漏進現行 span 計算：插欄後修訂格的 \
+         grid_span_raw 必須與基線一致（修前態＝被改寫成 \"3\"）"
+    );
+    assert_eq!(
+        t["rows"][0]["cells"].as_array().expect("cells").len(),
+        baseline_cells + 1,
+        "span 有效值=1 時插入點 1＝格右緣 ⇒ 必須以**新增一格**落地，\
+         不得走格內拆分（拆分＝把舊值當成現行跨欄數的死亡形態）"
+    );
+}
+
+// ===========================================================================
+// S3-4：classify_locate_error 一刀切覆寫
+// ===========================================================================
+//
+// 燈 D1：根表張數分岔檔的**非 Body 目標**（SubDocNotFound）被一刀切改寫成
+// 「透明包裝錯位」——錯標籤線索；修後必須沿用 SubDocNotFound 原身分。
+// 燈 D2：兩套口徑相等的真越界不得被覆寫成透明包裝。
+// 燈 D3：巢狀層透明包裝（根表數相等）舊態漏歸類 ⇒ 必須歸類透明包裝。
+
+/// 兩張根表、其中一張藏在 `w:sdt` 內（根表張數兩套口徑分岔＝1 vs 2）。
+const TWO_ROOTS_ONE_WRAPPED: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:sdt><w:sdtContent><w:tbl><w:tblPr><w:tblW w:w="3000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>包內表</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:sdtContent></w:sdt>
+<w:tbl><w:tblPr><w:tblW w:w="3000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>裸表</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+</w:body></w:document>"#;
+
+#[test]
+fn e3_s3_4_lampD1_subdoc_not_found_must_keep_its_identity() {
+    let mut e = open_docx(TWO_ROOTS_ONE_WRAPPED);
+    let path = TablePath {
+        target: SubDocTarget::Header {
+            section_id: 0,
+            slot: HfSlotKind::Default,
+        },
+        root_slot: 0,
+        nested_steps: Vec::new(),
+    };
+    let err = match e.apply_mutation(Mutation::DeleteTable { table: path }) {
+        Ok(_) => panic!("無頁首 part 的 DeleteTable 必須失敗"),
+        Err(err) => format!("{err:?}"),
+    };
+    assert!(
+        err.contains("SubDocNotFound"),
+        "非 Body 子樹不存在必須維持 SubDocNotFound 身分（根表張數分岔不改變\
+         失敗原因），不得被一刀切覆寫成透明包裝錯位，實得: {err}"
+    );
+    assert!(
+        !err.contains("透明包裝"),
+        "SubDocNotFound 摻『透明包裝』＝假線索（誘導使用者重選表），實得: {err}"
+    );
+}
+
+#[test]
+fn e3_s3_4_lampD2_genuine_root_overrun_must_stay_overrun() {
+    let mut e = open_docx(VMERGE_FIXTURE);
+    let path = TablePath {
+        target: SubDocTarget::Body,
+        // 真越界（canonical 根表數 1 ＝ raw 直屬根表數 1，口徑未分岔）。
+        root_slot: 5,
+        nested_steps: Vec::new(),
+    };
+    let err = match e.apply_mutation(Mutation::DeleteTable { table: path }) {
+        Ok(_) => panic!("root_slot 5 對單表檔必須越界失敗"),
+        Err(err) => format!("{err:?}"),
+    };
+    assert!(
+        err.contains("越界"),
+        "兩套口徑相等的真越界必須沿用『越界』原訊息，實得: {err}"
+    );
+    assert!(
+        !err.contains("透明包裝"),
+        "根表數相等（1==1）時覆寫成透明包裝＝錯歸類，實得: {err}"
+    );
+}
+
+const NESTED_INS_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:tbl><w:tblPr><w:tblW w:w="6000" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="6000"/></w:tblGrid>
+<w:tr><w:tc><w:tcPr><w:tcW w:w="6000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>宿主格</w:t></w:r></w:p><w:ins w:id="3" w:author="稽核" w:date="2026-01-01T00:00:00Z"><w:tbl><w:tblPr><w:tblW w:w="2000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w="2000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>包內子表</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:ins></w:tc></w:tr>
+</w:tbl>
+<w:p><w:r><w:t>尾段</w:t></w:r></w:p>
+</w:body></w:document>"#;
+
+/// 零段落＋列級包裝：目標表整顆無段落（純空白格）時首段識別子不存在，
+/// 走「逐層張數配對」分支——舊實作該分支只驗 tbl 數量，列級 `w:ins` 照樣
+/// 放行。本 fixture 自證列數分岔（canonical 2 列 vs raw 直屬 1 列）。
+const ZERO_PARA_INS_ROW_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+<w:p><w:r><w:t>正文段</w:t></w:r></w:p>
+<w:tbl><w:tblPr><w:tblW w:w="6000" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>
+<w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p/></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p/></w:tc></w:tr>
+<w:ins w:id="11" w:author="稽核" w:date="2026-01-01T00:00:00Z"><w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p/></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p/></w:tc></w:tr></w:ins>
+</w:tbl>
+</w:body></w:document>"#;
+
+#[test]
+fn e3_s2_3_lampC3_zero_paragraph_table_still_pairs_row_counts() {
+    let e0 = open_docx(ZERO_PARA_INS_ROW_FIXTURE);
+    let t = root_table(&e0, 0);
+    assert_eq!(
+        t["rows"].as_array().expect("rows").len(),
+        2,
+        "fixture 自證：canonical 穿透列級 w:ins ⇒ 2 列"
+    );
+    // 表內零可反查段落（每格都是空段）⇒ 走零段落分支。手鑄列 1（藏在
+    // w:ins 內的那一列）的路徑。
+    let path = TablePath {
+        target: SubDocTarget::Body,
+        root_slot: 0,
+        nested_steps: Vec::new(),
+    };
+    let mut e = open_docx(ZERO_PARA_INS_ROW_FIXTURE);
+    let err = match e.apply_mutation(Mutation::DeleteTableRow { table: path, row: 1 }) {
+        Ok(_) => panic!(
+            "零段落表的列級包裝錯位（raw 直屬 1 列 vs canonical 2 列）若成功＝\
+             刪錯列（raw 直屬列 1 不存在，但 canonical 列 1 存在）"
+        ),
+        Err(err) => format!("{err:?}"),
+    };
+    assert!(
+        err.contains("路徑與文件不符") && err.contains("透明包裝"),
+        "零段落分支的列級分岔必須歸類透明包裝，實得: {err}"
+    );
+}
+
+#[test]
+fn e3_s3_4_lampD3_wrapped_subtable_must_be_classified_as_transparent_wrapper() {
+    let e0 = open_docx(NESTED_INS_FIXTURE);
+    // 反查面取「帶巢狀步」的那條路徑（包內子表段落）——零第二輪翻譯。
+    let hit = (0..e0.paragraph_count())
+        .filter_map(|p| locate(&e0, p))
+        .find(|h| {
+            !h["table_path"]["nested_steps"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        })
+        .expect("包內子表段落要可反查出巢狀步");
+    assert_eq!(
+        hit["table_path"]["nested_steps"][0][2].as_u64(),
+        Some(0),
+        "巢狀步 sub＝0（本檔宿主格只有這張子表）"
+    );
+    let mut e = open_docx(NESTED_INS_FIXTURE);
+    let err = match e.apply_mutation(Mutation::DeleteTable {
+        table: path_of(&hit),
+    }) {
+        Ok(_) => panic!("raw 口徑下子表不存在（藏在 w:ins 內），必須失敗"),
+        Err(err) => format!("{err:?}"),
+    };
+    assert!(
+        err.contains("透明包裝"),
+        "根表數相等但巢狀層透明包裝導致的定位失敗必須歸類透明包裝（修前=\
+         『巢狀步 0 子表 0 越界』假線索），實得: {err}"
+    );
+    assert!(
+        !err.contains("越界"),
+        "界內錯位／包裝分岔的拒絕不得摻『越界』字樣，實得: {err}"
+    );
+}
+
 #[test]
 fn e3_s2_1_delete_restart_row_promotes_continuation_even_with_gridspan_prefix() {
     // 修前紅：首個 w:val 讀到 gridSpan 的 "2" ⇒ restart 誤判 false ⇒
@@ -465,7 +747,7 @@ fn e3_s2_1_delete_restart_row_promotes_continuation_even_with_gridspan_prefix() 
     .expect("DeleteTableRow 不得失敗");
     let xml = doc_xml(&e);
     assert_eq!(
-        vmerge_state_of_cell(&xml, "甲续格"),
+        vmerge_state_of_cell(&xml, "甲續格"),
         Some(true),
         "刪掉 restart 頂列後，原續格必須晉升 restart（否則成孤兒 continue）；\
          修前形態＝attr_in_tag 對整段 tcPr 取首個 w:val，恆讀到 gridSpan 的 \"2\""

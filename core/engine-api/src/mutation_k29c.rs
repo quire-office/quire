@@ -398,6 +398,13 @@ fn table_identity_error(
         if !(resolved.0 <= span.start && span.end <= resolved.1) {
             return Err(mismatch());
         }
+        // 3b) E-3 S2-3：首段落識別子查不出**列／格層級**的透明包裝——
+        // `<w:sdt>`／`<w:ins>` 包在列或格層級時，首段落仍完整落在解析出的
+        // `<w:tbl>` 界內 ⇒ 舊實作在此放行，隨後 `direct_children("tr"/"tc")`
+        // 照樣界內錯位改錯列格。補驗：raw 直屬 `w:tr` 數必與 canonical 列數
+        // 相等，且逐列 raw 直屬 `w:tc` 數必與 canonical 格數相等（殘差口徑同
+        // 下「逐層張數配對」的既有記帳）。
+        structure_pairing_error(text, resolved.0, target, &mismatch)?;
         return Ok(());
     }
     // 4) 零段落 ⇒ 無識別子，退回**逐層張數配對**：canonical 表數恆 ≥ raw 直屬
@@ -413,10 +420,25 @@ fn table_identity_error(
     }
     let mut cursor_span = *raw_roots.get(path.root_slot).ok_or_else(mismatch)?;
     let mut cur = &root.table;
+    // E-3 S2-3：零段落分支舊實作只驗 tbl 數量——列／格層級的透明包裝同樣
+    // 會造成界內錯位（段數零⇒首段識別子不存在，更查不出）。補驗：每層
+    // raw 直屬 `w:tr`／`w:tc` 數必與 canonical 列數／該列格數相等。
     for (row, cell, sub) in &path.nested_steps {
         let rows = direct_children(text, cursor_span.0, "tr");
+        if rows.len() != cur.rows.len() {
+            return Err(mismatch());
+        }
         let row_span = *rows.get(*row).ok_or_else(mismatch)?;
         let cells = direct_children(text, row_span.0, "tc");
+        let canonical_cells = cur
+            .rows
+            .get(*row)
+            .ok_or_else(mismatch)?
+            .cells
+            .len();
+        if cells.len() != canonical_cells {
+            return Err(mismatch());
+        }
         let cell_span = *cells.get(*cell).ok_or_else(mismatch)?;
         let sub_tables = direct_children(text, cell_span.0, "tbl");
         let canonical_count = cur
@@ -448,6 +470,39 @@ fn table_identity_error(
                     .nth(*sub)
             })
             .ok_or_else(mismatch)?;
+    }
+    // 目標表本身（零段落⇒無識別子）的列／格層配對——與上方識別子分支的
+    // 3b 同款防線。
+    structure_pairing_error(text, cursor_span.0, cur, &mismatch)?;
+    Ok(())
+}
+
+/// E-3 S2-3：列／格層級的**逐層張數配對**（目標表已以 raw 區間 `table_start`
+/// 定位後呼叫）。canonical 解析器穿透列／格層級的 `w:sdt`／`w:ins` 透明包裝
+/// （`under()` 守衛），把包裝內的 `w:tr`／`w:tc` 照收進樹；本模組 raw 側
+/// `direct_children` 不穿透 ⇒ 只要有任何一列／一格被包裝藏住，兩套口徑的
+/// 「第幾列／第幾格」就錯位，且錯位仍落在 `Vec::get` 界內（首段落識別子查
+/// 不出——段落仍整顆在 `<w:tbl>` 界內）。
+///
+/// 配對式：逐列 raw 直屬 `w:tr` 數 == canonical 列數，且逐列 raw 直屬
+/// `w:tc` 數 == canonical 該列格數。透明包裝只讓 canonical 多認、raw 不會
+/// 多認 ⇒ 相等 ⇔ 該層無包裝穿插。殘差（一處多算＋一處少算互相抵銷的病態
+/// 檔）與上方「逐層張數配對」同款記帳，corpus 未見。
+fn structure_pairing_error(
+    text: &str,
+    table_start: usize,
+    target: &quire_ooxml::Table,
+    mismatch: &dyn Fn() -> MutationError,
+) -> Result<(), MutationError> {
+    let rows = direct_children(text, table_start, "tr");
+    if rows.len() != target.rows.len() {
+        return Err(mismatch());
+    }
+    for (row, canonical_row) in rows.iter().zip(target.rows.iter()) {
+        let cells = direct_children(text, row.0, "tc");
+        if cells.len() != canonical_row.cells.len() {
+            return Err(mismatch());
+        }
     }
     Ok(())
 }
@@ -555,7 +610,11 @@ fn cell_grid_span(text: &str, tcpr: Option<(usize, usize)>) -> usize {
     };
     let raw = &text[s..e];
     // 起點定位：只認 `<w:gridSpan` 這個標籤（local name 精確比對，不認子字串）。
-    let Some(at) = find_local_tag(raw, "gridSpan") else {
+    // E-3 S2-3：改 `direct_children`（深度感知）取代 `find_local_tag`（全子樹
+    // 掃描）——後者會穿透 `<w:tcPrChange><w:tcPr>` 修訂子樹、讀到**修訂前**
+    // 舊值當現行值（同義兩制的修訂態變體）。canonical 側 `top_is(&[b"tcPr"])`
+    // 只認直系子女，本函數必須同口徑。
+    let Some((at, _)) = direct_children(raw, 0, "gridSpan").into_iter().next() else {
         return 1;
     };
     attr_in_tag(&tag_open_string(raw, at), "w:val")
@@ -1508,31 +1567,87 @@ impl Engine {
     ) -> Result<(usize, usize), MutationError> {
         let span = match locate_table(text, path) {
             Ok(span) => span,
-            Err(err) => return Err(self.classify_locate_error(text, err)),
+            Err(err) => return Err(self.classify_locate_error(text, path, err)),
         };
         table_identity_error(&self.doc.tables, text, path, span)?;
         Ok(span)
     }
 
-    /// 解析失敗的**原因歸屬**：兩套 root 張數口徑已分岔 ⇒ 換成點名透明包裝的
-    /// 誠實拒絕；張數相等（路徑過期／使用者傳錯）⇒ 原封不動沿用原錯誤。
-    fn classify_locate_error(&self, text: &str, err: MutationError) -> MutationError {
-        let raw_root_count = match find_local_tag(text, "body") {
-            Some(body_start) => direct_children(text, body_start, "tbl").len(),
-            None => return err,
-        };
-        if raw_root_count != self.doc.tables.len() {
-            MutationError::InvalidTableOperation {
-                detail: format!(
-                    "路徑與文件不符（疑似 sdt/ins 透明包裝錯位：{} 張根表在 canonical \
-                     計入但 raw 直屬子節點只認 {} 張，本檔這類路徑一律拒收）",
-                    self.doc.tables.len(),
-                    raw_root_count
-                ),
-            }
-        } else {
-            err
+    /// 解析失敗的**原因歸屬**（E-3 S3-4 修正一刀切覆寫）。
+    ///
+    /// 舊實作只比「raw 直屬根表數 vs canonical 根表數」，分岔就一律改寫成
+    /// 透明包裝錯位——兩個方向都錯：
+    ///   * **誤歸類**：`path.target != Body` 的 `SubDocNotFound`（子樹根本
+    ///     不存在）、路徑過期的真越界，都被貼上「透明包裝」標籤 ⇒ 外殼拿
+    ///     錯線索去重選表（E 卡 t_c1dbc6d7 定案：拒絕訊息不得給假線索）。
+    ///   * **漏歸類**：分岔發生在**巢狀層**（根表數相等）時完全不改寫，
+    ///     保留「巢狀步 N 子表 M 越界」這種同樣誤導的假線索。
+    ///
+    /// 新口徑（兩道閘都要過才歸類透明包裝）：
+    ///   1. `path.target == Body`（非 Body 的失敗與包裝錯位無關）。
+    ///   2. **canonical 樹可定位**同一條路徑（可定位＝這座標是反查面鑄出的
+    ///      合法座標，失敗純因 raw 不穿透；canonical 也定位不了＝真越界／
+    ///      過期路徑，沿用原錯誤）。
+    fn classify_locate_error(
+        &self,
+        text: &str,
+        path: &TablePath,
+        err: MutationError,
+    ) -> MutationError {
+        if path.target != SubDocTarget::Body {
+            return err;
         }
+        if !self.canonical_path_locatable(path) {
+            return err;
+        }
+        let raw_root_count = find_local_tag(text, "body")
+            .map(|body_start| direct_children(text, body_start, "tbl").len());
+        let scope = match raw_root_count {
+            // 根表層分岔：給得出兩套張數（原訊息形態）。
+            Some(n) if n != self.doc.tables.len() => format!(
+                "{} 張根表在 canonical 計入但 raw 直屬子節點只認 {n} 張",
+                self.doc.tables.len()
+            ),
+            // 根表數相等／無 body 可掃 ⇒ 分岔在巢狀層（raw 不穿透格內包裝）。
+            Some(_) => "巢狀層節點在 canonical 計入但 raw 直屬子節點認不到".to_string(),
+            None => "無法掃描 raw 直屬子節點".to_string(),
+        };
+        MutationError::InvalidTableOperation {
+            detail: format!(
+                "路徑與文件不符（疑似 sdt/ins 透明包裝錯位：{scope}，本檔這類路徑一律拒收）"
+            ),
+        }
+    }
+
+    /// `path` 能否在 canonical 樹（`OoxmlDoc::tables`）逐層定位——透明包裝
+    /// 判定的第二道閘（可定位 ⇒ 座標出自反查面、失敗純因 raw 不穿透）。
+    fn canonical_path_locatable(&self, path: &TablePath) -> bool {
+        let mut cur = match self.doc.tables.get(path.root_slot) {
+            Some(root) => &root.table,
+            None => return false,
+        };
+        for (row, cell, sub) in &path.nested_steps {
+            let Some(cell) = cur
+                .rows
+                .get(*row)
+                .and_then(|r| r.cells.get(*cell))
+            else {
+                return false;
+            };
+            let Some(next) = cell
+                .blocks
+                .iter()
+                .filter_map(|b| match b {
+                    quire_ooxml::Block::Table(inner) => Some(&**inner),
+                    _ => None,
+                })
+                .nth(*sub)
+            else {
+                return false;
+            };
+            cur = next;
+        }
+        true
     }
 
     fn body_part(&self) -> Result<(&'static str, Vec<u8>), MutationError> {
@@ -1753,8 +1868,8 @@ impl Engine {
                 // `<w:gridSpan w:val="2"/>…<w:vMerge w:val="restart"/>` 時
                 // 恆讀到 "2" ⇒ restart 誤判 false ⇒ 刪列後延續格漏晉升、
                 // 變孤兒 continue（使用者可見：刪列後併格斷鏈）。
-                let restart = match find_local_tag(tcpr, "vMerge") {
-                    Some(at) => {
+                let restart = match direct_children(tcpr, 0, "vMerge").into_iter().next() {
+                    Some((at, _)) => {
                         attr_in_tag(&tag_open_string(tcpr, at), "w:val").as_deref()
                             == Some("restart")
                     }
@@ -1904,10 +2019,18 @@ impl Engine {
                     r#"<w:tc><w:tcPr><w:tcW w:w="{}" w:type="dxa"/></w:tcPr><w:p></w:p></w:tc>"#,
                     twips(width_pt).max(0)
                 );
+                // E-3 S2-3 隨車（紅燈 C2 抓出）：`RowLayout.end` 含 `</w:tr>`
+                // 閉標籤（`element_end` 語義），舊寫法把新格插到閉標籤**之後**
+                // ⇒ 孤兒 `<w:tc>` 游離在列外：canonical 解析（列直屬才認）
+                // 看不見這格 ⇒ 網格多一欄但列格數不變、發射面少一格（靜默
+                // 丟欄）。插入點必須落在 `</w:tr>` **之前**（列內尾部）。
+                let tail = text[..row.end]
+                    .rfind("</w:tr>")
+                    .unwrap_or(row.end);
                 reps.push((
                     ByteSpan {
-                        start: row.end,
-                        end: row.end,
+                        start: tail,
+                        end: tail,
                     },
                     new_cell.into_bytes(),
                 ));
