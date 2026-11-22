@@ -1641,7 +1641,7 @@ fn token_tag_name(token: &str) -> Option<&str> {
 /// `spacing`／`bidi`／`rPr`…）但序不同——`snapToGrid` 在 rPr 是第 15、在 pPr
 /// 是第 20（`adjustRightInd` 之後）；把 pPr 拿去吃 rPr 表會把 `spacing` 排到
 /// `jc` 之後、`shd` 排到 `tabs` 之前，破 schema 序（Word 直接判文件毀損）。
-/// 鍵名同样是 [`tag_local`] 產出＝**已去命名空間前綴**。未知元素回 `None`
+/// 鍵名同樣是 [`tag_local`] 產出＝**已去命名空間前綴**。未知元素回 `None`
 /// （由 [`merge_children_ordered`] 以「隨前件」規則安置）。
 fn ppr_child_rank(name: &str) -> Option<i32> {
     let rank = match name {

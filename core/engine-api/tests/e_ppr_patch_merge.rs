@@ -15,7 +15,7 @@
 //! - 寫入面：`word/document.xml` 明文逐字斷言（未觸碰宣告俱在／覆寫／移除形態、
 //!   同族不重複、CT_PPr 宣告序），必要時另存檔重開（`save_docx` →
 //!   `from_docx_bytes`）與 `roundtrip_check` 驗一次，防止只在記憶體態正確。
-//! - 幾何面：`pageBreakBefore` 這類「用戶看得見」的宣告必须在版面上仍生效
+//! - 幾何面：`pageBreakBefore` 這類「用戶看得見」的宣告必須在版面上仍生效
 //!   （受標段仍自新頁起頭），防止「XML 寫對、版面不認」。
 //! - 無損紅線：全 `None` 補丁（零意圖）存檔 byte-identical——既有硬閂回歸鎖。
 //! - `patch_numpr` 臂需帶 `word/numbering.xml`（`abstractNum`＋`num` 對得上
@@ -382,13 +382,8 @@ fn eppr_lamp4_sequential_single_field_calls_accumulate() {
     let saved = engine.save_docx().expect("存檔失敗");
     let reopened = Engine::from_docx_bytes(&saved).expect("重開失敗");
     let reopened_ppr = ppr_of_para(&para_xml_containing(
-        &String::from_utf8(
-            reopened
-                .part("word/document.xml")
-                .expect("document.xml")
-                .to_vec(),
-        )
-        .expect("UTF-8"),
+        std::str::from_utf8(reopened.part("word/document.xml").expect("document.xml"))
+            .expect("UTF-8"),
         "這是一份",
     ));
     println!("=== 燈 4 存檔重開 ===\npPr = {reopened_ppr}");
