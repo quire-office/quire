@@ -9,9 +9,12 @@
  *   字級 0.58×base、上標基線 −0.35×base、下標 +1.0pt@11pt（=+0.0909×base）、
  *   **行高不膨脹**（sup/sub 行的 auto 行距 pitch 與純正文行逐行全等 12.65pt）。
  * - 存檔面另驗 XML 真的落地（ZIP deflate 解壓後才准搜尋，latin1 直搜會假陰性）。
- * - 底線形態（underline-style）的引擎解析缺口用**實測**坐實：寫入端五形態
- *   真的進 XML，存檔重開後渲染卻與 single 無異（解析層折成布林），故誠實留
- *   pending，不假 live。
+ * - 底線形態（underline-style）U4f 考卷重估：原「解析層折成布林、渲染無差異」
+ *   前提已被 E-2（t_b5a4d0bf 解析保形態，w:u/@w:val 進 RunStyle＋DrawItem::Text
+ *   .underline 幾何透傳）＋E-2b（t_5e62f3b5 共型寫入端）推翻，鈕已轉 live（閉環
+ *   背書 shells/web/editor/tests/u4f_underline_style_live_probe.mjs）。檢查 8 保留
+ *   三形態 flags／幾何全等的實測（web canvas 渲染器仍只唸 FLAG_UNDERLINE 兜底單線
+ *   ＝vendor/renderer.js 未做面，另卡追），但其消費鏈結論按現況改寫。
  *
  * 用法：node scripts/u4b_selfcheck.mjs（repo 根執行）
  */
@@ -268,7 +271,7 @@ console.log('\n[檢查 7] 清除直接格式：七欄一次寫入＋樣式級聯
 }
 
 // --------------------------------------------------------------------------
-console.log('\n[檢查 8] 底線形態引擎缺口（實測坐實，非推測）：五形態寫入真實、渲染無差異');
+console.log('\n[檢查 8] 底線形態三層實測（U4f 考卷重估）：寫入真＋引擎保形態＋web canvas 渲染器未消費形態（發射面殘留）');
 {
   const mk = async (kind) => {
     const a = new EngineAdapter();
@@ -284,16 +287,17 @@ console.log('\n[檢查 8] 底線形態引擎缺口（實測坐實，非推測）
   ok(/w:u w:val="single"/.test(single.xml) && /w:u w:val="double"/.test(double.xml)
     && /w:u w:val="dotted"/.test(dotted.xml), '寫入端：單條／雙條／點線三種 w:u/@w:val 真的進 XML');
   ok(single.t.flags === double.t.flags && double.t.flags === dotted.t.flags,
-    `渲染端：三形態 Text.flags 全等（${single.t.flags}），發射層 FLAG_UNDERLINE 一態——形態資訊在解析層（styles.rs 折 Option<bool>）遺失`);
+    `渲染端：三形態 Text.flags 全等（${single.t.flags}）——flags 本來就只承載「有無底線」開關；形態自 E-2 起在 Text.underline 欄`);
   ok(single.t.y === double.t.y && single.t.x === double.t.x,
-    '渲染端：三形態幾何全等（無任何像素級差異可提供給用戶）');
-  // 存檔重開（真 round-trip）後仍無差異：證明不是外殼快取
+    '渲染端：三形態幾何全等——web canvas 渲染器（vendor/renderer.js）只唸 FLAG_UNDERLINE 兜底單線、未消費 DrawItem::Text.underline 形態（E-2 記帳未做面，另卡追）');
+  // 存檔重開（真 round-trip）：E-2 保形態後 underline 欄應隨檔讀回（非僅旗標）
   const bytes = Buffer.from(double.a.save());
   const c = new EngineAdapter();
   await c.init();
   c.openFile(new Uint8Array(bytes), 'reopen.docx');
-  ok(textsOf(c)[1].flags === 4, '存檔重開後雙條底線仍只是 FLAG_UNDERLINE(4)（解析層缺口非外殼態）');
-  notes.push('format:underline-style 因此誠實留 pending:engine-para：寫入真、解析與發射兩層斷點，掛 live＝假宣稱');
+  ok(textsOf(c)[1].flags === 4, '存檔重開後底線旗標 FLAG_UNDERLINE(4) 讀回');
+  ok(textsOf(c)[1].underline === 'double', `存檔重開後形態欄讀回（underline=${JSON.stringify(textsOf(c)[1].underline)}，E-2 保形態回歸基準）`);
+  notes.push('format:underline-style 自 U4f 轉 live：E-2 解析保形態＋E-2b 共型寫入端（e2b_underline_shared_type 7/7＋瀏覽器閉環 u4f_underline_style_live_probe）；web canvas 形態繪製殘留屬渲染器未做面，另卡');
 }
 
 // --------------------------------------------------------------------------
@@ -307,10 +311,13 @@ console.log('\n[檢查 9] core 命令層誠實記帳（假 live 回塞鎖）');
     ok(r.handled === true && r.requirement === 'live', `${cmd} 受理＋live（實得 ${JSON.stringify({ h: r.handled, r: r.requirement })}）`);
   }
   const us = core.onCommand('format:underline-style', { style: 'double' }, 'pending:engine-para');
-  ok(us.handled === false && us.requirement !== 'live',
-    `底線形態鈕誠實不受理、不沿用 live（實得 ${JSON.stringify({ h: us.handled, r: us.requirement })}）`);
+  ok(us.handled === true && us.requirement === 'live',
+    `底線形態鈕轉 live（U4f：E-2/E-2b 引擎面全通，真閉環背書；實得 ${JSON.stringify({ h: us.handled, r: us.requirement })}）`);
+  const usBad = core.onCommand('format:underline-style', { style: 'wavy' }, 'live');
+  ok(usBad.handled === false && usBad.requirement !== 'live',
+    `非法形態 wavy 不代收、不沿用 live（實得 ${JSON.stringify({ h: usBad.handled, r: usBad.requirement })}）`);
   const logs = core.getLog().filter(l => l.cmdId === 'format:underline-style');
-  ok(logs.length > 0 && logs[logs.length - 1].handled === false, '失敗如實進 commandLog（考卷讀得到真實失敗）');
+  ok(logs.length > 0 && logs[logs.length - 1].handled === false, '非法形態如實進 commandLog（考卷讀得到真實失敗）');
 }
 
 // --------------------------------------------------------------------------
@@ -325,7 +332,7 @@ console.log('\n[檢查 10] 標籤守恆與 K29e 歸零（驗收命令的腳本�
     ok(m && /data-requirement="live"/.test(m[0]), `HTML：[${cmd}] = live`);
   }
   const usBtn = html.match(/<(?:button|select)[^>]+data-command="format:underline-style"[^>]*>/i);
-  ok(usBtn && /data-requirement="pending:[^"]+"/.test(usBtn[0]), 'HTML：[format:underline-style] 為真實缺口 pending');
+  ok(usBtn && /data-requirement="live"/.test(usBtn[0]), 'HTML：[format:underline-style] = live（U4f，引擎面缺口由 E-2/E-2b 消除）');
   const uiSrc = fs.readFileSync(UI_JS_PATH, 'utf-8');
   ok(/fontFamilySelect/.test(uiSrc) && /'font:family'/.test(uiSrc),
     '外殼真的綁了字型族下拉 change 事件（沒有它 live 就是假宣稱）');

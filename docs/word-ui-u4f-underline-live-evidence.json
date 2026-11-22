@@ -1,0 +1,231 @@
+{
+  "meta": {
+    "baseUrl": "http://127.0.0.1:8791/shells/web/editor/index.html",
+    "at": "2026-11-22T14:37:19.676Z",
+    "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
+  },
+  "labels": {
+    "arrow": {
+      "found": true,
+      "req": "live",
+      "aria": "底線樣式",
+      "title": "底線形態選單（E-2 解析保形態＋E-2b 共型寫入端真通）：單條／雙條／粗條／點狀／虛線／無六形態逐字寫入 w:u/@w:val，切換即存檔件逐字對。wavy／words 等未支援形態寫入端誠實拒絕，不入選單值域",
+      "visible": true
+    },
+    "menuOpened": true,
+    "items": {
+      "single": {
+        "req": "live",
+        "text": "單條底線",
+        "visible": true
+      },
+      "double": {
+        "req": "live",
+        "text": "雙條底線",
+        "visible": true
+      },
+      "thick": {
+        "req": "live",
+        "text": "粗條底線",
+        "visible": true
+      },
+      "dotted": {
+        "req": "live",
+        "text": "點狀底線",
+        "visible": true
+      },
+      "dashed": {
+        "req": "live",
+        "text": "虛線底線",
+        "visible": true
+      },
+      "off": {
+        "req": "live",
+        "text": "無底線",
+        "visible": true
+      }
+    },
+    "forbidden": [
+      {
+        "val": "wavy",
+        "inMenu": false
+      },
+      {
+        "val": "words",
+        "inMenu": false
+      }
+    ],
+    "menuItemCount": 6,
+    "adapterKinds": [
+      "single",
+      "double",
+      "thick",
+      "dotted",
+      "dashed",
+      "off"
+    ]
+  },
+  "forms": {
+    "single": {
+      "found": true,
+      "req": "live",
+      "beforeHits": [],
+      "afterHits": [
+        "single"
+      ],
+      "exactForm": true,
+      "flagOn": true,
+      "coreLog": {
+        "handled": true,
+        "requirement": "live"
+      },
+      "undo": {
+        "dispatched": true,
+        "backHits": [],
+        "restoredToPrev": true
+      }
+    },
+    "double": {
+      "found": true,
+      "req": "live",
+      "beforeHits": [],
+      "afterHits": [
+        "double"
+      ],
+      "exactForm": true,
+      "flagOn": true,
+      "coreLog": {
+        "handled": true,
+        "requirement": "live"
+      },
+      "undo": {
+        "dispatched": true,
+        "backHits": [],
+        "restoredToPrev": true
+      }
+    },
+    "thick": {
+      "found": true,
+      "req": "live",
+      "beforeHits": [],
+      "afterHits": [
+        "thick"
+      ],
+      "exactForm": true,
+      "flagOn": true,
+      "coreLog": {
+        "handled": true,
+        "requirement": "live"
+      },
+      "undo": {
+        "dispatched": true,
+        "backHits": [],
+        "restoredToPrev": true
+      }
+    },
+    "dotted": {
+      "found": true,
+      "req": "live",
+      "beforeHits": [],
+      "afterHits": [
+        "dotted"
+      ],
+      "exactForm": true,
+      "flagOn": true,
+      "coreLog": {
+        "handled": true,
+        "requirement": "live"
+      },
+      "undo": {
+        "dispatched": true,
+        "backHits": [],
+        "restoredToPrev": true
+      }
+    },
+    "dashed": {
+      "found": true,
+      "req": "live",
+      "beforeHits": [],
+      "afterHits": [
+        "dashed"
+      ],
+      "exactForm": true,
+      "flagOn": true,
+      "coreLog": {
+        "handled": true,
+        "requirement": "live"
+      },
+      "undo": {
+        "dispatched": true,
+        "backHits": [],
+        "restoredToPrev": true
+      }
+    },
+    "off": {
+      "found": true,
+      "req": "live",
+      "doubleHits": [
+        "double"
+      ],
+      "offWritesNone": true,
+      "offNoFormLeft": true,
+      "offClearsFlags": true,
+      "pulledBackHits": [
+        "double"
+      ],
+      "undoDrained": 3,
+      "finalBaselineClean": true
+    }
+  },
+  "honesty": {
+    "wavy": {
+      "menuItem": false,
+      "adapterAccepted": false,
+      "adapterError": "不支援的底線形態：wavy（引擎可寫形態僅 single/double/thick/dotted/dashed/off；wavy 等未支援形態寫入端誠實拒絕）",
+      "xmlUnchanged": true
+    },
+    "coreWavy": {
+      "handled": false,
+      "requirement": "pending:shell"
+    }
+  },
+  "notes": {
+    "baseline": {
+      "xmlHasU": false,
+      "flagItems": 0,
+      "paragraphs": 14
+    },
+    "coreArm": [
+      {
+        "style": "single",
+        "handled": true,
+        "req": "live"
+      },
+      {
+        "style": "double",
+        "handled": true,
+        "req": "live"
+      },
+      {
+        "style": "thick",
+        "handled": true,
+        "req": "live"
+      },
+      {
+        "style": "dotted",
+        "handled": true,
+        "req": "live"
+      },
+      {
+        "style": "dashed",
+        "handled": true,
+        "req": "live"
+      },
+      {
+        "style": "off",
+        "handled": true,
+        "req": "live"
+      }
+    ]
+  }
+}
