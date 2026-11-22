@@ -15,7 +15,7 @@
 //!   實作（位移只動基線 y，不動 layout 行高），更正逐條記 docs。
 //!
 //! 移除語意的兩條路徑（本卡寫進文件，不是第三態）：
-//! - 移除類值（`Some(false)`／`UnderlineKind::None`／`StrikeKind::None`／
+//! - 移除類值（`Some(false)`／`UnderlineKind::None`（E-2b 共型後＝`Underline::Off`）／`StrikeKind::None`／
 //!   `VertAlign::Baseline`）＝**顯式關閉**，寫出 `<w:x w:val="0|none"/>`
 //!   形態，直接層贏過樣式級聯（Word 口徑）；
 //! - `highlight: Some(alpha-0)` 例外：解析層既有口徑把 `w:highlight w:val="none"`
@@ -292,7 +292,9 @@ fn k29e_lamp3_underline_kinds_and_double_strike() {
         (UnderlineKind::Double, r#"<w:u w:val="double"/>"#),
         (UnderlineKind::Dotted, r#"<w:u w:val="dotted"/>"#),
         (UnderlineKind::Dashed, r#"<w:u w:val="dashed"/>"#),
-        (UnderlineKind::None, r#"<w:u w:val="none"/>"#),
+        // E-2b 共型：舊鏡像 `UnderlineKind::None` ＝共型後 `Underline::Off`
+        // （同一型別換名，寫出字面仍是 `w:val="none"`，斷言強度零動搖）。
+        (UnderlineKind::Off, r#"<w:u w:val="none"/>"#),
     ];
     for (kind, tag) in cases {
         let mut engine = fixture_engine();
@@ -300,7 +302,8 @@ fn k29e_lamp3_underline_kinds_and_double_strike() {
             &mut engine,
             2,
             RunDirectPatch {
-                underline: Some(kind),
+                // E-2b 共型：`Underline` 非 Copy（Raw 帶字串），構造處 clone。
+                underline: Some(kind.clone()),
                 ..Default::default()
             },
         );
@@ -578,7 +581,7 @@ fn k29e_lamp6_removal_falls_back_to_style_cascade() {
         &mut engine,
         2,
         RunDirectPatch {
-            underline: Some(UnderlineKind::None),
+            underline: Some(UnderlineKind::Off),
             strike: Some(StrikeKind::None),
             vert_align: Some(VertAlign::Baseline),
             highlight: Some(0x00FF_FF00),

@@ -470,7 +470,8 @@ pub(crate) fn underline_of(e: &quick_xml::events::BytesStart) -> Underline {
         "double" => Underline::Double,
         "thick" => Underline::Thick,
         "dotted" => Underline::Dotted,
-        // Word 相容讀取端也吃 `dash`（mutation.rs K29e `UnderlineKind` 同口徑）。
+        // Word 相容讀取端也吃 `dash`（ECMA 枚舉只有 `dashed`；corpus phpword
+        // 四檔實見——E-2b 共型後寫入端不再有獨立枚舉，歸一只此一家）。
         "dashed" | "dash" => Underline::Dashed,
         _ if collapsed => Underline::Single,
         _ => Underline::Raw(trimmed.to_string()),

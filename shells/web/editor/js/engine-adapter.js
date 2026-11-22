@@ -103,19 +103,24 @@ export function buildInsertBreakMutation(para, cp, kind = 'LineWrapping') {
 }
 
 /**
- * K29e 底線形態映射（U4b）：把外殼的「底線樣式」語意折算成引擎
- * `UnderlineKind` 串列枚舉。錨點＝`core/engine-api/src/mutation.rs` 的
- * `enum UnderlineKind { Single, Double, Dotted, Dashed, None }`（serde 預設
- * 外標＝變體名原字串，非 snake_case，故此處逐字用大寫首字母形態）。
+ * K29e 底線形態映射（U4b 建立；E-2b 共型遷移）。引擎端錨點＝
+ * `core/engine-api/src/mutation.rs` 的 `UnderlineKind`——E-2b 起它是
+ * `quire_render_trait::Underline` 的**別名**（解析/發射/寫入三端同型），
+ * serde canonical 形＝變體名小寫（`'single'…'off'`，`Raw` 外部標籤
+ * `{"raw":"wavy"}`）。注意 `Off` 的兩套字面不同家、禁互竄：serde 線契約是
+ * `'off'`，寫進檔的 `w:u/@w:val` 是 ECMA 正字 `"none"`（引擎折算）。
  *
- * 誠實紀律：引擎端 `w:u/@w:val` 寫入是五形態齊備的（`as_u_val()` 五臂），
- * 但**解析層只把 `w:u` 折成 `Option<bool>`（core/ooxml/src/styles.rs
- * `b"u" => rs.underline = Some(toggle_on_attr(e))`）**——形態不進 RunStyle，
- * 發射層因此只能繪「有／無底線」兩態。這是外殼接不通的真實斷點，
- * 逐字記在 docs/word-ui-k29e-remap-report.md §2.3；`format:underline-style`
- * 據此不得掛 live。
+ * 遷移期雙讀（PM 紀律：舊殼 pkg 未同步重建不得炸）：引擎經 serde alias 仍吃
+ * 舊大寫變體名（`'Single'…'None'`，考卷 e2b 燈 4 鎖死）；但本殼輸出走
+ * canonical 小寫——雙讀是讀端寬容，不是寫端權利（燈 5）。
+ *
+ * E-2b 共型紅利：`thick` 寫入端真通（鏡像枚舉時代無此變體，corpus 實見×5）；
+ * `wavy`/`words` 等未支援形態寫入端**誠實拒絕**（XmlPatchRejected，引擎無從
+ * 編造未支援形態），故仍不入本殼值域。E-2 已修解析層保形態（w:u/@w:val 形態
+ * 進 RunStyle、發射端幾何底線），U4b 時代「形態不進 RunStyle」的誠實斷點
+ * 記帳已被 docs/word-ui-e2-underline-report.md 取代。
  */
-export const UNDERLINE_KINDS = ['Single', 'Double', 'Dotted', 'Dashed', 'None'];
+export const UNDERLINE_KINDS = ['single', 'double', 'thick', 'dotted', 'dashed', 'off'];
 
 /**
  * 建立刪除線形態值（引擎 `StrikeKind { Single, Double, None }`）。
@@ -158,19 +163,23 @@ export const HIGHLIGHT_NAMED_COLORS = [
 ];
 
 /**
- * 正規化底線形態輸入：接受引擎枚舉名（'Single'…）、OOXML 字面（'single'…）
- * 或 `false`／'none'（明確移除）。回傳引擎枚舉名，非法值回傳 null（呼叫端
- * 據此拒絕，不得憑空選一個形態塞給引擎）。
+ * 正規化底線形態輸入（E-2b 共型遷移）：接受 canonical 小寫（'single'…'off'）、
+ * 舊大寫變體名（'Single'…'None'——遷移期相容，舊呼叫端不炸）、OOXML 字面
+ * （'none'…）、相容別名 'dash'、`false`／'0'／'false'（明確移除）與 'thick'
+ * （共型紅利，寫入端真通）。回傳引擎 serde canonical（小寫），非法值回傳
+ * null（呼叫端據此拒絕，不得憑空選一個形態塞給引擎；`wavy`/`words` 等
+ * 未支援形態寫入端必被引擎誠實拒絕，本殼不代收）。
  */
 export function normalizeUnderlineKind(value) {
   if (value === undefined || value === null) return null;
-  if (value === false) return 'None';
+  if (value === false) return 'off';
   if (typeof value === 'string') {
     const lowered = value.trim().toLowerCase();
-    if (lowered === 'none' || lowered === '0' || lowered === 'false') return 'None';
-    // OOXML 字面 `dashed` 與相容別名 `dash` 都收（mutation.rs 註解：Word
-    // 相容讀取端也吃 dash）；`thick`／`wavy` 等未入引擎枚舉的形態一律拒。
-    const alias = { single: 'Single', double: 'Double', dotted: 'Dotted', dashed: 'Dashed', dash: 'Dashed' };
+    if (lowered === 'none' || lowered === 'off' || lowered === '0' || lowered === 'false') return 'off';
+    // OOXML 字面 `dashed` 與相容別名 `dash` 都收（解析層 styles.rs 同款歸一）；
+    // `wavy`／`words` 等未入可寫形態集的形態一律拒（引擎 Raw 寫入誠實拒絕，
+    // 外殼不得先射箭代收再被引擎打臉）。大寫舊名經 toLowerCase 天然落入本表。
+    const alias = { single: 'single', double: 'double', thick: 'thick', dotted: 'dotted', dashed: 'dashed', dash: 'dashed' };
     return alias[lowered] || null;
   }
   return null;
@@ -258,12 +267,13 @@ export function buildFormatTextRangeMutation(range, patch = {}) {
         color_rgb: patch.color_rgb !== undefined ? patch.color_rgb : null,
         size_pt: patch.size_pt !== undefined ? patch.size_pt : null,
         char_style: patch.char_style !== undefined ? patch.char_style : null,
-        // K29e 六欄（U4b 接線）：呼叫端已正規化（見 normalizeUnderlineKind／
-        // normalizeVertAlign／parseColorArgb），此處只做「未帶→null＝不碰」的
-        // 欄位級換算，不再二次猜值。傳給引擎的形態：
-        //   underline  = 'Single'|'Double'|'Dotted'|'Dashed'|'None'（serde 外部標
-        //                的無欄位列舉＝字串變體名）
-        //   strike     = 'Single'|'Double'|'None'
+        // K29e 六欄（U4b 接線；E-2b 底線欄共型遷移）：呼叫端已正規化（見
+        // normalizeUnderlineKind／normalizeVertAlign／parseColorArgb），此處只做
+        // 「未帶→null＝不碰」的欄位級換算，不再二次猜值。傳給引擎的形態：
+        //   underline  = 'single'|'double'|'thick'|'dotted'|'dashed'|'off'
+        //                （E-2b 共型 canonical 小寫；引擎 serde alias 仍雙讀
+        //                舊大寫 'Single'…'None'，遷移期舊呼叫端不炸）
+        //   strike     = 'Single'|'Double'|'None'（未共型，仍大寫外標）
         //   vert_align = 'Superscript'|'Subscript'|'Baseline'
         //   highlight  = 0xAARRGGBB 數值（alpha=0＝明確移除）
         //   font_family= 字串（空字串＝明確移除直接層宣告）
@@ -1811,20 +1821,21 @@ export class EngineAdapter {
   }
 
   /**
-   * 底線切換／設定（K29e；引擎 `RunDirectPatch::underline`）。
-   * @param {string|boolean|null} kind - 'single'|'double'|'dotted'|'dashed'|
-   *                                     'none'／false＝明確移除；未帶＝切換。
+   * 底線切換／設定（K29e；引擎 `RunDirectPatch::underline`；E-2b 共型遷移）。
+   * @param {string|boolean|null} kind - 'single'|'double'|'thick'|'dotted'|
+   *                                     'dashed'|'off'／false＝明確移除；
+   *                                     未帶＝切換。舊大寫名遷移期相容。
    */
   formatUnderline(kind) {
     const normalized = (kind === undefined || kind === null)
       ? null
       : normalizeUnderlineKind(kind);
     if (kind !== undefined && kind !== null && normalized === null) {
-      return { ok: false, error: `不支援的底線形態：${String(kind)}（引擎枚舉僅 single/double/dotted/dashed/none）` };
+      return { ok: false, error: `不支援的底線形態：${String(kind)}（引擎可寫形態僅 single/double/thick/dotted/dashed/off；wavy 等未支援形態寫入端誠實拒絕）` };
     }
     const next = normalized !== null
       ? normalized
-      : (this.getCursorCharFormatProbe().underline ? 'None' : 'Single');
+      : (this.getCursorCharFormatProbe().underline ? 'off' : 'single');
     return this.formatTextRange(null, { underline: next });
   }
 
@@ -1906,7 +1917,9 @@ export class EngineAdapter {
     return this.formatTextRange(null, {
       bold: false,
       italic: false,
-      underline: 'None',
+      // E-2b 共型：底線移除值走 canonical 'off'（serde 舊大寫 'None' 仍雙讀
+      // 相容，但輸出端走新形——雙讀是讀端寬容，不是寫端權利）。
+      underline: 'off',
       strike: 'None',
       vert_align: 'Baseline',
       highlight: 0x00FFFFFF,

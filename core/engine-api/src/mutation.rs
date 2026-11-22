@@ -65,35 +65,26 @@ pub enum BreakKind {
     Tab,
 }
 
-/// 底線樣式（K29e；ECMA-376 §17.3.2.41 `w:u/@w:val` 之 ST_UnderlineValues 子集）。
-/// `None` 變體＝明確關閉底線（寫出 `<w:u w:val="none"/>`——不是「不碰」；
-/// 「不碰」是欄位級 `Option::None`，見 [`RunDirectPatch::underline`]）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum UnderlineKind {
-    /// `single`：單條底線。
-    Single,
-    /// `double`：雙條底線。
-    Double,
-    /// `dotted`：點狀底線。
-    Dotted,
-    /// `dashed`：虛線底線（ECMA 枚舉名 `dashed`；Word 相容讀取端也吃 `dash`）。
-    Dashed,
-    /// `none`：明確關閉（級聯兜底不得再補上底線）。
-    None,
-}
-
-impl UnderlineKind {
-    /// `w:u/@w:val` 字面值（ECMA-376 ST_UnderlineValues）。
-    fn as_u_val(self) -> &'static str {
-        match self {
-            UnderlineKind::Single => "single",
-            UnderlineKind::Double => "double",
-            UnderlineKind::Dotted => "dotted",
-            UnderlineKind::Dashed => "dashed",
-            UnderlineKind::None => "none",
-        }
-    }
-}
+/// 底線形態（K29e；ECMA-376 §17.3.2.41 `w:u/@w:val` 之 ST_UnderlineValues 子集）。
+///
+/// **E-2b 共型**：本符號不再是 mutation.rs 自造的鏡像枚舉（舊五值
+/// `Single|Double|Dotted|Dashed|None`），而是解析/發射端單一真值源
+/// [`quire_render_trait::Underline`] 的**別名**——寫入端、解析端、發射端三端
+/// 同型，編譯期防再次分岔（考卷 `e2b_underline_shared_type` 燈 1 鎖死；舊鏡像
+/// 枚舉就漏接了 `Thick`，corpus 實見×5）。既有 `UnderlineKind` import 路徑零
+/// 斷裂，但語義要點兩處：
+/// - 舊 `None` 變體＝本型別 `Underline::Off`（明確移除，寫 `<w:u w:val="none"/>`
+///   ——不是「不碰」；「不碰」是欄位級 `Option::None`，見 [`RunDirectPatch::underline`]）；
+/// - 新增可寫形態 `Thick`（共型紅利），`Raw(_)` 寫入端**誠實拒絕**（引擎無從
+///   替用戶編造未支援形態，且 Raw 字面直插 `w:val` 屬未驗證注入面）——見
+///   `reject_unwritable_underline`。
+///
+/// serde 遷移記帳（破向後兼容，顯式）：序列化輸出從變體名大寫（`"Single"…
+/// "None"`）改為 canonical 小寫（`"single"…"off"`，`Raw` 外部標籤形）。舊態
+/// JSON 經 serde alias **雙讀**繼續可反序列化（遷移期紀律：舊殼 pkg 未同步
+/// 重建不得炸，考卷燈 4；雙讀是讀端寬容，不是寫端權利，燈 5）。外殼
+/// `shells/web/editor/js/engine-adapter.js` 同步改 canonical＋兼容正規化。
+pub use quire_render_trait::Underline as UnderlineKind;
 
 /// 刪除線樣式（K29e；ECMA-376 §17.3.2.21 `w:strike` ＋ §17.3.2.11 `w:dstrike`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,8 +126,11 @@ pub struct RunDirectPatch {
     /// 字元樣式 id（`w:rStyle/@w:val`）。
     #[serde(default)]
     pub char_style: Option<String>,
-    /// 底線（K29e；`w:u/@w:val`）。`Some(UnderlineKind::None)`＝明確移除
-    /// （寫 `<w:u w:val="none"/>`，級聯層 `toggle_attr_on` 讀為 `Some(false)`）。
+    /// 底線（K29e；`w:u/@w:val`；E-2b 共型後型別＝解析/發射端同型 [`UnderlineKind`]）。
+    /// `Some(UnderlineKind::Off)`＝明確移除（寫 `<w:u w:val="none"/>`，級聯層
+    /// `toggle_attr_on` 讀為 `Some(false)`）。`Some(Raw(_))`＝寫入端誠實拒絕
+    /// （`apply_mutation` 入口 `XmlPatchRejected`，零位元組位移——引擎無從替
+    /// 用戶編造未支援形態，Raw 字面直插 `w:val` 屬未驗證注入面）。
     #[serde(default)]
     pub underline: Option<UnderlineKind>,
     /// 刪除線（K29e；`w:strike`＋`w:dstrike`）。`Some(StrikeKind::None)`＝
@@ -1993,6 +1987,35 @@ fn remove_element(inner: &str, name: &str) -> String {
     out
 }
 
+/// E-2b 共型：底線寫入端誠實閘門——`Underline::Raw(_)` 拒絕。
+///
+/// 定案（卡面任務 1，採「寫入端拒絕」建議案）：寫入端無從替用戶編造未支援
+/// 形態（Raw 的繪製配方連發射端都還是 TODO），且 Raw 原字面直接插值進
+/// `w:u/@w:val` 是未驗證字串注入面（`"/></w:rPr><w:b/>` 之流可竄改 rPr 結構）。
+/// 故 Raw 只允許**讀取端**保形（wavy/words 從檔讀進來、發射端降級單線，E-2
+/// 既有口徑），寫出路徑一律誠實報錯。拒絕點在 `apply_mutation` 入口（任何
+/// XML 觸碰之前）＝零位元組位移；`patch_rpr` 寫出臂再以 `as_u_val()` 回 None
+/// 為二道防線（型別層出口，防未來繞過入口的新呼叫點）。
+/// BUGGY 回塞態（`E2B_UNDERLINE_BUGGY=1`）：`as_u_val()` 把 Raw 折成單線，
+/// 本閘門同款放行（＝修前鏡像枚舉根本沒有 Raw、無從拒絕的語義），考卷燈 3
+/// 據此鑑別回紅。
+fn reject_unwritable_underline(patch: &RunDirectPatch) -> Result<(), MutationError> {
+    if let Some(UnderlineKind::Raw(raw)) = &patch.underline {
+        // 回塞態與 `as_u_val` 同口徑：Raw 放行降級單線（K29e 鏡像枚舉時代行為）。
+        if std::env::var_os("E2B_UNDERLINE_BUGGY").is_some() {
+            return Ok(());
+        }
+        return Err(MutationError::XmlPatchRejected {
+            detail: format!(
+                "底線形態 Raw(\"{raw}\") 寫入端不支援：引擎無從替用戶編造未支援形態\
+                 （ECMA ST_UnderlineValues 未支援值僅供讀取端保形）。可寫形態＝\
+                 single/double/thick/dotted/dashed/off。"
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn patch_rpr(rpr: &str, patch: &RunDirectPatch) -> String {
     // [K29B_BUGGY_POINT_2: RPR_PATCH]
     let buggy_rpr = false;
@@ -2141,9 +2164,14 @@ fn patch_rpr(rpr: &str, patch: &RunDirectPatch) -> String {
             ));
         }
     }
-    // K29e：底線（CT_RPr 序：highlight 之後）。
-    if let Some(u) = patch.underline {
-        add.push_str(&format!(r#"<w:u w:val="{}"/>"#, u.as_u_val()));
+    // K29e：底線（CT_RPr 序：highlight 之後）。E-2b 共型：`as_u_val()` 是檔契約
+    // 字面唯一出口（render-trait 單一真值源）；回 None（Raw 且非回塞態）＝
+    // **不寫**——二道防線，正常路徑已被 `apply_mutation` 入口閘門拒絕，這裡
+    // 防的是未來繞過入口的新呼叫點把 Raw 字面直插 `w:val`（注入面）。
+    if let Some(u) = patch.underline.as_ref() {
+        if let Some(val) = u.as_u_val() {
+            add.push_str(&format!(r#"<w:u w:val="{val}"/>"#));
+        }
     }
     // K29e：上下標（CT_RPr 末位；EG_RPrBase 尾段 vertAlign 在 lang 之前）。
     if let Some(va) = patch.vert_align {
@@ -2459,6 +2487,20 @@ fn find_style_span(xml: &[u8], style_id: &str) -> Option<ByteSpan> {
 impl Engine {
     /// 依據 Mutation 規格套用單筆變更。
     pub fn apply_mutation(&mut self, op: Mutation) -> Result<MutationOutcome, MutationError> {
+        // E-2b 共型收尾：寫入端誠實閘門必須在觸碰任何 XML 之前（拒絕＝零位元組
+        // 位移，不得先寫一半再反悔）。全庫走 `patch_rpr` 寫入面的只有兩臂
+        // （FormatTextRange／UpsertNamedStyle，grep `patch_rpr` 呼叫點坐實），
+        // 閘門只裝一處、兩臂共軌，堵「樣式臂旁路寫 Raw」的口子。本閘置於
+        // K29c/K29d 分流之前：那兩族的型錄不承載 `RunDirectPatch`，閘門對其
+        // 恆為直通（零行為變動），但未來任何新增承載臂都自動被本閘覆蓋。
+        match &op {
+            Mutation::FormatTextRange { patch, .. } => reject_unwritable_underline(patch)?,
+            Mutation::UpsertNamedStyle {
+                run_patch: Some(rp),
+                ..
+            } => reject_unwritable_underline(rp)?,
+            _ => {}
+        }
         // K29c（M4＋M5）：表格與圖片家族走獨立實作檔，避免與 Slice 1/2 的
         // 單段落外科手術主幹糾纏；兩者共用同一 Undo／touched／rebuild 紀律。
         if crate::mutation_k29c::is_k29c_mutation(&op) {

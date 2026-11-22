@@ -441,24 +441,23 @@ fn e2e_lamp4_json_zero_displacement_when_undeclared() {
 /// 白名單外）與解析端 `Underline`（E-2）的**口徑閉環**——同一 ECMA `w:u/@w:val`
 /// 字面，經「寫入→存檔→重解析→發射」必須落回同形態，且讀取端改動不改寫位元組。
 ///
-/// 共型取捨（老實記帳，非迴避）：`UnderlineKind` 定義在
-/// `core/engine-api/src/mutation.rs`——本卡白名單明令勿碰（E-1／活體卡
-/// territory），且它是 `pub` 線契約（shells/web 序列化路徑已消費其 serde
-/// 形），就地換型會越界改寫入端契約。故本燈不改型別，改以**語義等價閉環**
-/// 鎖死兩制：逐值斷言寫入端的 `w:val` 字面經解析端讀成對應 `Underline`
-/// 變體（single/double/dotted/dashed/none↔Off 五值全走一遍）。兩者的serde
-/// 形本就不同（`Underline` 走小寫字面＋`Raw` 外部標籤，`UnderlineKind` 走
-/// 變體名），共型屬另卡（需同時動 mutation.rs 與外殼序列化），本卡只證
-/// 「口徑不漂移」。
+/// 共型取捨（E-2 老實記帳 → **E-2b 已落地**）：E-2 時 `UnderlineKind` 是
+/// mutation.rs 自造的鏡像枚舉（白名單禁碰＋pub 線契約），本燈以**語義等價閉環**
+/// 鎖死兩制。E-2b（t_5e62f3b5）把 `UnderlineKind` 改為 `Underline` 的別名——
+/// 三端同型後本燈仍是回歸基準（逐值寫讀閉環不受共型影響，卡面任務 3 的「共型後
+/// 燈 6 應仍綠」由本燈自證）；編譯期同型防分岔改由 `e2b_underline_shared_type`
+/// 燈 1 接手，serde 線契約遷移由該卷燈 4／5／7 鎖死。
 #[test]
 fn e2e_lamp6_write_read_roundtrip_kind_parity() {
     // (a) 寫入端四形態 + 明確關閉：逐值 → 存檔件字面 → 重解析形態 → 發射。
+    // E-2b 共型記帳：本燈的 `UnderlineKind` 已是 `Underline` 別名（同一型別），
+    // 舊 `None` 變體換名 `Off`（語義不變）；(b) 段的零位元組位移斷言原樣保留。
     for (kind, want_val, want_kind) in [
         (UnderlineKind::Single, "single", Some(Underline::Single)),
         (UnderlineKind::Double, "double", Some(Underline::Double)),
         (UnderlineKind::Dotted, "dotted", Some(Underline::Dotted)),
         (UnderlineKind::Dashed, "dashed", Some(Underline::Dashed)),
-        (UnderlineKind::None, "none", None),
+        (UnderlineKind::Off, "none", None),
     ] {
         let mut engine = fixture_engine();
         engine
@@ -469,7 +468,8 @@ fn e2e_lamp6_write_read_roundtrip_kind_parity() {
                     end: DocPos { para: 0, cp: 5 },
                 },
                 patch: RunDirectPatch {
-                    underline: Some(kind),
+                    // E-2b 共型：`Underline` 非 Copy（Raw 帶字串），逐值餵入改 clone。
+                    underline: Some(kind.clone()),
                     ..Default::default()
                 },
             })

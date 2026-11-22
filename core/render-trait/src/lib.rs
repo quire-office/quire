@@ -22,25 +22,41 @@ pub const FLAG_STRIKE: u8 = 8;
 ///
 /// serde 表示＝`w:val` 小寫字面（`"single"`…），`Raw` 以外部標籤形
 /// `{"raw":"wavy"}` 保形——JSON 線契約逐字鎖死於 E-2 考卷。
+///
+/// E-2b 共型：本枚舉同時是**寫入端**形態型別——`quire_engine::UnderlineKind`
+/// （mutation.rs，K29e 舊鏡像枚舉）已是本型別的別名，解析端／發射端／寫入端
+/// 三端同型，編譯期防再次分岔（考卷 `e2b_underline_shared_type` 燈 1）。
+/// 兩套字面不同家、禁互竄：serde 形是殼↔引擎契約（`Off`→`"off"`），
+/// [`Underline::as_u_val`] 是 OOXML 檔契約（`Off`→`"none"`，ECMA 正字）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Underline {
     /// 明確關閉（`none`／`false`／`0`／`off` 四種拼法歸一於解析層）。
+    /// `alias = "None"`＝E-2b 遷移期雙讀：舊寫入端線契約（mutation.rs 鏡像
+    /// 枚舉 `UnderlineKind`）的 serde 形是變體名大寫 `"None"`（移除值），舊殼
+    /// pkg 未同步重建時不得炸（考卷 e2b 燈 4）。canonical 輸出恆小寫 `"off"`。
+    #[serde(alias = "None")]
     Off,
     /// `single`：單條底線（無 `@w:val` 時的 ECMA 預設）。
+    #[serde(alias = "Single")]
     Single,
     /// `double`：雙條底線。
+    #[serde(alias = "Double")]
     Double,
-    /// `thick`：粗單線。
+    /// `thick`：粗單線（E-2b 起寫入端亦可達——共型紅利，鏡像枚舉時代無此變體）。
     Thick,
     /// `dotted`：點狀底線。
+    #[serde(alias = "Dotted")]
     Dotted,
     /// `dashed`：虛線底線（Word 相容別名 `dash` 於解析層歸一，corpus
     /// phpword 四檔實見）。
+    #[serde(alias = "Dashed")]
     Dashed,
     /// 未支援形態的 raw 保形通道（ECMA 全集其餘值如 `wavy`／`words`，
     /// corpus fdo61343 實見 `words`）。發射端**降級單線＋TODO，禁 panic**，
-    /// 原字面保留待後續卡補繪製配方。
+    /// 原字面保留待後續卡補繪製配方。寫入端（E-2b）：serde 邊界讀得進寫得出
+    /// （燈 7 不吞值），但 `apply_mutation` 入口**誠實拒絕**（燈 3）——引擎
+    /// 無從替用戶編造未支援形態，且 Raw 字面直插 `w:val` 屬未驗證注入面。
     Raw(String),
 }
 
@@ -48,6 +64,33 @@ impl Underline {
     /// 是否為「有底線」（`Off` 以外皆真）。`FLAG_UNDERLINE` 旗標的判準。
     pub fn on(&self) -> bool {
         !matches!(self, Underline::Off)
+    }
+
+    /// OOXML **檔契約**字面（寫入端 `w:u/@w:val`，ECMA-376 ST_UnderlineValues
+    /// 正字）。E-2b 共型後由 mutation.rs 鏡像枚舉的私有助手上移到單一真值源。
+    ///
+    /// 兩套字面禁互竄：serde 線契約（殼↔引擎）`Off`→`"off"`（燈 5），本檔契約
+    /// `Off`→`"none"`（燈 1）——ECMA 正字是 `none`，serde 形是 Rust 變體名小寫。
+    /// `Raw(_)` 回 `None`＝寫入端無字面可用（拒絕語義的型別層出口；buggy 回塞
+    /// 態例外折成單線，見下）。
+    pub fn as_u_val(&self) -> Option<&'static str> {
+        // BUGGY 回塞鎖（k21/g1/E-2 同款 env 慣例；隨貨
+        // scripts/e2b_underline_buggy_replay.sh）：`E2B_UNDERLINE_BUGGY=1` 把
+        // 寫出路徑塞回 K29e 鏡像五值語義——`Thick` 折成 single（鏡像枚舉本來
+        // 就沒這變體，共型前 `w:val="thick"` 根本寫不出）、`Raw` 降級單線
+        // （入口閘門同款放行）。考卷 e2b 燈 1／2／3／6 據此鑑別回紅。
+        let buggy = std::env::var_os("E2B_UNDERLINE_BUGGY").is_some();
+        match self {
+            Underline::Off => Some("none"),
+            Underline::Single => Some("single"),
+            Underline::Double => Some("double"),
+            Underline::Thick if buggy => Some("single"),
+            Underline::Thick => Some("thick"),
+            Underline::Dotted => Some("dotted"),
+            Underline::Dashed => Some("dashed"),
+            Underline::Raw(_) if buggy => Some("single"),
+            Underline::Raw(_) => None,
+        }
     }
 }
 
