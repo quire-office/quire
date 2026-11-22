@@ -26,7 +26,7 @@ RunStyle＋SVG 發幾何底線）＋E-2b（t_5e62f3b5，docs/word-ui-e2b-underli
 | `docs/word-ui-u4f-underline-live-evidence.{json,png}` | 探針證據隨貨 |
 | `scripts/u3_selfcheck.mjs` | 考卷重估（E-2 燈 13–15 同款口徑）：檢查 4(c) 由「禁止 live」反轉為「必須 live」（真能力掛 pending＝低報，與假 live 同罪），血緣＋閉環背書寫死註解 |
 | `scripts/u4b_selfcheck.mjs` | 考卷重估：檔頭記帳、檢查 8（三形態 flags/幾何全等實測保留，結論改寫為「flags 只承載開關、形態在 Text.underline 欄；canvas 渲染器未做面」）、檢查 9（underline-style 轉 live＋wavy 不代收雙態）、檢查 10（HTML 斷言反轉） |
-| `scripts/u4b_label_remap.mjs` | 映射表 `format:underline-style` 條目轉 live（含 U4f 血緣三查依據）——钮面態維持「同一工具＋同一映射表可重放」不變量 |
+| `scripts/u4b_label_remap.mjs` | 映射表 `format:underline-style` 條目轉 live（含 U4f 血緣三查依據）——鈕面態維持「同一工具＋同一映射表可重放」不變量 |
 | `docs/word-ui-k29e-remap-evidence.csv` | 補登 U4f 轉 live 血緣列（`git show main:index.html` 基準重放產出，非手改） |
 
 白名單自證：`core/` 零觸碰；`engine-adapter.js` 僅註解（已申報）；與活體卡
