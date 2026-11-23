@@ -204,12 +204,21 @@ try {
     // 正向行跨度真值表：逐段逐 cp 取 caret_rect（None＝該段不可定位），依
     // (page, y) 去重成行，並記引擎身分（table_locator_json 命中＝格內段）。
     // 段數×cp 上限為探針成本閘（長段抽樣步進 4 cp）。
+    //
+    // T4AA v3 取樣上界鐵律：cp 上界＝min(段碼點長, 400)——引擎 caret_rect 對
+    // 越界 cp 的**契約是 clamp 到段尾**（core/layout/src/lib.rs caret_rect 開頭
+    // cp.min(total_cp)），掃進 cp=400 會拿回段尾幾何卻記入 400 當樣本 cp，反向
+    // 腿如實回報段尾 cp 即被誤判「落點錯」。用戶檔實錄：短格內段 para9 cp8→
+    // 回落 cp6、para13 cp20→cp17（共 11 條假紅，引擎側零缺陷）。代碼點計數走
+    // Array.from 保 surrogate pair，與 adapter clampCaret 同口徑。
     const careBands = [];
     const paras = a.paragraphCount();
     for (let p = 0; p < paras; p++) {
       const isCell = a.locateTableCell ? !!a.locateTableCell(p) : false;
+      const paraLen = Array.from(a.paragraphText ? a.paragraphText(p) : '').length;
+      const cpCap = Math.min(paraLen, 400);
       let lastKey = '';
-      for (let cp = 0; cp <= 400; cp += 4) {
+      for (let cp = 0; cp <= cpCap; cp += 4) {
         const r = a.caretRect ? a.caretRect(p, cp) : null;
         if (!r) { if (cp > 200) break; continue; }
         const key = r.page + ':' + Math.round(r.y_pt);

@@ -19,10 +19,10 @@
 //!
 //! # 鑑別力（BUGGY 回塞鎖口徑，鎖在源碼熱路徑）
 //! - `T4AA_CELL_CARET_BUGGY=1`：格內正逆兩腿整支退回修前「一律 None」
-//!   （v1 契約態）⇒ 燈 1／燈 3／燈 5／燈 6 必紅；燈 2（點擊）在該態轉為
+//!   （v1 契約態）⇒ 燈 1／燈 3／燈 5／燈 6／燈 7 必紅；燈 2（點擊）在該態轉為
 //!   「格內點擊必全滅」的缺口記帳斷言（比照 u4f 燈 3 的鎖態雙記法——同一盞
 //!   燈在修前態記的是缺口，不是假綠）；燈 4（索引空間）與命中面正交，恆綠。
-//! - `T4AA_COARSE=1`：粗帶尺對照（每行 1 帶），六盞恆綠＝零擾動守門。
+//! - `T4AA_COARSE=1`：粗帶尺對照（每行 1 帶），七盞恆綠＝零擾動守門。
 
 use quire_layout::table::{CellBlock, CellInput, RowInput, TableInput, WidthSpec};
 use quire_layout::{CaretPos, LayoutEngine, LayoutParams, ParaGrid, TableSlot, TextMeasurer};
@@ -581,6 +581,59 @@ fn t4aa_cell_caret_survives_row_slice_across_pages() {
         bad.len(),
         total,
         bad.iter().take(8).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 燈 7（越界 cp 契約）：格內段與正文段同款「cp 越界 clamp 到段尾」——探針
+// v3 的取樣上界鐵律依賴此契約（用戶檔實錄：探針掃短段到 cp=400 拿回段尾幾何
+// 卻記入 400，反向腿如實回報段尾 cp，11 條假紅；引擎側 diag 239/239 零斷裂）。
+// 本燈把該契約從「探針的假設」升為「考卷鎖定的行為」：日後任何一侧改clamp
+// 語義（回 None／回首行／回越界 cp）都在這裡先紅，不會再燒成探針誤報。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn t4aa_cell_caret_out_of_range_cp_clamps_to_para_end() {
+    let (p, mut texts) = engine_with_table(6, "格");
+    texts.push("表後正文段".to_string());
+    let eng = build_engine(&texts, 6, "格", &p);
+
+    // 取一個有文字的格內段（段長＝該段所有切片字元數和）。
+    let lines = cell_lines(&eng);
+    assert!(!lines.is_empty(), "格內行樣本不可為空");
+    let mut seg: std::collections::BTreeMap<usize, usize> = Default::default();
+    for (_, para, text, _, _, _, _) in &lines {
+        *seg.entry(*para).or_default() += text.chars().count();
+    }
+    let (para, len) = seg
+        .into_iter()
+        .max_by_key(|(_, n)| *n)
+        .expect("必有格內段");
+    assert!(len >= 2, "本燈需段長≥2（實得 {len}）");
+
+    let at_end = eng
+        .caret_rect(CaretPos { para, cp: len })
+        .expect("段尾 cp 必可得");
+    // (a) 越界 cp（段尾＋1／＋40／＋400）必與段尾逐位元組同值——clamp 契約，
+    //     且絕不得回 None（回 None 會讓探針把該段歸錯桶）。
+    for over in [len + 1, len + 40, len + 400] {
+        let r = eng
+            .caret_rect(CaretPos { para, cp: over })
+            .unwrap_or_else(|| panic!("越界 cp {over}（段長 {len}）必可得，不得回 None"));
+        assert_eq!(
+            (r.page, r.x_pt, r.y_pt),
+            (at_end.page, at_end.x_pt, at_end.y_pt),
+            "格內段越界 cp {over} 應 clamp 至段尾幾何（探針取樣上界鐵律的引擎側根據）"
+        );
+    }
+    // (b) 反向腿從段尾幾何回查必得 cp＝段長（不得回越界 cp，也不得回上一段）。
+    let back = eng
+        .caret_at(at_end.page, at_end.x_pt + 0.5, at_end.y_pt + 1.0)
+        .expect("段尾反查必命中");
+    assert_eq!(
+        (back.para, back.cp),
+        (para, len),
+        "段尾正逆互逆（探針同款 x 位移）"
     );
 }
 
