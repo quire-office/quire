@@ -2717,6 +2717,20 @@ impl LayoutEngine {
     /// 找不到（段落不存在／空段落在不可見頁）回 None，呼叫端退回段落首。
     pub fn caret_rect(&self, caret: CaretPos) -> Option<CaretRect> {
         let text = self.texts.get(caret.para)?;
+        // T4AA（格內 caret 正向腿）：表格內部段落「流失權」——不在正文流
+        // `page.lines` 裡，舊行為自 `self.texts` 取到字串卻掃不到任何行而回
+        // None（v1 契約缺口，本卡產品化）。格內行的 y 由切片幾何逐層加法得出
+        // （TablePlacement.band＋RowFrag.band_start＋CellText.y_pt），x 由切片
+        // CellText.x_pt＋行內 advance——與發射口徑 push_frag_items 同一來源，
+        // 絕不另造第二套尺（PM 定案第 1 條「正逆同源」）。
+        if self.flow.iter().any(|it| matches!(it, FlowItem::Text { para: p } if *p == caret.para))
+        {
+            // 正文段落（含同名空段）：走原正文路徑，行為逐位元組不變。
+        } else if let Some(r) = self.cell_caret_rect(caret, text) {
+            return Some(r);
+        } else {
+            return None;
+        }
         let total_cp = text.chars().count();
         let cp = caret.cp.min(total_cp);
         let line_h = self.params.font_size_pt * self.params.line_spacing;
@@ -2779,10 +2793,14 @@ impl LayoutEngine {
         // `U4F_CARET_AT_BUGGY=1` ⇒ 整支退回修前「起帶完全相等」判制
         // ⇒ u4f 燈 3 必紅（鑑別力證據）。
         let buggy_exact = std::env::var_os("U4F_CARET_AT_BUGGY").is_some();
-        let li = if p.line_bands.is_empty() {
-            band as usize // 舊快照無 line_bands：退回陣標（與 caret_rect 同策）
+        // T4AA（格內 caret 反向腿）回塞鎖：`T4AA_CELL_CARET_BUGGY=1` ⇒ 格內
+        // 反查整支退回修前「一律 None」（v1 契約態）⇒ t4aa 格內燈必紅
+        // （鑑別力證據，比照 U4F_CARET_AT_BUGGY 口徑）。
+        let cell_buggy = std::env::var_os("T4AA_CELL_CARET_BUGGY").is_some();
+        let li: Option<usize> = if p.line_bands.is_empty() {
+            Some(band as usize) // 舊快照無 line_bands：退回陣標（與 caret_rect 同策）
         } else if buggy_exact {
-            p.line_bands.iter().position(|&b| b == band)?
+            p.line_bands.iter().position(|&b| b == band)
         } else {
             // 取首條跨度涵蓋點擊帶的行（與修前 `position()` 的首條命中同調：
             // 多欄頁兩欄同行可同帶，舊制取左欄，本制亦取先登録的第一條——零擾動）。
@@ -2798,35 +2816,263 @@ impl LayoutEngine {
                     break;
                 }
             }
-            hit?
+            hit
         };
-        let line = p.lines.get(li)?;
-        let rel = (x_pt - p.margin_left_pt).max(0.0);
-        let cp_in_line = self.caret_cp_in_line(&line.text, rel);
-        // 段落內偏移 = 該段在目標行之前所有行的碼點數之和（跨頁續排亦正確：
-        // 行帶著 para_index，線性掃過全部頁面對應段落行）。
-        let mut before = 0usize;
-        'outer: for pg in &self.pages {
-            for (i, l) in pg.lines.iter().enumerate() {
-                if l.para_index != line.para_index {
-                    continue;
+        if let Some(li) = li {
+            if let Some(line) = p.lines.get(li) {
+                let rel = (x_pt - p.margin_left_pt).max(0.0);
+                let cp_in_line = self.caret_cp_in_line(&line.text, rel);
+                // 段落內偏移 = 該段在目標行之前所有行的碼點數之和（跨頁續排亦正確：
+                // 行帶著 para_index，線性掃過全部頁面對應段落行）。
+                let mut before = 0usize;
+                'outer: for pg in &self.pages {
+                    for (i, l) in pg.lines.iter().enumerate() {
+                        if l.para_index != line.para_index {
+                            continue;
+                        }
+                        if pg.index == page && i == li {
+                            break 'outer;
+                        }
+                        before += l.text.chars().count();
+                    }
                 }
-                if pg.index == page && i == li {
-                    break 'outer;
-                }
-                before += l.text.chars().count();
+                return Some(CaretPos {
+                    para: line.para_index,
+                    cp: before + cp_in_line,
+                });
             }
         }
-        Some(CaretPos {
-            para: line.para_index,
-            cp: before + cp_in_line,
-        })
+        // T4AA（格內 caret 產品化）：正文腿落空（點擊帶不在任何正文行跨度／
+        // 舊快照陣標越界）→ 試格內反查。正文行與格內行的 y 區天然互斥
+        // （表格帶不計入正文行跨度，U4f 根因 A 修復後繪製＝計帳同尺），故
+        // 正文優先＝零擾動、格內接住＝本卡新增命中面。任何 BUGGY 回塞鎖態
+        // （u4f 正文鎖／本卡格內鎖）都不啟動新腿＝整支退回修前行為，兩把鎖
+        // 的紅燈記帳互不污染。
+        if !cell_buggy && !buggy_exact {
+            if let Some(c) = self.cell_caret_at(page, x_pt, y_pt) {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    // ---------------------------------------------------------------------
+    // T4AA（格內 caret）：表格格內行的正逆兩腿。
+    //
+    // 正逆同源（PM 定案第 1 條）：兩腿都經 [`Self::walk_cell_lines`] 走同一
+    // 個幾何來源——切片樹本身（`TablePlacement.frag`），座標加法定律逐字照
+    // `core/engine-api/src/lib.rs` 的 `push_frag_items` 發射口徑：
+    //   頂層 base＝(frag.x_pt, frag.y_pt)（packer 已蓋章頁絕對）
+    //   列游標   ry += RowFrag.height_pt（含列餘量，與發射同值）
+    //   文字框   (base_x + CellText.x_pt, base_y + ry + CellText.y_pt)
+    //            （CellText.x_pt 已含格左緣＋左內邊距；y_pt 已含 valign／
+    //             垂直邊距位移，見 `frag_of_cell`）
+    //   巢狀子表 base_x += nf.x_pt、base_y += yoff（與 push_frag_items 遞迴同式）
+    // 嚴禁另造第二套尺：帶→pt 一律乘全域 `params.line_h_pt()`（U4f 根因 A
+    // 之後表格內部尺與全域同源），行跨度取 `CellText.bands`（＝block
+    // line_bands，與正文 `ParaGrid::bands_of` 同款語義）。
+    //
+    // 段號錨定：`CellText.text_ord`＝表內文字 block 文件序（與 `retext_walk`
+    // ／`TableSlot.para_start` 同一計數空間），canonical 段索引＝
+    // `para_start ＋ text_ord`——與 `table_locator_json` 逐字同一索引空間，
+    // 故外殼拿到 caret 後照舊可用 `table_locator_json(caret.para)` 反查格位。
+    // ---------------------------------------------------------------------
+
+    /// 格內行遍歷器（正逆兩腿共用；見區塊注的座標加法定律）。
+    /// `cb(page 未知，由呼叫端帶)` 依**文件序**收到每一條格內可定位文字行：
+    /// (行框左上 x0/y0（頁絕對 pt）、跨度帶數、字級、切片行、canonical 段索引)。
+    fn walk_cell_lines<F>(
+        frag: &crate::table::TableFrag,
+        base_x: f32,
+        base_y: f32,
+        para_base: usize,
+        default_size: f32,
+        cb: &mut F,
+    ) where
+        F: FnMut(f32, f32, u32, f32, &crate::table::CellText, usize, f32, f32),
+    {
+        let mut ry = 0.0f32; // 切片內列游標（累加列切片高，照 push_frag_items）
+        for row in &frag.rows {
+            for cell in &row.cells {
+                for t in &cell.texts {
+                    // 舊快照／手搓幾何無 text_ord：誠實不掛（反查回 None，
+                    // 絕不把游標錯掛到別的段）。
+                    let Some(ord) = t.text_ord else { continue };
+                    // bands 0＝舊快照回退 1 帶（與正文行跨度判制同策）。
+                    let span = if t.bands == 0 { 1 } else { t.bands };
+                    let size = t.size_pt.unwrap_or(default_size);
+                    cb(
+                        base_x + t.x_pt,
+                        base_y + ry + t.y_pt,
+                        span,
+                        size,
+                        t,
+                        para_base + ord,
+                        base_x + cell.x_pt,
+                        cell.w_pt,
+                    );
+                }
+                for (yoff, nf) in &cell.nested {
+                    // 巢狀子表：x 加子表左緣（nf.x_pt 已含格左緣＋內邊距＋
+                    // 子表 x_off）、y 加子表切片頂偏移；text_ord 已在切片時
+                    // 換算成外層樹序，para_base 逐層不再加。
+                    Self::walk_cell_lines(
+                        nf,
+                        base_x + nf.x_pt,
+                        base_y + ry + yoff,
+                        para_base,
+                        default_size,
+                        cb,
+                    );
+                }
+            }
+            ry += row.height_pt;
+        }
+    }
+
+    /// 正向腿：格內段 caret (para, cp) → 頁內矩形。找不到（段不在任何表槽／
+    /// 槽未排在頁上／舊快照無 text_ord／cp 全不可定位）回 None。
+    fn cell_caret_rect(&self, caret: CaretPos, text: &str) -> Option<CaretRect> {
+        let total_cp = text.chars().count();
+        let cp = caret.cp.min(total_cp);
+        let default_size = self.params.font_size_pt;
+        // 段可能跨頁（長格內段被列切片拆到兩頁）：逐頁逐槽掃描，跨度含 cp
+        // 的行優先；同槽掃到該段任何行都記「末行兜底」（cp＝段尾越界等，
+        // 與正文路徑同款取捨）。
+        let mut hit: Option<CaretRect> = None;
+        let mut last: Option<CaretRect> = None;
+        for page in &self.pages {
+            for tp in &page.tables {
+                let Some(slot) = self.tables.get(tp.slot) else {
+                    continue;
+                };
+                let para_base = slot.para_start;
+                Self::walk_cell_lines(
+                    &tp.frag,
+                    tp.frag.x_pt,
+                    tp.frag.y_pt,
+                    para_base,
+                    default_size,
+                    &mut |x0, y0, _span, size, t, para, _cell_x, _cell_w| {
+                        if para != caret.para {
+                            return;
+                        }
+                        let rect = CaretRect {
+                            page: page.index,
+                            x_pt: x0,
+                            y_pt: y0,
+                            height_pt: size,
+                        };
+                        let line_cp = t.text.chars().count();
+                        if cp >= t.char_offset && cp <= t.char_offset + line_cp {
+                            let r = CaretRect {
+                                x_pt: x0
+                                    + self.caret_x_in_line_sized(
+                                        &t.text,
+                                        cp - t.char_offset,
+                                        size,
+                                    ),
+                                ..rect
+                            };
+                            if hit.is_none() {
+                                hit = Some(r);
+                            }
+                        }
+                        last = Some(rect);
+                    },
+                );
+                if hit.is_some() {
+                    return hit;
+                }
+            }
+        }
+        last
+    }
+
+    /// 反向腿：點擊 (page, x_pt, y_pt) 落在格內行 → caret。正文行優先（零
+    /// 擾動），正文掃不到才試格內。回 None＝該處無可定位文字行（正當空白）。
+    fn cell_caret_at(&self, page: usize, x_pt: f32, y_pt: f32) -> Option<CaretPos> {
+        let p = self.pages.get(page)?;
+        let line_h = self.params.line_h_pt();
+        // 候選收集：y 跨度涵蓋點擊 y 的所有格內行（同行並列多格全收），再取
+        // 「y 最近 → x 最近」的字典序最小者。y 為主要鍵（T4AA 考卷坐實的
+        // 必現錯）：行跨度上緣容許 ±1pt 觸控容錯，相鄰列的跨度因此在邊界重疊
+        // 一線——若以 x 為唯一鍵，兩列格內行的 x 幾何常常逐位元組相同，舊制
+        // 「先登記者勝」會讓**上一列**憑容錯偷走下一列行頂的點擊（用戶形態＝
+        // 點第 2 列游標落第 1 列）。y 為主要鍵後，真正涵蓋點擊的那列 y 距離
+        // 恆為 0，必勝容錯擦邊的鄰列。x 距離＝點擊落在行框內距離 0，框外取到
+        // 最近緣的距離（與正文「帶→行」判定的容錯語義同向）。
+        let mut best: Option<(f32, f32, usize, usize)> = None; // (y距, x距, para, cp)
+        for tp in &p.tables {
+            let Some(slot) = self.tables.get(tp.slot) else {
+                continue;
+            };
+            let para_base = slot.para_start;
+            let default_size = self.params.font_size_pt;
+            Self::walk_cell_lines(
+                &tp.frag,
+                tp.frag.x_pt,
+                tp.frag.y_pt,
+                para_base,
+                default_size,
+                &mut |x0, y0, span, size, t, para, cell_x, cell_w| {
+                    if y_pt < y0 - 1.0 || y_pt >= y0 + span as f32 * line_h + 1.0 {
+                        return;
+                    }
+                    // 水平判定＝**格子欄位框**（[cell_x, cell_x＋cell_w]）：
+                    // 點擊必須落在該格欄位寬之內才落格內 caret（Word 對格內
+                    // 空白點擊＝落該行最近緣，但格外的空白不落 caret）。
+                    // 嚴禁按「文字行寬」判定——格內行短、格子寬，按行寬判會在
+                    // 格內空白處憑空不命中（用戶實測抱怨的另一半）。
+                    if x_pt < cell_x - 1.0 || x_pt > cell_x + cell_w + 1.0 {
+                        return;
+                    }
+                    // y 距＝點擊到**本行核心跨度** [y0, y0＋跨度) 的距離（核心外
+                    // 才計距，核心內恆 0）；外層 ±1.0 已做觸控容錯過濾。
+                    let y_dist = if y_pt < y0 {
+                        y0 - y_pt
+                    } else if y_pt >= y0 + span as f32 * line_h {
+                        y_pt - (y0 + span as f32 * line_h)
+                    } else {
+                        0.0
+                    };
+                    let rel = (x_pt - x0).max(0.0);
+                    // 同行並列多格時的優先序：取「文字行框」水平距離最近者
+                    // （點擊在行框內＝0，框外取到最近緣的距離）。格子欄位框
+                    // 已在上游過濾，這裡的距離只用來在同 y 的多格之間選邊。
+                    let w = crate::shaping::shape_advances(&t.text, size)
+                        .iter()
+                        .map(|c| c.w)
+                        .sum::<f32>();
+                    let dist = if x_pt < x0 {
+                        x0 - x_pt
+                    } else if x_pt > x0 + w {
+                        x_pt - (x0 + w)
+                    } else {
+                        0.0
+                    };
+                    let cp = t.char_offset + self.caret_cp_in_line_sized(&t.text, rel, size);
+                    match best {
+                        Some((bd, bx, _, _)) if (bd, bx) <= (y_dist, dist) => {}
+                        _ => best = Some((y_dist, dist, para, cp)),
+                    }
+                },
+            );
+        }
+        best.map(|(_, _, para, cp)| CaretPos { para, cp })
     }
 
     /// 行內水平偏移 → caret x（shaped advances 逐 cluster 累計，取「不越過 rel」
     /// 的最後 cluster 邊界）。
     fn caret_x_in_line(&self, line_text: &str, cp: usize) -> f32 {
-        let clusters = shape_advances(line_text, self.params.font_size_pt);
+        self.caret_x_in_line_sized(line_text, cp, self.params.font_size_pt)
+    }
+
+    /// 同 [`Self::caret_x_in_line`]，但字級可帶入（T4AA：格內行按自身級聯
+    /// 字級量測；正文路徑帶全域尺＝與修前逐位元組全等）。正逆兩腿對格內行
+    /// 一律用**同一** `t.size_pt`（互逆性的尺來源）。
+    fn caret_x_in_line_sized(&self, line_text: &str, cp: usize, size_pt: f32) -> f32 {
+        let clusters = shape_advances(line_text, size_pt);
         let mut byte_target = line_text.len();
         if cp < line_text.chars().count() {
             byte_target = line_text
@@ -2847,7 +3093,12 @@ impl LayoutEngine {
 
     /// 行內 x → caret cp（與 `caret_x_in_line` 互逆：取最接近 rel 的 cluster 邊界）。
     fn caret_cp_in_line(&self, line_text: &str, rel: f32) -> usize {
-        let clusters = shape_advances(line_text, self.params.font_size_pt);
+        self.caret_cp_in_line_sized(line_text, rel, self.params.font_size_pt)
+    }
+
+    /// 同 [`Self::caret_cp_in_line`]，字級可帶入（T4AA 格內行；正逆同尺）。
+    fn caret_cp_in_line_sized(&self, line_text: &str, rel: f32, size_pt: f32) -> usize {
+        let clusters = shape_advances(line_text, size_pt);
         let mut x = 0.0f32;
         let mut best_cp = 0usize;
         let mut best_err = f32::INFINITY;
@@ -3784,14 +4035,51 @@ mod tests {
             "caret y 依帶 4 換算：{}",
             tail.y_pt
         );
-        // 反查：點後段行的 caret rect 位置命中後段段首；點表格帶不回文字行。
+        // 反查：點後段行的 caret rect 位置命中後段段首。
         let back = eng
             .caret_at(tail.page, tail.x_pt, tail.y_pt + 6.0)
             .expect("後段行可命中");
         assert_eq!((back.para, back.cp), (texts.len() - 1, 0));
+        // T4AA（格內 caret 產品化）極性反轉：舊斷言「表格帶反查必 None」是
+        // v1 契約的契約化（t_c2bbcb38 同款——燈的預設正是缺口本身）。格內
+        // caret 上線後，點頁 0 表格帶（首列格內行 y）必須落格內段：
+        // 首列「列0」＝texts[1]（para_start=1＋text_ord 0）。
+        let in_cell = eng
+            .caret_at(0, 50.0, 40.0 + 1.0 * line_h + 6.0)
+            .expect("T4AA：格內行反查必命中（格內打字定位產品化）");
+        assert_eq!(in_cell.para, 1, "表格帶點擊必落首列格內段");
+        // 正逆同源（互逆考卷，比照 u4f 燈 3(b) 口徑）：格內 caret_rect 的點
+        // 反查必還原同段同 cp——逐 cp 掃描（首列段「列0」共 2 碼點，掃到段尾），
+        // 斷點只準在一處。
+        let mut inv_total = 0usize;
+        let mut inv_bad = Vec::new();
+        for cp in 0..=2usize {
+            let fwd = eng
+                .caret_rect(CaretPos { para: 1, cp })
+                .expect("格內正向腿必可得");
+            assert_eq!(fwd.page, 0, "格內段 caret_rect 頁歸屬");
+            // 同一行帶內三處 y（行頂／帶中段／帶尾，用戶點 anywhere 都要能定位）。
+            for dy in [0.5f32, line_h * 0.5, line_h * 0.9] {
+                inv_total += 1;
+                let rt = eng.caret_at(fwd.page, fwd.x_pt, fwd.y_pt + dy);
+                match rt {
+                    Some(c) if (c.para, c.cp) == (1, cp) => {}
+                    other => inv_bad.push((cp, dy, other.map(|c| (c.para, c.cp)))),
+                }
+            }
+        }
         assert!(
-            eng.caret_at(0, 50.0, 40.0 + 1.0 * line_h + 6.0).is_none(),
-            "表格帶上無文字行，反查必 None（v1 表格內 caret 不支援）"
+            inv_bad.is_empty(),
+            "格內 caret_rect→caret_at 互逆失敗 {}/{} 例：{:?}",
+            inv_bad.len(),
+            inv_total,
+            inv_bad
+        );
+        // 正當空白仍 None：頁 1 表格（4 列）＋後段行排完後的空帶（帶 6）
+        // 無任何行跨度涵蓋，點擊不得憑空落 caret（格內命中不扩大到無文字區）。
+        assert!(
+            eng.caret_at(1, 120.0, 40.0 + 6.0 * line_h + 6.0).is_none(),
+            "空帶點擊仍 None（格內命中不扩大到無文字區）"
         );
     }
 
