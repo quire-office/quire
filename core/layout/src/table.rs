@@ -454,7 +454,9 @@ fn count_text_blocks(input: &TableInput) -> usize {
 
 /// T4AA：把子表切片所有 `CellText.text_ord`（子表自身樹序）平移
 /// `base`＝子表在外層樹的 `ord_base`，換算成外層樹序。巢狀在巢狀由
-/// 遞迴逐層累加（內層已換算到內層樹序，本層再加外層基址）。
+/// 本函數**遞迴**逐層累加（內層已換算到內層樹序，本層再加外層基址）：
+/// `frag_of_cell` 對子表只呼叫一次，漏了這層遞迴會讓「巢狀在巢狀」的
+/// 第三層起文字停在第二層樹序（錯掛到別的段）。
 fn shift_frag_ords(frag: &mut TableFrag, base: usize) {
     for row in frag.rows.iter_mut() {
         for cell in row.cells.iter_mut() {
@@ -462,6 +464,9 @@ fn shift_frag_ords(frag: &mut TableFrag, base: usize) {
                 if let Some(o) = t.text_ord.as_mut() {
                     *o += base;
                 }
+            }
+            for (_, nf) in cell.nested.iter_mut() {
+                shift_frag_ords(nf, base);
             }
         }
     }
@@ -985,6 +990,7 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                     line_bands,
                     size_pt,
                     runs,
+                    ord,
                 } => {
                     let start = cur;
                     for ln in lines {
@@ -1023,6 +1029,13 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                                 text: ln.text.clone(),
                                 size_pt: *size_pt,
                                 runs: line_runs,
+                                // T4AA（格內 caret）三標注：canonical 段錨定
+                                // ＋行首 cp＋行跨度帶數。座標換算仍全部走
+                                // 繪製口徑（本檔零新尺），這裡只補「哪一段、
+                                // 第幾個 cp、佔幾帶」的索引面。
+                                text_ord: *ord,
+                                char_offset: ln.char_offset,
+                                bands: *line_bands,
                             });
                         }
                         // K6：逐 block 宣告行高（細尺下）或全域 lref（舊行為）。
@@ -1031,7 +1044,11 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                     // bands 可多於 lines（空段佔帶）：游標補到 block 尾。
                     cur = cur.max(start + *bands);
                 }
-                CellBlockGeom::Table { layout, bands } => {
+                CellBlockGeom::Table {
+                    layout,
+                    bands,
+                    ord_base,
+                } => {
                     let nb0 = cur;
                     let nb1 = cur + *bands;
                     // 根因 5：子表只在與切片視窗相交的帶段發射——外層
@@ -1043,13 +1060,17 @@ fn frag_of_cell(tl: &TableLayout, cg: &CellGeom, w: SliceWin) -> CellFrag {
                         // 根因 7：子表左緣加本格左內邊距（cg.text_x_off，
                         // 預設 5.4pt），不再貼死外層格左框線。
                         let (sr, sb) = layout.cursor_at_band(vis0 - nb0);
-                        let (f, _, _) = layout.fragment(
+                        let (mut f, _, _) = layout.fragment(
                             sr,
                             sb,
                             (vis1 - vis0).max(1),
                             false,
                             cg.x + cg.text_x_off,
                         );
+                        // T4AA：子表切片的 text_ord 是**子表自身樹序**，加
+                        // ord_base 換算成外層樹序（巢狀在巢狀由函式內遞迴
+                        // 逐層累加），發射端與 caret 反查據此一路加到根槽。
+                        shift_frag_ords(&mut f, *ord_base);
                         nested.push((shift + pad_delta + (vis0 - win0) as f32 * tl.line_h, f));
                     }
                     cur = nb1;
@@ -1163,6 +1184,12 @@ pub fn layout_table(
 
     // ---- pass 1：逐格斷行＋邊框/填色/邊距解析（欄位座標先定） ----
     let n_rows = input.rows.len();
+    // T4AA（格內 caret）：本表輸入樹的文字 block 文件序游標，**跨列跨格
+    // 連續**（與 [`retext_walk`] 逐字同口徑：`Text` 計 1 含協定填充段、
+    // `Table` 遞迴計子樹全數、`Image` 不計；深度超限跳過的子表照計，因
+    // retext_walk 對快照原樹仍計）。`TableSlot.para_start ＋ 本游標值＝
+    // canonical 段索引（table_locator_json 同一索引空間，PM 定案第 1 條）。
+    let mut ord_cursor = 0usize;
     let mut rows: Vec<RowGeom> = Vec::with_capacity(n_rows);
     for (ri, row) in input.rows.iter().enumerate() {
         let n_cells = row.cells.len().max(1);
@@ -1231,12 +1258,15 @@ pub fn layout_table(
                 }
             };
             if cell.blocks.is_empty() {
+                // 合成空 block（空格外殼）：無 canonical 段落可錨，ord 誠實
+                // None——caret 反查對它回 None，絕不把游標錯掛到別的段。
                 blocks.push(CellBlockGeom::Text {
                     lines: break_lines("", inner_w, &cell_m),
                     bands: lref,
                     line_bands: lref,
                     size_pt: cell.text_size_pt,
                     runs: Vec::new(),
+                    ord: None,
                 });
             } else {
                 let has_table = cell.blocks.iter().any(|b| matches!(b, CellBlock::Table(_)));
@@ -1245,6 +1275,12 @@ pub fn layout_table(
                     match b {
                         CellBlock::Text(t) => {
                             let filler = has_table && bi == last_i && t.trim().is_empty();
+                            // T4AA：協定填充段（ECMA-376 §17.4.66 的尾部空
+                            // w:p）是**真實段落**——它在 canonical 索引空間佔
+                            // 一個位置（retext_walk 對它照計），故 ord 照發、
+                            // cursor 照進；只是不佔帶高（bands=0）。
+                            let ord = ord_cursor;
+                            ord_cursor += 1;
                             if filler {
                                 blocks.push(CellBlockGeom::Text {
                                     lines: Vec::new(),
@@ -1252,6 +1288,7 @@ pub fn layout_table(
                                     line_bands: lref,
                                     size_pt: cell.text_size_pt,
                                     runs: Vec::new(),
+                                    ord: Some(ord),
                                 });
                             } else {
                                 let ls = break_lines(t, inner_w, &cell_m);
@@ -1280,15 +1317,27 @@ pub fn layout_table(
                                     line_bands,
                                     size_pt: cell.text_size_pt,
                                     runs: spans,
+                                    ord: Some(ord),
                                 });
                             }
                             text_i += 1;
                         }
                         CellBlock::Table(n) => {
+                            // T4AA：子樹在**外層樹**佔用連續 ord 區間（起點＝
+                            // 當前游標，長度＝子樹文字 block 數，與
+                            // retext_walk 對快照原樹的計數逐字同口徑）。深度
+                            // 超限跳過幾何時游標照進——否則後方 block 的 ord
+                            // 會錯掛到子樹段號上。
+                            let ord_base = ord_cursor;
+                            ord_cursor += count_text_blocks(n);
                             if depth < MAX_NEST_DEPTH {
                                 let nl = layout_table(n, inner_w, line_h, m, depth + 1);
                                 let bands = nl.total_bands.max(1);
-                                blocks.push(CellBlockGeom::Table { layout: nl, bands });
+                                blocks.push(CellBlockGeom::Table {
+                                    layout: nl,
+                                    bands,
+                                    ord_base,
+                                });
                             }
                             // 深度超限：老實略過子表（不虛構幾何）。
                         }
