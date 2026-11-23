@@ -61,7 +61,7 @@ fn params() -> LayoutParams {
     }
 }
 
-/// 格內段文字（輸入與 canonical texts **共用同一產生器**，杜绝兩側漂移）。
+/// 格內段文字（輸入與 canonical texts **共用同一產生器**，杜絕兩側漂移）。
 fn cell_text(prefix: &str, i: usize) -> String {
     format!("{prefix}{i}內文測試樣本")
 }
@@ -344,7 +344,7 @@ fn t4aa_pointerdown_in_cell_lands_caret() {
         );
     }
 
-    // 格外正當空白不落 caret（命中面不扩大到無文字區）。
+    // 格外正當空白不落 caret（命中面不擴大到無文字區）。
     if !buggy {
         let (pg, y0) = (lines[0].0, lines[0].6);
         assert!(
@@ -588,7 +588,7 @@ fn t4aa_cell_caret_survives_row_slice_across_pages() {
 // 燈 7（越界 cp 契約）：格內段與正文段同款「cp 越界 clamp 到段尾」——探針
 // v3 的取樣上界鐵律依賴此契約（用戶檔實錄：探針掃短段到 cp=400 拿回段尾幾何
 // 卻記入 400，反向腿如實回報段尾 cp，11 條假紅；引擎側 diag 239/239 零斷裂）。
-// 本燈把該契約從「探針的假設」升為「考卷鎖定的行為」：日後任何一侧改clamp
+// 本燈把該契約從「探針的假設」升為「考卷鎖定的行為」：日後任何一側改 clamp
 // 語義（回 None／回首行／回越界 cp）都在這裡先紅，不會再燒成探針誤報。
 // ---------------------------------------------------------------------------
 
