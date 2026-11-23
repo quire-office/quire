@@ -210,7 +210,13 @@ fn engine_with_table(rows: usize, prefix: &str) -> (LayoutParams, Vec<String>) {
 
 fn build_engine(texts: &[String], rows: usize, prefix: &str, p: &LayoutParams) -> LayoutEngine {
     let m = TextMeasurer::new(p.font_size_pt);
-    let tl = quire_layout::table::layout_table(&table_input(rows, prefix), p.content_w_pt(), p.line_h_pt(), &m, 0);
+    let tl = quire_layout::table::layout_table(
+        &table_input(rows, prefix),
+        p.content_w_pt(),
+        p.line_h_pt(),
+        &m,
+        0,
+    );
     let slot = TableSlot {
         para_start: 0,
         para_end: rows,
@@ -362,8 +368,8 @@ fn t4aa_cell_caret_roundtrip_is_inverse() {
     // 互逆：caret_rect(para,cp) 的點反查必還原同段同 cp（比照 U4f 燈 3 口徑）。
     let mut total = 0usize;
     let mut bad = Vec::new();
-    for para in 0..6usize {
-        let n = texts[para].chars().count();
+    for (para, para_text) in texts.iter().take(6).enumerate() {
+        let n = para_text.chars().count();
         for cp in 0..=n {
             let fwd = match eng.caret_rect(CaretPos { para, cp }) {
                 Some(r) => r,
@@ -448,9 +454,7 @@ fn t4aa_text_ord_anchors_canonical_para_across_nest_and_filler() {
                         for nrow in &nf.rows {
                             for ncell in &nrow.cells {
                                 for t in &ncell.texts {
-                                    let ord = t
-                                        .text_ord
-                                        .expect("巢狀切片必帶換算後的 text_ord");
+                                    let ord = t.text_ord.expect("巢狀切片必帶換算後的 text_ord");
                                     let canonical = eng
                                         .paragraph_text(slot.para_start + ord)
                                         .expect("巢狀段必在 canonical 索引空間");
@@ -475,8 +479,11 @@ fn t4aa_text_ord_anchors_canonical_para_across_nest_and_filler() {
     let filler = expect.len() - 1; // 表前段＋子表2段 → 填充段索引＝3
     assert_eq!(texts[filler], "", "fixture：末 block 必為協定填充空段");
     assert!(
-        eng.caret_rect(CaretPos { para: filler, cp: 0 })
-            .is_none(),
+        eng.caret_rect(CaretPos {
+            para: filler,
+            cp: 0
+        })
+        .is_none(),
         "協定填充段無行可定位，caret_rect 必誠實 None"
     );
     assert!(

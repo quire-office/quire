@@ -2723,13 +2723,16 @@ impl LayoutEngine {
         // （TablePlacement.band＋RowFrag.band_start＋CellText.y_pt），x 由切片
         // CellText.x_pt＋行內 advance——與發射口徑 push_frag_items 同一來源，
         // 絕不另造第二套尺（PM 定案第 1 條「正逆同源」）。
-        if self.flow.iter().any(|it| matches!(it, FlowItem::Text { para: p } if *p == caret.para))
+        if self
+            .flow
+            .iter()
+            .any(|it| matches!(it, FlowItem::Text { para: p } if *p == caret.para))
         {
             // 正文段落（含同名空段）：走原正文路徑，行為逐位元組不變。
-        } else if let Some(r) = self.cell_caret_rect(caret, text) {
-            return Some(r);
         } else {
-            return None;
+            // 非正文流段＝表格格內段（或協定填充段）：只准由切片幾何回答，
+            // 找不到就是 None——絕不退回正文行掃描去憑空落游標。
+            return self.cell_caret_rect(caret, text);
         }
         let total_cp = text.chars().count();
         let cp = caret.cp.min(total_cp);
@@ -2967,11 +2970,7 @@ impl LayoutEngine {
                         if cp >= t.char_offset && cp <= t.char_offset + line_cp {
                             let r = CaretRect {
                                 x_pt: x0
-                                    + self.caret_x_in_line_sized(
-                                        &t.text,
-                                        cp - t.char_offset,
-                                        size,
-                                    ),
+                                    + self.caret_x_in_line_sized(&t.text, cp - t.char_offset, size),
                                 ..rect
                             };
                             if hit.is_none() {
