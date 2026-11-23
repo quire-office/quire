@@ -378,9 +378,11 @@ fn t4aa_cell_caret_roundtrip_is_inverse() {
                     continue;
                 }
             };
-            for dy in [0.5f32, line_h * 0.5, line_h * 0.9] {
+            for dy in [0.5f32, 1.0f32, line_h * 0.5, line_h * 0.9] {
                 total += 1;
-                let back = eng.caret_at(fwd.page, fwd.x_pt, fwd.y_pt + dy);
+                // x 探針口徑同款位移（+0.5pt）：探針用「rect.x＋0.5」點擊，
+                // 考卷必須同形，否則 wasm 側紅燈在 cargo 側查不到（T4AA 教訓）。
+                let back = eng.caret_at(fwd.page, fwd.x_pt + 0.5, fwd.y_pt + dy);
                 match back {
                     Some(c) if c.para == para && c.cp == cp => {}
                     other => bad.push((

@@ -20,10 +20,13 @@
  *     （引擎 caret_rect 復測）>1pt」即紅。v1 兩缺陷已修：Rule 欄位讀 y1
  *     （v1 讀 y_pt 恆 undefined＝rule×text 恆 0 假綠）；寬度改引擎真字距
  *     （v1 0.6×字級粗估對 CJK 行高估 67%，偽重疊滿屏）。
- *   - CARET_DEAD：任一頁 BODY 歸因（該 y 有可定位段落 caret_rect 行跨度覆蓋）
- *     命中率 < 70% 即紅。CELL（格內段，caret_at None 屬 v1 契約——格內編輯
- *     走 marker-grid 路徑）與 EMPTY（正當空白）不計死區；raw 命中率照輸出，
+ *   - CARET_DEAD：任一頁 BODY 歸因（該 y 有可定位**正文**段落 caret_rect 行跨度
+ *     覆蓋）命中率 < 70% 即紅。CELL／EMPTY 不計死區；raw 命中率照輸出，
  *     供對分修前基線。
+ *   v3（t_4aa15a4e 格內 caret 產品化）：格內段的歸因從「無 caret_rect 覆蓋」
+ *     推定改為**引擎身分**（table_locator_json 反查在表內＝CELL 段）——v2 推定
+ *     在格內 caret 上線後會把有 rect 的格內段誤歸 BODY，造出假紅。CELL 另設
+ *     硬閘：逐條格內行用自己的幾何反查必還原同段同 cp（100%），未滿即紅。
  *   退出碼：0 全綠；1 有紅燈；2 探針自身錯誤。
  *
  * 用法：node shells/web/editor/tests/u4f_table_overlay_caret_probe.mjs [docx路徑] [--json F] [--shot F]
@@ -183,17 +186,28 @@ try {
   //              v1 契約，另行計數不計死區；
   //       EMPTY＝皆非，None 屬正當（Word 對空白點擊亦不落 caret）。
   //     raw 命中率仍逐頁輸出（對分 PM 修前基線用），判定制以 BODY 為準。
+  //
+  // T4AA v3（t_4aa15a4e 交付）：格內 caret 產品化後，v2 歸因失效——「無
+  // caret_rect 覆蓋＝格內段」的推定把**有** rect 的格內段誤歸進 BODY（用戶檔
+  // 頁1/3 遂顯示 BODY 58%/43% 假紅，實測正文 caret 零回退）。v3 改以引擎身分
+  // 判定制：段落經 table_locator_json 反查在表內＝CELL 段，其行跨度只進 CELL
+  // 桶。CELL 判定從「None 屬契約」翻正為「命中且落點正確」：逐條格內行用
+  // **自己的幾何**（caret_rect 給出的 x/y，非固定掃描列 x=120——固定列會落在
+  // 空格或欄間，None 屬正當、無鑑別力）反查，必還原同段同 cp，門檻 100%。
+  // BODY 歸因口徑與 v2 逐字同（正文零擾動，門檻仍 >70%）。
   const result = await evalIn(String.raw`(() => {
     const a = window.QWordEngine;
     const e = a.engine;
     const pages = a.pageCount();
     const perPage = [];
     let overlayTotal = 0;
-    // 正向行跨度真值表：逐段逐 cp 取 caret_rect（None＝該段不可定位＝格內段），
-    // 依 (page, y) 去重成行。段數×cp 上限為探針成本閘（長段抽樣步進 4 cp）。
+    // 正向行跨度真值表：逐段逐 cp 取 caret_rect（None＝該段不可定位），依
+    // (page, y) 去重成行，並記引擎身分（table_locator_json 命中＝格內段）。
+    // 段數×cp 上限為探針成本閘（長段抽樣步進 4 cp）。
     const careBands = [];
     const paras = a.paragraphCount();
     for (let p = 0; p < paras; p++) {
+      const isCell = a.locateTableCell ? !!a.locateTableCell(p) : false;
       let lastKey = '';
       for (let cp = 0; cp <= 400; cp += 4) {
         const r = a.caretRect ? a.caretRect(p, cp) : null;
@@ -201,14 +215,18 @@ try {
         const key = r.page + ':' + Math.round(r.y_pt);
         if (key === lastKey) continue;
         lastKey = key;
-        careBands.push({ pg: r.page, y0: r.y_pt, y1: r.y_pt + (r.height_pt || 12) });
+        careBands.push({ pg: r.page, y0: r.y_pt, y1: r.y_pt + (r.height_pt || 12), x0: r.x_pt, cp, para: p, cell: isCell });
       }
     }
+    const bodyBands = careBands.filter((b) => !b.cell);
+    const cellBands = careBands.filter((b) => b.cell);
     // caret_rect.y 是行頂，DL baseline 在行頂下方（上升部）——覆蓋判據容差放到
     // 1.2×行高，否則行尾 baseline 的正文行會被誤判成格內行（用戶檔實測教訓）。
-    const coversY = (pg, y) => careBands.some(b => b.pg === pg && y >= b.y0 - 1 && y < b.y0 + (b.y1 - b.y0) * 1.2 + 1);
-    // 該 y 是否落在可定位段落行跨度（BODY 掃描判據；容差＝半行高）。
-    const onBodyBand = (pg, y) => careBands.some(b => b.pg === pg && y >= b.y0 - 0.5 && y < b.y1 - 0.5);
+    const coversY = (pg, y) => bodyBands.some(b => b.pg === pg && y >= b.y0 - 1 && y < b.y0 + (b.y1 - b.y0) * 1.2 + 1);
+    // 該 y 是否落在可定位**正文**段落行跨度（BODY 掃描判據；容差＝半行高）。
+    const onBodyBand = (pg, y) => bodyBands.some(b => b.pg === pg && y >= b.y0 - 0.5 && y < b.y1 - 0.5);
+    // 該 y 是否落在格內段行跨度（CELL 掃描桶判據）。
+    const onCellBand = (pg, y) => cellBands.some(b => b.pg === pg && y >= b.y0 - 0.5 && y < b.y1 - 0.5);
     for (let pg = 0; pg < pages; pg++) {
       const dl = a.getPageDisplayList(pg);
       const rules = (dl ? dl.items : []).filter(i => i.Rule).map(i => i.Rule);
@@ -290,7 +308,8 @@ try {
         }
       }
       // caret 掃描（PM 口徑 x=120、y=72..720 步 12）：raw 命中仍計（對分基線），
-      // 判定以 BODY 歸因為準（CELL＝格內段 None 屬 v1 契約；EMPTY 屬正當）。
+      // 判定以 BODY 歸因為準（T4AA v3：CELL 桶＝引擎身分 table_locator_json，
+      // 不再是「無 rect 覆蓋」推定；EMPTY 屬正當）。
       let hit = 0, miss = 0, bodyTot = 0, bodyHit = 0, cellTot = 0, cellHit = 0, emptyTot = 0, emptyHit = 0;
       const bodyMiss = [];
       for (let y = 72; y <= 720; y += 12) {
@@ -300,13 +319,29 @@ try {
         if (onBodyBand(pg, y)) {
           bodyTot++; bodyHit += got ? 1 : 0;
           if (!got && bodyMiss.length < 8) bodyMiss.push(y);
-        } else if (texts.some(t => y >= t.y - t.size_pt * 0.9 && y <= t.y + t.size_pt * 0.35)) {
+        } else if (onCellBand(pg, y)) {
           cellTot++; cellHit += got ? 1 : 0;
         } else {
           emptyTot++; emptyHit += got ? 1 : 0;
         }
       }
-      perPage.push({ pg, rules: rules.length, texts: texts.length, overlaps, cellNearRule, samples, textOverlaps, unmeasurable, tsamples, caretHit: hit, caretMiss: miss, bodyHit, bodyTot, bodyMiss, cellHit, cellTot, emptyHit, emptyTot });
+      // T4AA v3 CELL 真判定：逐條格內行用**自己的幾何**反查（固定掃描列 x=120
+      // 會落在空格／欄間，None 屬正當、無鑑別力）。必命中且還原同段同 cp——
+      // 用戶可見語義＝「點格內文字，游標落進該格該字」。樣本坐標零內文。
+      let cellLineTot = 0, cellLineBad = 0;
+      const cellBad = [];
+      for (const b of cellBands) {
+        if (b.pg !== pg) continue;
+        cellLineTot++;
+        const v = e.caret_at_json(pg, b.x0 + 0.5, b.y0 + 1.0);
+        const got = v ? JSON.parse(v) : null;
+        if (!got || got.para !== b.para || got.cp !== b.cp) {
+          cellLineBad++;
+          // 隱私鐵律：只記結構度量（段號為索引非內文）。
+          if (cellBad.length < 8) cellBad.push({ para: b.para, cp: b.cp, x: Math.round(b.x0), y: Math.round(b.y0), got: got ? { para: got.para, cp: got.cp } : null });
+        }
+      }
+      perPage.push({ pg, rules: rules.length, texts: texts.length, overlaps, cellNearRule, samples, textOverlaps, unmeasurable, tsamples, caretHit: hit, caretMiss: miss, bodyHit, bodyTot, bodyMiss, cellHit, cellTot, cellLineTot, cellLineBad, cellBad, emptyHit, emptyTot });
     }
     return { pages, chars: a.getWordCount(), paraCount: a.paragraphCount(), overlayTotal, perPage };
   })()`);
@@ -314,29 +349,40 @@ try {
   const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }, sessionId);
   fs.writeFileSync(SHOT_OUT, Buffer.from(shot.data, 'base64'));
 
-  // 判定制 v2：跑版＝rule×text（正文×表格框線/格內交疊）與 text×text（真字距）
-  // 皆 0；caret 死區＝BODY 歸因命中率 <70%（CELL＝格內段 None 屬 v1 契約、
-  // EMPTY＝正當，皆不計死區）。raw 命中率保留輸出供對分修前基線。
+  // 判定制 v3（T4AA）：跑版＝rule×text（正文×表格框線/格內交疊）與 text×text
+  // （真字距）皆 0；caret 死區＝BODY 歸因命中率 <70%（歸因口徑與 v2 同，只把
+  // 格內段从 BODY 桶分離）；**CELL 新增硬閘**＝逐條格內行用自己的幾何反查
+  // 必命中且還原同段同 cp，任何一條不還原即紅（門檻 100%，PM 定案第 3 條
+  // 「CELL 計數逐頁轉滿」的強化版——不只命中，落點段號與碼點都要對）。
+  // 回塞鎖在 cargo 側（T4AA_CELL_CARET_BUGGY=1 令格內兩腿退回 None，t4aa 考卷
+  // 必紅；wasm 探針跑的是正式版，不需重複回塞）。EMPTY＝正當，不計死區。
+  // raw 命中率保留輸出供對分修前基線。
   const BODY_MIN = 0.7;
   const overlayRed = result.perPage.filter((p) => p.overlaps > 0 || p.textOverlaps > 0);
   const caretRed = result.perPage.filter((p) => p.bodyTot > 0 && p.bodyHit / p.bodyTot < BODY_MIN);
+  const cellRed = result.perPage.filter((p) => p.cellLineBad > 0);
   const summary = {
     docx: path.basename(DOCX), pages: result.pages, chars: result.chars, paraCount: result.paraCount,
     overlayRedPages: overlayRed.map((p) => p.pg), caretRedPages: caretRed.map((p) => p.pg),
+    cellRedPages: cellRed.map((p) => p.pg),
+    cellLines: result.perPage.reduce((s, p) => s + p.cellLineTot, 0),
+    cellLineBad: result.perPage.reduce((s, p) => s + p.cellLineBad, 0),
     shot: SHOT_OUT,
   };
   console.log('U4F_SUMMARY ' + JSON.stringify(summary));
   for (const p of result.perPage) {
     const rawTot = p.caretHit + p.caretMiss;
     const bodyRate = p.bodyTot ? (p.bodyHit / p.bodyTot * 100).toFixed(1) : 'n/a';
-    const flagged = p.overlaps > 0 || p.textOverlaps > 0 || (p.bodyTot > 0 && p.bodyHit / p.bodyTot < BODY_MIN);
+    const cellRate = p.cellLineTot ? ((p.cellLineTot - p.cellLineBad) / p.cellLineTot * 100).toFixed(1) : 'n/a';
+    const flagged = p.overlaps > 0 || p.textOverlaps > 0 || p.cellLineBad > 0 ||
+      (p.bodyTot > 0 && p.bodyHit / p.bodyTot < BODY_MIN);
     if (flagged || p.unmeasurable > 0) {
-      console.log(`  頁${p.pg}: rules=${p.rules} texts=${p.texts} 正文×表格框線=${p.overlaps} 真字距text×text=${p.textOverlaps}(不可測=${p.unmeasurable}) BODY命中=${p.bodyHit}/${p.bodyTot}(${bodyRate}%) CELL=${p.cellHit}/${p.cellTot} raw=${p.caretHit}/${rawTot}${flagged ? ' 樣本=' + JSON.stringify((p.samples && p.samples.length ? p.samples : p.tsamples) || []).slice(0, 160) : ''}`);
+      console.log(`  頁${p.pg}: rules=${p.rules} texts=${p.texts} 正文×表格框線=${p.overlaps} 真字距text×text=${p.textOverlaps}(不可測=${p.unmeasurable}) BODY命中=${p.bodyHit}/${p.bodyTot}(${bodyRate}%) CELL行=${p.cellLineTot - p.cellLineBad}/${p.cellLineTot}(${cellRate}%) CELL掃描=${p.cellHit}/${p.cellTot} raw=${p.caretHit}/${rawTot}${flagged ? ' 樣本=' + JSON.stringify((p.cellBad && p.cellBad.length ? p.cellBad : (p.samples && p.samples.length ? p.samples : p.tsamples)) || []).slice(0, 200) : ''}`);
     }
   }
   if (JSON_OUT) fs.writeFileSync(JSON_OUT, JSON.stringify(result, null, 2));
   if (cdp.events.length) console.log('PAGE_EVENTS: ' + cdp.events.slice(0, 5).join(' | '));
-  const red = overlayRed.length > 0 || caretRed.length > 0;
+  const red = overlayRed.length > 0 || caretRed.length > 0 || cellRed.length > 0;
   console.log(red ? 'U4F_PROBE=RED' : 'U4F_PROBE=GREEN');
   process.exitCode = red ? 1 : 0;
 } catch (err) {
