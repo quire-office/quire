@@ -605,10 +605,7 @@ fn t4aa_cell_caret_out_of_range_cp_clamps_to_para_end() {
     for (_, para, text, _, _, _, _) in &lines {
         *seg.entry(*para).or_default() += text.chars().count();
     }
-    let (para, len) = seg
-        .into_iter()
-        .max_by_key(|(_, n)| *n)
-        .expect("必有格內段");
+    let (para, len) = seg.into_iter().max_by_key(|(_, n)| *n).expect("必有格內段");
     assert!(len >= 2, "本燈需段長≥2（實得 {len}）");
 
     let at_end = eng
