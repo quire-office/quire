@@ -284,6 +284,23 @@ pub struct CellText {
     /// serde default 兼容舊快照（goldens 的自訂序列化器不寫本欄，零位移）。
     #[serde(default)]
     pub size_pt: Option<f32>,
+    /// T4AA（格內 caret）：本行所屬「表內文字 block 文件序」——與
+    /// [`retext_walk`]／`TableSlot.para_start` **同一計數空間**（ canonical
+    /// para＝slot.para_start＋本值）。caret 正逆兩腿靠它把格內行錨回段落索引
+    /// （`table_locator_json` 的索引空間逐字同一，PM 定案第 1 條）。
+    /// `None`＝舊快照／外部手搓幾何（反查退 None，誠實不虛構）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_ord: Option<usize>,
+    /// T4AA：本行行首在該 block 文字內的碼點偏移（斷行 `Line::char_offset`
+    /// 透傳）。cp 換算＝本值＋行內偏移（與正文 `Line::char_offset` 同標尺）。
+    #[serde(default)]
+    pub char_offset: usize,
+    /// T4AA：本行佔用帶數（＝所屬 block 的 `line_bands`；0＝舊快照回退 1）。
+    /// caret_at 的行跨度判制用，與正文 `ParaGrid::bands_of` 同款語義。
+    /// 換算頁座標一律走繪製口徑（`TablePlacement.frag` 逐層加法，見
+    /// engine-api `push_frag_items`），本欄只給跨度，不另造尺。
+    #[serde(default)]
+    pub bands: u32,
     /// run 級樣式片段（L2-cellruns／TODO(CardA) 清償）：**行內局部**碼點座標
     /// （`[from,to)` 以本行 `text` 為尺），由 `fragment` 把 block 級 run 標注
     /// 與本行區間求交集得到；未覆蓋的縫隙補零樣式段，相鄰同鍵段合併，故
@@ -379,9 +396,21 @@ enum CellBlockGeom {
         line_bands: u32,
         size_pt: Option<f32>,
         runs: Vec<CellRun>,
+        /// T4AA（格內 caret）：本 block 在**本表輸入樹的文件序**（與
+        /// [`retext_walk`] 游標、`TableSlot.para_start` 同一計數空間）。
+        /// `None`＝合成空 block（空格外殼，無 canonical 段落可錨）——caret
+        /// 反查據此誠實回 None，絕不把游標錯掛到別的段。
+        ord: Option<usize>,
     },
     /// 巢狀子表：完整排版；帶高＝自身 total_bands（至少 1）。
-    Table { layout: TableLayout, bands: u32 },
+    /// `ord_base`（T4AA）＝子表首個文字 block 在**外層樹**的文件序起點：
+    /// 子表切片的 `CellText.text_ord`（子表自身樹序）＋本值＝外層樹序，
+    /// 逐層遞迴累加後＝根槽樹序（canonical para＝slot.para_start＋該值）。
+    Table {
+        layout: TableLayout,
+        bands: u32,
+        ord_base: usize,
+    },
     /// 圖片佔位（t_a1397522）：extent 尺寸（pt）＋量化帶高 ceil(h/line_h)，
     /// 繪製寬超出可用寬時只縮不放大（Word 原樣溢出，我們鉗進格寬老實近似）。
     Image {
@@ -400,6 +429,40 @@ impl CellBlockGeom {
             CellBlockGeom::Text { bands, .. } => *bands,
             CellBlockGeom::Table { bands, .. } => *bands,
             CellBlockGeom::Image { bands, .. } => *bands,
+        }
+    }
+}
+
+/// T4AA：`input`（含全部巢狀子表，文件序）的文字 block 總數——與
+/// [`retext_walk`] 的游標增量逐字同口徑（`Text` 計 1、`Table` 遞迴計其
+/// 子樹全數、`Image` 不計）。`layout_table` pass 1 用它把巢狀子表的
+/// `ord_base` 之後的游標接續到正確位置（子樹 block 在外層樹佔用連續
+/// 序號區間，與 canonical 段索引的連續性同源）。
+fn count_text_blocks(input: &TableInput) -> usize {
+    input
+        .rows
+        .iter()
+        .flat_map(|r| r.cells.iter())
+        .flat_map(|c| c.blocks.iter())
+        .map(|b| match b {
+            CellBlock::Text(_) => 1,
+            CellBlock::Table(n) => count_text_blocks(n),
+            CellBlock::Image { .. } => 0,
+        })
+        .sum()
+}
+
+/// T4AA：把子表切片所有 `CellText.text_ord`（子表自身樹序）平移
+/// `base`＝子表在外層樹的 `ord_base`，換算成外層樹序。巢狀在巢狀由
+/// 遞迴逐層累加（內層已換算到內層樹序，本層再加外層基址）。
+fn shift_frag_ords(frag: &mut TableFrag, base: usize) {
+    for row in frag.rows.iter_mut() {
+        for cell in row.cells.iter_mut() {
+            for t in cell.texts.iter_mut() {
+                if let Some(o) = t.text_ord.as_mut() {
+                    *o += base;
+                }
+            }
         }
     }
 }
