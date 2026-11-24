@@ -4,7 +4,7 @@
 //!
 //! # 用戶實測缺口（PM 轉達 2026-11-24）
 //! 「有 cursor 但會上下偏移，且大小不會隨段落字體大小改變。」編輯器線上站
-//! 實測檔（多級標題文件，標題段 26pt 級）：點大字号段落時游標明顯偏離文字
+//! 實測檔（多級標題文件，標題段 26pt 級）：點大字號段落時游標明顯偏離文字
 //! 行、游標高度恆細短。
 //!
 //! # 探針實測對卡面前提的修正（先量後修；合成檔＋200 檔 5554 樣本全 corpus 掃）
@@ -214,7 +214,7 @@ fn u4i_lamp2_caret_height_follows_paragraph_size() {
     assert!(checked >= 8, "首行樣本不足（實得 {checked}）");
     assert!(
         big_checked >= 2,
-        "大字号段樣本不足（26pt 級實得 {big_checked}，fixture 應含兩段）"
+        "大字號段樣本不足（26pt 級實得 {big_checked}，fixture 應含兩段）"
     );
     assert!(
         bad.is_empty(),
@@ -228,7 +228,7 @@ fn u4i_lamp2_caret_height_follows_paragraph_size() {
 // 燈 3（x 腿與發射尺同源＋正逆 round-trip）：
 // (a) 26pt 段的行內 x 步進必按該段字級推進（與發射尺同源），不得按全域
 //     12pt 尺（修前態 step≈11.93pt/字＝BUGGY 必紅點名）。
-// (b) 大字号段逐 cp 正向 y→反向 caret_at 必還原同 (para,cp)。
+// (b) 大字號段逐 cp 正向 y→反向 caret_at 必還原同 (para,cp)。
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -250,24 +250,24 @@ fn u4i_lamp3_x_follows_size_and_round_trip() {
         "燈 3(a) 26pt 段行內 x 步進 {step:.3}pt/字——未按段落字級（全域尺態≈11.9，發射同尺態≈25.9）"
     );
 
-    // (b) 正逆 round-trip：大字号段（段0／段4）行內 cp 的 (x, y) 反查必還原
+    // (b) 正逆 round-trip：大字號段（段0／段4）行內 cp 的 (x, y) 反查必還原
     //     同 (para,cp)。x 取 caret 自身值（同尺反查；跨半字取樣由燈 3(a) 的
     //     尺源斷言把關，這裡護互逆契約）。
     for para in [0usize, 4usize] {
         let n = eng.paragraph_text(para).unwrap().chars().count();
         for cp in 0..n {
             let Some((page, x, y, _h)) = caret_rect(&eng, para, cp) else {
-                panic!("大字号段 {para} cp {cp}：正向腿 None");
+                panic!("大字號段 {para} cp {cp}：正向腿 None");
             };
             let Some((bp, bcp)) = caret_at(&eng, page, x + 1.0, y) else {
                 panic!(
-                    "大字号段 {para} cp {cp}：反向腿 None（x={x:.2}, y={y:.2}）——帶尺判定制被動壞？"
+                    "大字號段 {para} cp {cp}：反向腿 None（x={x:.2}, y={y:.2}）——帶尺判定制被動壞？"
                 );
             };
             assert_eq!(
                 (bp, bcp),
                 (para, cp),
-                "大字号段 {para} cp {cp} 正逆 round-trip 破口（x={x:.2}, y={y:.2}）"
+                "大字號段 {para} cp {cp} 正逆 round-trip 破口（x={x:.2}, y={y:.2}）"
             );
         }
     }
