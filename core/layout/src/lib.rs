@@ -2737,6 +2737,19 @@ impl LayoutEngine {
         let total_cp = text.chars().count();
         let cp = caret.cp.min(total_cp);
         let line_h = self.params.font_size_pt * self.params.line_spacing;
+        // U4i（字級腿同源）：正逆兩腿的行內量測與 caret 高度取該段級聯字級
+        // （`grid.size_of`＝`break_para` 斷行同一支尺，engine 由樣式級聯餵入），
+        // 不再吃全域預設尺——26pt 標題段 caret 舊態按 12pt 尺量 x、高畫 12pt，
+        // 用戶可見「游標偏離文字行＋高度恆細短」。y 腿（band×帶尺）不動：
+        // 探針實測（200 檔 5554 樣本）caret y 與發射行 y 本就逐段全等。
+        // 回塞鎖：`U4I_CARET_GLOBAL_RULER_BUGGY=1` ⇒ 兩腿整支退回全域尺
+        // （修前態）⇒ t_u4i_caret_size 燈 2／燈 3 必紅（鑑別力證據）。
+        let u4i_buggy = std::env::var_os("U4I_CARET_GLOBAL_RULER_BUGGY").is_some();
+        let size = if u4i_buggy {
+            self.params.font_size_pt
+        } else {
+            self.grid.size_of(caret.para, self.params.font_size_pt)
+        };
 
         // 逐頁掃描屬於本段的行：以各行字元數累計，找出 cp 落在哪一行。
         // 座標原點取「此頁所屬 section」的邊界（跨 section 續排的段落，兩頁邊界可不同）。
@@ -2748,14 +2761,14 @@ impl LayoutEngine {
                     continue;
                 }
                 let line_cp = line.text.chars().count();
-                let x = self.caret_x_in_line(&line.text, cp.saturating_sub(seen_cp));
+                let x = self.caret_x_in_line_sized(&line.text, cp.saturating_sub(seen_cp), size);
                 // y 走行網格帶索引（表格插進網格後 li ≠ 帶；缺欄位退回 li）。
                 let band = page.line_bands.get(li).copied().unwrap_or(li as u32) as f32;
                 let rect = CaretRect {
                     page: page.index,
                     x_pt: page.margin_left_pt + x,
                     y_pt: page.margin_top_pt + band * line_h,
-                    height_pt: self.params.font_size_pt,
+                    height_pt: size,
                 };
                 // cp 落在本行範圍內（含行尾）即命中；最後一行兜底（cp=段尾等）。
                 if cp <= seen_cp + line_cp || line_cp == 0 {
@@ -2773,7 +2786,25 @@ impl LayoutEngine {
     pub fn caret_at(&self, page: usize, x_pt: f32, y_pt: f32) -> Option<CaretPos> {
         let p = self.pages.get(page)?;
         let line_h = self.params.font_size_pt * self.params.line_spacing;
-        let band = (((y_pt - p.margin_top_pt) / line_h).floor().max(0.0)) as u32;
+        // U4i 根因 C（反查帶界浮點落帶）：舊式 `((y−margin_top)/line_h).floor()`
+        // 在 y **恰為帶邊界**時被 f32 舍入誤差（商落在 55.999994 一類）floor 成
+        // 前一帶——正向腿給出的行 y 反查會落進**前一行**的跨度窗口（細帶尺下
+        // 前一行跨度可達十餘帶，必然吞下），正逆互逆在大字号段成批破口（燈 4
+        // 混級段實錄：26pt 行 cp18+ 全部反查回前一行行內偏移）。修法＝帶商加
+        // 相對容差再 floor：恰邊界（含 ±f32 噪声）歸本帶、帶內任意點不動——
+        // 與正向腿「margin_top＋band×line_h」同一把尺的正逆印證，非第二把尺
+        // （容差 1e-3 帶＝實尺 ≤0.003pt，低於渲染精度，點擊語義零變動）。
+        // `caret_rect` 給的每一點反查必還原同段同 cp（燈 3(b)／燈 4 互逆契約）。
+        // `U4I_CARET_GLOBAL_RULER_BUGGY=1`（本卡回塞鎖）⇒ 容差同步退 0＝修前
+        // 逐位元組舊態（帶界浮點落帶缺陷重現，燈 4 混級段成批紅＝鑑別點名）。
+        let band_eps = if std::env::var_os("U4I_CARET_GLOBAL_RULER_BUGGY").is_some() {
+            0.0
+        } else {
+            1e-3
+        };
+        let band = (((y_pt - p.margin_top_pt) / line_h + band_eps)
+            .floor()
+            .max(0.0)) as u32;
         // y→帶→行陣列索引：有表格的頁 band ≠ 陣標（`line_bands` 才是映射，
         // caret_rect 正向走同一映射）。
         //
@@ -2823,8 +2854,18 @@ impl LayoutEngine {
         };
         if let Some(li) = li {
             if let Some(line) = p.lines.get(li) {
+                // U4i（反向腿字級同源）：行內 x→cp 反查按**該段級聯字級**量測
+                // ——與正向腿同一 `grid.size_of`、同一回塞鎖態（正逆互逆的
+                // 尺來源；`break_para` 斷行亦同一支尺）。BUGGY 態退回全域尺
+                // 與正向腿同步，u4f/t4aa 互逆考卷在鎖態下仍逐位元組全等。
+                let u4i_buggy = std::env::var_os("U4I_CARET_GLOBAL_RULER_BUGGY").is_some();
+                let size = if u4i_buggy {
+                    self.params.font_size_pt
+                } else {
+                    self.grid.size_of(line.para_index, self.params.font_size_pt)
+                };
                 let rel = (x_pt - p.margin_left_pt).max(0.0);
-                let cp_in_line = self.caret_cp_in_line(&line.text, rel);
+                let cp_in_line = self.caret_cp_in_line_sized(&line.text, rel, size);
                 // 段落內偏移 = 該段在目標行之前所有行的碼點數之和（跨頁續排亦正確：
                 // 行帶著 para_index，線性掃過全部頁面對應段落行）。
                 let mut before = 0usize;
@@ -3061,15 +3102,11 @@ impl LayoutEngine {
         best.map(|(_, _, para, cp)| CaretPos { para, cp })
     }
 
-    /// 行內水平偏移 → caret x（shaped advances 逐 cluster 累計，取「不越過 rel」
-    /// 的最後 cluster 邊界）。
-    fn caret_x_in_line(&self, line_text: &str, cp: usize) -> f32 {
-        self.caret_x_in_line_sized(line_text, cp, self.params.font_size_pt)
-    }
-
-    /// 同 [`Self::caret_x_in_line`]，但字級可帶入（T4AA：格內行按自身級聯
-    /// 字級量測；正文路徑帶全域尺＝與修前逐位元組全等）。正逆兩腿對格內行
-    /// 一律用**同一** `t.size_pt`（互逆性的尺來源）。
+    /// 行內 caret cp → x 偏移（shaped advances 逐 cluster 累計，取「不越過
+    /// rel」的最後 cluster 邊界；按傳入字級量測）。正逆兩腿尺來源：
+    /// T4AA 格內行帶切片自身 `t.size_pt`；正文腿（U4i）帶該段級聯字級
+    /// `grid.size_of`——兩者皆與發射/斷行同源，未宣告段退回全域尺＝
+    /// 與修前逐位元組全等。
     fn caret_x_in_line_sized(&self, line_text: &str, cp: usize, size_pt: f32) -> f32 {
         let clusters = shape_advances(line_text, size_pt);
         let mut byte_target = line_text.len();
@@ -3090,12 +3127,8 @@ impl LayoutEngine {
         x
     }
 
-    /// 行內 x → caret cp（與 `caret_x_in_line` 互逆：取最接近 rel 的 cluster 邊界）。
-    fn caret_cp_in_line(&self, line_text: &str, rel: f32) -> usize {
-        self.caret_cp_in_line_sized(line_text, rel, self.params.font_size_pt)
-    }
-
-    /// 同 [`Self::caret_cp_in_line`]，字級可帶入（T4AA 格內行；正逆同尺）。
+    /// 行內 x → caret cp（與 [`Self::caret_x_in_line_sized`] 互逆：取最接近
+    /// rel 的 cluster 邊界；字級尺來源同正向腿，正逆同尺）。
     fn caret_cp_in_line_sized(&self, line_text: &str, rel: f32, size_pt: f32) -> usize {
         let clusters = shape_advances(line_text, size_pt);
         let mut x = 0.0f32;
