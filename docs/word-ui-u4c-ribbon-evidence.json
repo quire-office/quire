@@ -1,7 +1,7 @@
 {
   "meta": {
     "baseUrl": "http://127.0.0.1:8791/shells/web/editor/index.html",
-    "at": "2026-11-21T18:37:44.371Z",
+    "at": "2026-11-24T07:31:30.263Z",
     "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
   },
   "buttons": {
@@ -859,7 +859,7 @@
       "btnClickFpChanged": false,
       "directDispatch": {
         "handled": true,
-        "requirement": "live"
+        "requirement": "pending:engine-table"
       },
       "directFpChanged": false,
       "directRects": {
