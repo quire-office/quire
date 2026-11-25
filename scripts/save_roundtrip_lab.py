@@ -324,6 +324,8 @@ def _para_xml_excerpt(docx: pathlib.Path, text: str, limit: int = 1400) -> dict:
     SplitParagraph 把 w:p 從中段切開時，把跨切點的行內容器（w:hyperlink／
     w:ins／w:fldSimple…）連同**未閉合**的起點一起搬進第二段——故計數直接
     點名該段內這些容器的存在性，作為返修卡的定位線索（本卡不修，PM 裁決）。
+    容器可能在目標段**上游**才打開（修訂痕跡 w:ins 常包住整串段落），段內
+    計數會漏——故另掃「錨點前 4000 字元視窗」，上下游容器都點名。
     """
     try:
         xml = _saved_document_xml(docx)
@@ -338,8 +340,15 @@ def _para_xml_excerpt(docx: pathlib.Path, text: str, limit: int = 1400) -> dict:
     for t in ("hyperlink", "ins", "del", "fldSimple", "smartTag", "sdt", "bdo", "dir"):
         op = len(re.findall(rf"<w:{t}\b(?!/)", b))
         cl = len(re.findall(rf"</w:{t}>", b))
+        # 上游視窗：段起點往前 4000 字元內「開了沒關」的容器＝跨段包裝嫌疑。
+        pos = xml.find(b)
+        win = xml[max(0, pos - 4000):pos]
+        w_op = len(re.findall(rf"<w:{t}\b(?!/)", win))
+        w_cl = len(re.findall(rf"</w:{t}>", win))
         if op or cl:
-            tags[f"w:{t}"] = f"{op}開/{cl}閉"
+            tags[f"w:{t}"] = f"段內{op}開/{cl}閉"
+        elif w_op > w_cl:
+            tags[f"w:{t}"] = f"上游未閉（前4000字 {w_op}開/{w_cl}閉）"
     return {"excerpt": b[:limit], "wrap_tags": tags}
 
 
@@ -414,13 +423,19 @@ def content_check(kind, mjson, target_paras, orig_rows, saved_rows, saved_docx,
         n_new = sum(len(re.findall(r"<w:b(\s|/>)", b)) for b in p_blocks)
         if orig_blocks:
             n_old = sum(len(re.findall(r"<w:b(\s|/>)", b)) for b in orig_blocks)
-            # 既有粗體不得被吞：原檔該段每個粗體可見 run 的文字，存檔後仍粗。
-            old_bold = {t for b in orig_blocks for t, f in _run_flags(b) if f}
-            new_bold = {t for b in p_blocks for t, f in _run_flags(b) if f}
-            lost = old_bold - new_bold
+            # 既有粗體不得被吞：原檔該段每個粗體可見 run 的文字，存檔後仍
+            # 落在「粗體文字串流」內。比對用**粗體 run 文字依序串接後做子串
+            # Contains**，不是 run 文字集合相等——引擎圈選 split 會把既有粗體
+            # run 切碎（floatingtbl_with_formula 實錄：'Polarimeter' 切成
+            # P|ola|rimeter 三 run、三個都帶 <w:b/>，集合口徑誤報「抹樣式」）。
+            # 真抹樣式時該文字會從粗體串流消失（含部分抹：切碎的中間段掉色
+            # →串流斷開→子串查不到→紅），鑑別力不鬆。
+            bold_stream = "".join(t for b in p_blocks for t, f in _run_flags(b) if f)
+            old_bold = [t for b in orig_blocks for t, f in _run_flags(b) if f]
+            lost = [t for t in old_bold if t not in bold_stream]
             grew = n_new >= n_old + 1
             if lost:
-                return False, f"存檔抹掉既有粗體 run：{sorted(lost)[:3]}（flag 級差分）"
+                return False, f"存檔抹掉既有粗體 run：{lost[:3]}（flag 級差分）"
             if not grew:
                 return False, (f"目標段 <w:b> 計數 {n_old}→{n_new} 未淨增"
                                "（新粗體未進 XML，flag 級差分）")
