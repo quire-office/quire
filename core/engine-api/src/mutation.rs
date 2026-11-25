@@ -2052,6 +2052,14 @@ fn split_paragraph_xml(
                         detail: "run 區間解析失敗".to_string(),
                     }
                 })?;
+                // 病態上遊守衛：CT_P 契約 pPr 必須是 w:p 首個子元素，若頂層
+                // pPr 竟排在 run 之後（run.start < body_start）則切片會反向
+                // panic——誠實拒絕（零位元組位移），不容錯位切片進 parts。
+                if run.start < body_start {
+                    return Err(MutationError::XmlPatchRejected {
+                        detail: "段落結構違反 CT_P（pPr 非首個子元素），拆段拒絕".to_string(),
+                    });
+                }
                 let run_text = &text[run.start..run.end];
                 let open_gt =
                     run_text
@@ -2104,7 +2112,8 @@ fn split_paragraph_xml(
                     .iter()
                     .find(|n| cp <= n.start_cp)
                     .map(|n| n.node_span.start)
-                    .unwrap_or(content_end);
+                    .unwrap_or(content_end)
+                    .max(body_start);
                 left_content = text[body_start..split_abs].to_string();
                 right_content = text[split_abs..content_end].to_string();
                 cut = split_abs;
