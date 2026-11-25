@@ -1,0 +1,25 @@
+{
+  "fixture": "fixtures/style_cascade.docx",
+  "caret": {
+    "para": 3,
+    "cp": 38
+  },
+  "paragraph_count": {
+    "before": 47,
+    "after": 47
+  },
+  "para_text": {
+    "before": "級聯填充第0段：這一行的存在是為了把版面擠過第一頁，讓大字段落在可預測的頁與帶上落地。",
+    "after": "級聯填充第0段：這一行的存在是為了把版面擠過第一頁，讓大字段落在可預測的頁與\n帶上落地。"
+  },
+  "call_chain": [
+    {
+      "m": "insert_text_at_caret",
+      "a": [
+        3,
+        38,
+        "\n"
+      ]
+    }
+  ]
+}
