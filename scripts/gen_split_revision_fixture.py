@@ -63,11 +63,20 @@ DOC_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 def build(out: pathlib.Path) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
+    # 固定 date_time（ODF-E1 口徑）：zipfile 預設寫目前時間 ⇒ 每次重跑位元組
+    # 不同＝「產生器可重現」宣稱不成立；STORE＋固定時間做到 byte 級冪等。
+    fixed = (2026, 11, 26, 0, 0, 0)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
-        z.writestr("[Content_Types].xml", CONTENT_TYPES)
-        z.writestr("_rels/.rels", ROOT_RELS)
-        z.writestr("word/document.xml", BODY)
-        z.writestr("word/_rels/document.xml.rels", DOC_RELS)
+        for name, data in (
+            ("[Content_Types].xml", CONTENT_TYPES),
+            ("_rels/.rels", ROOT_RELS),
+            ("word/document.xml", BODY),
+            ("word/_rels/document.xml.rels", DOC_RELS),
+        ):
+            info = zipfile.ZipInfo(name, date_time=fixed)
+            info.compress_type = zipfile.ZIP_STORED
+            info.external_attr = 0o600 << 16
+            z.writestr(info, data)
 
 
 if __name__ == "__main__":
