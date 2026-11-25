@@ -17,12 +17,12 @@ run 85 首跑把靶錨在 `Text.y + size_pt ± 4`（把 `Text.y` 同時當框頂
 列表行序＝閱讀序，單調游標對號直接給該行首碼點與行尾碼點）。
 
 燈（全部真滑鼠 click，取樣＝第 0 頁逐顯示列表 Text 項）：
-  燈 A1（卡面考題2 同段面）：契约 y ±(該邊 pitch/2 − 1) → caret 段＝該行所属段，
-    零 None。`該邊 pitch`＝與**上／下各自相鄰顯示行**的契约 y 差（混級檔兩側 pitch
+  燈 A1（卡面考題2 同段面）：契約 y ±(該邊 pitch/2 − 1) → caret 段＝該行所屬段，
+    零 None。`該邊 pitch`＝與**上／下各自相鄰顯示行**的契約 y 差（混級檔兩側 pitch
     不同：12pt 行距 16.8、24pt 行距 33.6；拿單側 pitch 打兩邊會自己越界假紅）。
-  燈 A2（卡面考題2「跨中線才換段」）：契约 y ±(該邊 pitch/2 + 1) → caret 必落
-    **相鄰顯示行**（para＝邻行 para 且 cp ∈ 邻行碼點區間）。
-  燈 B（新建段落落點）：真滑鼠在缺陷面（契约 y 以上）點擊定 caret → 以該 caret 發
+  燈 A2（卡面考題2「跨中線才換段」）：契約 y ±(該邊 pitch/2 + 1) → caret 必落
+    **相鄰顯示行**（para＝鄰行 para 且 cp ∈ 鄰行碼點區間）。
+  燈 B（新建段落落點）：真滑鼠在缺陷面（契約 y 以上）點擊定 caret → 以該 caret 發
     **真產線** `apply_mutation_json(SplitParagraph)`（engine M1.3，編輯面 Enter 的
     正入口）→ 段數增一、新建段落＝點擊段被切開的後半（用戶實錄「新建段落落在
     para4/5 之間」修後必全等）。殼層 Enter 另有第二根因（段內字面 \n 不增段），
@@ -203,7 +203,7 @@ def main():
             box = canvas.bounding_box()
             scale = box["width"] / got["w_pt"]
 
-            # 逐行兩側 pitch＝與**上／下各自相鄰顯示行**的契约 y 差（混級時兩側不同，
+            # 逐行兩側 pitch＝與**上／下各自相鄰顯示行**的契約 y 差（混級時兩側不同，
             # A1/A2 一律逐邊取值；拿單側 pitch 打兩邊＝探針自己越界假紅）。
             usable = []
             for i, tg in enumerate(rows):
@@ -216,7 +216,7 @@ def main():
             rows = usable
             check("取樣：可用行（兩側相鄰行齊備） >= 12", len(rows) >= 12, f"實得 {len(rows)}")
 
-            # ---- 燈 A1：真滑鼠點擊契约 y ±(該邊 pitch/2 − 1) → 同段、零死區 ----
+            # ---- 燈 A1：真滑鼠點擊契約 y ±(該邊 pitch/2 − 1) → 同段、零死區 ----
             mis_a1, dead_a1, nclick = [], [], 0
             record = []
             for i, tg in enumerate(rows):
@@ -236,9 +236,9 @@ def main():
                     elif caret["para"] != tg["para"]:
                         mis_a1.append((i, tag, round(y_pt, 2), caret["para"], tg["para"], tg["text"]))
             check("燈 A1：真滑鼠點擊樣本 >= 24", nclick >= 24, f"實得 {nclick}")
-            check("燈 A1：契约 y ±(該邊 pitch/2−1) 點擊段全等（卡面考題2 同段面）", not mis_a1,
+            check("燈 A1：契約 y ±(該邊 pitch/2−1) 點擊段全等（卡面考題2 同段面）", not mis_a1,
                   f"錯段 {len(mis_a1)}/{nclick} 例：{mis_a1[:4]}")
-            check("燈 A1：契约 y ±(該邊 pitch/2−1) 零死區", not dead_a1,
+            check("燈 A1：契約 y ±(該邊 pitch/2−1) 零死區", not dead_a1,
                   f"None {len(dead_a1)} 例：{dead_a1[:4]}")
 
             # ---- 燈 A2：跨中線（該邊 pitch/2 + 1）→ 必落相鄰顯示行（「跨中線才換段」）----
@@ -276,7 +276,7 @@ def main():
                 if tg["para"] in picked or tg["cpStart"] == 0:
                     continue  # 每段取首個非段首靶（段首分裂＝空頭段，另案語義）
                 picked.add(tg["para"])
-                # 缺陷面：契约 y 以上（用戶實錄 ascent 態）——修前此處反查回上一段段尾。
+                # 缺陷面：契約 y 以上（用戶實錄 ascent 態）——修前此處反查回上一段段尾。
                 y_pt = tg["rowY"] - (tg["up_half"] - 1.0)
                 page.mouse.click(box["x"] + (tg["x"] + tg["size"] * 0.5) * scale,
                                  box["y"] + y_pt * scale)

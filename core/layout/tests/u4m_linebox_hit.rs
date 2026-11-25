@@ -253,7 +253,7 @@ fn u4m_lamp0_fixture_terrain_is_the_defect_ground() {
             prev.band,
             prev.band + prev.span
         );
-        // 且該落點必須在上一行的**基線之上**（视觉上屬本行，不該給上一段）。
+        // 且該落點必須在上一行的**基線之上**（視覺上屬本行，不該給上一段）。
         assert!(
             click_band < cur.band as f32,
             "{}：點擊帶不在本行基線以上（用戶形態不成立）",
@@ -511,7 +511,7 @@ fn u4m_lamp4_table_and_empty_bands_stay_none() {
     for t in TERRAINS {
         let p = params_of(t);
         let lh = line_h(t);
-        // 5 列 × 40pt 列高（列高远大於格內文字行高）⇒ 表格帶群大於格內行帶群。
+        // 5 列 × 40pt 列高（列高遠大於格內文字行高）⇒ 表格帶群大於格內行帶群。
         let input = TableInput {
             grid_pt: vec![200.0],
             rows: (0..5)
@@ -705,7 +705,7 @@ fn u4m_lamp6_click_paragraph_equals_caret_paragraph() {
                     continue;
                 }
                 // 同源對帳：cp 必落在點擊行的碼點區間 [行起, 行起＋行長]（段內
-                // 偏移由前行累計而来；錯判上一段段尾的舊態在此同樣露餡）。
+                // 偏移由前行累計而來；錯判上一段段尾的舊態在此同樣露餡）。
                 let line_start: usize = pg
                     .lines
                     .iter()

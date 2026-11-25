@@ -1,4 +1,4 @@
-// t_f073cd6c 證據檢視（非考卷）：把點擊矩陣 JSON 印成人讀表，核對逐行契约 y/pitch。
+// t_f073cd6c 證據檢視（非考卷）：把點擊矩陣 JSON 印成人讀表，核對逐行契約 y/pitch。
 import fs from "node:fs";
 const p = process.argv[2] || "build/u4m-click-matrix.json";
 const d = JSON.parse(fs.readFileSync(p, "utf8"));

@@ -149,7 +149,7 @@ def main():
                 )
                 par = json.loads(raw)["para"] if raw else None
                 own.append((k, par))
-            # 找該行应屬段：文字對號（段落文字＝各行文字串接 ⇒ indexOf 給該行首碼點）
+            # 找該行應屬段：文字對號（段落文字＝各行文字串接 ⇒ indexOf 給該行首碼點）
             owner = pg.evaluate(
                 """([needle]) => {
                   const eng = window.__ime.engine();
