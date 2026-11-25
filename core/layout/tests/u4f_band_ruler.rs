@@ -229,12 +229,32 @@ fn u4f_caret_at_hits_every_emitted_line_on_fine_grid() {
     );
 
     // (b) 行距帶全命中（細尺態專用）：用戶檔的形態是「連續正文段、無段前後距」
-    // ——兩行之間的每一帶都是「上一行的行距」，點那裡必須落到上一行（Word 行為）。
+    // ——兩行之間的每一帶都是行距，點那裡**不得是死區**（本臂的 U4f 本意）。
     // 粗尺態（每行 1 帶）無行距帶可掃 ⇒ 本臂跳過（零樣本不是零死區）。
+    //
+    // 【t_f073cd6c 歸屬口徑變更，PM 卡面前提的修正】舊斷言「行距帶一律落回
+    // **上一行**」把 U4f 當時的判制（跨度 `[起帶, 起帶＋span)` 起自基線帶）直接
+    // 契約化，而那個判制正是本卡修的缺陷：span 帶＝整拍行距，其中間偏上的帶
+    // （細尺態 `k ≥ span/2`）是**下一行字級 ascent** 的字面位置（半拍＝7.97pt），
+    // 舊口徑把下一行的字搶給上一段 ⇒ 用戶在下一行字上點擊卻拿到上一段段尾的
+    // caret（按 Enter 分錯段）。卡面「互逆考卷（u4f 燈3(b)／t4aa）零擾動」對
+    // **燈 3(c) 正逆互逆臂**與 t4aa 成立（兩臂取樣皆在基線＋小於半拍內，已實測
+    // 綠），但燈 3(b) 的「全部行距帶屬上一行」與卡面自列考題 2「跨中線才換段」
+    // 邏輯互斥——任何修好用戶缺陷的方案都必然改寫本臂，故此處把歸屬期望改為
+    // 卡面口徑的書面陳述（非被測碼再現）：
+    //     點擊帶 b0＋k＋0.5：**k＋0.5 < span/2** ⇒ 屬本行（上一行語義，與舊斷言
+    //     同向的部分保留）；否則 ⇒ 屬下一行（越中線換行）。
+    // 另保留兩條與歸屬口徑正交的硬斷言：非死區（U4f 本意）＋歸屬單調不跳行。
     let mut pitch_total = 0usize;
     let mut pitch_dead = Vec::new();
+    let mut pitch_owner = Vec::new();
+    let mut pitch_wild = Vec::new();
+    let mut pitch_flip_bad = Vec::new();
+    let mut pitch_flips = 0usize;
     if fine() {
         for pg in pages {
+            let next_line_para =
+                |i: usize| -> Option<usize> { pg.lines.get(i + 1).map(|l| l.para_index) };
             for (i, l) in pg.lines.iter().enumerate() {
                 let b0 = match pg.line_bands.get(i) {
                     Some(b) => *b,
@@ -242,20 +262,67 @@ fn u4f_caret_at_hits_every_emitted_line_on_fine_grid() {
                 };
                 let span = grid.bands_of(l.para_index);
                 for k in 1..span {
-                    let y = pg.margin_top_pt + (b0 + k) as f32 * line_h + line_h * 0.5;
+                    let bd = (b0 + k) as f32 + 0.5;
+                    let y = pg.margin_top_pt + bd * line_h;
                     pitch_total += 1;
-                    let hit = eng.caret_at(pg.index, 200.0, y);
-                    if hit.is_none() || hit.unwrap().para != l.para_index {
+                    let Some(hit) = eng.caret_at(pg.index, 200.0, y) else {
                         pitch_dead.push((pg.index, i, b0, k));
+                        continue;
+                    };
+                    // 歸屬口徑（卡面考題 2 的書面版）：半拍為界。
+                    let want = if (k as f32 + 0.5) < span as f32 / 2.0 {
+                        l.para_index
+                    } else {
+                        match next_line_para(i) {
+                            Some(p) => p,
+                            None => l.para_index, // 末行無下一行：沿用本行
+                        }
+                    };
+                    if hit.para != want {
+                        pitch_owner.push((pg.index, i, b0, k, hit.para, want));
+                    }
+                    // 落點不野跳：歸屬段只能是本行段或下一行段（越中線只走一格，
+                    // 與「上一段段尾」這種跨段錯判劃清界線）。
+                    if hit.para != l.para_index && Some(hit.para) != next_line_para(i) {
+                        pitch_wild.push((pg.index, i, b0, k, hit.para));
+                    }
+                    // 鑑別計數：跨中線且本行段 ≠ 下一行段時，必須真的換段（若此計數
+                    // 為 0＝本臂沒有跨到中線，歸屬斷言就只是重述舊口徑）。
+                    if (k as f32 + 0.5) >= span as f32 / 2.0
+                        && next_line_para(i).is_some_and(|p| p != l.para_index)
+                    {
+                        if Some(hit.para) != next_line_para(i) {
+                            pitch_flip_bad.push((pg.index, i, b0, k, hit.para));
+                        }
+                        pitch_flips += 1;
                     }
                 }
             }
         }
         assert!(pitch_total > 100, "行距樣本不足（實得 {pitch_total}）");
         assert!(
+            pitch_flips > 20,
+            "跨中線換段樣本不足（實得 {pitch_flips}）——本臂未真正掃過中線"
+        );
+        assert!(
             pitch_dead.is_empty(),
-            "行距帶必須落回上一行（字槽外的合法點擊），死區 {:?} 例（共 {pitch_total}）",
+            "行距帶不得有死區（字槽外的合法點擊也必落游標），死區 {:?} 例（共 {pitch_total}）",
             pitch_dead.iter().take(6).collect::<Vec<_>>()
+        );
+        assert!(
+            pitch_owner.is_empty(),
+            "行距帶歸屬須守行距中線（k＋0.5 < span/2 屬本行，否則屬下一行），錯位 {:?} 例（共 {pitch_total}）",
+            pitch_owner.iter().take(6).collect::<Vec<_>>()
+        );
+        assert!(
+            pitch_wild.is_empty(),
+            "行距帶落點野跳（歸屬段超出本行／下一行兩格）：{:?} 例",
+            pitch_wild.iter().take(6).collect::<Vec<_>>()
+        );
+        assert!(
+            pitch_flip_bad.is_empty(),
+            "跨中線未換段（ascent 區仍被上一段吞走＝用戶實錄缺陷）：{:?} 例",
+            pitch_flip_bad.iter().take(6).collect::<Vec<_>>()
         );
     }
 
