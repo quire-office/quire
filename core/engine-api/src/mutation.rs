@@ -2485,6 +2485,19 @@ fn find_style_span(xml: &[u8], style_id: &str) -> Option<ByteSpan> {
 }
 
 impl Engine {
+    /// 段落的**突變碼點空間**長度（與 `apply_mutation` 的 `total_cp` 同源：
+    /// `analyze_paragraph` 口徑）。版面層 `paragraph_text` 長度可能分歧
+    /// （TOC 前導點、欄代碼等只進其中一口徑），考卷腳本選 cp 前必查此值，
+    /// 免得拿版面文字長度算出越界偏移。段不存在／無 document.xml → None。
+    pub fn paragraph_cp_len(&self, para: usize) -> Option<usize> {
+        let xml = self.doc.parts.get("word/document.xml")?;
+        let (p_span, total) = crate::mutation::find_paragraph_span(xml, para).ok()?;
+        if para >= total {
+            return None;
+        }
+        Some(crate::mutation::analyze_paragraph(xml, p_span).total_cp)
+    }
+
     /// 依據 Mutation 規格套用單筆變更。
     pub fn apply_mutation(&mut self, op: Mutation) -> Result<MutationOutcome, MutationError> {
         // E-2b 共型收尾：寫入端誠實閘門必須在觸碰任何 XML 之前（拒絕＝零位元組
