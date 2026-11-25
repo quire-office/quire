@@ -1910,7 +1910,7 @@ fn close_tag_for(open_tag: &str) -> String {
 ///
 /// 不可直接用 `ParagraphAnalysis::ppr_end_offset`：該欄是整段切片**最後**一個
 /// `</w:pPr>`，段內含 txbxContent／Fallback 巢裝段（WordWithAttachments para 4
-/// 實證）時會落在深處，以其為正文起點＝把整塊 txbx 內容划進 pPr 前綴。
+/// 實證）時會落在深處，以其為正文起點＝把整塊 txbx 內容劃進 pPr 前綴。
 fn first_top_level_ppr_end(text: &str, from: usize, to: usize) -> Option<usize> {
     let mut cursor = from;
     let mut depth = 0usize;
