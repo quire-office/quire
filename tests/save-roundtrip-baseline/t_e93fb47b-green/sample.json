@@ -1,0 +1,127 @@
+{
+  "seed": null,
+  "n": 4,
+  "entries": [
+    {
+      "file": "ooxmlexport/n830205.docx",
+      "source": "LibreOffice/core",
+      "source_url": "https://github.com/LibreOffice/core/tree/master/sw/qa/extras/ooxmlexport/data",
+      "orig_path": "n830205.docx",
+      "kind": "real-world",
+      "license": "MPL-2.0/GPL-3.0/LGPL-3.0（LibreOffice 三重授權；原始為 tdf bugzilla 匿名化真實用戶文件）",
+      "batch": "phase0",
+      "sha256": "bbf1063e8350891f77ce2a2250641f0933eb8f4fc41fc45107fa1f75374ec3d2",
+      "bytes": 33181,
+      "nparts": 29,
+      "tags": [
+        "columns",
+        "custom_xml",
+        "doc_properties",
+        "header_footer",
+        "highlight",
+        "numbering",
+        "paragraph_border_shading",
+        "sections",
+        "styles_defined",
+        "table",
+        "theme",
+        "tracked_revisions",
+        "websettings"
+      ],
+      "scrubbed": true,
+      "strata": [
+        "manual"
+      ]
+    },
+    {
+      "file": "poi/test-data_document_WordWithAttachments.docx",
+      "source": "apache/poi",
+      "source_url": "https://github.com/apache/poi/tree/trunk/test-data/document",
+      "orig_path": "test-data/document/WordWithAttachments.docx",
+      "kind": "real-world",
+      "license": "Apache-2.0（Bugzilla 真實回報文件，POI 測試資料）",
+      "batch": "phase0",
+      "sha256": "1a96e8328c5038cf2cd2b4ae393508656cec42edee8e2664fa8ae0ce03f871c9",
+      "bytes": 145419,
+      "nparts": 31,
+      "tags": [
+        "bookmark",
+        "comments",
+        "custom_xml",
+        "doc_properties",
+        "embedded_object",
+        "header_footer",
+        "hyperlink",
+        "image",
+        "legacy_vml",
+        "sections",
+        "styles_defined",
+        "table",
+        "textbox",
+        "theme",
+        "websettings"
+      ],
+      "scrubbed": true,
+      "strata": [
+        "manual"
+      ]
+    },
+    {
+      "file": "xopt/OpenXmlPowerToolsExamples_DocumentBuilder04_Jupiter.docx",
+      "source": "EricWhiteDev/Open-Xml-PowerTools",
+      "source_url": "https://github.com/EricWhiteDev/Open-Xml-PowerTools",
+      "orig_path": "OpenXmlPowerToolsExamples/DocumentBuilder04/Jupiter.docx",
+      "kind": "template",
+      "license": "MIT（Microsoft Open-Xml-PowerTools；功能導向範例文件）",
+      "batch": "phase0",
+      "sha256": "7c49b252e5430d847272af65659bdb229de7616bba2d51161672990fe8d64516",
+      "bytes": 25742,
+      "nparts": 14,
+      "tags": [
+        "doc_properties",
+        "drawing",
+        "east_asian",
+        "fields",
+        "image",
+        "numbering",
+        "paragraph_border_shading",
+        "sections",
+        "styles_defined",
+        "theme",
+        "tracked_revisions",
+        "websettings"
+      ],
+      "scrubbed": true,
+      "strata": [
+        "manual"
+      ]
+    },
+    {
+      "file": "ooxmlimport/tdf154695-ToC_no_numbers.docx",
+      "source": "LibreOffice/core",
+      "source_url": "https://github.com/LibreOffice/core/tree/master/sw/qa/extras/ooxmlimport/data",
+      "orig_path": "tdf154695-ToC_no_numbers.docx",
+      "kind": "real-world",
+      "license": "MPL-2.0/GPL-3.0/LGPL-3.0（LibreOffice 三重授權；原始為 tdf bugzilla 匿名化真實用戶文件）",
+      "batch": "phase0",
+      "sha256": "035faa3660775f1eb91b8cf2595d062877338f59b3d6a5870902b79fb555321f",
+      "bytes": 16663,
+      "nparts": 11,
+      "tags": [
+        "bookmark",
+        "content_control",
+        "doc_properties",
+        "fields",
+        "hyperlink",
+        "sections",
+        "styles_defined",
+        "theme",
+        "websettings"
+      ],
+      "scrubbed": true,
+      "strata": [
+        "manual"
+      ]
+    }
+  ]
+}
