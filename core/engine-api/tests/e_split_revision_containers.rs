@@ -11,7 +11,7 @@
 //! - 第二段頭留下該容器的孤兒閉標籤。
 //!   存檔整批失敗（`quire-cli save --mutation` rc=3，四檔紅燈）。上游容器配對
 //!   本就完好（report.md 段內計數坐實），「未閉」是**我方切斷**造成——修法須
-//!   自己收斂閉合，不得假設上游配對完好，也不得整段丟棄追蹤標記蒙混過燈。
+//!   自己收斂閉合，不得假設上游配對完好，也不得整段丟棄追蹤標記矇混過燈。
 //!
 //! # 修復契約（斷言層）
 //! 1. 切點兩側容器配對補全：第一段尾由內而外補閉標籤、第二段頭由外而內補
@@ -256,7 +256,7 @@ fn count_tag(xml: &str, open_prefix: &str, close_tag: &str) -> (usize, usize) {
     (open, close)
 }
 
-/// 切片內全部文字流（`w:t`＋`w:delText` 明文串接）——文字守恆真值，独立於
+/// 切片內全部文字流（`w:t`＋`w:delText` 明文串接）——文字守恆真值，獨立於
 /// 引擎 cp 口徑（`w:delText` 不在 cp 空間卻在 canonical 文字流）。
 fn xml_text_flow(xml: &str) -> String {
     let mut out = String::new();
@@ -481,7 +481,7 @@ fn split_rev_lamp_f2_deltext_conserved() {
     let flow: String = xml_text_flow(&xml[l_start..l_end]) + &xml_text_flow(&xml[r_start..r_end]);
     assert_eq!(
         flow, base_flow,
-        "w:delText 文字流必須逐字守恆（只准斷點，不准吞刪除標記文字）"
+        "w:delText 文字流必須逐字守恆（拆段只斷點、不得吞刪除標記文字）",
     );
     let saved = engine.save_docx().expect("含 del 段拆段後存檔失敗");
     Engine::from_docx_bytes(&saved).expect("含 del 段拆段後重開失敗");
