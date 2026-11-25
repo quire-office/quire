@@ -329,6 +329,7 @@ def main():
                 step = 1.0 / r["dpr"] / r["scale"]
                 lo = round(tg["rowY"] + r["rows"][0] * step, 2)
                 hi = round(tg["rowY"] + (r["rows"][-1] + 1) * step, 2)
+                tg["ink_pt"] = (lo, hi)  # 供下方歸因對照（規則 M/S 純幾何兩式）
                 own_wrong = []
                 yy = lo
                 while yy <= hi:
@@ -344,6 +345,36 @@ def main():
                                    "dn_half": tg["dn_half"], "ink_pt": [lo, hi],
                                    "own_ink_pts": len(own_wrong), "sample": own_wrong[:6],
                                    "text": tg["text"]})
+            # 歸因對照（PM 裁示用的決定性數字）：同一批實測墨跡帶上，把兩套判制
+            # **純幾何**各跑一遍，數「點到自己字形卻判給別行」的點數——
+            #   規則 M（本卡修後＝行距中線切分）：行 i 命中區間 [mid(yᵢ₋₁,yᵢ), mid(yᵢ,yᵢ₊₁))
+            #   規則 S（修前＝跨度對齊基線帶，本 fixture 每行 span=1 帶）：[yᵢ, yᵢ₊₁)
+            # 兩式皆由同一批 caret_rect 契約 y（＝顯示列表 Text.y）算出，不碰引擎，
+            # 故與燈 C 的引擎實測同一基準可比。
+            def rule_count(pick):
+                n = 0
+                for i, tg in enumerate(rows):
+                    if not tg.get("ink_pt"):
+                        continue
+                    lo, hi = tg["ink_pt"]
+                    a, b = pick(i, rows)
+                    yy = lo
+                    while yy <= hi:
+                        if not (a <= yy < b):
+                            n += 1
+                        yy += 1.0
+                return n
+
+            mid_cnt = rule_count(lambda i, r: ((r[i - 1]["rowY"] + r[i]["rowY"]) / 2.0 if i > 0
+                                               else r[i]["rowY"] - r[i]["up_half"] * 2.0,
+                                               (r[i]["rowY"] + r[i + 1]["rowY"]) / 2.0
+                                               if i + 1 < len(r) else r[i]["rowY"] + r[i]["dn_half"] * 2.0))
+            span_cnt = rule_count(lambda i, r: (r[i]["rowY"],
+                                                r[i + 1]["rowY"] if i + 1 < len(r)
+                                                else r[i]["rowY"] + r[i]["dn_half"] * 2.0))
+            note("燈 C 歸因對照（同一批實測墨跡、純幾何兩式並跑）",
+                 f"規則 M（修後行距中線）錯判={mid_cnt} 點／規則 S（修前跨度制）錯判={span_cnt} 點"
+                 f"／引擎實測（規則 M）錯判={ink_mis} 點")
             note("燈 C（記帳）：像素墨跡真值——本行字形墨跡內判給別段的點數合計",
                  f"{ink_mis}（契約軸 y＝顯示列表 Text.y；渲染器基線畫在 y+size_pt，"
                  f"故中線切分點橫穿字形——座標語義軸，PM 裁示範圍）")
