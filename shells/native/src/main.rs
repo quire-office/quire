@@ -391,6 +391,10 @@ fn cmd_layout_meta(path: &str, paragraphs: bool) -> ExitCode {
             }
         }
     }
+    // cp_len 走批次口徑（Engine::paragraph_cp_lens＝單趟掃描）：逐段
+    // paragraph_cp_len 對大檔是 O(段數 × 檔大小)，12MB 級 document.xml
+    // （corpus/poi/test-data_document_bug65649）曾燒穿考卷 180 秒逾時。
+    let cp_lens = engine.paragraph_cp_lens();
     let mut rows = Vec::with_capacity(engine.paragraph_count());
     for (para, page) in page_of.into_iter().enumerate() {
         let text = engine.paragraph_text(para).unwrap_or_default();
@@ -400,7 +404,7 @@ fn cmd_layout_meta(path: &str, paragraphs: bool) -> ExitCode {
         rows.push(serde_json::json!({
             "para": para,
             "text": text,
-            "cp_len": engine.paragraph_cp_len(para),
+            "cp_len": cp_lens.get(para).copied().flatten(),
             "page": page,
             "in_table": locator.is_some(),
             "table_path": locator.as_ref().and_then(|v| v.get("table_path")).cloned(),

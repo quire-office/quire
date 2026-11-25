@@ -322,9 +322,40 @@ def _saved_document_xml(docx) -> str:
         return z.read("word/document.xml").decode("utf-8", "replace")
 
 
-def content_check(kind, mjson, target_paras, orig_rows, saved_rows, saved_docx):
+def _para_blocks(xml: str, key: str) -> list:
+    """存檔 XML 中涵蓋錨點文字（squash 後子串）的全部 w:p 區塊。"""
+    return [b for b in re.findall(r"<w:p\b.*?</w:p>", xml, re.S)
+            if key and key in squash("".join(re.findall(r"<w:t[^>]*>([^<]*)</w:t>", b)))]
+
+
+def _run_flags(block: str) -> list:
+    """段區塊 → 粗體可見 run 序列 [(text, bold)]（空 text 的純格式 run 不收，
+    它們不攜帶可見文字——flag 級差分的比對單位＝有字的 run）。"""
+    out = []
+    for r in re.findall(r"<w:r\b.*?</w:r>", block, re.S):
+        rt = squash("".join(re.findall(r"<w:t[^>]*>([^<]*)</w:t>", r)))
+        if rt:
+            out.append((rt, bool(re.search(r"<w:b(\s|/>)", r))))
+    return out
+
+
+def content_check(kind, mjson, target_paras, orig_rows, saved_rows, saved_docx,
+                  orig_docx=None):
     """內容層：編輯必須確實進到存檔產物（引擎可讀層＋OOXML 樣式層）。
-    渲染層只證明 LO 看得見；內容層先判「存檔有沒有吞編輯」，兩者分工。"""
+    渲染層只證明 LO 看得見；內容層先判「存檔有沒有吞編輯」，兩者分工。
+
+    bold/align 用 **flag 級差分**（PM 裁決 11-25，取代舊「錨點字串必須落在
+    帶 <w:b> 的 run」判據）：引擎把 cp 區間切進哪個 run 由 split 決定，
+    圈選區含純空白 run 時粗體 flag 落在零可見文字的空白 run 上，舊錨點判據
+    看不見它＝假紅（fdo78883 實錄：mutation cp[1,4) 含段首空白，`<w:b/>`
+    24→25 有增而判紅）。flag 級差分口徑：
+      - 原檔該段粗體可見 run 集合 ⊆ 存檔後該段粗體可見 run 集合（既有粗體
+        不得被存檔吞掉——防「存檔抹樣式」）；
+      - 存檔後該段 `<w:b` 計數較原檔同段淨增 ≥1（新粗體確實寫入；計數含
+        空白 run 上的 flag，正是要抓的寫入證據）；
+      - 存檔後該段可見文字（squash）與原檔同段一致（寫樣式不得動文字）。
+    兩條都過才算寫入；缺原檔對照時退回「淨增 ≥1 ＋ 文字一致」的弱口徑。
+    """
     saved_all = squash("".join(r["text"] for r in saved_rows))
     tp = min(target_paras)
     orig = next((r for r in orig_rows if r["para"] == tp), None)
@@ -342,19 +373,36 @@ def content_check(kind, mjson, target_paras, orig_rows, saved_rows, saved_docx):
     # 目標段文字錨點：取首 6 字作短錨，找**所有**涵蓋它的 w:p 區塊再驗樣式
     # （TOC/正文同文重複時，錨點可能命中多個段落——任何一個有樣式即算寫入）。
     key = squash(orig["text"])[:6]
-    p_blocks = [b for b in re.findall(r"<w:p\b.*?</w:p>", xml, re.S)
-                if key and key in squash("".join(re.findall(r"<w:t[^>]*>([^<]*)</w:t>", b)))]
+    p_blocks = _para_blocks(xml, key)
     if not p_blocks:
         return False, f"存檔 XML 找不到目標段（錨「{key}」）"
+    orig_blocks = []
+    if orig_docx is not None:
+        try:
+            orig_blocks = _para_blocks(_saved_document_xml(orig_docx), key)
+        except Exception:  # noqa: BLE001  對照檔讀不到→退弱口徑，不炸考卷
+            orig_blocks = []
+    text_kept = any(squash(orig["text"])[:16] in squash(
+        "".join(re.findall(r"<w:t[^>]*>([^<]*)</w:t>", b))) for b in p_blocks)
     if kind == "bold":
-        lo = min(4, len(orig["text"])) - 1
-        frag = squash(orig["text"])[1:lo + 1]
-        for hit in p_blocks:
-            for run in re.findall(r"<w:r\b.*?</w:r>", hit, re.S):
-                rt = squash("".join(re.findall(r"<w:t[^>]*>([^<]*)</w:t>", run)))
-                if rt and rt in frag and re.search(r"<w:b(\s|/>)", run):
-                    return True, ""
-        return False, "目標段涵蓋突變字的 run 無 <w:b>（粗體未進 XML）"
+        n_new = sum(len(re.findall(r"<w:b(\s|/>)", b)) for b in p_blocks)
+        if orig_blocks:
+            n_old = sum(len(re.findall(r"<w:b(\s|/>)", b)) for b in orig_blocks)
+            # 既有粗體不得被吞：原檔該段每個粗體可見 run 的文字，存檔後仍粗。
+            old_bold = {t for b in orig_blocks for t, f in _run_flags(b) if f}
+            new_bold = {t for b in p_blocks for t, f in _run_flags(b) if f}
+            lost = old_bold - new_bold
+            grew = n_new >= n_old + 1
+            if lost:
+                return False, f"存檔抹掉既有粗體 run：{sorted(lost)[:3]}（flag 級差分）"
+            if not grew:
+                return False, (f"目標段 <w:b> 計數 {n_old}→{n_new} 未淨增"
+                               "（新粗體未進 XML，flag 級差分）")
+            return (text_kept, "" if text_kept else "目標段文字被改動（寫樣式不得動文字）")
+        # 無原檔對照（呼叫端未傳）：弱口徑＝段內有粗體可見 run 或 flag 存在。
+        if n_new >= 1 and text_kept:
+            return True, ""
+        return False, "目標段無 <w:b>（粗體未進 XML，弱口徑）"
     if kind == "align":
         for hit in p_blocks:
             if re.search(r"<w:jc\s+w:val=\"center\"", hit):
@@ -486,7 +534,8 @@ def process_file(binp, corpus, entry, out_dir, soffice, scratch, profile_uri, ne
         # 內容層：編輯必須進到存檔產物（先於渲染層；渲染層只驗證 LO 可見性）。
         saved_rows = cli_paragraphs(binp, saved)
         content_ok, content_why = content_check(kind, mjson, target_paras,
-                                                rows, saved_rows, saved)
+                                                rows, saved_rows, saved,
+                                                orig_docx=docx)
         pdf1 = rl.lo_to_pdf(soffice, saved, scratch, profile_uri)
         if pdf1 is None:
             arm["verdict"] = "LO_FAIL"
