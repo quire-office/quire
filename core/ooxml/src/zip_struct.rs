@@ -206,6 +206,34 @@ struct Planned {
 }
 
 impl ZipBundle {
+    /// save-roundtrip-lab 回塞鎖專用：把末位 entry 輪轉到中央目錄邏輯順序的
+    /// 前排（`[Content_Types].xml` 依 OPC §3 必須置首，因此目標位取其後的
+    /// 首位）——zip 邏輯順序與實體佈局變動、內容 part 位元組零變動，
+    /// LO 渲染零位移。這是「對渲染無害、對結構有害」的良性重排，只供
+    /// `SAVE_RT_BUGGY` 回塞臂使用，正常存檔路徑零呼叫。
+    /// 回傳 true＝確實發生了重排；false＝檔案太小/結構特殊（如唯一 entry），
+    /// 呼叫端據此老實記錄「本檔無重排效應」而非硬宣稱紅。
+    pub fn reorder_last_to_front(&mut self) -> bool {
+        const CT: &str = "[Content_Types].xml";
+        let n = self.entries.len();
+        if n < 3 {
+            return false;
+        }
+        let dest = usize::from(self.entries[0].key() == CT);
+        // 來源＝末位（若末位恰是 [Content_Types].xml 則退回次末位）。
+        let src = if self.entries[n - 1].key() == CT {
+            n - 2
+        } else {
+            n - 1
+        };
+        if src <= dest {
+            return false;
+        }
+        let e = self.entries.remove(src);
+        self.entries.insert(dest, e);
+        true
+    }
+
     /// 由 zip 位元組建立結構表示（只解析 central directory 與 local 標頭，
     /// entry 內容一律以壓縮位元組原樣保留）。
     pub fn open(bytes: &[u8]) -> Result<Self, ZipError> {

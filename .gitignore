@@ -18,3 +18,9 @@ None/
 
 # D9b 本機探針組（診斷腳本，不入库）
 scratch_d9b/
+
+# save-roundtrip-baseline 可重生成產物（存檔臂 DOCX／SVG 渲染，70MB 級；
+# 報告＋取樣清單＋scores 入庫，重生成物不落庫）
+tests/save-roundtrip-baseline/saved/
+tests/save-roundtrip-baseline/orig/
+tests/save-roundtrip-baseline/saved-quire/

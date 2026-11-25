@@ -45,7 +45,21 @@ fn main() -> ExitCode {
                 `dump` **同一個** PageDisplayList JSON 契約（同欄位名、同座標系；
                 頁面幾何同樣走 C4 的 style:page-layout 鏈）。
                 給 n＝輸出該頁（單頁物件，同 `page` 子命令形）；不給 n＝輸出全部頁
-                pretty 陣列（同 `dump` 子命令形）。非零離開碼＝開檔／投影／頁碼錯。";
+                pretty 陣列（同 `dump` 子命令形）。非零離開碼＝開檔／投影／頁碼錯。
+      quire-cli save <file.docx> --out <path> [--mutation '<json>']...
+                開檔→（可選依序套用 Mutation JSON，serde 形同 wasm
+                `apply_mutation_json`）→無損存檔寫入 <path>；stdout 輸出
+                JSON 彙報（位元組恆等與否/段落數/touched parts/逐筆 mutation
+                成敗）。save-roundtrip-lab 的存檔鏈入口；零編輯＝不加
+                --mutation。非零離開碼＝開檔/套用/存檔失敗。
+      quire-cli paragraphs <file.docx>
+                輸出段落清單 JSON：[{para,text,page,in_table,table_path}]——
+                page＝該段首行所在頁（pagebreaks 口徑），in_table/table_path
+                走 table_locator_json（最深命中）。供 save-roundtrip-lab
+                挑編輯目標（正文段/格內段/目標頁）。
+      quire-cli pagebreaks <file.docx>
+                輸出分頁斷點清單 JSON（同 `render` 的 pagebreaks.json，
+                但不產 SVG，快速取段落→頁對照）。";
     if args.len() < 3 {
         eprintln!("{usage}");
         return ExitCode::from(2);
@@ -68,6 +82,12 @@ fn main() -> ExitCode {
     }
     if cmd == "render" {
         return render(&args[2..], usage);
+    }
+    if cmd == "save" {
+        return cmd_save(&args[2..], usage);
+    }
+    if cmd == "paragraphs" || cmd == "pagebreaks" {
+        return cmd_layout_meta(&args[2], cmd == "paragraphs");
     }
     let path = &args[2];
     let bytes = match std::fs::read(path) {
@@ -207,6 +227,192 @@ fn render(rest: &[String], usage: &str) -> ExitCode {
         written,
         pb.display(),
         engine.paragraph_count()
+    );
+    ExitCode::SUCCESS
+}
+
+/// save 子命令：開檔→（依序套用 `--mutation` JSON）→無損存檔。
+/// save-roundtrip-lab（scripts/save_roundtrip_lab.py）的存檔鏈入口——零編輯
+/// 臂＝不帶 --mutation；編輯態臂＝帶一或多筆 Mutation（serde 形同 wasm
+/// `apply_mutation_json`，外殼與考卷同一真值源，零第二輪翻譯）。
+/// stdout＝單筆 JSON 彙報；非零離開碼＝開檔/任一 mutation 失敗/存檔失敗。
+fn cmd_save(rest: &[String], usage: &str) -> ExitCode {
+    let mut out: Option<PathBuf> = None;
+    let mut mutations: Vec<String> = Vec::new();
+    let mut target: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--out" => {
+                i += 1;
+                let Some(p) = rest.get(i) else {
+                    eprintln!("--out 需要參數\n{usage}");
+                    return ExitCode::from(2);
+                };
+                out = Some(PathBuf::from(p));
+            }
+            "--mutation" => {
+                i += 1;
+                let Some(m) = rest.get(i) else {
+                    eprintln!("--mutation 需要 JSON 參數\n{usage}");
+                    return ExitCode::from(2);
+                };
+                mutations.push(m.clone());
+            }
+            other if other.starts_with("--") => {
+                eprintln!("未知選項: {other}\n{usage}");
+                return ExitCode::from(2);
+            }
+            other => target = Some(other.to_string()),
+        }
+        i += 1;
+    }
+    let Some(target) = target else {
+        eprintln!("需要 <file.docx>\n{usage}");
+        return ExitCode::from(2);
+    };
+    let Some(out) = out else {
+        eprintln!("save 需要 --out <path>\n{usage}");
+        return ExitCode::from(2);
+    };
+    let bytes = match std::fs::read(&target) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("讀檔失敗 {target}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let mut engine = match Engine::from_docx_bytes(&bytes) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("解析失敗 {target}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    // 逐筆套用 Mutation：任一失敗即非零退出＋ stderr 點名原因（考卷把
+    // 「無法套用的 mutation」視為該臂 invalid，不得靜默跳過）。
+    let mut applied = Vec::with_capacity(mutations.len());
+    for (k, mj) in mutations.iter().enumerate() {
+        let op: quire_engine::Mutation = match serde_json::from_str(mj) {
+            Ok(op) => op,
+            Err(e) => {
+                eprintln!("mutation #{k} JSON 解析失敗: {e}\n原始: {mj}");
+                return ExitCode::from(2);
+            }
+        };
+        match engine.apply_mutation(op) {
+            Ok(outcome) => applied.push(serde_json::json!({
+                "index": k,
+                "ok": true,
+                "touched_parts": outcome.touched_parts,
+                "caret_after": outcome.caret_after,
+            })),
+            Err(e) => {
+                eprintln!("mutation #{k} 套用失敗: {e}\n原始: {mj}");
+                return ExitCode::from(3);
+            }
+        }
+    }
+    let saved = match engine.save_docx() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("存檔失敗 {target}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Some(par) = out.parent() {
+        if let Err(e) = std::fs::create_dir_all(par) {
+            eprintln!("建立輸出目錄失敗 {}: {e}", par.display());
+            return ExitCode::from(1);
+        }
+    }
+    if let Err(e) = std::fs::write(&out, &saved) {
+        eprintln!("寫檔失敗 {}: {e}", out.display());
+        return ExitCode::from(1);
+    }
+    // touched 彙總＝逐筆 outcome.touched_parts 聯集（不另開 Engine 介面：
+    // 零編輯時聯集恆空，與 Engine::touched 語義一致，分層零新增面）。
+    let mut touched: Vec<String> = Vec::new();
+    for a in &applied {
+        if let Some(arr) = a.get("touched_parts").and_then(|v| v.as_array()) {
+            for t in arr.iter().filter_map(|v| v.as_str()) {
+                if !touched.contains(&t.to_string()) {
+                    touched.push(t.to_string());
+                }
+            }
+        }
+    }
+    let report = serde_json::json!({
+        "file": target,
+        "out": out.to_string_lossy(),
+        "bytes_in": bytes.len(),
+        "bytes_out": saved.len(),
+        "byte_identical": bytes == saved,
+        "paragraphs": engine.paragraph_count(),
+        "page_count": engine.page_count(),
+        "touched_parts": touched,
+        "mutations": applied,
+    });
+    println!("{report}");
+    ExitCode::SUCCESS
+}
+
+/// paragraphs / pagebreaks 子命令：段落→頁對照與分頁斷點（純讀取，不存檔）。
+fn cmd_layout_meta(path: &str, paragraphs: bool) -> ExitCode {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("讀檔失敗 {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let engine = match Engine::from_docx_bytes(&bytes) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("解析失敗 {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    if !paragraphs {
+        println!("{}", engine.page_breaks_json());
+        return ExitCode::SUCCESS;
+    }
+    // 段落 → 首行所在頁：由 pagebreaks（first_para..=last_para）反推，
+    // 段落不落在任何頁（空文件/未排版）時 page=null，老實呈現不猜。
+    let brks: Vec<quire_engine::PageBreak> =
+        serde_json::from_str(&engine.page_breaks_json()).unwrap_or_default();
+    let mut page_of = vec![None; engine.paragraph_count()];
+    for b in &brks {
+        for p in b.first_para..=b.last_para {
+            if let Some(slot) = page_of.get_mut(p) {
+                if slot.is_none() {
+                    *slot = Some(b.page);
+                }
+            }
+        }
+    }
+    // cp_len 走批次口徑（Engine::paragraph_cp_lens＝單趟掃描）：逐段
+    // paragraph_cp_len 對大檔是 O(段數 × 檔大小)，12MB 級 document.xml
+    // （corpus/poi/test-data_document_bug65649）曾燒穿考卷 180 秒逾時。
+    let cp_lens = engine.paragraph_cp_lens();
+    let mut rows = Vec::with_capacity(engine.paragraph_count());
+    for (para, page) in page_of.into_iter().enumerate() {
+        let text = engine.paragraph_text(para).unwrap_or_default();
+        let locator: Option<serde_json::Value> = engine
+            .table_locator_json(para)
+            .and_then(|s| serde_json::from_str(&s).ok());
+        rows.push(serde_json::json!({
+            "para": para,
+            "text": text,
+            "cp_len": cp_lens.get(para).copied().flatten(),
+            "page": page,
+            "in_table": locator.is_some(),
+            "table_path": locator.as_ref().and_then(|v| v.get("table_path")).cloned(),
+        }));
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
     );
     ExitCode::SUCCESS
 }

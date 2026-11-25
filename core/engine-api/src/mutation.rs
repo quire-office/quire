@@ -927,6 +927,29 @@ pub fn find_paragraph_span(
     xml: &[u8],
     target_para: usize,
 ) -> Result<(ParagraphSpan, usize), MutationError> {
+    let (spans, total) = scan_paragraph_spans(xml, Some(target_para))?;
+    let span = *spans.last().ok_or(MutationError::ParagraphOutOfBounds {
+        para: target_para,
+        len: total,
+    })?;
+    Ok((span, total))
+}
+
+/// 段落區間掃描的共用實作：**單趟**掃描 `xml`，收集扁平段落區間。
+/// `stop_at＝Some(k)`＝湊齊 k＋1 段即停（呼叫端只要第 k 段，零多讀）；
+/// `None`＝掃到檔尾（批次口徑，`paragraph_spans_all` 用）。
+/// 回傳 `(已收集區間, 已見段落總數)`——後者是全文檔的段數計數器，
+/// 與 `find_paragraph_span` 舊回傳的第二項逐字同義。
+///
+/// 抽出來是因為 `Engine::paragraph_cp_lens` 需要「一趟拿全部段」：舊寫法對
+/// 每段各呼叫一次 `find_paragraph_span`＝O(段數 × 檔大小) 的二次掃描，
+/// 12MB 級 document.xml（corpus/poi/test-data_document_bug65649）直接燒穿
+/// 180 秒探針逾時。邏輯零分岔：本函數就是原 `find_paragraph_span` 的主體，
+/// 只在停止條件上多一個 `None` 臂。
+fn scan_paragraph_spans(
+    xml: &[u8],
+    stop_at: Option<usize>,
+) -> Result<(Vec<ParagraphSpan>, usize), MutationError> {
     let text = match std::str::from_utf8(xml) {
         Ok(t) => t,
         Err(_) => {
@@ -943,7 +966,7 @@ pub fn find_paragraph_span(
     let mut para_index = 0usize;
     let n = text.len();
 
-    let mut target_span: Option<ParagraphSpan> = None;
+    let mut spans: Vec<ParagraphSpan> = Vec::new();
 
     while cursor < n {
         let lt = match text[cursor..].find('<') {
@@ -1044,25 +1067,36 @@ pub fn find_paragraph_span(
             }
 
             if let Some(end) = p_end {
-                if para_index == target_para {
-                    target_span = Some(ParagraphSpan {
-                        start: p_start,
-                        end,
-                    });
+                let span = ParagraphSpan {
+                    start: p_start,
+                    end,
+                };
+                match stop_at {
+                    // 單段口徑：命中即停（原 find_paragraph_span 行為；回傳的
+                    // 第二項因此＝「已見至該段為止」的計數，全庫呼叫端只有一處
+                    // 用它做越界判定，語義不變）。
+                    Some(k) if para_index == k => {
+                        spans.push(span);
+                        para_index += 1;
+                        return Ok((spans, para_index));
+                    }
+                    // 批次口徑：一路收，檔尾才停。
+                    None => spans.push(span),
+                    Some(_) => {}
                 }
                 para_index += 1;
             }
         }
     }
 
-    if let Some(span) = target_span {
-        Ok((span, para_index))
-    } else {
-        Err(MutationError::ParagraphOutOfBounds {
-            para: target_para,
-            len: para_index,
-        })
-    }
+    Ok((spans, para_index))
+}
+
+/// 單趟掃描全文，回傳**全部**扁平段落區間（索引＝扁平段落序）。
+/// 與逐段呼叫 `find_paragraph_span` 的差別只有趟數：N 段從 N 趟變 1 趟。
+/// 口徑（哪些 `w:p` 佔槽）與 `find_paragraph_span` 完全同源——同一支掃描器。
+pub fn paragraph_spans_all(xml: &[u8]) -> (Vec<ParagraphSpan>, usize) {
+    scan_paragraph_spans(xml, None).unwrap_or_else(|_| (Vec::new(), 0))
 }
 
 /// 段落內 `<w:t>` 節點定位資訊。
@@ -2485,6 +2519,35 @@ fn find_style_span(xml: &[u8], style_id: &str) -> Option<ByteSpan> {
 }
 
 impl Engine {
+    /// 段落的**突變碼點空間**長度（與 `apply_mutation` 的 `total_cp` 同源：
+    /// `analyze_paragraph` 口徑）。版面層 `paragraph_text` 長度可能分歧
+    /// （TOC 前導點、欄代碼等只進其中一口徑），考卷腳本選 cp 前必查此值，
+    /// 免得拿版面文字長度算出越界偏移。段不存在／無 document.xml → None。
+    pub fn paragraph_cp_len(&self, para: usize) -> Option<usize> {
+        let xml = self.doc.parts.get("word/document.xml")?;
+        let (p_span, total) = crate::mutation::find_paragraph_span(xml, para).ok()?;
+        if para >= total {
+            return None;
+        }
+        Some(crate::mutation::analyze_paragraph(xml, p_span).total_cp)
+    }
+
+    /// 全部段落的突變碼點空間長度（索引＝扁平段落序，缺段以 None 補位）。
+    /// **單趟**掃描版：`paragraph_cp_len` 逐段呼叫是 O(段數 × 檔大小)——
+    /// 12MB 級 document.xml（bug65649）會燒穿分鐘級探針逾時；批次口徑把
+    /// N 次全文重掃收斂成 1 次。每段的 `analyze_paragraph` 仍只掃自身區間，
+    /// total_cp 語義與 `paragraph_cp_len` 逐字同值（同一支分析器）。
+    pub fn paragraph_cp_lens(&self) -> Vec<Option<usize>> {
+        let Some(xml) = self.doc.parts.get("word/document.xml") else {
+            return Vec::new();
+        };
+        let (spans, _total) = crate::mutation::paragraph_spans_all(xml);
+        spans
+            .into_iter()
+            .map(|s| Some(crate::mutation::analyze_paragraph(xml, s).total_cp))
+            .collect()
+    }
+
     /// 依據 Mutation 規格套用單筆變更。
     pub fn apply_mutation(&mut self, op: Mutation) -> Result<MutationOutcome, MutationError> {
         // E-2b 共型收尾：寫入端誠實閘門必須在觸碰任何 XML 之前（拒絕＝零位元組

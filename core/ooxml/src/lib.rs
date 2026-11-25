@@ -358,6 +358,15 @@ impl OoxmlDoc {
     /// 其餘（含壓縮位元組、extra field、entry comment、data descriptor gap）
     /// 逐位元組沿用原始 archive。parts 未動時輸出與輸入位元組完全相同。
     pub fn save(&self) -> Result<Vec<u8>, OoxmlError> {
+        // save-roundtrip-lab 回塞鎖（SAVE_RT_BUGGY，比照 U4F_*_BUGGY 口徑）：
+        // 本卡考卷「存檔前後 LO 渲染必須一致」的鑑別力證據來源。開啟時存檔鏈
+        // 故意多做一件**對渲染無害**的重排：central directory 末位 entry 搬到
+        // 首位——zip 結構層變動、內容 part 位元組零變動，LO 像素零位移。
+        // 零編輯臂（byte_identical==false 即紅）必須點名它＝考卷有鑑別力；
+        // 正常態（未設 env）零行為變動，既有 byte-identical 閘門（corpus 399）
+        // 零擾動。採「附加式」：changes/extras 照常計算後才重排，編輯態臂
+        // 在 BUGGY 下仍然如實寫入編輯（重排只是額外動作，不吞編輯）。
+        let buggy_reorder = std::env::var_os("SAVE_RT_BUGGY").is_some();
         let mut changes: BTreeMap<String, Change> = BTreeMap::new();
         let mut extras: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
@@ -384,6 +393,11 @@ impl OoxmlDoc {
             if self.bundle.entry(name).is_none() {
                 extras.insert(name.clone(), bytes.clone());
             }
+        }
+        if buggy_reorder {
+            let mut b = self.bundle.clone();
+            b.reorder_last_to_front();
+            return Ok(b.serialize(&changes, &extras)?);
         }
         Ok(self.bundle.serialize(&changes, &extras)?)
     }
