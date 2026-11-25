@@ -46,11 +46,11 @@ run_pair() {
   failed=$(grep -oE '[0-9]+ failed' /tmp/split_rev_replay.log | head -1 || echo "0 failed")
   echo "  結果: ${passed}, ${failed} (rc=${rc})"
   if [[ "$expect" == "red" && "$rc" -eq 0 ]]; then
-    echo "  ✗ 回塞態却全綠＝考卷無鑑別力" >&2
+    echo "  ✗ 回塞態卻全綠＝考卷無鑑別力" >&2
     return 1
   fi
   if [[ "$expect" == "green" && "$rc" -ne 0 ]]; then
-    echo "  ✗ 正常態却紅（回歸！）" >&2
+    echo "  ✗ 正常態卻紅（回歸！）" >&2
     tail -30 /tmp/split_rev_replay.log >&2
     return 1
   fi
