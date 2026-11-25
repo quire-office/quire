@@ -1840,7 +1840,157 @@ fn strip_sectpr(ppr: &str) -> String {
     out
 }
 
+/// SplitParagraph 回塞鎖（t_e93fb47b，比照 `E2B_UNDERLINE_BUGGY` 口徑）：
+/// `SPLIT_REV_BUGGY=1` 把本卡「切點容器配對補全」與「pPr 單份複製」兩條線
+/// 退回修前形態（該翻紅的盞別實錄見 `tests/e_split_revision_containers.rs`
+/// 檔頭；env 鎖零改檔，禁 checkout/reset 鐵律天然滿足）。
+fn split_rev_buggy() -> bool {
+    std::env::var_os("SPLIT_REV_BUGGY").is_some()
+}
+
+/// 開標籤（非閉、非自閉合）的完整元素名（`w:fldSimple` 之類）；否則 `None`。
+fn open_tag_full_name(tag: &str) -> Option<&str> {
+    if !tag.starts_with('<') || tag.starts_with("</") || tag.ends_with("/>") {
+        return None;
+    }
+    tag[1..]
+        .split_whitespace()
+        .next()
+        .map(|name| name.trim_end_matches('>'))
+        .filter(|name| !name.is_empty())
+}
+
+/// 掃描 `[from, to)`，回傳「截至 `to` 仍未閉合」容器的**完整開標籤字串**
+/// （陣列序＝由外而內，堆疊頂＝最內層）。
+///
+/// 配對規矩（卡面鐵律：不得假設上游配對完好）：閉標籤與堆疊中任一同名項
+/// 配對 → 剔除該項（頂層同名最優）；堆疊無同名（上游容器跨段起點的孤兒閉）
+/// → 容忍略過。自閉合標籤永不進堆疊。
+///
+/// 取捨（比照 `leading_element` 既有註明）：不解析 XML 註解／CDATA——註解
+/// 內字面出現同名標籤會誤計深度（語料零實例）。
+fn open_containers_at(text: &str, from: usize, to: usize) -> Vec<String> {
+    let mut stack: Vec<String> = Vec::new();
+    let mut cursor = from;
+    while cursor < to {
+        let Some(lt_rel) = text[cursor..to].find('<') else {
+            break;
+        };
+        let lt = cursor + lt_rel;
+        let Some(gt_rel) = text[lt..to].find('>') else {
+            break;
+        };
+        let gt = lt + gt_rel;
+        let tag = &text[lt..=gt];
+        cursor = gt + 1;
+        // XML 宣告／處理指令／註解／CDATA：不進標籤堆疊（`<!`／`<?` 前綴）。
+        if tag.starts_with("<!") || tag.starts_with("<?") {
+            continue;
+        }
+        if open_tag_full_name(tag).is_some() {
+            stack.push(tag.to_string());
+        } else if tag.starts_with("</") {
+            let local = tag_local(tag);
+            if let Some(idx) = stack.iter().rposition(|open| tag_local(open) == local) {
+                stack.remove(idx);
+            }
+        }
+    }
+    stack
+}
+
+/// 由開標籤字串導出配對閉標籤（`<w:hyperlink r:id="rId10">` → `</w:hyperlink>`）。
+fn close_tag_for(open_tag: &str) -> String {
+    let name = open_tag_full_name(open_tag).unwrap_or("");
+    format!("</{name}>")
+}
+
+/// 自段落正文起點 `from` 掃到**頂層**（堆疊空＝直接掛在 `w:p` 下）首顆
+/// `w:pPr` 元素的結束偏移（含自閉合空 pPr）；無頂層 pPr ⇒ `None`。
+///
+/// 不可直接用 `ParagraphAnalysis::ppr_end_offset`：該欄是整段切片**最後**一個
+/// `</w:pPr>`，段內含 txbxContent／Fallback 巢裝段（WordWithAttachments para 4
+/// 實證）時會落在深處，以其為正文起點＝把整塊 txbx 內容划進 pPr 前綴。
+fn first_top_level_ppr_end(text: &str, from: usize, to: usize) -> Option<usize> {
+    let mut cursor = from;
+    let mut depth = 0usize;
+    while cursor < to {
+        let Some(lt_rel) = text[cursor..to].find('<') else {
+            break;
+        };
+        let lt = cursor + lt_rel;
+        let Some(gt_rel) = text[lt..to].find('>') else {
+            break;
+        };
+        let gt = lt + gt_rel;
+        let tag = &text[lt..=gt];
+        cursor = gt + 1;
+        if tag.starts_with("<!") || tag.starts_with("<?") {
+            continue;
+        }
+        if tag.starts_with("</") {
+            depth = depth.saturating_sub(1);
+        } else if open_tag_full_name(tag).is_some() {
+            let at_top = depth == 0;
+            depth += 1;
+            if at_top && tag_local(tag) == "pPr" {
+                // 頂層 pPr 開標籤：找它自己的閉標籤結束（深度計數，pPr 內
+                // 可合法巢 rPr／pPrChange 等異名，同名只可能來自 pPrChange
+                // 內再裝 pPr 的病態形態——深度計數天然覆蓋）。
+                let mut inner_depth = 1usize;
+                let mut sc = gt + 1;
+                while sc < to {
+                    let Some(l2) = text[sc..to].find('<') else {
+                        break;
+                    };
+                    let l2 = sc + l2;
+                    let Some(g2) = text[l2..to].find('>') else {
+                        break;
+                    };
+                    let g2 = l2 + g2;
+                    let t2 = &text[l2..=g2];
+                    sc = g2 + 1;
+                    if t2.starts_with("<!") || t2.starts_with("<?") {
+                        continue;
+                    }
+                    if t2.starts_with("</") {
+                        inner_depth -= 1;
+                        if inner_depth == 0 {
+                            return Some(g2 + 1);
+                        }
+                    } else if open_tag_full_name(t2).is_some() {
+                        inner_depth += 1;
+                    }
+                }
+                // 頂層 pPr 未閉＝上游已病態，保守回 None（維持修前 pPr 前綴
+                // 口徑，不憑空切半顆 pPr）。
+                return None;
+            }
+        } else if depth == 0 && tag_local(tag) == "pPr" {
+            // 自閉合 `<w:pPr/>`（或帶屬性的空宣告）：本身即頂層 pPr 全元素。
+            return Some(gt + 1);
+        }
+    }
+    None
+}
+
+/// 段切片「段內開啟者必須段內閉合」良構檢查：跨段邊界的上游容器其開／閉
+/// 在切片之外——孤兒閉標籤屬合法（容忍），但切片掃到末尾仍有未閉開標籤＝
+/// `expected </w:ins> but </w:p>` 族 ill-formed 形態，拒絕在寫入前（零位元
+/// 組位移，比照 `reject_unwritable_underline` 「拒絕＝零位元組位移」契約）。
+fn paragraph_slice_balanced(slice: &str) -> bool {
+    open_containers_at(slice, 0, slice.len()).is_empty()
+}
+
 /// 將單一段落在 `cp` 處拆成兩段（回傳兩段完整 `<w:p>` XML）。
+///
+/// 跨切點容器配對（t_e93fb47b 主修）：切點落在段內行內容器（`w:ins`／
+/// `w:del`／`w:hyperlink`／`w:fldSimple`…）包裹的 run 內部時，舊實作只斷
+/// run 文字流——第一段把切點之前開了沒關的容器起點原樣留在段尾直接接
+/// `</w:p>`（ill-formed，存檔整批失敗），第二段頭留孤兒閉標籤。修法＝切點
+/// 之前仍未閉合的容器，第一段尾**由內而外**補閉標籤、第二段頭**由外而內**
+/// 補同名開標籤（開標籤逐字複製，屬性全保留＝不丟追蹤標記），兩側配對
+/// 完備後文字流與 canonical 樹逐字守恆。
 fn split_paragraph_xml(
     xml: &[u8],
     p_span: ParagraphSpan,
@@ -1851,22 +2001,45 @@ fn split_paragraph_xml(
         detail: "XML 明文非合法 UTF-8".to_string(),
     })?;
     let p_open = text[p_span.start..analysis.p_open_end_offset].to_string();
-    let ppr = analysis
-        .ppr_end_offset
-        .map(|e| text[analysis.p_open_end_offset..e].to_string())
-        .unwrap_or_default();
     let p_close = text[analysis.p_close_start_offset..p_span.end].to_string();
     let content_start = analysis.p_open_end_offset;
     let content_end = analysis.p_close_start_offset;
+    // pPr 不複製＋不越界線（燈 R1，雙份 pPr 缺陷實錄＝Jupiter cp=3 態）：
+    // 舊寫法 `ppr` 取到 `analysis.ppr_end_offset`（整段切片**最後**一個
+    // `</w:pPr>`）而正文起點卻從 `<w:p>` 尾算 ⇒ ①段內有頂層 pPr 時左段吃到
+    // 兩顆 pPr（違反 CT_P 單 pPr 契約）；②段內含 txbxContent／Fallback 巢裝
+    // 段時（WordWithAttachments para 4 實證）該偏移落在深處，整塊圖形內容被
+    // 劃進「pPr 前綴」而複製進兩半。好態一律以「首顆**頂層** pPr」為唯一
+    // 事實來源：ppr 前綴與正文起點同源，兩者不可能重疊。
+    let top_ppr_end = first_top_level_ppr_end(text, content_start, content_end);
+    let (ppr, body_start) = if split_rev_buggy() {
+        // 回塞態＝修前形態：pPr 前綴沿用 analysis 口徑、正文從 `<w:p>` 尾起切。
+        let legacy_ppr = analysis
+            .ppr_end_offset
+            .map(|e| text[content_start..e].to_string())
+            .unwrap_or_default();
+        (legacy_ppr, content_start)
+    } else {
+        (
+            top_ppr_end
+                .map(|e| text[content_start..e].to_string())
+                .unwrap_or_default(),
+            top_ppr_end.unwrap_or(content_start),
+        )
+    };
 
-    let left_content;
-    let right_content;
+    let mut left_content;
+    let mut right_content;
+    // 切點絕對偏移（容器鏈在該點求值；各臂各恰好賦值一次）。
+    let cut;
     if cp == 0 {
         left_content = String::new();
-        right_content = text[content_start..content_end].to_string();
+        right_content = text[body_start..content_end].to_string();
+        cut = body_start;
     } else if cp >= analysis.total_cp {
-        left_content = text[content_start..content_end].to_string();
+        left_content = text[body_start..content_end].to_string();
         right_content = String::new();
+        cut = content_end;
     } else {
         let chosen = analysis
             .text_nodes
@@ -1879,6 +2052,14 @@ fn split_paragraph_xml(
                         detail: "run 區間解析失敗".to_string(),
                     }
                 })?;
+                // 病態上遊守衛：CT_P 契約 pPr 必須是 w:p 首個子元素，若頂層
+                // pPr 竟排在 run 之後（run.start < body_start）則切片會反向
+                // panic——誠實拒絕（零位元組位移），不容錯位切片進 parts。
+                if run.start < body_start {
+                    return Err(MutationError::XmlPatchRejected {
+                        detail: "段落結構違反 CT_P（pPr 非首個子元素），拆段拒絕".to_string(),
+                    });
+                }
                 let run_text = &text[run.start..run.end];
                 let open_gt =
                     run_text
@@ -1913,7 +2094,7 @@ fn split_paragraph_xml(
 
                 left_content = format!(
                     "{}{}{}</w:r>",
-                    &text[content_start..run.start],
+                    &text[body_start..run.start],
                     run_open,
                     left_inner
                 );
@@ -1923,6 +2104,7 @@ fn split_paragraph_xml(
                     right_inner,
                     &text[run.end..content_end]
                 );
+                cut = run.start;
             }
             None => {
                 let split_abs = analysis
@@ -1930,15 +2112,42 @@ fn split_paragraph_xml(
                     .iter()
                     .find(|n| cp <= n.start_cp)
                     .map(|n| n.node_span.start)
-                    .unwrap_or(content_end);
-                left_content = text[content_start..split_abs].to_string();
+                    .unwrap_or(content_end)
+                    .max(body_start);
+                left_content = text[body_start..split_abs].to_string();
                 right_content = text[split_abs..content_end].to_string();
+                cut = split_abs;
             }
+        }
+    }
+
+    // 跨切點容器配對補全（回塞態跳過＝鏡像修前「只斷文字流」形態）。
+    if !split_rev_buggy() {
+        let chain = open_containers_at(text, body_start, cut);
+        if !chain.is_empty() {
+            for open in chain.iter().rev() {
+                left_content.push_str(&close_tag_for(open));
+            }
+            let mut head = String::new();
+            for open in &chain {
+                head.push_str(open);
+            }
+            right_content = format!("{head}{right_content}");
         }
     }
 
     let left = format!("{p_open}{ppr}{left_content}{p_close}");
     let right = format!("{p_open}{}{right_content}{p_close}", strip_sectpr(&ppr));
+    // 良構閘門（回塞態不設＝修前無從拒絕的語義）：兩半各自必須配對收斂，
+    // 未收斂＝誠實拒絕、零位元組位移，不容 ill-formed 落進 parts。
+    if !split_rev_buggy() && !(paragraph_slice_balanced(&left) && paragraph_slice_balanced(&right))
+    {
+        return Err(MutationError::XmlPatchRejected {
+            detail: "拆段後段切片容器配對未收斂（段內開啟的標籤未在段內閉合），\
+                     拒絕本次拆段且零位元組位移"
+                .to_string(),
+        });
+    }
     Ok((left, right))
 }
 

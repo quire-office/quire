@@ -54,6 +54,14 @@ SAVE_RT_BUGGY=1 python3 scripts/save_roundtrip_lab.py --discriminate \
   XML），**非存檔鏈倒退**，PM 裁決不歸本卡修——report.md「引擎突變層
   缺陷實錄」章節帶最小重現命令＋原檔目標段 XML＋跨切點容器開閉計數含
   上游視窗（返修卡線索）。
+  【返修追記 t_e93fb47b（run 89，git 7f1e365）】上項 4 檔紅燈已由返修卡
+  修復（SplitParagraph 切點容器配對補全＋pPr 單份線，考卷
+  `core/engine-api/tests/e_split_revision_containers.rs` 11 盞先紅後綠＋
+  `SPLIT_REV_BUGGY=1` 回塞鑑別）。同環境重跑 `--files <這4檔> --pixel-allow 0`
+  產物存 `t_e93fb47b-green/`（紅燈計數 4→0，enter 臂四檔全 PASS，LO 環境
+  口徑與本基線同源）；全量 42 檔重跑（HEAD 7f1e365）fail=0 lo_fail=0
+  （時值 1108 s，口徑對齊本基線 1116 s）。本目錄 report.md／scores.jsonl
+  為 run 87 修復前歷史實錄，**保留不改**（缺陷實錄＝返修卡溯源）。
 - 回塞鎖：`discrimination.md`＝紅 4/4 檔點名＋像素層零位移（重排對渲染
   無害的實據）＋編輯態臂零紅（重排不吞編輯）。
 - 效能基線（run 87 修復後，實錄進 report.md「考卷自身效能基線」章節）：
