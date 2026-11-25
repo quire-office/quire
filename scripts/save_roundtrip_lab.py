@@ -317,6 +317,32 @@ def zone_start_for(by_para: dict, target_paras: list, vis: dict,
     return (0, "no-target")
 
 
+def _para_xml_excerpt(docx: pathlib.Path, text: str, limit: int = 1400) -> dict:
+    """引擎突變層缺陷實錄用：原檔目標段的原始 XML 節錄＋外包裝節點計數。
+
+    ill-formed 紅（expected `</w:hyperlink>`, but `</w:p>` 族）的根因假說＝
+    SplitParagraph 把 w:p 從中段切開時，把跨切點的行內容器（w:hyperlink／
+    w:ins／w:fldSimple…）連同**未閉合**的起點一起搬進第二段——故計數直接
+    點名該段內這些容器的存在性，作為返修卡的定位線索（本卡不修，PM 裁決）。
+    """
+    try:
+        xml = _saved_document_xml(docx)
+    except Exception:  # noqa: BLE001
+        return {"excerpt": "（原檔 XML 讀取失敗）", "wrap_tags": {}}
+    key = squash(text)[:6]
+    blocks = _para_blocks(xml, key)
+    if not blocks:
+        return {"excerpt": "（原檔找不到目標段錨點）", "wrap_tags": {}}
+    b = blocks[0]
+    tags = {}
+    for t in ("hyperlink", "ins", "del", "fldSimple", "smartTag", "sdt", "bdo", "dir"):
+        op = len(re.findall(rf"<w:{t}\b(?!/)", b))
+        cl = len(re.findall(rf"</w:{t}>", b))
+        if op or cl:
+            tags[f"w:{t}"] = f"{op}開/{cl}閉"
+    return {"excerpt": b[:limit], "wrap_tags": tags}
+
+
 def _saved_document_xml(docx) -> str:
     with zipfile.ZipFile(docx) as z:
         return z.read("word/document.xml").decode("utf-8", "replace")
@@ -421,15 +447,32 @@ def page_pixel_diff(pdf_a, pdf_b, i) -> int:
     import numpy as np
     da, db = rl.pymupdf.open(pdf_a), rl.pymupdf.open(pdf_b)
     try:
-        if i >= da.page_count or i >= db.page_count:
-            return -1  # 頁數不對齊：呼叫端另行判
-        pa, pb = pix(da[i]), pix(db[i])
-        if pa.shape != pb.shape:
-            return int(pa.size)  # 頁尺寸都變＝整頁視為差異
-        d = np.any(pa != pb, axis=2)
-        return int(np.count_nonzero(d))
+        return _page_diff_open(da, db, i)
     finally:
         da.close(); db.close()
+
+
+def pixel_diffs_all(pdf_a, pdf_b) -> list:
+    """逐頁像素 diff 計數（**每檔只開一次**）。舊 page_pixel_diff 逐頁各開
+    兩份 PDF——190 頁級檔（bug65649）會變成 380 次 open/檔臂，考卷跑不動。
+    口徑逐字不變：同尺寸逐像素不等計數、尺寸不同＝整頁視為差異、
+    超出較少頁數＝-1（呼叫端另行判）。"""
+    da, db = rl.pymupdf.open(pdf_a), rl.pymupdf.open(pdf_b)
+    try:
+        return [_page_diff_open(da, db, i) for i in range(max(da.page_count, db.page_count))]
+    finally:
+        da.close(); db.close()
+
+
+def _page_diff_open(da, db, i) -> int:
+    import numpy as np
+    if i >= da.page_count or i >= db.page_count:
+        return -1  # 頁數不對齊：呼叫端另行判
+    pa, pb = pix(da[i]), pix(db[i])
+    if pa.shape != pb.shape:
+        return int(pa.size)  # 頁尺寸都變＝整頁視為差異
+    d = np.any(pa != pb, axis=2)
+    return int(np.count_nonzero(d))
 
 
 def page_text_lines(pdf, i) -> list:
@@ -503,12 +546,13 @@ def process_file(binp, corpus, entry, out_dir, soffice, scratch, profile_uri, ne
         if pdfa is None:
             a["pixel_layer"] = "lo_fail"
         else:
-            n0 = lo_page_count(pdf0); n1 = lo_page_count(pdfa)
-            diffs = [page_pixel_diff(pdf0, pdfa, i) for i in range(min(n0, n1))]
-            text_pages = []
-            for i in range(min(n0, n1)):
-                if (page_text_lines(pdf0, i) or []) != (page_text_lines(pdfa, i) or []):
-                    text_pages.append(i)
+            # 每份 PDF 只 open/抽 facts 一次（舊寫法逐頁各開 PDF＋逐頁重抽
+            # facts，190 頁級檔會燒穿考卷預算；判據口徑逐字不變）。
+            facts1 = rl.pdf_page_facts(pdfa)
+            n0, n1 = len(facts0), len(facts1)
+            diffs = pixel_diffs_all(pdf0, pdfa)
+            text_pages = [i for i in range(min(n0, n1))
+                          if (facts0[i]["lines"] or []) != (facts1[i]["lines"] or [])]
             a["pixel_layer"] = {"pages_orig": n0, "pages_saved": n1,
                                 "px_diff": diffs, "pages_px_nonzero": [i for i, d in enumerate(diffs) if d > pixel_allow],
                                 "pages_text_diff": text_pages}
@@ -528,6 +572,18 @@ def process_file(binp, corpus, entry, out_dir, soffice, scratch, profile_uri, ne
         except RuntimeError as e:
             arm["verdict"] = "FAIL"
             arm["why"] = f"編輯存檔失敗: {e}"
+            # 引擎突變層缺陷（ill-formed XML 族）＝非存檔鏈倒退，PM 裁決不歸
+            # 本卡修：自動實錄最小重現＋原檔目標段 XML（含跨切點容器開閉計數，
+            # 返修卡的定位線索）。render_report 另立章節集中呈現。
+            if "ill-formed" in str(e) or "XML 解析失敗" in str(e):
+                arm["engine_bug"] = True
+                tp0 = min(target_paras) if target_paras else None
+                o = rows_by_para.get(tp0) if tp0 is not None else None
+                arm["repro"] = {"file": rel, "kind": kind, "mutation": mjson}
+                if o is not None:
+                    ev = _para_xml_excerpt(docx, o["text"])
+                    arm["target_para_xml"] = ev["excerpt"]
+                    arm["wrap_tags"] = ev["wrap_tags"]
             rec["arms"][f"edit:{kind}"] = arm
             rec["status"] = "fail"
             continue
@@ -544,13 +600,14 @@ def process_file(binp, corpus, entry, out_dir, soffice, scratch, profile_uri, ne
             continue
         z, zmethod = zone_start_for(rows_by_para, target_paras, vis,
                                     {r["para"]: r["page"] for r in rows})
-        n0, n1 = lo_page_count(pdf0), lo_page_count(pdf1)
+        facts1 = rl.pdf_page_facts(pdf1)
+        n0, n1 = len(facts0), len(facts1)
         arm["zone_start"] = z
         arm["zone_method"] = zmethod
         arm["pages_orig"], arm["pages_saved"] = n0, n1
         arm["content_ok"] = content_ok
         arm["content_why"] = content_why
-        diffs = [page_pixel_diff(pdf0, pdf1, i) for i in range(min(n0, n1))]
+        diffs = pixel_diffs_all(pdf0, pdf1)
         arm["px_diff"] = diffs
         before = [i for i in range(min(z, len(diffs))) if diffs[i] > pixel_allow]
         arm["before_zone_pages_px_nonzero"] = before
@@ -671,6 +728,27 @@ def render_report(rows, meta, out_md: pathlib.Path):
         cs = ", ".join("—" if s is None else str(s) for s in r.get("orig_content", [])[:6])
         lines.append(f"| corpus/{r['file']} | {r.get('orig_lo_pages', '—')} | {r.get('orig_ow_pages', '—')} | "
                      f"{'✓' if r.get('orig_lo_pages') == r.get('orig_ow_pages') else '✗'} | {cs} |")
+    lines += ["", "## 引擎突變層缺陷實錄（PM 裁決 11-25：不歸本卡修，據此開返修卡）", ""]
+    bugs = [(r, k, arm) for r in rows for k, arm in r["arms"].items()
+            if arm.get("engine_bug")]
+    if not bugs:
+        lines.append("（本輪無 ill-formed XML 級失敗）")
+    for r, k, arm in bugs:
+        rp = arm.get("repro", {})
+        lines += [
+            f"### {r['file']}｜{k.split(':', 1)[1]} 臂",
+            "",
+            f"- 錯誤：{arm.get('why', '')}",
+            f"- 最小重現：`quire-cli save {r['file']} --out x.docx --mutation "
+            f"'{json.dumps(rp.get('mutation', {}), ensure_ascii=False)}'`",
+            f"- 目標段外包裝容器計數（跨切點未閉合＝根因線索）："
+            f"{arm.get('wrap_tags') or '（無命中容器，見節錄）'}",
+            "",
+            "```xml",
+            str(arm.get("target_para_xml", ""))[:1400],
+            "```",
+            "",
+        ]
     lines += ["",
               "口徑說明：",
               "- **臂 A 預閘＝位元組恆等**（sha256 對源檔逐位）；恆等過＝像素層跳過但記錄。",
@@ -696,7 +774,8 @@ def write_scores_jsonl(rows, meta, path: pathlib.Path):
                        "git": meta["git"], "buggy": meta["buggy"]}
                 for f in ("byte_identical", "pixel_layer", "zone_start", "zone_method",
                           "pages_orig", "pages_saved", "before_zone_pages_px_nonzero",
-                          "visible", "why", "note", "px_diff", "touched_parts"):
+                          "visible", "why", "note", "px_diff", "touched_parts",
+                          "engine_bug", "wrap_tags", "repro"):
                     if f in arm:
                         row[f] = arm[f]
                 if isinstance(row.get("pixel_layer"), dict):
