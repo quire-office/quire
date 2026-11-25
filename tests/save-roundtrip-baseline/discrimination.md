@@ -1,12 +1,38 @@
 # save-roundtrip-lab 報告（儲存保真閘門）
 
-- 生成時間：2026-11-25T23:21:41
+- 生成時間：2026-11-26T01:09:34
 - LibreOffice：`/home/jerry/.local/lo-linux/opt/libreoffice25.8/program/soffice`（本機 Linux LO；Windows soffice.exe 不在此機，PATH 注入口徑自動偵測）
-- quire-cli：`/home/jerry/projects/quire/.worktrees/t_d96c31db/target/debug/quire-cli`｜git：`abc8cae`
+- quire-cli：`/home/jerry/projects/quire/.worktrees/t_d96c31db/target/debug/quire-cli`｜git：`960c1c5`
 - 對象：自訂 4 檔（4 檔，seed=None）
 - SAVE_RT_BUGGY：True｜--discriminate：True｜像素容差：0
 - 紅燈檔案：0；LO 轉換失敗：0
 - 鑑別力判定：**紅 4/4 檔點名（回塞鎖有效）**
+
+## 考卷自身效能基線（PM 裁決 3：`paragraph_cp_len` 效能倒退修復實錄）
+
+本輪考卷總時數：44.8 s（4 檔）。本閘門自身最慢檔（逐檔實測，供 nightly 預算參考）：
+
+| 檔案 | 全臂耗時 (s) |
+|---|---|
+| xopt/TestFiles_RP_RP051-Arabic.docx | 31.1 |
+| ooxmlexport/fdo78883.docx | 6.3 |
+| selfgen/cjk_japanese_ruby.docx | 5.9 |
+| poi/test-data_document_table_footnotes.docx | 1.6 |
+
+修復前（run 86 基線，逐段呼叫 `Engine::paragraph_cp_len`，每次從頭重掃 `document.xml`＝O(段數 × 檔大小)）：`corpus/poi/test-data_document_bug65649.docx`（`document.xml` 12.5 MB／15,934 段）跑 `quire-cli paragraphs` **>420 s 逾時被殺**（考卷卡死在此檔）。
+
+修復後（單趟掃描器 `scan_paragraph_spans`＋批次出口 `Engine::paragraph_cp_lens`）：
+
+| 項目 | 耗時 | 峰值記憶體 | 備註 |
+|---|---|---|---|
+| `quire-cli paragraphs`（bug65649） | **27.56 s** | 195,552 KB | 輸出 2,446,372 B；**修復前 >420 s 逾時** |
+| `quire-cli pagebreaks`（bug65649） | 23.5 s | — | 同檔分頁斷點 |
+| 零編輯存檔（bug65649） | 20.9 s | — | `byte_identical=true` |
+| LO `lo_to_pdf`（bug65649） | 9.4 s | — | 180 頁 |
+| `pdf_page_facts`（bug65649） | 0.8 s | — | 180 頁文字抽取 |
+
+根因與修法：舊 `paragraph_cp_len` 對每段呼叫 `find_paragraph_span`，該函式每次從 `document.xml` 起點重新掃描 ⇒ 段數越多、檔越大，平方級惡化。抽出單趟掃描器`scan_paragraph_spans(xml, stop_at)`（`Some(k)` 命中即停，保留舊逐段語義；`None` 一趟收全部段）＋批次出口 `Engine::paragraph_cp_lens()`，把 N 次全文重掃收斂為 1 次；每段 `analyze_paragraph` 仍只掃自身區間，`total_cp` 語義逐字同值。
+
 
 ## 臂 A：零編輯（位元組恆等預閘＋像素/文字差分）
 

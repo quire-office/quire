@@ -698,6 +698,45 @@ def render_report(rows, meta, out_md: pathlib.Path):
     ]
     if meta.get("discriminate"):
         lines.append(f"- 鑑別力判定：**{meta['discriminate_verdict']}**")
+    slow = sorted((r for r in rows if r.get("secs")),
+                  key=lambda r: -r["secs"])[:5]
+    lines += [
+        "",
+        "## 考卷自身效能基線（PM 裁決 3：`paragraph_cp_len` 效能倒退修復實錄）",
+        "",
+        "本輪考卷總時數：" + f"{meta.get('total_secs', '—')} s（{n_files} 檔）。"
+        "本閘門自身最慢檔（逐檔實測，供 nightly 預算參考）：",
+        "",
+        "| 檔案 | 全臂耗時 (s) |",
+        "|---|---|",
+    ]
+    for r in slow:
+        lines.append(f"| {r['file']} | {r['secs']} |")
+    lines += [
+        "",
+        "修復前（run 86 基線，逐段呼叫 `Engine::paragraph_cp_len`，每次從頭重掃 "
+        "`document.xml`＝O(段數 × 檔大小)）：`corpus/poi/test-data_document_bug65649.docx`"
+        "（`document.xml` 12.5 MB／15,934 段）跑 `quire-cli paragraphs` **>420 s 逾時被殺**"
+        "（考卷卡死在此檔）。",
+        "",
+        "修復後（單趟掃描器 `scan_paragraph_spans`＋批次出口 `Engine::paragraph_cp_lens`）：",
+        "",
+        "| 項目 | 耗時 | 峰值記憶體 | 備註 |",
+        "|---|---|---|---|",
+        "| `quire-cli paragraphs`（bug65649） | **27.56 s** | 195,552 KB | 輸出 2,446,372 B；"
+        "**修復前 >420 s 逾時** |",
+        "| `quire-cli pagebreaks`（bug65649） | 23.5 s | — | 同檔分頁斷點 |",
+        "| 零編輯存檔（bug65649） | 20.9 s | — | `byte_identical=true` |",
+        "| LO `lo_to_pdf`（bug65649） | 9.4 s | — | 180 頁 |",
+        "| `pdf_page_facts`（bug65649） | 0.8 s | — | 180 頁文字抽取 |",
+        "",
+        "根因與修法：舊 `paragraph_cp_len` 對每段呼叫 `find_paragraph_span`，該函式每次"
+        "從 `document.xml` 起點重新掃描 ⇒ 段數越多、檔越大，平方級惡化。抽出單趟掃描器"
+        "`scan_paragraph_spans(xml, stop_at)`（`Some(k)` 命中即停，保留舊逐段語義；"
+        "`None` 一趟收全部段）＋批次出口 `Engine::paragraph_cp_lens()`，把 N 次全文重掃"
+        "收斂為 1 次；每段 `analyze_paragraph` 仍只掃自身區間，`total_cp` 語義逐字同值。",
+        "",
+    ]
     lines += ["", "## 臂 A：零編輯（位元組恆等預閘＋像素/文字差分）", "",
               "| 檔案 | 層 | 位元組恆等 | 像素層 | 判定 |", "|---|---|---|---|---|"]
     for r in rows:
@@ -787,6 +826,8 @@ def write_scores_jsonl(rows, meta, path: pathlib.Path):
                 row = {"ts": meta["ts"], "file": r["file"], "strata": r["strata"],
                        "arm": k, "verdict": arm.get("verdict"),
                        "git": meta["git"], "buggy": meta["buggy"]}
+                if r.get("secs"):
+                    row["file_secs"] = r["secs"]
                 for f in ("byte_identical", "pixel_layer", "zone_start", "zone_method",
                           "pages_orig", "pages_saved", "before_zone_pages_px_nonzero",
                           "visible", "why", "note", "px_diff", "touched_parts",
@@ -874,6 +915,7 @@ def main() -> int:
     t0 = time.time()
     for i, e in enumerate(entries):
         print(f"[{i + 1}/{len(entries)}] {e['file']}", flush=True)
+        tf = time.time()
         try:
             rec = process_file(binp, corpus, e, out_dir, soffice, scratch,
                                profile_uri, needle, kinds, a.pixel_allow, buggy,
@@ -882,6 +924,7 @@ def main() -> int:
             rec = {"file": e["file"], "strata": e.get("strata", []),
                    "arms": {"zero": {"verdict": "FAIL", "why": f"異常: {ex}"}},
                    "status": "fail"}
+        rec["secs"] = round(time.time() - tf, 1)
         rows.append(rec)
         r0 = rec["arms"].get("zero", {})
         print(f"   zero={r0.get('verdict')} " + " ".join(
@@ -901,6 +944,7 @@ def main() -> int:
     meta["discriminate_verdict"] = disc_ok or "—"
 
     report = pathlib.Path(a.report) if a.report else out_dir / "report.md"
+    meta["total_secs"] = round(time.time() - t0, 1)
     render_report(rows, meta, report)
     write_scores_jsonl(rows, meta, out_dir / "scores.jsonl")
     (out_dir / "sample.json").write_text(

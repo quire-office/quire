@@ -39,18 +39,25 @@ SAVE_RT_BUGGY=1 python3 scripts/save_roundtrip_lab.py --discriminate \
   重排（末位 entry 搬到前排）；`--discriminate` 要求零編輯臂必紅，
   未紅＝exit 1（比照 U4F_*_BUGGY 口徑）。
 
-## 本基線跑況（2026-11-25 run 87）
+## 本基線跑況（2026-11-25/26 run 87）
 - 環境：本機 LibreOffice 25.8（`~/.local/lo-linux/…/program/soffice`，
   PM 裁決 11-25：本機查無 Windows soffice.exe，接受 Linux LO 為本專案
   正式口徑；Windows 機重跑自動生效）＋`target/debug/quire-cli`。
+- 取樣：42 檔（seed=20261125），卡面點名面向全覆蓋：table／image／
+  footnote／endnote／mixed_size／multisection／cjk（`sample.json`）。
+- 全量耗時：42 檔 1116 s（nightly 預算）；`--quick` 10 檔 406–418 s
+  （PM 合併閘門候選，含 bug65649 在內）。
 - 臂 A（零編輯）：42/42 位元組恆等 PASS（roundtrip corpus 399/399 同步
   零倒退）。
-- 臂 B/C（編輯態）：紅燈＝引擎突變層缺陷（SplitParagraph 對含
-  `w:hyperlink`／`w:ins`／`w:fldSimple` 段落產出 ill-formed XML），
-  **非存檔鏈倒退**，PM 裁決不歸本卡修——report.md「引擎突變層缺陷實錄」
-  章節帶最小重現命令＋原檔目標段 XML＋跨切點容器開閉計數（返修卡線索）。
+- 臂 B/C（編輯態）：紅燈 4 檔全為引擎突變層缺陷（SplitParagraph 對含
+  `w:hyperlink`／`w:ins`／`w:fldSimple`／上游未閉容器段落產出 ill-formed
+  XML），**非存檔鏈倒退**，PM 裁決不歸本卡修——report.md「引擎突變層
+  缺陷實錄」章節帶最小重現命令＋原檔目標段 XML＋跨切點容器開閉計數含
+  上游視窗（返修卡線索）。
 - 回塞鎖：`discrimination.md`＝紅 4/4 檔點名＋像素層零位移（重排對渲染
   無害的實據）＋編輯態臂零紅（重排不吞編輯）。
-- 效能基線（run 87 修復後）：bug65649（12.5MB document.xml、15934 段、
-  LO 180 頁）paragraphs 27.6s、零編輯存檔 20.9s、LO 轉換 9.4s——
-  `paragraph_cp_lens` 單趟批次口徑修復前該檔在考卷 180s 探針必逾時。
+- 效能基線（run 87 修復後，實錄進 report.md「考卷自身效能基線」章節）：
+  bug65649（12.5MB document.xml、15934 段、LO 180 頁）paragraphs 27.6s、
+  零編輯存檔 20.9s、LO 轉換 9.4s；該檔全臂 769 s 佔全量 69%——修復前
+  `paragraph_cp_len` 逐段重掃使該檔在考卷 420s 探針直接逾時卡死。
+

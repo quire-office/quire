@@ -928,12 +928,10 @@ pub fn find_paragraph_span(
     target_para: usize,
 ) -> Result<(ParagraphSpan, usize), MutationError> {
     let (spans, total) = scan_paragraph_spans(xml, Some(target_para))?;
-    let span = *spans
-        .last()
-        .ok_or(MutationError::ParagraphOutOfBounds {
-            para: target_para,
-            len: total,
-        })?;
+    let span = *spans.last().ok_or(MutationError::ParagraphOutOfBounds {
+        para: target_para,
+        len: total,
+    })?;
     Ok((span, total))
 }
 

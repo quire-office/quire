@@ -1,11 +1,38 @@
 # save-roundtrip-lab 報告（儲存保真閘門）
 
-- 生成時間：2026-11-25T20:43:43
+- 生成時間：2026-11-26T00:47:24
 - LibreOffice：`/home/jerry/.local/lo-linux/opt/libreoffice25.8/program/soffice`（本機 Linux LO；Windows soffice.exe 不在此機，PATH 注入口徑自動偵測）
-- quire-cli：`/home/jerry/projects/quire/.worktrees/t_d96c31db/target/debug/quire-cli`｜git：`e758668`
+- quire-cli：`/home/jerry/projects/quire/.worktrees/t_d96c31db/target/debug/quire-cli`｜git：`960c1c5`
 - 對象：corpus manifest 分層抽樣 42 檔（42 檔，seed=20261125）
 - SAVE_RT_BUGGY：False｜--discriminate：False｜像素容差：0
-- 紅燈檔案：6；LO 轉換失敗：0
+- 紅燈檔案：4；LO 轉換失敗：0
+
+## 考卷自身效能基線（PM 裁決 3：`paragraph_cp_len` 效能倒退修復實錄）
+
+本輪考卷總時數：1116.0 s（42 檔）。本閘門自身最慢檔（逐檔實測，供 nightly 預算參考）：
+
+| 檔案 | 全臂耗時 (s) |
+|---|---|
+| poi/test-data_document_bug65649.docx | 768.9 |
+| poi/test-data_document_drawing.docx | 48.1 |
+| ooxmlexport/tdf102466.docx | 32.5 |
+| xopt/TestFiles_RP_RP051-Arabic.docx | 27.2 |
+| poi/test-data_document_form_footnotes.docx | 23.5 |
+
+修復前（run 86 基線，逐段呼叫 `Engine::paragraph_cp_len`，每次從頭重掃 `document.xml`＝O(段數 × 檔大小)）：`corpus/poi/test-data_document_bug65649.docx`（`document.xml` 12.5 MB／15,934 段）跑 `quire-cli paragraphs` **>420 s 逾時被殺**（考卷卡死在此檔）。
+
+修復後（單趟掃描器 `scan_paragraph_spans`＋批次出口 `Engine::paragraph_cp_lens`）：
+
+| 項目 | 耗時 | 峰值記憶體 | 備註 |
+|---|---|---|---|
+| `quire-cli paragraphs`（bug65649） | **27.56 s** | 195,552 KB | 輸出 2,446,372 B；**修復前 >420 s 逾時** |
+| `quire-cli pagebreaks`（bug65649） | 23.5 s | — | 同檔分頁斷點 |
+| 零編輯存檔（bug65649） | 20.9 s | — | `byte_identical=true` |
+| LO `lo_to_pdf`（bug65649） | 9.4 s | — | 180 頁 |
+| `pdf_page_facts`（bug65649） | 0.8 s | — | 180 頁文字抽取 |
+
+根因與修法：舊 `paragraph_cp_len` 對每段呼叫 `find_paragraph_span`，該函式每次從 `document.xml` 起點重新掃描 ⇒ 段數越多、檔越大，平方級惡化。抽出單趟掃描器`scan_paragraph_spans(xml, stop_at)`（`Some(k)` 命中即停，保留舊逐段語義；`None` 一趟收全部段）＋批次出口 `Engine::paragraph_cp_lens()`，把 N 次全文重掃收斂為 1 次；每段 `analyze_paragraph` 仍只掃自身區間，`total_cp` 語義逐字同值。
+
 
 ## 臂 A：零編輯（位元組恆等預閘＋像素/文字差分）
 
@@ -14,7 +41,7 @@
 | poi/test-data_document_table-alignment.docx | table | ✓ | skipped（位元組恆等；跳過像素層但照記錄） | ✓ PASS |
 | selfgen/patho_table_cell_lists.docx | table,cjk | ✓ | skipped（位元組恆等；跳過像素層但照記錄） | ✓ PASS |
 | ooxmlexport/fdo79540.docx | table,mixed_size,header_footer | ✓ | skipped（位元組恆等；跳過像素層但照記錄） | ✓ PASS |
-| poi/test-data_document_bug65649.docx | table,merged,table_across,footnote,multisection,mixed_size,cjk | ✗ |  | ✗ FAIL |
+| poi/test-data_document_bug65649.docx | table,merged,table_across,footnote,multisection,mixed_size,cjk | ✓ | skipped（位元組恆等；跳過像素層但照記錄） | ✓ PASS |
 | ooxmlexport/floatingtbl_with_formula.docx | table | ✓ | skipped（位元組恆等；跳過像素層但照記錄） | ✓ PASS |
 | ooxmlexport/tdf102466.docx | table,merged,image,multisection,mixed_size,header_footer,fields | ✓ | skipped（位元組恆等；跳過像素層但照記錄） | ✓ PASS |
 | xopt/TestFiles_HC006-Test-01.docx | table,nested_table,mixed_size | ✓ | skipped（位元組恆等；跳過像素層但照記錄） | ✓ PASS |
@@ -73,6 +100,11 @@
 | ooxmlexport/fdo79540.docx | bold | [] | —(—) | —→— | — | — | — skip |  |
 | ooxmlexport/fdo79540.docx | align | [] | —(—) | —→— | — | — | — skip |  |
 | ooxmlexport/fdo79540.docx | cell | [] | —(—) | —→— | — | — | — skip |  |
+| poi/test-data_document_bug65649.docx | type | [0] | 0(lo-visible) | 180→180 | [] | ✓ | ✓ PASS |  |
+| poi/test-data_document_bug65649.docx | enter | [0] | 0(lo-visible) | 180→180 | [] | ✓ | ✓ PASS |  |
+| poi/test-data_document_bug65649.docx | bold | [0] | 0(lo-visible) | 180→180 | [] | ✗ | — skip | 突變對目標區視覺無效（內容層已驗證寫入，渲染同形） |
+| poi/test-data_document_bug65649.docx | align | [0] | 0(lo-visible) | 180→180 | [] | ✗ | — skip | 突變對目標區視覺無效（內容層已驗證寫入，渲染同形） |
+| poi/test-data_document_bug65649.docx | cell | [2] | 0(lo-visible) | 180→180 | [] | ✓ | ✓ PASS |  |
 | ooxmlexport/floatingtbl_with_formula.docx | type | [0] | 0(lo-visible) | 1→1 | [] | ✓ | ✓ PASS |  |
 | ooxmlexport/floatingtbl_with_formula.docx | enter | [0] | 0(lo-visible) | 1→1 | [] | ✓ | ✓ PASS |  |
 | ooxmlexport/floatingtbl_with_formula.docx | bold | [0] | 0(lo-visible) | 1→1 | [] | ✗ | — skip | 突變對目標區視覺無效（內容層已驗證寫入，渲染同形） |
@@ -223,7 +255,7 @@
 | xopt/OpenXmlPowerToolsExamples_DocumentBuilder04_Jupiter.docx | cell | [] | —(—) | —→— | — | — | — skip |  |
 | ooxmlexport/fdo78883.docx | type | [0] | 0(lo-visible) | 2→2 | [] | ✓ | ✓ PASS |  |
 | ooxmlexport/fdo78883.docx | enter | [0] | 0(lo-visible) | 2→2 | [] | ✓ | ✓ PASS |  |
-| ooxmlexport/fdo78883.docx | bold | [0] | 0(lo-visible) | 2→2 | [] | ✗ | ✗ FAIL | 存檔吞編輯（內容層）：目標段涵蓋突變字的 run 無 <w:b>（粗體未進 XML） |
+| ooxmlexport/fdo78883.docx | bold | [0] | 0(lo-visible) | 2→2 | [] | ✗ | — skip | 突變對目標區視覺無效（內容層已驗證寫入，渲染同形） |
 | ooxmlexport/fdo78883.docx | align | [0] | 0(lo-visible) | 2→2 | [] | ✓ | ✓ PASS |  |
 | ooxmlexport/fdo78883.docx | cell | [2] | 0(lo-visible) | 2→2 | [] | ✓ | ✓ PASS |  |
 | ooxmlexport/2col-header.docx | type | [] | —(—) | —→— | — | — | — skip |  |
@@ -278,6 +310,11 @@
 | corpus/selfgen/patho_table_cell_lists.docx →bold | 1 | 1 | ✓ | 0.882 | — skip |
 | corpus/selfgen/patho_table_cell_lists.docx →align | 1 | 1 | ✓ | 0.882 | ✓ PASS |
 | corpus/selfgen/patho_table_cell_lists.docx →cell | 1 | 1 | ✓ | 0.886 | ✓ PASS |
+| corpus/poi/test-data_document_bug65649.docx →type | 180 | 190 | ✗ | 0.903, 0.069, 0.311, 0.28, 0.339, 0.412 | ✓ PASS |
+| corpus/poi/test-data_document_bug65649.docx →enter | 180 | 190 | ✗ | 0.903, 0.069, 0.311, 0.28, 0.339, 0.412 | ✓ PASS |
+| corpus/poi/test-data_document_bug65649.docx →bold | 180 | 190 | ✗ | 0.903, 0.069, 0.311, 0.28, 0.339, 0.412 | — skip |
+| corpus/poi/test-data_document_bug65649.docx →align | 180 | 190 | ✗ | 0.903, 0.069, 0.311, 0.28, 0.339, 0.412 | — skip |
+| corpus/poi/test-data_document_bug65649.docx →cell | 180 | 190 | ✗ | 0.895, 0.069, 0.311, 0.28, 0.339, 0.412 | ✓ PASS |
 | corpus/ooxmlexport/floatingtbl_with_formula.docx →type | 1 | 1 | ✓ | 0.86 | ✓ PASS |
 | corpus/ooxmlexport/floatingtbl_with_formula.docx →enter | 1 | 1 | ✓ | 0.86 | ✓ PASS |
 | corpus/ooxmlexport/floatingtbl_with_formula.docx →bold | 1 | 1 | ✓ | 0.86 | — skip |
@@ -376,7 +413,7 @@
 | corpus/xopt/OpenXmlPowerToolsExamples_DocumentBuilder04_Jupiter.docx →align | 2 | 2 | ✓ | 0.939, 0.887 | ✓ PASS |
 | corpus/ooxmlexport/fdo78883.docx →type | 2 | 2 | ✓ | 0.724, 0.0 | ✓ PASS |
 | corpus/ooxmlexport/fdo78883.docx →enter | 2 | 2 | ✓ | 0.691, 0.0 | ✓ PASS |
-| corpus/ooxmlexport/fdo78883.docx →bold | 2 | 2 | ✓ | 0.724, 0.0 | ✗ FAIL |
+| corpus/ooxmlexport/fdo78883.docx →bold | 2 | 2 | ✓ | 0.724, 0.0 | — skip |
 | corpus/ooxmlexport/fdo78883.docx →align | 2 | 2 | ✓ | 0.724, 0.0 | ✓ PASS |
 | corpus/ooxmlexport/fdo78883.docx →cell | 2 | 2 | ✓ | 0.724, 0.0 | ✓ PASS |
 | corpus/xopt/OpenXmlPowerToolsExamples_DocumentBuilder01_Source1.docx →type | 3 | 3 | ✓ | 0.989, 0.97, 0.975 | ✓ PASS |
@@ -408,7 +445,7 @@
 | corpus/poi/test-data_document_table-alignment.docx | 1 | 1 | ✓ | 0.985 |
 | corpus/selfgen/patho_table_cell_lists.docx | 1 | 1 | ✓ | 0.882 |
 | corpus/ooxmlexport/fdo79540.docx | 1 | 1 | ✓ | — |
-| corpus/poi/test-data_document_bug65649.docx | — | — | ✓ |  |
+| corpus/poi/test-data_document_bug65649.docx | 180 | 190 | ✗ | 0.903, 0.069, 0.311, 0.28, 0.339, 0.412 |
 | corpus/ooxmlexport/floatingtbl_with_formula.docx | 1 | 1 | ✓ | 0.86 |
 | corpus/ooxmlexport/tdf102466.docx | 11 | 11 | ✓ | 0.0, 0.893, 0.896, 0.38, 0.425, 1.0 |
 | corpus/xopt/TestFiles_HC006-Test-01.docx | 2 | 1 | ✗ | 0.95, 0.0 |
@@ -447,6 +484,84 @@
 | corpus/xopt/OpenXmlPowerToolsExamples_DocumentBuilder04_Neptune.docx | 1 | 1 | ✓ | 0.979 |
 | corpus/selfgen/embedded_font_odttf.docx | 1 | 1 | ✓ | 1.0 |
 | corpus/xopt/OpenXmlPowerToolsExamples_ChartUpdater01_Chart-Cached-Data-05.docx | 1 | 1 | ✓ | 0.224 |
+
+## 引擎突變層缺陷實錄（PM 裁決 11-25：不歸本卡修，據此開返修卡）
+
+### ooxmlexport/n830205.docx｜enter 臂
+
+- 錯誤：編輯存檔失敗: save rc=3: mutation #0 套用失敗: 引擎錯誤: XML 解析失敗: ill-formed document: expected `</w:ins>`, but `</w:p>` was found
+原始: {"SplitParagraph": {"target": "Body", "pos": {"para": 10, "cp": 29}}}
+- 最小重現：`quire-cli save ooxmlexport/n830205.docx --out x.docx --mutation '{"SplitParagraph": {"target": "Body", "pos": {"para": 10, "cp": 29}}}'`
+- 目標段外包裝容器計數（跨切點未閉合＝根因線索）：{'w:del': '上游未閉（前4000字 3開/1閉）'}
+
+```xml
+<w:p w:rsidR="000C113D" w:rsidRPr="00722059" w:rsidRDefault="000C113D" w:rsidP="00100072">
+      <w:pPr>
+        <w:jc w:val="center"/>
+        <w:rPr>
+          <w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/>
+          <w:b/>
+          <w:sz w:val="18"/>
+          <w:szCs w:val="18"/>
+          <w:rPrChange w:id="6" w:author="JimBob" w:date="2013-07-17T12:26:00Z">
+            <w:rPr>
+              <w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/>
+              <w:b/>
+            </w:rPr>
+          </w:rPrChange>
+        </w:rPr>
+      </w:pPr>
+      <w:r w:rsidRPr="00722059">
+        <w:rPr>
+          <w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/>
+          <w:b/>
+          <w:sz w:val="18"/>
+          <w:szCs w:val="18"/>
+          <w:rPrChange w:id="7" w:author="JimBob" w:date="2013-07-17T12:26:00Z">
+            <w:rPr>
+              <w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/>
+              <w:b/>
+            </w:rPr>
+          </w:rPrChange>
+        </w:rPr>
+        <w:t>BodyText</w:t>
+      </w:r>
+    </w:p>
+```
+
+### poi/test-data_document_WordWithAttachments.docx｜enter 臂
+
+- 錯誤：編輯存檔失敗: save rc=3: mutation #0 套用失敗: 引擎錯誤: XML 解析失敗: ill-formed document: expected `</w:hyperlink>`, but `</w:p>` was found
+原始: {"SplitParagraph": {"target": "Body", "pos": {"para": 4, "cp": 23}}}
+- 最小重現：`quire-cli save poi/test-data_document_WordWithAttachments.docx --out x.docx --mutation '{"SplitParagraph": {"target": "Body", "pos": {"para": 4, "cp": 23}}}'`
+- 目標段外包裝容器計數（跨切點未閉合＝根因線索）：{'w:hyperlink': '段內3開/3閉'}
+
+```xml
+<w:p w:rsidR="0047220F" w:rsidRPr="00A17CAE" w:rsidRDefault="0047220F"/></w:txbxContent></v:textbox></v:shape><w10:wrap type="none"/><w10:anchorlock/></v:group></w:pict></w:r><w:hyperlink r:id="rId10" w:history="1"><w:r w:rsidR="00571BF5"><w:rPr><w:rStyle w:val="af"/><w:b/><w:sz w:val="40"/><w:szCs w:val="40"/><w:lang w:val="en-US"/></w:rPr><w:t>Hyperlink</w:t></w:r></w:hyperlink><w:r w:rsidR="00F2789D" w:rsidRPr="00A50BB5"><w:rPr><w:b/><w:sz w:val="40"/><w:szCs w:val="40"/><w:lang w:val="en-US"/></w:rPr><w:t xml:space="preserve"> </w:t></w:r><w:hyperlink r:id="rId11" w:history="1"><w:r w:rsidR="00F2789D" w:rsidRPr="00F2789D"><w:rPr><w:rStyle w:val="af"/><w:b/><w:sz w:val="40"/><w:szCs w:val="40"/></w:rPr><w:t>Ссылка</w:t></w:r></w:hyperlink><w:r w:rsidR="00F2789D" w:rsidRPr="00A50BB5"><w:rPr><w:b/><w:sz w:val="40"/><w:szCs w:val="40"/><w:lang w:val="en-US"/></w:rPr><w:t xml:space="preserve"> </w:t></w:r><w:hyperlink r:id="rId12" w:history="1"><w:r w:rsidR="00F2789D" w:rsidRPr="004A4699"><w:rPr><w:rStyle w:val="af"/><w:b/><w:sz w:val="40"/><w:szCs w:val="40"/></w:rPr><w:t>юбо</w:t></w:r><w:r w:rsidR="004A4699" w:rsidRPr="004A4699"><w:rPr><w:rStyle w:val="af"/><w:b/><w:sz w:val="40"/><w:szCs w:val="40"/><w:lang w:val="uz-Cyrl-UZ"/></w:rPr><w:t>қ</w:t></w:r><w:r w:rsidR="00F2789D" w:rsidRPr="004A4699"><w:rPr><w:rStyle w:val="af"/><w:b/><w:sz w:val="40"/><w:szCs w:val="40"/></w:rP
+```
+
+### xopt/OpenXmlPowerToolsExamples_DocumentBuilder04_Jupiter.docx｜enter 臂
+
+- 錯誤：編輯存檔失敗: save rc=3: mutation #0 套用失敗: 引擎錯誤: XML 解析失敗: ill-formed document: expected `</w:fldSimple>`, but `</w:p>` was found
+原始: {"SplitParagraph": {"target": "Body", "pos": {"para": 2, "cp": 8}}}
+- 最小重現：`quire-cli save xopt/OpenXmlPowerToolsExamples_DocumentBuilder04_Jupiter.docx --out x.docx --mutation '{"SplitParagraph": {"target": "Body", "pos": {"para": 2, "cp": 8}}}'`
+- 目標段外包裝容器計數（跨切點未閉合＝根因線索）：{'w:fldSimple': '段內1開/1閉'}
+
+```xml
+<w:p w:rsidR="00D757CE" w:rsidRDefault="00D757CE" w:rsidP="00D757CE"><w:pPr><w:pStyle w:val="Caption"/><w:rPr><w:rFonts w:eastAsia="宋体"/></w:rPr></w:pPr><w:r><w:t xml:space="preserve">Figure </w:t></w:r><w:fldSimple w:instr=" SEQ Figure \* ARABIC "><w:r><w:rPr><w:noProof/></w:rPr><w:t>1</w:t></w:r></w:fldSimple><w:r><w:rPr><w:rFonts w:eastAsia="宋体" w:hint="eastAsia"/></w:rPr><w:t xml:space="preserve"> Jupiter</w:t></w:r></w:p>
+```
+
+### ooxmlimport/tdf154695-ToC_no_numbers.docx｜enter 臂
+
+- 錯誤：編輯存檔失敗: save rc=3: mutation #0 套用失敗: 引擎錯誤: XML 解析失敗: ill-formed document: expected `</w:hyperlink>`, but `</w:p>` was found
+原始: {"SplitParagraph": {"target": "Body", "pos": {"para": 1, "cp": 5}}}
+- 最小重現：`quire-cli save ooxmlimport/tdf154695-ToC_no_numbers.docx --out x.docx --mutation '{"SplitParagraph": {"target": "Body", "pos": {"para": 1, "cp": 5}}}'`
+- 目標段外包裝容器計數（跨切點未閉合＝根因線索）：{'w:hyperlink': '段內1開/1閉', 'w:sdt': '上游未閉（前4000字 1開/0閉）'}
+
+```xml
+<w:p w:rsidR="00036FAB" w:rsidRDefault="00036FAB"><w:pPr><w:pStyle w:val="TOC1"/><w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8296"/></w:tabs><w:rPr><w:noProof/></w:rPr></w:pPr><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \o "1-3" \h \z \u </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:hyperlink w:anchor="_Toc131755898" w:history="1"><w:r w:rsidRPr="0080186F"><w:rPr><w:rStyle w:val="Hyperlink"/><w:noProof/></w:rPr><w:t>Heading 1</w:t></w:r><w:r><w:rPr><w:noProof/><w:webHidden/></w:rPr><w:tab/></w:r><w:r><w:rPr><w:noProof/><w:webHidden/></w:rPr><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:rPr><w:noProof/><w:webHidden/></w:rPr><w:instrText xml:space="preserve"> PAGEREF _Toc131755898 \h </w:instrText></w:r><w:r><w:rPr><w:noProof/><w:webHidden/></w:rPr></w:r><w:r><w:rPr><w:noProof/><w:webHidden/></w:rPr><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:rPr><w:noProof/><w:webHidden/></w:rPr><w:t>1</w:t></w:r><w:r><w:rPr><w:noProof/><w:webHidden/></w:rPr><w:fldChar w:fldCharType="end"/></w:r></w:hyperlink></w:p>
+```
+
 
 口徑說明：
 - **臂 A 預閘＝位元組恆等**（sha256 對源檔逐位）；恆等過＝像素層跳過但記錄。
