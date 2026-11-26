@@ -2802,9 +2802,14 @@ impl LayoutEngine {
         } else {
             1e-3
         };
-        let band = (((y_pt - p.margin_top_pt) / line_h + band_eps)
-            .floor()
-            .max(0.0)) as u32;
+        // U4m：帶商的**小數部**是行框歸屬的判準（先 floor 會把「行框頂以上 8pt」
+        // 與「行框頂以下 8pt」壓成同一個整數帶，垂直判制在粗帶尺（每行 1 帶）下
+        // 永遠無法發火——用戶實錄的 12pt／行距 1.4 正是粗帶尺態）。故小數商
+        // `bandf` 留給行框中介帶比對，整數 `band` 仍供修前路徑（回塞鎖與舊快照
+        // 陣標退回）原樣使用；兩者只差一次 floor，尺源同一（同一 `line_h`、同一
+        // `band_eps`）。
+        let bandf = ((y_pt - p.margin_top_pt) / line_h + band_eps).max(0.0);
+        let band = bandf.floor() as u32;
         // y→帶→行陣列索引：有表格的頁 band ≠ 陣標（`line_bands` 才是映射，
         // caret_rect 正向走同一映射）。
         //
@@ -2831,21 +2836,168 @@ impl LayoutEngine {
         // 反查整支退回修前「一律 None」（v1 契約態）⇒ t4aa 格內燈必紅
         // （鑑別力證據，比照 U4F_CARET_AT_BUGGY 口徑）。
         let cell_buggy = std::env::var_os("T4AA_CELL_CARET_BUGGY").is_some();
+        // U4m（行框歸屬）回塞鎖：`U4M_LINEBOX_BUGGY=1` ⇒ 反查整支退回修前
+        // 「跨度起自基線帶」判制（逐位元組舊態）⇒ u4m 燈 1／2／3 必紅（用戶
+        // 實錄形態：基線以上 ascent 區點擊成批改判上一行／上一段）。
+        let u4m_buggy = std::env::var_os("U4M_LINEBOX_BUGGY").is_some();
         let li: Option<usize> = if p.line_bands.is_empty() {
             Some(band as usize) // 舊快照無 line_bands：退回陣標（與 caret_rect 同策）
         } else if buggy_exact {
             p.line_bands.iter().position(|&b| b == band)
-        } else {
-            // 取首條跨度涵蓋點擊帶的行（與修前 `position()` 的首條命中同調：
-            // 多欄頁兩欄同行可同帶，舊制取左欄，本制亦取先登録的第一條——零擾動）。
+        } else if u4m_buggy {
+            // U4m 回塞態＝U4f 修後的「跨度起自基線帶」判制（修本卡前的逐位元組
+            // 舊態）⇒ u4m 燈 1／2／3 必紅（基線以上 ascent 區成批改判上一行）。
             let mut hit: Option<usize> = None;
             for (i, &b) in p.line_bands.iter().enumerate() {
                 if b > band {
                     break;
                 }
-                // 行的文字跨度（帶）：該段每行佔用帶數，恆 ≥1。
                 let span = self.grid.bands_of(p.lines[i].para_index);
                 if band < b.saturating_add(span) {
+                    hit = Some(i);
+                    break;
+                }
+            }
+            hit
+        } else {
+            // ============ U4m 行框歸屬＝**行框墨跡真值制**（PM 裁示 11-26 04:45） ============
+            // 【前提反轉記帳】本卡原始 body 把發射 y／`caret_rect.y`／顯示列表
+            // `Text.y` 讀作「基線」——**誤**（PM 拆卡時寫錯的前提）。三支出貨渲染器
+            // （`shells/web/demo/main.js`、編輯器外殼 vendor 渲染器、
+            // `shells/native/src/render_svg.rs` 白紙黑字「讓 y 語義接近行頂」）皆把
+            // **字形基線**畫在 `y ＋ size_pt` ⇒ `Text.y` ＝**行框頂**。故：
+            //     墨跡上緣 ink_top ＝ y ＋ size − asc×size ＝ y －(asc−size)
+            //     墨跡下緣 ink_bot＝ y ＋ size ＋ desc×size
+            // （asc／desc＝內嵌子集 hhea 度量的 em 比例，`shaping::ink_em_ratios`，
+            //  與斷行／發射／caret 同一支字型＝非第二把尺。）
+            //
+            // 判制：一行的**命中中介帶**＝該行墨跡上下緣所夾區間，相鄰兩行的切分
+            // 點取「上行墨跡下緣與下行墨跡上緣的中點」⇒ 行間空白歸**最近墨跡行**、
+            // 每一行的墨跡區間內任一點反查必歸該行。這是三支判制裡最強的契約：
+            //   · 修前跨度制 `[起帶, 起帶＋span)`（＝行框頂到下一行行框頂）：把整拍
+            //     行距的下半（含本行字形下半全部墨跡）讓給**下一行**——用戶檔實測
+            //     墨跡破口 1/38（PM 復算），且行距鬆的檔破口更深。
+            //   · run 85/88 已落庫的**行距中線制**（本區作廢）：切分點落在兩行行框
+            //     頂之中點，橫穿字形（12pt／pitch 16.8：中線 y＋8.4，墨跡
+            //     [y＋2.1, y＋14]）⇒ 每行字形下半中位 5.61pt、最深 14.01pt 被判給
+            //     下一段，實測墨跡破口 38/38（PM 逐行復算；本卡探針燈 C 同批數字
+            //     獨立復現）。現狀收案會把這個新使用者 bug 收進主線，故 PM 否 A。
+            //   · 本制切分點落在**兩行墨跡之間的空白**（實測餘量：上排墨跡下緣→
+            //     切分最淺 +0.20pt、切分→下排墨跡上緣最淺 +4.43pt）⇒ 零墨跡破口。
+            //
+            // 邊界紀律（與修前同款，只換切分點的位置）：
+            //   1. **嚴禁第二把尺**：上下界只由 `page.line_bands`（正向 `caret_rect`
+            //      出 y 的同一來源）× 同 `line_h` × `ParaGrid::bands_of`（同尺）×
+            //      `ParaGrid::size_of`（U4i 已定案的段級聯字級，與正向腿字級同源）
+            //      × 內嵌字型 hhea 度量算出。正向腿零改動 ⇒ u4f 燈 3(c)／t4aa 燈 3／
+            //      u4i 燈 3(b)／燈 5 的正逆互逆考卷零擾動（那些考卷取樣於 y＝行框頂
+            //      ＋小於半拍，落點恆在本行墨跡區間內，判制換軸不動它）。
+            //   2. **命中面不縮**（U4f 死區教訓）：切分點一律夾在兩行行框頂之間
+            //      （`b_i < 切分 ≤ b_{i+1}`）⇒ 每條行的行框頂 y 恆屬本行（正向腿落點
+            //      永不成死區）、且切分點相鄰首尾相接 ⇒ 全頁覆蓋並集仍＝
+            //      [首行上界, 末行下界)，末行下界沿用修前口徑 `b＋span`。
+            //   3. **表格帶／空帶仍 None**（既有「表格帶必 None」考卷零擾動）：中介
+            //      帶不得越入本頁表格切片／流內圖片的佔用帶區間——`lo/hi` 一律被
+            //      佔用區間夾住，正文反查絕不吞表格帶（吞了就搶走 T4AA 格內腿的點擊）。
+            //   4. 粗帶尺零擾動臂（u4f 燈 4）比的是 `pages()` 而非 `caret_at`，本制
+            //      不觸碰分頁幾何 ⇒ 零擾動守門不受影響。
+            // 多欄頁兩欄同行可同帶：按陣列序取**首條**命中（與修前 `position()` 的
+            // 首條命中同調＝取左欄）；同欄內行框頂嚴格單調 ⇒ 中介帶不重疊，命中唯一。
+            let bd = bandf;
+            let n = p.line_bands.len().min(p.lines.len());
+            // 本頁被表格切片／流內圖片佔用的帶區間 [起, 迄)（正文中介帶的柵欄）。
+            let mut occ: Vec<(u32, u32)> = Vec::new();
+            for tp in &p.tables {
+                let h: f32 = tp.frag.rows.iter().map(|r| r.height_pt).sum();
+                let nb = if line_h > 0.0 {
+                    (h / line_h).ceil().max(1.0) as u32
+                } else {
+                    1
+                };
+                occ.push((tp.band, tp.band.saturating_add(nb)));
+            }
+            for im in &p.images {
+                let nb = if line_h > 0.0 {
+                    (im.h_pt / line_h).ceil().max(1.0) as u32
+                } else {
+                    1
+                };
+                occ.push((im.band, im.band.saturating_add(nb)));
+            }
+            // 完全落在本行行框頂「之上」的佔用區間的最早迄帶／「之下」的最早起帶。
+            let occ_end_below = |b: u32| occ.iter().filter(|(_, e)| *e <= b).map(|(_, e)| *e).max();
+            let occ_start_above =
+                |b: u32| occ.iter().filter(|(s, _)| *s > b).map(|(s, _)| *s).min();
+            // 第 i 行的**墨跡上下緣**（帶單位；行框頂 b 為原點）。字級取該段級聯
+            // 尺（U4i 同源），換算成帶數後加到行框頂上。
+            let ink_edges = |i: usize| -> (f32, f32) {
+                let b = p.line_bands[i] as f32;
+                let size = self
+                    .grid
+                    .size_of(p.lines[i].para_index, self.params.font_size_pt);
+                let (top_off, bot_off) = crate::shaping::ink_offsets_pt(size);
+                if line_h > 0.0 {
+                    (b + top_off / line_h, b + bot_off / line_h)
+                } else {
+                    (b, b + 1.0)
+                }
+            };
+            // 同欄前／後行索引（欄序同＝同一欄行網格同軸；跨欄帶序各自重來，不互為鄰）。
+            let prev_same = |i: usize| -> Option<usize> {
+                (0..i).rev().find(|&k| p.lines[k].col == p.lines[i].col)
+            };
+            let next_same = |i: usize| -> Option<usize> {
+                (i + 1..n).find(|&k| p.lines[k].col == p.lines[i].col)
+            };
+            // 相鄰兩行（同欄、k 在上、i 在下）的**切分點**：兩行墨跡相鄰邊之中點，
+            // 再夾進「不越下行行框頂」。上下兩行各自用同一運算式求同一條邊 ⇒ 必
+            // 首尾相接（無重疊、無死區）；夾到 `≤ b_i` 保證下行行框頂恆屬自己
+            //（正向腿 `caret_rect` 給出的 y 永不成死區——U4f 死區教訓）。
+            // 行距緊（`line_spacing` < asc＋desc−1 ≈ 1.128）時兩行墨跡會真的重疊，
+            // 中點會越過下行行框頂 ⇒ 夾回 `b_i`：此時以行框頂為界（單倍行距態退化
+            // 為「行框頂歸本行」，仍零死區、仍首尾相接）。
+            let split_between = |k: usize, i: usize| -> f32 {
+                let (_, bot_k) = ink_edges(k);
+                let (top_i, _) = ink_edges(i);
+                let mid = (bot_k + top_i) / 2.0;
+                let hi = p.line_bands[i] as f32;
+                if mid >= hi {
+                    hi
+                } else if mid <= p.line_bands[k] as f32 {
+                    // 理論不可達（`bot_off＋top_off＋pitch > 0`），防呆不產倒帶。
+                    p.line_bands[k] as f32
+                } else {
+                    mid
+                }
+            };
+            let mut hit: Option<usize> = None;
+            for i in 0..n {
+                let b = p.line_bands[i] as f32;
+                let span = self.grid.bands_of(p.lines[i].para_index) as f32;
+                let (my_top, _) = ink_edges(i);
+                // 上界＝與同欄前行的切分點；欄內首行無前行 ⇒ 退本行墨跡上緣再上
+                // half-pitch（讓首行上方的段前距／行距空白仍歸首行，Word 實態）。
+                // 下界＝與同欄後行的切分點；欄內末行無後行 ⇒ 沿用修前口徑 `b＋span`
+                //（頁底空白屬末行——命中面只增不減）。
+                let lo_raw = match prev_same(i) {
+                    Some(k) => split_between(k, i),
+                    None => {
+                        let pitch = next_same(i).map_or(span, |j| (ink_edges(j).0 - b).max(1.0));
+                        (my_top - pitch / 2.0).min(b)
+                    }
+                };
+                let hi_raw = match next_same(i) {
+                    Some(j) => split_between(i, j),
+                    None => b + span,
+                };
+                // 紀律 3：被佔用區間夾住（夾完仍保 `lo ≤ b < hi`＝本行行框頂必可
+                // 命中，不產生死區）。
+                let lo = occ_end_below(p.line_bands[i]).map_or(lo_raw, |e| lo_raw.max(e as f32));
+                let hi = occ_start_above(p.line_bands[i]).map_or(hi_raw, |s| hi_raw.min(s as f32));
+                if lo >= hi {
+                    continue; // 中介帶被佔用區間吃光＝該行無正文命中面（表格帶語義）
+                }
+                if bd >= lo && bd < hi {
                     hit = Some(i);
                     break;
                 }

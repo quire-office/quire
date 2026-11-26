@@ -229,33 +229,138 @@ fn u4f_caret_at_hits_every_emitted_line_on_fine_grid() {
     );
 
     // (b) 行距帶全命中（細尺態專用）：用戶檔的形態是「連續正文段、無段前後距」
-    // ——兩行之間的每一帶都是「上一行的行距」，點那裡必須落到上一行（Word 行為）。
+    // ——兩行之間的每一帶都是行距，點那裡**不得是死區**（本臂的 U4f 本意）。
     // 粗尺態（每行 1 帶）無行距帶可掃 ⇒ 本臂跳過（零樣本不是零死區）。
+    //
+    // 【t_f073cd6c 歸屬口徑變更（PM 承擔改卷責任）：行框墨跡真值制】
+    // 舊斷言「行距帶一律落回**上一行**」把 U4f 當時的判制（跨度 `[起帶, 起帶＋span)`
+    // 起自行框頂）直接契約化，而那個判制正是本卡修的缺陷：span 帶＝整拍行距，其中
+    // 靠下的帶是**下一行字形的字面位置**，舊口徑把下一行的字搶給上一段 ⇒ 用戶在下
+    // 一行字上點擊卻拿到上一段段尾的 caret（按 Enter 分錯段）。
+    // run 85/88 一度改以「兩行框頂之中線」切分，依 PM 11-26 04:45 前提反轉（`Text.y`
+    // ＝行框頂，非基線）作廢：中線（12pt／pitch 16.8 態＝y＋8.4）橫穿字形，把每行
+    // 字形下半中位 5.61pt 判給下一段（PM 逐行復算 38/38）。
+    // 現行口徑＝**行框墨跡真值制**：相鄰兩行的切分點＝「上行墨跡下緣與下行墨跡上緣
+    // 的中點」（夾到不越下行行框頂）。本臂以考卷端獨立算式求同一條切分邊界，期望：
+    //     點擊帶 bd ＝ b0＋k＋0.5 ＜ split ⇒ 屬本行；bd ≥ split ⇒ 屬下一行。
+    // 另加一條**對中線制的鑑別斷言**：落在「中線以上、墨跡切分以下」那一塊的帶，
+    // 現行制必屬本行（中線制會判給下一行）——這是本臂對 PM 作廢理由的本地證據。
+    // 保留兩條與歸屬口徑正交的硬斷言：非死區（U4f 本意）＋歸屬單調不跳行。
+    let (asc_em, desc_em) = quire_layout::shaping::ink_em_ratios();
+    // 本 fixture 全段同一字級（`ParaGrid::size_pt` 空＝退回 `params.font_size_pt`）。
+    let size_pt = p.font_size_pt;
+    // 墨跡上下緣相對行框頂的帶位移（與引擎 `shaping::ink_offsets_pt`／`caret_at`
+    // 同一公式；尺源同一：`line_h`＝全域帶尺、`asc_em／desc_em`＝內嵌字型度量）。
+    let ink_top_off = (size_pt - asc_em * size_pt) / line_h;
+    let ink_bot_off = (size_pt + desc_em * size_pt) / line_h;
     let mut pitch_total = 0usize;
     let mut pitch_dead = Vec::new();
+    let mut pitch_owner = Vec::new();
+    let mut pitch_wild = Vec::new();
+    let mut pitch_flip_bad = Vec::new();
+    let mut pitch_flips = 0usize;
+    // 鑑別計數（對中線制）：落在「中線～墨跡切分」之間、現行制判屬本行的樣本數。
+    let mut ink_vs_midline = 0usize;
     if fine() {
         for pg in pages {
+            let next_line_para =
+                |i: usize| -> Option<usize> { pg.lines.get(i + 1).map(|l| l.para_index) };
             for (i, l) in pg.lines.iter().enumerate() {
                 let b0 = match pg.line_bands.get(i) {
                     Some(b) => *b,
                     None => continue,
                 };
                 let span = grid.bands_of(l.para_index);
+                // 切分點（帶）：與下一行（同欄）的墨跡相鄰邊中點；末行無下一行 ⇒
+                // 沿用修前下界 `b0＋span`。
+                let split = match next_line_para(i) {
+                    Some(_) => {
+                        let bot = b0 as f32 + ink_bot_off;
+                        let dtop = (b0 + span) as f32 + ink_top_off;
+                        let mid = (bot + dtop) / 2.0;
+                        let hi = (b0 + span) as f32;
+                        if mid >= hi {
+                            hi
+                        } else if mid <= b0 as f32 {
+                            b0 as f32
+                        } else {
+                            mid
+                        }
+                    }
+                    None => b0 as f32 + span as f32,
+                };
+                let midline = b0 as f32 + span as f32 / 2.0;
                 for k in 1..span {
-                    let y = pg.margin_top_pt + (b0 + k) as f32 * line_h + line_h * 0.5;
+                    let bd = (b0 + k) as f32 + 0.5;
+                    let y = pg.margin_top_pt + bd * line_h;
                     pitch_total += 1;
-                    let hit = eng.caret_at(pg.index, 200.0, y);
-                    if hit.is_none() || hit.unwrap().para != l.para_index {
+                    let Some(hit) = eng.caret_at(pg.index, 200.0, y) else {
                         pitch_dead.push((pg.index, i, b0, k));
+                        continue;
+                    };
+                    // 歸屬口徑（墨跡真值制的書面版）。
+                    let want = if bd < split {
+                        l.para_index
+                    } else {
+                        match next_line_para(i) {
+                            Some(pp) => pp,
+                            None => l.para_index, // 末行無下一行：沿用本行
+                        }
+                    };
+                    if hit.para != want {
+                        pitch_owner.push((pg.index, i, b0, k, hit.para, want));
+                    }
+                    // 落點不野跳：歸屬段只能是本行段或下一行段（越界只走一格，
+                    // 與「上一段段尾」這種跨段錯判劃清界線）。
+                    if hit.para != l.para_index && Some(hit.para) != next_line_para(i) {
+                        pitch_wild.push((pg.index, i, b0, k, hit.para));
+                    }
+                    // 鑑別計數（跨墨跡切分才換段）：本行段 ≠ 下一行段時必須真換段。
+                    if bd >= split && next_line_para(i).is_some_and(|pp| pp != l.para_index) {
+                        if Some(hit.para) != next_line_para(i) {
+                            pitch_flip_bad.push((pg.index, i, b0, k, hit.para));
+                        }
+                        pitch_flips += 1;
+                    }
+                    // 對中線制的鑑別：中線以上、墨跡切分以下 ⇒ 現行制屬本行（中線
+                    // 制在此判給下一行＝PM 復算 38/38 破口的取樣區）。
+                    if bd >= midline && bd < split {
+                        if hit.para != l.para_index {
+                            pitch_owner.push((pg.index, i, b0, k, hit.para, l.para_index));
+                        }
+                        ink_vs_midline += 1;
                     }
                 }
             }
         }
         assert!(pitch_total > 100, "行距樣本不足（實得 {pitch_total}）");
         assert!(
+            pitch_flips > 10,
+            "跨墨跡切分換段樣本不足（實得 {pitch_flips}）——本臂未真正掃過墨跡邊界"
+        );
+        assert!(
+            ink_vs_midline > 10,
+            "「中線～墨跡切分」取樣不足（實得 {ink_vs_midline}）——本臂未對中線制取樣"
+        );
+        assert!(
             pitch_dead.is_empty(),
-            "行距帶必須落回上一行（字槽外的合法點擊），死區 {:?} 例（共 {pitch_total}）",
+            "行距帶不得有死區（字槽外的合法點擊也必落游標），死區 {:?} 例（共 {pitch_total}）",
             pitch_dead.iter().take(6).collect::<Vec<_>>()
+        );
+        assert!(
+            pitch_owner.is_empty(),
+            "行距帶歸屬須守行框墨跡真值制（bd＜切分點屬本行，否則屬下一行），錯位 {:?} 例（共 {pitch_total}）",
+            pitch_owner.iter().take(6).collect::<Vec<_>>()
+        );
+        assert!(
+            pitch_wild.is_empty(),
+            "行距帶落點野跳（歸屬段超出本行／下一行兩格）：{:?} 例",
+            pitch_wild.iter().take(6).collect::<Vec<_>>()
+        );
+        assert!(
+            pitch_flip_bad.is_empty(),
+            "跨墨跡切分未換段（下一行字形仍被上一段吞走＝用戶實錄缺陷）：{:?} 例",
+            pitch_flip_bad.iter().take(6).collect::<Vec<_>>()
         );
     }
 
