@@ -1,0 +1,65 @@
+{
+  "mode": "good",
+  "fixture": "style_cascade.docx",
+  "enter1": {
+    "caret_before": {
+      "para": 3,
+      "cp": 3
+    },
+    "pc": [
+      47,
+      48
+    ],
+    "calls": [
+      {
+        "m": "apply_mutation_json",
+        "a": [
+          "SplitParagraph",
+          "{\"target\":\"Body\",\"pos\":{\"para\":3,\"cp\":3}}"
+        ]
+      }
+    ],
+    "caret_after": {
+      "para": 4,
+      "cp": 0
+    }
+  },
+  "shift_enter": {
+    "pc": [
+      48,
+      48
+    ],
+    "calls": [
+      {
+        "m": "apply_mutation_json",
+        "a": [
+          "InsertBreak",
+          "{\"target\":\"Body\",\"pos\":{\"para\":4,\"cp\":38},\"kind\":\"LineWrapping\"}"
+        ]
+      }
+    ]
+  },
+  "enter2": {
+    "pc": [
+      48,
+      49
+    ],
+    "calls": [
+      {
+        "m": "apply_mutation_json",
+        "a": [
+          "SplitParagraph",
+          "{\"target\":\"Body\",\"pos\":{\"para\":5,\"cp\":38}}"
+        ]
+      }
+    ],
+    "pc_after_undo": 48
+  },
+  "save_readback": {
+    "live_pc": 48,
+    "cli_rows": 48,
+    "mismatch": [],
+    "saved": "u4n-enter-split-saved-good.docx"
+  },
+  "pageerrors": []
+}

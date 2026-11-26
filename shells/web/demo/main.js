@@ -240,6 +240,57 @@ imeEl.addEventListener("compositionend", (e) => {
   composing = false;
   commitText(e.data || "");
 });
+// U4N 回塞鎖（卡 t_d900332c，比照 k21/g1 口徑的 JS 版）：瀏覽器端本無 `process`
+// ——正常瀏覽器此式恆假，零行為擾動；回塞態由探針經 addInitScript 注入
+// `window.process = { env: { U4N_ENTER_SPLIT_BUGGY: "1" } }` 驅動，把 Enter／
+// Shift+Enter 打回修前缺陷態（commitText("\n") 段內字面換行、段數不增）。
+// 判別一律在**事件時**求值（不在模組層快取成常數）：模組層快照會在注入生效前
+// 定值，注入時點一旦早於模組求值就會鎖咬不住——求值延後到按鍵當下才可靠。
+const u4EnterBuggy = () =>
+  typeof process !== "undefined" && process.env != null &&
+  process.env.U4N_ENTER_SPLIT_BUGGY != null;
+
+// ---------------- U4N（卡 t_d900332c）：Enter 分段接正產線 SplitParagraph ----------------
+// 缺陷實錄（t_f073cd6c 取證，docs/word-ui-u4m-shell-enter-evidence.json）：
+// insertParagraph 曾走 commitText("\n") → insert_text_at_caret 段內插字面換行
+// ⇒ 段數永不增——用戶「無法任意按 Enter 創建新段落」的真根因（殼層，非引擎）。
+// 修復後分派（兩種語意、兩條路徑，不得混用）：
+//   Enter（insertParagraph）       → Mutation::SplitParagraph（M1.3，段數 +1，
+//                                    caret 落引擎 caret_after＝{para+1, cp:0}）。
+//   Shift+Enter（insertLineBreak） → Mutation::InsertBreak LineWrapping（段內
+//                                    `<w:br/>` 軟換行，段數不變——軟換行是「斷點」
+//                                    不是「新段」，與 Word 語意同；存檔後重開
+//                                    仍是同段兩行，非兩段）。
+// 引擎拒絕（如表格格內——M1.3／M1.5 只收正文 Body）時誠實顯示於狀態列、文件零
+// 變動；**絕不回退** commitText("\n") 假裝成功——那正是本卡要收斂的字面路徑。
+// 表格內分段支援屬引擎側另案（禁改 core/，本殼不越界湊燈）。
+function applyEnterMutation(mutation) {
+  if (!engine || readOnly) return false;
+  const res = JSON.parse(engine.apply_mutation_json(JSON.stringify(mutation)));
+  if (!res.ok) {
+    statusEl.textContent = `分段未套用（引擎拒絕）：${res.error}`;
+    return false;
+  }
+  const after = res.outcome && res.outcome.caret_after;
+  if (after) caret = { para: after.para, cp: after.cp }; // 落點以引擎回讀真值為準
+  resetAnchor();
+  render();
+  return true;
+}
+
+function splitParagraphAtCaret() {
+  return applyEnterMutation({
+    SplitParagraph: { target: "Body", pos: { para: caret.para, cp: caret.cp } },
+  });
+}
+
+function insertSoftBreakAtCaret() {
+  return applyEnterMutation({
+    InsertBreak: { target: "Body", pos: { para: caret.para, cp: caret.cp },
+                   kind: "LineWrapping" },
+  });
+}
+
 // 非合成輸入（英文數直接鍵入、貼上、退格）：beforeinput 比 input 更早且帶 inputType。
 imeEl.addEventListener("beforeinput", (e) => {
   if (composing || e.isComposing) return; // 合成中由 compositionend 處理
@@ -247,13 +298,21 @@ imeEl.addEventListener("beforeinput", (e) => {
   switch (e.inputType) {
     case "insertText":
     case "insertFromPaste":
-    case "insertLineBreak":
       e.preventDefault();
       commitText(e.data ?? "");
       break;
+    case "insertLineBreak":
+      e.preventDefault();
+      // 回塞態（U4N_ENTER_SPLIT_BUGGY）：修前 Shift+Enter＝commitText("") 靜默
+      // 無操作——軟換行連斷點都沒進文件（字面路徑收斂的姊妹缺陷）。
+      if (u4EnterBuggy()) { commitText(e.data ?? ""); break; }
+      insertSoftBreakAtCaret();
+      break;
     case "insertParagraph":
       e.preventDefault();
-      commitText("\n");
+      // 回塞態：修前缺陷原樣——段內插字面 \n、段數不增（探針反相斷言的靶）。
+      if (u4EnterBuggy()) { commitText("\n"); break; }
+      splitParagraphAtCaret();
       break;
     case "deleteContentBackward":
       e.preventDefault();
