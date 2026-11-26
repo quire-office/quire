@@ -1,0 +1,70 @@
+{
+  "mode": "buggy",
+  "fixture": "style_cascade.docx",
+  "enter1": {
+    "caret_before": {
+      "para": 3,
+      "cp": 3
+    },
+    "pc": [
+      47,
+      47
+    ],
+    "calls": [
+      {
+        "m": "insert_text_at_caret",
+        "a": [
+          3,
+          3,
+          "\n"
+        ]
+      }
+    ],
+    "caret_after": {
+      "para": 3,
+      "cp": 4
+    }
+  },
+  "shift_enter": {
+    "pc": [
+      47,
+      47
+    ],
+    "calls": []
+  },
+  "enter2": {
+    "pc": [
+      47,
+      47
+    ],
+    "calls": [
+      {
+        "m": "insert_text_at_caret",
+        "a": [
+          4,
+          38,
+          "\n"
+        ]
+      }
+    ],
+    "pc_after_undo": 47
+  },
+  "save_readback": {
+    "live_pc": 47,
+    "cli_rows": 47,
+    "mismatch": [
+      [
+        3,
+        "級聯填充第0段：這一行的存在是為了把版面擠過",
+        "級聯填\n充第0段：這一行的存在是為了把版面擠"
+      ],
+      [
+        4,
+        "級聯填充第1段：這一行的存在是為了把版面擠過",
+        "級聯填充第1段：這一行的存在是為了把版面擠過"
+      ]
+    ],
+    "saved": "u4n-enter-split-saved-buggy.docx"
+  },
+  "pageerrors": []
+}

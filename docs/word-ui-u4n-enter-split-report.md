@@ -129,5 +129,6 @@
     bash scripts/u4n_enter_split_buggy_replay.sh buggy   # 9 盞紅＝鎖有效
     bash scripts/u4n_enter_split_buggy_replay.sh good    # 全綠
 
-證據落盤：`build/u4n-enter-split-good.json`／`build/u4n-enter-split-buggy.json`
-（含逐盞明細、呼叫鏈實錄、存檔回讀差集）＋同名 PNG 截圖。
+證據落盤（已入庫 docs/，good／buggy 兩態 md5 必不同——U4g 教訓：同 md5＝證據失效）：
+`docs/word-ui-u4n-enter-split-evidence.good.json`／`.buggy.json`（含逐盞明細、
+呼叫鏈實錄、存檔回讀差集）＋同名 `.good.png`／`.buggy.png` 截圖。
