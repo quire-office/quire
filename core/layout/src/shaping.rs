@@ -319,6 +319,38 @@ impl FontMetrics {
     }
 }
 
+/// 內建字型「基線到字形上緣／下緣」的 em 比例（U4m 行框墨跡真值制用；
+/// 實測值：asc／em＝1.16000、desc／em＝0.28800，隨 size 線性）。
+///
+/// 尺源＝`FontMetrics::new`（同一支內嵌子集的 hhea 度量，與斷行／發射／caret
+/// 同一個字型），不是另造的第二把尺：正向腿給出行框頂 y、三支出貨渲染器把
+/// **字形基線**畫在 `y ＋ size_pt`（`shells/web/demo/main.js`、
+/// `shells/native/src/render_svg.rs`、編輯器外殼 vendor 渲染器同式），
+/// 故某行的**墨跡上下緣**（頁絕對 pt）＝
+///     ink_top ＝ y ＋ size − asc_em × size
+///     ink_bot＝ y ＋ size ＋ desc_em × size
+/// 行框歸屬反查（`LayoutEngine::caret_at`）就以這兩條邊界為命中區間。
+/// 用 `OnceLock` 常數化（1pt 級量一次、按比例線性縮放）：每頁每行都要算，
+/// 不能每行重跑一次 swash metrics。
+pub fn ink_em_ratios() -> (f32, f32) {
+    static RATIOS: std::sync::OnceLock<(f32, f32)> = std::sync::OnceLock::new();
+    *RATIOS.get_or_init(|| {
+        let m = FontMetrics::new(1.0);
+        let s = m.size_pt.max(0.001);
+        (m.ascent_pt / s, m.descent_pt / s)
+    })
+}
+
+/// 某字級的**行框墨跡上下緣**相對「行框頂 y」的位移（pt）：回傳
+/// `(上緣位移, 下緣位移)`＝`(size − asc_em×size, size ＋ desc_em×size)`
+/// （上緣位移為負：字形上緣在行框頂之上）。座標口徑見 [`ink_em_ratios`]：
+/// 行框頂＝發射 y＝`caret_rect.y`＝顯示列表 `Text.y`，基線＝y＋size。
+pub fn ink_offsets_pt(size_pt: f32) -> (f32, f32) {
+    let (asc_em, desc_em) = ink_em_ratios();
+    let s = size_pt.max(0.0);
+    (s - asc_em * s, s + desc_em * s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
