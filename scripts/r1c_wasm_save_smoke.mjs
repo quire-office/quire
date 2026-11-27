@@ -35,7 +35,22 @@ if (!(checked.bytes_len > 0)) fail(`零編輯 checked bytes_len 不得為 0: ${J
 ok(`checked 出口（零編輯）：ok:true, bytes_len=${checked.bytes_len}`);
 
 // ---- 2) 編輯一筆後取證據：touched 只准 word/document.xml ----
-engine.replace_paragraph_text(0, "R1c wasm 證據鏈 smoke");
+// 走真編輯鏈 apply_mutation_json（M1.1 InsertText，與考卷 insert_once 同口徑
+// ——touched 白名單由 mutation 落地層標記）。刻意不用 replace_paragraph_text：
+// 那是 layout 投影骨架路徑，原就不寫 part（零 touched 是誠實態，非缺陷）。
+const mut = JSON.stringify({
+  InsertText: {
+    target: "Body",
+    pos: { para: 0, cp: 0 },
+    text: "R1c wasm 證據鏈 smoke",
+    style_override: null,
+  },
+});
+const applied = JSON.parse(engine.apply_mutation_json(mut));
+if (applied.ok === false) fail(`InsertText 套用失敗: ${JSON.stringify(applied)}`);
+// 預算制軟分頁：settle 到穩定再存檔（考卷同口徑）。
+let guard = 0;
+while (!engine.is_settled() && guard++ < 2000) engine.reflow_step_json();
 const report = JSON.parse(engine.save_docx_report_json());
 if (report.ok !== true) fail(`report 應 ok:true，實際 ${JSON.stringify(report)}`);
 if (!Array.isArray(report.touched_parts) || !report.touched_parts.includes("word/document.xml"))
