@@ -1848,6 +1848,15 @@ fn split_rev_buggy() -> bool {
     std::env::var_os("SPLIT_REV_BUGGY").is_some()
 }
 
+/// R1-a 多步 Redo 回塞鎖（t_2ecfe8ca，比照 `E2B_UNDERLINE_BUGGY` 口徑）：
+/// `R1_REDO_BUGGY=1` 把重放路徑退回修前形態——`apply_mutation_inner` 重放時
+/// 照樣 `redo_stack.clear()`（缺陷本體），`redo()` 的重放護欄同步失效。考卷
+/// `tests/r1_redo_multistep.rs` 燈 1／燈 3 據此鑑別回紅；env 鎖零改檔，禁
+/// checkout/reset 鐵律天然滿足。
+fn r1_redo_buggy() -> bool {
+    std::env::var_os("R1_REDO_BUGGY").is_some()
+}
+
 /// 開標籤（非閉、非自閉合）的完整元素名（`w:fldSimple` 之類）；否則 `None`。
 fn open_tag_full_name(tag: &str) -> Option<&str> {
     if !tag.starts_with('<') || tag.starts_with("</") || tag.ends_with("/>") {
@@ -2758,7 +2767,29 @@ impl Engine {
     }
 
     /// 依據 Mutation 規格套用單筆變更。
+    ///
+    /// R1-a（t_2ecfe8ca）：本公開發出點＝**新語義操作**路徑（`replay=false`），
+    /// 照標準編輯器語義無條件丟棄 redo 歷史（重做後再打新字→重做鏈斷，卡面
+    /// 鐵律 1，紅燈 2 鎖死此行為）。重放（redo）改走私有
+    /// [`Engine::apply_mutation_inner`] 的 `replay=true` 臂，**不得**繞經本函式，
+    /// 否則重放第一筆就把整個 redo 棧清空（＝本卡缺陷本體）。
     pub fn apply_mutation(&mut self, op: Mutation) -> Result<MutationOutcome, MutationError> {
+        self.apply_mutation_inner(op, false)
+    }
+
+    /// R1-a 私有實作：`replay=false`＝新操作（照舊於結尾清 redo 棧）；
+    /// `replay=true`＝`redo()` 重放（**保留剩餘 redo 棧**——結尾 `clear()`
+    /// 正是「多步 redo 結構性不可能成功」的根因點）。`replay=true` 時仍照舊
+    /// push `undo_stack`（重放後 Ctrl+Z 可再撤銷該筆，undo/redo 兩棧互不污染，
+    /// 順序正確性由呼叫端 `redo()` 先 `pop()` 負責）。
+    ///
+    /// 注意：K29c／K29d 分流臂（獨立實作檔）自行 `redo_stack.clear()`，本旗
+    /// 管不到它們；重放路徑的棧保護由 `redo()` 端的重放護欄統一兜底。
+    fn apply_mutation_inner(
+        &mut self,
+        op: Mutation,
+        replay: bool,
+    ) -> Result<MutationOutcome, MutationError> {
         // E-2b 共型收尾：寫入端誠實閘門必須在觸碰任何 XML 之前（拒絕＝零位元組
         // 位移，不得先寫一半再反悔）。全庫走 `patch_rpr` 寫入面的只有兩臂
         // （FormatTextRange／UpsertNamedStyle，grep `patch_rpr` 呼叫點坐實），
@@ -3739,7 +3770,16 @@ impl Engine {
         };
 
         self.undo_stack.push(undo_entry);
-        self.redo_stack.clear();
+        // R1-a（t_2ecfe8ca）缺陷本體：這裡的無條件 `redo_stack.clear()` 對新操作
+        // 是標準語義（iron rule 1，照留），但 redo() 重放時走同一條尾巴，重放
+        // 第一筆就把整個 redo 棧清空，棧頂之後的 entries 全滅 ⇒ 多步 redo
+        // 結構性不可能成功。修法＝重放路徑（replay=true）跳過 clear，保留剩餘
+        // 棧；順序正確性由呼叫端負責（redo() 已先 pop，重放照舊 push
+        // undo_stack 讓 Ctrl+Z 可再撤銷）。回塞鎖 R1_REDO_BUGGY=1 時重放也清
+        // （修前鏡像，考卷燈 3 據此鑑別）。
+        if !replay || r1_redo_buggy() {
+            self.redo_stack.clear();
+        }
 
         Ok(MutationOutcome {
             events: Vec::new(),
@@ -3848,20 +3888,53 @@ impl Engine {
     }
 
     /// 重做頂端操作。
+    ///
+    /// R1-a（t_2ecfe8ca）：重放改走 `apply_mutation_inner(m, replay=true)`——
+    /// 結尾不再 `redo_stack.clear()`，棧頂之後尚未重放的 entries 得以存活，
+    /// 多步 redo 才結構性可行；重放照舊 push `undo_stack`（重做完 Ctrl+Z 可
+    /// 再撤銷，undo/redo 兩棧互不污染）。另設呼叫端**重放護欄**：重放前把
+    /// 剩餘棧移出保管、重放後（成功或失敗）放回——一則守住 iron rule 3 原子
+    /// 性（中途 `?` 失敗時未重放 entries 必須仍在棧上），二則兜住 K29c／K29d
+    /// 分流臂結尾的無條件 `redo_stack.clear()`（該兩檔屬平行卡禁區、本卡只准
+    /// 改 mutation.rs，replay 旗標傳不進去，護欄設在呼叫端是唯一合法位置）。
+    /// 回塞態 `R1_REDO_BUGGY=1`：護欄失效＋重放臂照清，逐字復刻修前缺陷。
     pub fn redo(&mut self) -> Result<Option<MutationOutcome>, MutationError> {
         let entry = match self.redo_stack.pop() {
             Some(e) => e,
             None => return Ok(None),
         };
 
-        // Redo 藉由重新執行原語義操作或逆向補丁
+        // 重放護欄：正常態先把尚未重放的剩餘 redo 棧取走保管；回塞態不保管
+        // （缺陷照犯，燈 3 據此翻紅）。
+        let shield = !r1_redo_buggy();
+        let preserved: Vec<UndoEntry> = if shield {
+            std::mem::take(&mut self.redo_stack)
+        } else {
+            Vec::new()
+        };
+
+        // Redo 藉由重新執行原語義操作或逆向補丁（replay=true＝不觸棧尾巴）。
+        let mut replay_result: Result<(), MutationError> = Ok(());
         for inv in &entry.inverse_ops {
             match &inv.semantic_inverse {
                 SemanticInverseOp::Mutation(m) => {
-                    self.apply_mutation(m.clone())?;
+                    if let Err(e) = self.apply_mutation_inner(m.clone(), true) {
+                        replay_result = Err(e);
+                        break;
+                    }
                 }
             }
         }
+
+        // 放回保管棧（失敗路徑同樣放回＝原子性底線）。現行重放臂不往
+        // redo_stack push（push 由 undo() 獨佔），若未來出現 push 亦無損併回。
+        if shield {
+            let pushed_during_replay = std::mem::replace(&mut self.redo_stack, preserved);
+            if !pushed_during_replay.is_empty() {
+                self.redo_stack.extend(pushed_during_replay);
+            }
+        }
+        replay_result?;
 
         Ok(Some(MutationOutcome {
             events: Vec::new(),
