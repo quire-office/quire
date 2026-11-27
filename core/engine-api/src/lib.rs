@@ -328,7 +328,22 @@ impl Engine {
         bytes: &[u8],
         paper: Option<&PaperSpec>,
     ) -> Result<Self, EngineError> {
+        let r1b_prof = std::env::var_os("R1B_PROFILE").is_some();
+        let mut r1b_t = std::time::Instant::now();
+        macro_rules! r1b_mark {
+            ($label:expr) => {{
+                if r1b_prof {
+                    eprintln!(
+                        "[R1B] {:<14} {:8.1} ms",
+                        $label,
+                        r1b_t.elapsed().as_secs_f64() * 1000.0
+                    );
+                }
+                r1b_t = std::time::Instant::now();
+            }};
+        }
         let doc = parse(bytes)?;
+        r1b_mark!("ooxml_parse");
         // ---- 樣式級聯層（t_5dfc8ac7）----
         // 開啟文件時一次性解析 styles.xml：逐段級聯合成的 (斷行字級, 段行高)
         // 網格餵 `ParaGrid`，run 級有效樣式烘焙進發射用投影 `paras_eff`（見
@@ -557,6 +572,7 @@ impl Engine {
                 cond_color: &cond_color_of,
             },
         );
+        r1b_mark!("cascade");
         // 顯式分頁旗標：直接 pPr **或** 級聯結果（樣式級 `pageBreakBefore`
         // 經 `effective_para` 流入投影段落；與上一步同一趟級聯，不另開）。
         let grid_break_v: Vec<bool> = eff_all.iter().map(|p| p.page_break).collect();
@@ -872,6 +888,7 @@ impl Engine {
             advance_scale: grid_adv_v,
             punct_arm: grid_punct_v,
         };
+        r1b_mark!("grid+tablemap");
         let layout = LayoutEngine::with_breaks_grid(
             &texts,
             params.clone(),
@@ -881,6 +898,7 @@ impl Engine {
             breaks,
             grid,
         );
+        r1b_mark!("layout_build");
         // 頁首頁尾層（t_b39f108b）：sectPr 宣告＋rels 查表＋part 解析。
         // 全鏈純讀取派生——parts／bundle 一個位元組都不碰（round-trip 零影響）。
         let (hf, hf_parts, even_odd, sec_geo) =
@@ -901,6 +919,7 @@ impl Engine {
             charts.clear();
         }
         let part_baselines = doc.parts.clone();
+        r1b_mark!("baselines");
         let engine = Self {
             doc,
             layout,
@@ -953,6 +972,7 @@ impl Engine {
             paper_override_applied,
             first_sec_geo,
         };
+        r1b_mark!("engine_struct");
         Ok(engine.with_footnotes())
     }
 
@@ -979,10 +999,23 @@ impl Engine {
     /// 註腳收斂可能改變頁數/節邊界（推下表以頁序索引），定案後再校一次
     /// 推下——表未變 ⇒ `set_header_pushes` 早退、零重排（常見路徑零成本）。
     fn recompute_notes(&mut self) {
+        // R1-b 量測標記（未設 `R1B_PROFILE` 時零行為變動，見 from_docx_bytes_with_paper 注）。
+        let prof = std::env::var_os("R1B_PROFILE").is_some();
+        let t0 = std::time::Instant::now();
         self.compute_header_push();
+        let hdr1 = t0.elapsed().as_secs_f64() * 1000.0;
         self.compute_footnotes();
+        let foot = t0.elapsed().as_secs_f64() * 1000.0 - hdr1;
         self.compute_endnotes();
+        let end = t0.elapsed().as_secs_f64() * 1000.0 - hdr1 - foot;
         self.compute_header_push();
+        if prof {
+            let total = t0.elapsed().as_secs_f64() * 1000.0;
+            eprintln!(
+                "[R1B] recompute_notes: hdr1 {hdr1:.1} + foot {foot:.1} + end {end:.1} + hdr2 {:.1} = {total:.1} ms",
+                total - hdr1 - foot - end
+            );
+        }
     }
 
     // ---------------- K7b：頁首推下層（Bug51170 尾部流動）----------------
