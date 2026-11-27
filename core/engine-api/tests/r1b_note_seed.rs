@@ -86,8 +86,8 @@ fn insert_char(engine: &mut Engine, para: usize) {
 fn r1b_lamp1_zero_change_recompute_relayouts_zero() {
     let bytes = corpus(FOOT_DOC);
     let engine = Engine::from_docx_bytes(&bytes).expect("開檔失敗");
-    let para = zero_change_para(&bytes, engine.page_count())
-        .expect("找不到零變動插入段（workload 異常）");
+    let para =
+        zero_change_para(&bytes, engine.page_count()).expect("找不到零變動插入段（workload 異常）");
 
     // 計數歸零後只量「編輯觸發的 recompute」段。
     Engine::reset_relayout_calls();
@@ -122,8 +122,8 @@ fn r1b_lamp2_pack_cache_determinism() {
     let mut a = Engine::from_docx_bytes(&bytes).expect("開檔失敗 A");
     let mut b = Engine::from_docx_bytes(&bytes).expect("開檔失敗 B");
 
-    let para = zero_change_para(&bytes, a.page_count())
-        .expect("找不到零變動插入段（workload 異常）");
+    let para =
+        zero_change_para(&bytes, a.page_count()).expect("找不到零變動插入段（workload 異常）");
     insert_char(&mut a, para);
     // B 走「編輯→Undo 回原點→再編輯同一段」：換參歷史不同（多一輪還原重排），
     // 終態必須與 A 逐位一致（發射↔分頁自洽不變量的確定性面）。

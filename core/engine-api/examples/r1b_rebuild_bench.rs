@@ -105,7 +105,7 @@ impl ZipTestHelper {
         c.extend_from_slice(&0u16.to_le_bytes());
         c.extend_from_slice(&0u16.to_le_bytes());
         self.buf.extend_from_slice(&[]); // 佔位（下方 central 再補齊欄位）
-        // 上面這行是防呆：central 欄位一律重新完整寫出，避免半截記錄。
+                                         // 上面這行是防呆：central 欄位一律重新完整寫出，避免半截記錄。
         c.extend_from_slice(&0x1234u16.to_le_bytes());
         c.extend_from_slice(&0x5678u16.to_le_bytes());
         c.extend_from_slice(&crc.to_le_bytes());
@@ -344,7 +344,7 @@ fn run_workload(label: &str, bytes: Vec<u8>, rounds: usize) -> (f64, f64) {
     for k in 0..rounds {
         let para = [para_head, para_mid, para_tail][k % 3];
         let patch = ParaPropsPatch {
-            alignment: Some(if k % 2 == 0 { "center" } else { "left" }).map(String::from),
+            alignment: Some(String::from(if k % 2 == 0 { "center" } else { "left" })),
             ..Default::default()
         };
         let t = Instant::now();
@@ -397,7 +397,7 @@ fn run_workload(label: &str, bytes: Vec<u8>, rounds: usize) -> (f64, f64) {
                     end: DocPos { para, cp: 12 },
                 },
                 patch: RunDirectPatch {
-                    italic: Some(if k % 2 == 0 { true } else { false }),
+                    italic: Some(k % 2 == 0),
                     ..Default::default()
                 },
             })
@@ -466,8 +466,8 @@ fn main() {
         let mut n = 4000usize;
         let mut bytes = synth_docx(n);
         loop {
-            let e = Engine::from_docx_bytes(&bytes)
-                .unwrap_or_else(|e| panic!("合成檔開檔失敗：{e}"));
+            let e =
+                Engine::from_docx_bytes(&bytes).unwrap_or_else(|e| panic!("合成檔開檔失敗：{e}"));
             if e.page_count() >= 500 {
                 break;
             }

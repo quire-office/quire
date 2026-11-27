@@ -110,8 +110,7 @@ fn r1b_note_seed_buggy() -> bool {
 
 /// `LayoutEngine::update_params`（清斷行快取＋整篇重排）累計呼叫次數。
 /// 經 `Engine::relayout_calls()` 透出給考卷／bench；`reset` 後可增量比對。
-static R1B_RELAYOUT_COUNT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static R1B_RELAYOUT_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub struct Engine {
     doc: OoxmlDoc,
@@ -338,6 +337,9 @@ impl Engine {
     /// `Some(p)` 時在 sections 建立處把每個 section 的 page_w/h 覆寫為 p 值；
     /// p 的邊距 Some 值覆寫對應邊距，None 邊距保留該 section 自身值。
     /// landscape／continuous／cols 一律不動。
+    // R1-b 計時插樁（R1B_PROFILE）：末個 r1b_mark! 之後累加器無可讀值＝
+    // unused_assignments 誤報，函式層局部放行（未設 env 時零行為變動）。
+    #[allow(unused_assignments)]
     pub fn from_docx_bytes_with_paper(
         bytes: &[u8],
         paper: Option<&PaperSpec>,
