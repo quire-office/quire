@@ -324,11 +324,11 @@ fn r1c_lamp3_report_is_pure_observation() {
     const FX: &[u8] = include_bytes!("../../../fixtures/style_cascade.docx");
 
     // 對照組：完全不呼叫 report。
-    let mut plain = insert_once(FX);
+    let plain = insert_once(FX);
     let bytes_plain = plain.save_docx().expect("對照組存檔失敗");
 
     // 實驗組：同一份編輯，先 report（連呼叫兩次，覆盖重複觀察）、再存檔。
-    let mut observed = insert_once(FX);
+    let observed = insert_once(FX);
     let _ = observed.save_docx_report_json();
     let _ = observed.save_docx_report_json();
     let bytes_observed = observed.save_docx().expect("實驗組存檔失敗");
