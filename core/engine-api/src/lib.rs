@@ -992,13 +992,19 @@ impl Engine {
 
     // ---------------- 頁底註腳層（F2b-2）----------------
 
-    /// R1-b 量測探針（紅燈考卷／bench 專用）：`LayoutEngine::update_params`
-    /// ＝「清斷行快取＋整篇重排」的總計數。零編輯／零註腳變動的 recompute
-    /// 之後必須仍為 0（`r1b_note_seed` 考卷燈 1 的鎖），`R1B_NOTE_SEED_BUGGY=1`
-    /// 回塞態下必 >0（燈 3 鑑別力）。
+    /// R1-b 量測探針（紅燈考卷／bench 專用）：`LayoutEngine`「換分頁參數＋重排」
+    /// 的總計數。零編輯／零註腳變動的 recompute 之後必須仍為 0
+    /// （`r1b_note_seed` 考卷燈 1 的鎖），`R1B_NOTE_SEED_BUGGY=1` 回塞態下必 >0
+    /// （燈 3 鑑別力）。
+    ///
+    /// R1-b 快路徑：本層換的都是**打包軸**參數（逐頁預留／頁首推下），斷行寬
+    /// 四軸（page_w／左右邊距／字級／行距）一個不動 ⇒ 走
+    /// `update_pack_params`：斷行快取保留、只重跑打包（bug65649 實測一輪
+    /// 211ms → ~25ms）。四軸真有變時 `update_pack_params` 內部自動退回
+    /// `update_params` 全清快取（保守口徑，正確性優先）。
     pub(crate) fn relayout_with_params(&mut self, p: LayoutParams) {
         R1B_RELAYOUT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.layout.update_params(p);
+        self.layout.update_pack_params(p);
     }
 
     /// 開啟尾部：收斂迴圈「分頁→排註腳→新預留」直至逐頁預留穩定
@@ -1263,7 +1269,23 @@ impl Engine {
     /// `self.params.footnote_reserves_pt == self.foot.reserves`——顯示用的
     /// 排布與實際分頁扣的預留永遠同一份。
     fn compute_footnotes(&mut self) {
+        // R1-b 分相探針（未設 `R1B_PROFILE` 時零行為變動）。
+        let r1b_prof = std::env::var_os("R1B_PROFILE").is_some();
+        let mut r1b_t = std::time::Instant::now();
+        macro_rules! r1b_sub {
+            ($label:expr) => {{
+                if r1b_prof {
+                    eprintln!(
+                        "  [R1B·foot] {:<18} {:8.1} ms",
+                        $label,
+                        r1b_t.elapsed().as_secs_f64() * 1000.0
+                    );
+                }
+                r1b_t = std::time::Instant::now();
+            }};
+        }
         self.build_note_entries();
+        r1b_sub!("build_note_entries");
         if self.note_entries.is_empty() || self.note_anchors.is_empty() {
             // 零擾動快路徑：無註腳（或註腳全未被引用）⇒ 現況逐位元組不變。
             self.foot = footnotes::NoteLayout::default();
@@ -1320,8 +1342,10 @@ impl Engine {
                 self.params = p.clone();
                 self.relayout_with_params(p);
             }
+            r1b_sub!(&format!("round{round} relayout"));
             // lay.reserves＝本輪版面下「下一輪該套」的計算預留（純由排布算出）。
             let lay = self.footnote_pass(body_size, round);
+            r1b_sub!(&format!("round{round} note_pass"));
             if footnotes::reserves_stable(&lay.reserves, &applied) {
                 // 計算值 == 實際套用值 ⇒ 分頁與排布自洽，定案返還。
                 self.foot = lay;

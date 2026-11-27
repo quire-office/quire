@@ -227,6 +227,18 @@ pub fn col_layout(geo: &SectionGeometry) -> Option<ColLayout> {
 /// 段落 i 的**斷行寬**：多欄 section＝首欄寬，單欄／無 section 表＝版心寬。
 /// `num <= 1` 時與 `LayoutParams::content_w_pt()` 逐位元組等價（零擾動閘門）。
 /// 公開給 engine 接線（級聯烘焙的逐段可用寬必須與斷行寬同口徑）。
+/// 斷行寬度軸（R1-b 快取保留判準）：`section_break_w_pt` 的 `None` 分支只看
+/// 這四欄（`content_w_pt` ← page_w／左右邊距；字級與行距進 `break_para` 的
+/// `TextMeasurer`）。四軸逐位相同 ⇒ 舊斷行快取逐條仍有效。
+/// `sections`／`grid` 不屬於 `LayoutParams`，換參函式碰不到，故不在比對範圍。
+fn break_width_axis_equal(a: &LayoutParams, b: &LayoutParams) -> bool {
+    a.page_w_pt == b.page_w_pt
+        && a.margins_pt[MARGIN_LEFT] == b.margins_pt[MARGIN_LEFT]
+        && a.margins_pt[MARGIN_RIGHT] == b.margins_pt[MARGIN_RIGHT]
+        && a.font_size_pt == b.font_size_pt
+        && a.line_spacing == b.line_spacing
+}
+
 pub fn section_break_w_pt(p: &LayoutParams, sections: &[SectionSpec], para: usize) -> f32 {
     match sections.get(para) {
         Some(s) => match col_layout(&s.geo) {
@@ -2417,6 +2429,25 @@ impl LayoutEngine {
     pub fn update_params(&mut self, params: LayoutParams) {
         self.params = params;
         self.cache = vec![None; self.cache.len()];
+        self.rebuild_full();
+    }
+
+    /// R1-b：只換「打包軸」參數（逐頁預留／頁首推下／page_h／上下邊距）時的換參——
+    /// 斷行快取**保留**，只重跑 `paginate_flow`（bug65649 實測整篇斷行 190ms、
+    /// 打包 25ms：舊寫每次註腳收斂輪都白付斷行錢，一輪 211ms 的絕大部分）。
+    ///
+    /// 安全不變量（可證，非推測）：斷行唯一的寬度來源是
+    /// [`section_break_w_pt`]＝`page_w_pt` ∪ `margins_pt[LEFT/RIGHT]` ∪
+    /// `font_size_pt` ∪ `line_spacing`（外加 `sections`／`grid`，兩者不在本函式
+    /// 參數內、生命期內不動）；預留／推下只經 [`section_capacity`] 進**打包**層。
+    /// 故這四軸任一有變 ⇒ 退回 `update_params` 全清快取（正確性優先於增量速度，
+    /// 保守口徑比照 F2b-2 注）；四軸不變 ⇒ 快取逐條仍有效，零錯斷行風險。
+    pub fn update_pack_params(&mut self, params: LayoutParams) {
+        if !break_width_axis_equal(&self.params, &params) {
+            self.update_params(params);
+            return;
+        }
+        self.params = params;
         self.rebuild_full();
     }
 
