@@ -14,10 +14,22 @@
 //!    variant 不得出現在清單。全部機械對照（掃 mutation.rs 列舉 ＋ 掃考卷檔），不靠人眼。
 //!
 //! 環境變數紀律（比照 k25b_group_child_stack／f2_wordart_projection 口徑）：
-//! `set_var`／`remove_var` 成對且**只出現在一個測試內**，同檔其他測試零 env 觸碰，
-//! 避免平行執行緒污染同期讀 env 的斷言。
+//! `set_var`／`remove_var` 成對且**只出現在一個測試內**，同檔其他測試零 env 觸碰；
+//! 又因 libtest 同檔平行執行緒**共用行程 env**，燈 1 翻 env 期間燈 2／燈 3 的
+//! 存檔段會被誤染（PM 值守補記：燈 1 設 R1C_SAVE_FAULT 視窗內，同行程其他燈的
+//! `save_docx()` 會誠實失敗）。故三盞 Drive 段同持 `R1C_ENV` 靜態互斥鎖
+//! serialize（比照 r1_redo_multistep 的 R1_ENV 口徑）。
 
 use quire_engine::{Engine, Mutation, SubDocTarget};
+
+/// env 翻動 serialize 鎖（PM 值守補）：燈 1 的 set/remove 全程持鎖；燈 2／燈 3
+/// 的存檔段同鎖——同行程平行執行緒下「讀 env 存檔的斷言」與「翻 env 的測試」
+/// 互斥，零污染（比照 r1_redo_multistep 的 R1_ENV 紀律）。
+static R1C_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    R1C_ENV.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 // ---------------------------------------------------------------- 通用輔助
 
@@ -102,6 +114,7 @@ fn insert_once(bytes: &[u8]) -> Engine {
 ///   考卷必須紅（證明本燈有鑑別力，不是空斷言）。
 #[test]
 fn r1c_lamp1_save_failure_never_returns_empty_bytes_silently() {
+    let _g = env_guard();
     const FX: &[u8] = include_bytes!("../../../fixtures/style_cascade.docx");
     // 進程起手先把兩個 env 清乾淨（CI 可能帶著殘值進來）。
     std::env::remove_var("R1C_SAVE_FAULT");
@@ -177,6 +190,7 @@ fn r1c_lamp1_save_failure_never_returns_empty_bytes_silently() {
 // ------------------------------------------------- 紅燈 2：證據正確鎖
 
 fn lamp2_evidence_lock(rel: &str) {
+    let _g = env_guard();
     let bytes = load_fixture(rel);
     let total = zip_file_entry_count(&bytes);
     assert!(total > 3, "{rel} 的 entry 數異常（{total}），掃描器假設可能失效");
@@ -246,6 +260,7 @@ fn r1c_lamp2_evidence_correct_on_style_inheritance() {
 /// 證據產出必須是純觀察，不得把 bundle／parts 摸髒（污染未觸碰 entry 的搬運依據）。
 #[test]
 fn r1c_lamp3_report_is_pure_observation() {
+    let _g = env_guard();
     const FX: &[u8] = include_bytes!("../../../fixtures/style_cascade.docx");
 
     // 對照組：完全不呼叫 report。
