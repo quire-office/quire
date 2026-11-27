@@ -116,7 +116,7 @@ fn zip_file_entry_count(bytes: &[u8]) -> usize {
 fn insert_once(bytes: &[u8]) -> Engine {
     let mut engine = Engine::from_docx_bytes(bytes).unwrap_or_else(|e| panic!("開檔失敗: {e}"));
     settle(&mut engine);
-    // 找第一個可插字的段落（cp=0 恒合法：CodepointOutOfBounds 的邊界是 cp > para_len）。
+    // 找第一個可插字的段落（cp=0 恆合法：CodepointOutOfBounds 的邊界是 cp > para_len）。
     let para = (0..engine.paragraph_count())
         .find(|&p| engine.paragraph_text(p).is_some())
         .expect("至少要有一個段落");
@@ -327,7 +327,7 @@ fn r1c_lamp3_report_is_pure_observation() {
     let plain = insert_once(FX);
     let bytes_plain = plain.save_docx().expect("對照組存檔失敗");
 
-    // 實驗組：同一份編輯，先 report（連呼叫兩次，覆盖重複觀察）、再存檔。
+    // 實驗組：同一份編輯，先 report（連呼叫兩次，覆蓋重複觀察）、再存檔。
     let observed = insert_once(FX);
     let _ = observed.save_docx_report_json();
     let _ = observed.save_docx_report_json();
@@ -460,7 +460,7 @@ fn variants_tested_by_exam_paper() -> (std::collections::BTreeSet<String>, Vec<S
 
 #[test]
 fn r1c_lamp4_supported_mutations_matches_exam_paper_census() {
-    // 1) 列舉源頭對照：能力清單目錄必須逐一对上 mutation.rs 的 variant（漂移閘）。
+    // 1) 列舉源頭對照：能力清單目錄必須一一對上 mutation.rs 的 variant（漂移閘）。
     let src_variants = mutation_variants_from_source();
     assert!(
         src_variants.len() >= 30,

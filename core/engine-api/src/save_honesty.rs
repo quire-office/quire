@@ -10,7 +10,7 @@
 //! 2. [`Engine::save_docx_report_json`]：無損證據。`touched_parts` 取自
 //!    引擎 touched 白名單、`entry_total` 取自 bundle 實數、`roundtrip` 取自
 //!    [`Engine::roundtrip_check`]（`core/ooxml/src/diff.rs` 的結構級對照）。
-//!    純觀察：全程 `&self`，不觸碰任何可变狀態（紅燈 3 鎖此事）。
+//!    純觀察：全程 `&self`，不觸碰任何可變狀態（紅燈 3 鎖此事）。
 //! 3. [`surface`]／[`Engine::supported_mutations_json`]：能力清單。
 //!    單源＝`src/mutation.rs` 列舉 ＋ `tests/` 考卷 census，**build 期機械生成**
 //!    （`build.rs`，比照 U4f 的 `R1C_*` env 注入口徑），零手寫清單——
@@ -36,7 +36,7 @@ use crate::Engine;
 
 // ================================================================ 錯誤種類
 
-/// 錯誤種類（單源＝`EngineError` 列舉本身，列舉加變體编译器強迫這裡同步；
+/// 錯誤種類（單源＝`EngineError` 列舉本身，列舉加變體編譯器強迫這裡同步；
 /// 壓扁成字串常數＝紅燈 1 的 `!= "unknown"` 斷言把關）。
 pub fn engine_error_kind(err: &crate::EngineError) -> &'static str {
     match err {
