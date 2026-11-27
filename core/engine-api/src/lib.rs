@@ -72,6 +72,10 @@ pub use mutation::{
     WrapModeSpec, XmlBytePatch, XmlReversePatch,
 };
 pub use quire_ooxml::diff_untouched;
+// R1-c：誠實存檔出口＋無損證據報告＋能力清單單源（實作面分檔；Engine 方法
+// 以 inherent impl 擴充於 save_honesty.rs，呼叫端經 quire_engine 直接可見）。
+mod save_honesty;
+pub use save_honesty::{engine_error_kind, surface as mutation_surface, SurfaceItem};
 // K29e：上下標型別 re-export——`RunDirectPatch::vert_align` 直接沿用級聯層
 // [`quire_ooxml::VertAlign`]（單一真值源），外殼與考卷經本 crate 取用。
 pub use quire_ooxml::{NoteKind2, NoteNumberFormat, NotePos, NoteRestart, VertAlign};
@@ -2894,7 +2898,12 @@ impl Engine {
     // ---------------- 無損存檔 / round-trip 驗證 ----------------
 
     /// 存檔：未觸碰 part 逐位元組沿用（見 quire-ooxml 文件）。
+    ///
+    /// R1-c 故障注入點：`R1C_SAVE_FAULT` 設定時誠實回 `Err`（見
+    /// [`save_honesty::fault_gate`]）。注入在 `OoxmlDoc::save()` **之前**——
+    /// 卡面禁區（R1-b 改 save()）一個位元組都不碰。
     pub fn save_docx(&self) -> Result<Vec<u8>, EngineError> {
+        save_honesty::fault_gate()?;
         Ok(self.doc.save()?)
     }
 

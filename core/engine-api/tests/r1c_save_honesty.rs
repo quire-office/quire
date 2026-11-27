@@ -27,8 +27,36 @@ use quire_engine::{Engine, Mutation, SubDocTarget};
 /// 互斥，零污染（比照 r1_redo_multistep 的 R1_ENV 紀律）。
 static R1C_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-    R1C_ENV.lock().unwrap_or_else(|e| e.into_inner())
+/// RAII：取鎖時快照兩個注入 env，放鎖（含 panic 路徑）時**還原到快照態**——
+/// 燈 1 若在持 env 中途斷言失敗，panic 也會先把環境復原再交還鎖（本次燈 3
+/// 級聯誤染的根因防護）。刻意不是「無條件清空」：外部以 `R1C_SAVE_BUGGY=1`
+/// 整跑時，快照＝存在 ⇒ 燈 2／燈 3 交還鎖後 BUGGY 仍在上，燈 1 臂 A 照樣
+/// 翻紅（無條件清空會把雙態閘門靜默癱瘓成假綠）。
+struct EnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    fault: Option<std::ffi::OsString>,
+    buggy: Option<std::ffi::OsString>,
+}
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.fault {
+            Some(v) => std::env::set_var("R1C_SAVE_FAULT", v),
+            None => std::env::remove_var("R1C_SAVE_FAULT"),
+        }
+        match &self.buggy {
+            Some(v) => std::env::set_var("R1C_SAVE_BUGGY", v),
+            None => std::env::remove_var("R1C_SAVE_BUGGY"),
+        }
+    }
+}
+
+fn env_guard() -> EnvGuard {
+    let lock = R1C_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    EnvGuard {
+        _lock: lock,
+        fault: std::env::var_os("R1C_SAVE_FAULT"),
+        buggy: std::env::var_os("R1C_SAVE_BUGGY"),
+    }
 }
 
 // ---------------------------------------------------------------- 通用輔助
@@ -52,7 +80,7 @@ fn zip_file_entry_count(bytes: &[u8]) -> usize {
     // EOCD（'PK\x05\x06'）必在檔尾 22 位元組起、往後最多 65535 註解內。
     let sig = [0x50u8, 0x4b, 0x05, 0x06];
     let tail_start = bytes.len().saturating_sub(22 + 65535);
-    let eocd = (bytes.len()..tail_start)
+    let eocd = (tail_start..bytes.len())
         .rev()
         .find(|&i| bytes.get(i..i + 4) == Some(&sig[..]))
         .expect("找不到 EOCD，不是合法 zip");
@@ -86,8 +114,7 @@ fn zip_file_entry_count(bytes: &[u8]) -> usize {
 
 /// 對一份 docx 做「單段 M1.1 InsertText」，回傳（引擎, 插字後的段落序）。
 fn insert_once(bytes: &[u8]) -> Engine {
-    let mut engine = Engine::from_docx_bytes(bytes)
-        .unwrap_or_else(|e| panic!("開檔失敗: {e}"));
+    let mut engine = Engine::from_docx_bytes(bytes).unwrap_or_else(|e| panic!("開檔失敗: {e}"));
     settle(&mut engine);
     // 找第一個可插字的段落（cp=0 恒合法：CodepointOutOfBounds 的邊界是 cp > para_len）。
     let para = (0..engine.paragraph_count())
@@ -116,9 +143,10 @@ fn insert_once(bytes: &[u8]) -> Engine {
 fn r1c_lamp1_save_failure_never_returns_empty_bytes_silently() {
     let _g = env_guard();
     const FX: &[u8] = include_bytes!("../../../fixtures/style_cascade.docx");
-    // 進程起手先把兩個 env 清乾淨（CI 可能帶著殘值進來）。
+    // 進程起手清 FAULT 殘值（CI 可能帶著殘值進來）。BUGGY **刻意不在入口清**：
+    // 外部以 `R1C_SAVE_BUGGY=1` 整跑時，臂 A 的誠實斷言必紅（卡面回塞鑑別
+    // 「紅燈 1 必紅」的實現形態，比照 r1_redo_multistep 雙態閘門口徑）。
     std::env::remove_var("R1C_SAVE_FAULT");
-    std::env::remove_var("R1C_SAVE_BUGGY");
 
     // ---- 臂 A：注入失敗態（未開 BUGGY）——修復後必綠 ----
     std::env::set_var("R1C_SAVE_FAULT", "1");
@@ -165,13 +193,21 @@ fn r1c_lamp1_save_failure_never_returns_empty_bytes_silently() {
         let engine = Engine::from_docx_bytes(FX).expect("開檔失敗");
         let v: serde_json::Value =
             serde_json::from_str(&engine.save_docx_checked_json()).expect("checked JSON 可解析");
-        // 修前態的特徵：失敗被吞掉 ⇒ 交出 ok:true ＋ 0 位元組（用戶拿到空檔）。
-        // 本燈在 BUGGY 下必須紅，故把「修後應有的行为」寫成斷言，讓它如實翻紅。
+        // 鑑別燈 Shape（比照 r1a_lamp3 口徑）：斷言「缺陷在回塞態被逐字復刻」
+        // ——修前 unwrap_or_default() 把失敗吞成 ok:true ＋ 0 位元組（用戶拿到
+        // 空檔且渾然不知）。本斷言在正常全跑綠（它鎖的是 BUGGY 路徑真的接到
+        // 吞錯機制，不是空斷言）；而**外部**以 `R1C_SAVE_BUGGY=1` 整跑時，
+        // 臂 A 的誠實斷言（ok 必 false）必紅——PM 雙態閘門的兩端。
         let swallowed_empty_ok = v["ok"] == true && v["bytes_len"].as_u64() == Some(0);
         assert!(
-            !swallowed_empty_ok,
-            "回塞態（R1C_SAVE_BUGGY=1）重現修前 unwrap_or_default() 吞錯：\
-             用戶拿到 0 位元組空檔且完全不知道發生了什麼。實際: {v}"
+            swallowed_empty_ok,
+            "回塞態（R1C_SAVE_BUGGY=1）必須逐字復刻修前 unwrap_or_default() 吞錯\
+             （ok:true 配 0 位元組）——否則回塞鎖沒接上真缺陷路徑。實際: {v}"
+        );
+        // 回塞態的錯誤資訊也必須全滅（修前態「完全不知道發生了什麼」的實錄）。
+        assert!(
+            v["error"].is_null() && v["error_kind"].is_null(),
+            "回塞態必須連錯誤資訊一併吞光（修前態特徵），實際: {v}"
         );
     }
     std::env::remove_var("R1C_SAVE_BUGGY");
@@ -183,7 +219,10 @@ fn r1c_lamp1_save_failure_never_returns_empty_bytes_silently() {
         let v: serde_json::Value =
             serde_json::from_str(&engine.save_docx_checked_json()).expect("checked JSON 可解析");
         assert_eq!(v["ok"], true, "零編輯存檔必須 ok:true，實際: {v}");
-        assert!(v["bytes_len"].as_u64().unwrap_or(0) > 0, "零編輯存檔不得是空 bytes: {v}");
+        assert!(
+            v["bytes_len"].as_u64().unwrap_or(0) > 0,
+            "零編輯存檔不得是空 bytes: {v}"
+        );
     }
 }
 
@@ -193,14 +232,20 @@ fn lamp2_evidence_lock(rel: &str) {
     let _g = env_guard();
     let bytes = load_fixture(rel);
     let total = zip_file_entry_count(&bytes);
-    assert!(total > 3, "{rel} 的 entry 數異常（{total}），掃描器假設可能失效");
+    assert!(
+        total > 3,
+        "{rel} 的 entry 數異常（{total}），掃描器假設可能失效"
+    );
 
     let engine = insert_once(&bytes);
     let v: serde_json::Value =
         serde_json::from_str(&engine.save_docx_report_json()).expect("report JSON 可解析");
 
     assert_eq!(v["ok"], true, "{rel}：存檔必須成功，實際: {v}");
-    assert!(v["bytes_len"].as_u64().unwrap_or(0) > 0, "{rel}：bytes_len 不得為 0: {v}");
+    assert!(
+        v["bytes_len"].as_u64().unwrap_or(0) > 0,
+        "{rel}：bytes_len 不得為 0: {v}"
+    );
 
     let touched: Vec<String> = v["touched_parts"]
         .as_array()
@@ -220,14 +265,21 @@ fn lamp2_evidence_lock(rel: &str) {
         Some((total - 1) as u64),
         "{rel}：preserved_part_count 必須等於 ZIP 實數 entry 數({total}) − 1"
     );
-    assert_eq!(v["entry_total"].as_u64(), Some(total as u64), "{rel}：entry_total 與 ZIP 實數不符");
+    assert_eq!(
+        v["entry_total"].as_u64(),
+        Some(total as u64),
+        "{rel}：entry_total 與 ZIP 實數不符"
+    );
 
     let rt = &v["roundtrip"];
     assert_eq!(rt["pass"], true, "{rel}：roundtrip 必須 pass，實際: {rt}");
     assert_eq!(
         rt["whitelisted_changed"]
             .as_array()
-            .map(|a| a.iter().map(|x| x.as_str().unwrap_or_default()).collect::<Vec<_>>())
+            .map(|a| a
+                .iter()
+                .map(|x| x.as_str().unwrap_or_default())
+                .collect::<Vec<_>>())
             .unwrap_or_default(),
         vec!["word/document.xml"],
         "{rel}：白名單內真正變更的 part 只准 word/document.xml"
@@ -240,8 +292,16 @@ fn lamp2_evidence_lock(rel: &str) {
         0,
         "{rel}：未觸碰 entry 零失真違規必須為 0，實際: {rt}"
     );
-    assert_eq!(rt["missing"].as_array().map(|a| a.len()).unwrap_or(1), 0, "{rel}：不得缺 part");
-    assert_eq!(rt["added"].as_array().map(|a| a.len()).unwrap_or(1), 0, "{rel}：不得憑空新增 part");
+    assert_eq!(
+        rt["missing"].as_array().map(|a| a.len()).unwrap_or(1),
+        0,
+        "{rel}：不得缺 part"
+    );
+    assert_eq!(
+        rt["added"].as_array().map(|a| a.len()).unwrap_or(1),
+        0,
+        "{rel}：不得憑空新增 part"
+    );
 }
 
 #[test]
@@ -308,8 +368,14 @@ fn mutation_variants_from_source() -> Vec<String> {
             break;
         }
         // variant 宣告形如：`    InsertText {` 或 `    DeleteRange { range: DocRange },`
-        let Some(head) = t.strip_prefix("    ") else { continue };
-        if head.starts_with(' ') || head.starts_with('/') || head.starts_with('#') || head.starts_with('}') {
+        let Some(head) = t.strip_prefix("    ") else {
+            continue;
+        };
+        if head.starts_with(' ')
+            || head.starts_with('/')
+            || head.starts_with('#')
+            || head.starts_with('}')
+        {
             continue;
         }
         let word: String = head
@@ -332,7 +398,7 @@ fn mutation_variants_from_source() -> Vec<String> {
 
 /// 掃 `core/engine-api/tests/*.rs`，回傳「有**非 `#[ignore]` 考題**引用到」的 variant 名集合。
 /// `#[ignore]` 標記在其所屬 `fn` 之前出線即視為該 fn 整段是 ignore 考題（比照 g1/e_probe
-/// 的寫法：`#[test]` ＋ `#[ignore = "..."]` 緊接 `fn`）。
+/// 的寫法：`\#[test]` ＋ `\#[ignore = "..."]` 緊接 `fn`）。
 fn variants_tested_by_exam_paper() -> (std::collections::BTreeSet<String>, Vec<String>) {
     use std::collections::BTreeSet;
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests");
@@ -340,7 +406,10 @@ fn variants_tested_by_exam_paper() -> (std::collections::BTreeSet<String>, Vec<S
     let mut ignored_hits: Vec<String> = Vec::new();
     let mut files: Vec<String> = std::fs::read_dir(dir)
         .expect("讀不到 tests 目錄")
-        .filter_map(|e| e.ok().and_then(|e| e.file_name().to_str().map(str::to_string)))
+        .filter_map(|e| {
+            e.ok()
+                .and_then(|e| e.file_name().to_str().map(str::to_string))
+        })
         .filter(|n| n.ends_with(".rs"))
         .collect();
     files.sort();
@@ -405,7 +474,8 @@ fn r1c_lamp4_supported_mutations_matches_exam_paper_census() {
     let mut catalog_sorted = catalog.clone();
     catalog_sorted.sort();
     assert_eq!(
-        catalog_sorted, src_variants,
+        catalog_sorted,
+        src_variants,
         "能力目錄與 `pub enum Mutation` 不同源（缺: {:?}／多: {:?}）",
         src_variants
             .iter()
@@ -443,7 +513,10 @@ fn r1c_lamp4_supported_mutations_matches_exam_paper_census() {
         );
     }
     // 4) 只有 ignore 考題（或完全沒考題）者，一律不得出現；且必須在目錄裡被誠實標記未驗證。
-    let untested: Vec<&String> = src_variants.iter().filter(|v| !tested.contains(*v)).collect();
+    let untested: Vec<&String> = src_variants
+        .iter()
+        .filter(|v| !tested.contains(*v))
+        .collect();
     for v in &untested {
         assert!(
             !reported.contains(v),
@@ -465,6 +538,6 @@ fn r1c_lamp4_supported_mutations_matches_exam_paper_census() {
     );
     // 留檔：把只有 ignore 考題的命中列印出來，交付報告可直接引用。
     if !ignored_hits.is_empty() {
-        eprintln!("[r1c_lamp4] 僅 #\[ignore\] 考題命中的 variant 引用: {ignored_hits:?}");
+        eprintln!("[r1c_lamp4] 僅 ##[ignore] 考題命中的 variant 引用: {ignored_hits:?}");
     }
 }
