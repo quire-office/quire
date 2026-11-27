@@ -99,6 +99,20 @@ pub struct PaperSpec {
     pub margin_right_pt: Option<f32>,
 }
 
+// ---------------- R1-b 量測面（recompute_notes 收斂止血）----------------
+//
+// `R1B_NOTE_SEED_BUGGY=1`：把註腳／尾註／頁首推下三條收斂迴圈的 `applied`
+// 刷回「空表起步」的舊行為（無條件先清快取整篇重排一輪）——紅燈考卷
+// `r1b_note_seed` 燈 3 鑑別力來源，比照 `K6_AUTO_PITCH_BUGGY` 先例。
+fn r1b_note_seed_buggy() -> bool {
+    std::env::var_os("R1B_NOTE_SEED_BUGGY").is_some()
+}
+
+/// `LayoutEngine::update_params`（清斷行快取＋整篇重排）累計呼叫次數。
+/// 經 `Engine::relayout_calls()` 透出給考卷／bench；`reset` 後可增量比對。
+static R1B_RELAYOUT_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 pub struct Engine {
     doc: OoxmlDoc,
     layout: LayoutEngine,
@@ -978,6 +992,15 @@ impl Engine {
 
     // ---------------- 頁底註腳層（F2b-2）----------------
 
+    /// R1-b 量測探針（紅燈考卷／bench 專用）：`LayoutEngine::update_params`
+    /// ＝「清斷行快取＋整篇重排」的總計數。零編輯／零註腳變動的 recompute
+    /// 之後必須仍為 0（`r1b_note_seed` 考卷燈 1 的鎖），`R1B_NOTE_SEED_BUGGY=1`
+    /// 回塞態下必 >0（燈 3 鑑別力）。
+    pub(crate) fn relayout_with_params(&mut self, p: LayoutParams) {
+        R1B_RELAYOUT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.layout.update_params(p);
+    }
+
     /// 開啟尾部：收斂迴圈「分頁→排註腳→新預留」直至逐頁預留穩定
     /// （≤`MAX_CONVERGE_ROUNDS`+1 輪）。**無註腳文件在快路徑直接返回**：
     /// entries/anchors 皆空 ⇒ 不進迴圈、params 與 layout 一個位元組不動。
@@ -1045,6 +1068,11 @@ impl Engine {
     /// 推下收斂主體：「設表→分頁→量頁首底端→新表」直至逐頁推下表穩定
     /// （≤`MAX_CONVERGE_ROUNDS` 輪）。不變量：結束時版面就是按
     /// `self.params.header_pushes_pt` 分頁的結果（發射↔分頁自洽）。
+    ///
+    /// R1-b（比照 `compute_footnotes` 種子化）：`applied` 起始＝**現行推下表**
+    /// 而非空表。進入時版面已按現行表分頁，空表起步會先無條件把表清空重排
+    /// 一輪（零變動檔白付整篇重排）。種子化＋`set_header_pushes` 既有同表早退
+    /// ⇒ 零變動檔定案零重排。回塞鎖 `R1B_NOTE_SEED_BUGGY=1` 刷回空表起步。
     fn compute_header_push(&mut self) {
         if std::env::var_os("K7B_HDR_PUSH_BUGGY").is_some() {
             if !self.params.header_pushes_pt.is_empty() {
@@ -1055,7 +1083,11 @@ impl Engine {
         if self.hf.is_empty() {
             return; // 無頁首/頁尾宣告：快路徑零擾動。
         }
-        let mut applied: Vec<f32> = Vec::new();
+        let mut applied: Vec<f32> = if r1b_note_seed_buggy() {
+            Vec::new()
+        } else {
+            self.params.header_pushes_pt.clone()
+        };
         for _round in 1..=quire_layout::MAX_CONVERGE_ROUNDS {
             self.set_header_pushes(applied.clone());
             let desired = self.header_push_desired();
@@ -1079,7 +1111,7 @@ impl Engine {
         let mut p = self.params.clone();
         p.header_pushes_pt = table;
         self.params = p.clone();
-        self.layout.update_params(p);
+        self.relayout_with_params(p);
     }
 
     /// 以**當前版面**逐頁量「該推多少」：頁首內容底端越過 margin 的頁，
@@ -1242,20 +1274,52 @@ impl Engine {
             let mut p = self.params.clone();
             p.footnote_reserves_pt = Vec::new();
             self.params = p.clone();
-            self.layout.update_params(p);
+            self.relayout_with_params(p);
             return;
         }
         let body_size = self.params.font_size_pt;
-        // `applied`＝本輪分頁實際套用的逐頁預留（起始＝空表＝現況）。
-        let mut applied: Vec<f32> = Vec::new();
+        // `applied`＝本輪分頁實際套用的逐頁預留。
+        //
+        // R1-b（根因 2 止血）：起始＝**現行 `params.footnote_reserves_pt`**，不是空表。
+        // 理由：呼叫進入時版面**本來就是**按這張表分頁的（見下方迴圈不變量），
+        // 舊寫法從空表起步 ⇒ 第一輪必然 `update_params(空表)`＝無條件清光斷行
+        // 快取＋整篇重排，即使註腳位置一個都沒動（bug65649 實測這一輪白付 295ms，
+        // 加上第二輪共 689ms／佔開檔與每次編輯的 50%）。種子化後零變動檔第一輪
+        // 「計算值 == 套用值」直接定案，`update_params` 零呼叫、快取零清。
+        // 收斂**不動點**不變（同表 ⇒ 同版面 ⇒ 同計算值），只砍掉通往同一不動點
+        // 的空轉輪；真變動（打字推註腳、編輯增刪註腳）照舊逐輪推進。
+        // 回塞鎖 `R1B_NOTE_SEED_BUGGY=1`：刷回空表起步（考卷鑑別力來源）。
+        let seeded = !std::env::var_os("R1B_NOTE_SEED_BUGGY").is_some();
+        let mut applied: Vec<f32> = if seeded {
+            self.params.footnote_reserves_pt.clone()
+        } else {
+            Vec::new()
+        };
+        // R1-b 定案快速徑（尾註檔止血）：進入時版面已按現行 params（**含尾註預留**）
+        // 分頁，而下方迴圈第一輪無條件清空尾註預留 ⇒ 每次 recompute 必付兩次
+        // 整篇重排（註腳清尾註一次、compute_endnotes 加回一次）。先在**現行版面**
+        // （含尾註預留）做一輪純檢查：計算預留==現行套用 ⇒ 定案返還、零重排。
+        // 純檢查不動 params/layout，不動點定義與舊路徑完全相同（未命中照舊走
+        // 清空迴圈＝舊語義）。零尾註檔本參數下 `endnote_reserves_pt` 空＝不觸發。
+        // 回塞鎖 `R1B_NOTE_SEED_BUGGY=1` 跳過本徑（考卷鑑別力來源）。
+        if !r1b_note_seed_buggy() && !self.params.endnote_reserves_pt.is_empty() {
+            let pre = self.footnote_pass(body_size, 1);
+            if footnotes::reserves_stable(&pre.reserves, &self.params.footnote_reserves_pt) {
+                self.foot = pre;
+                return;
+            }
+        }
         let max_rounds = quire_layout::MAX_CONVERGE_ROUNDS;
         for round in 1..=max_rounds {
             let mut p = self.params.clone();
             p.footnote_reserves_pt = applied.clone();
             // 尾註預留由 compute_endnotes 另行收斂；此處先清，避免舊值干擾註腳分頁。
             p.endnote_reserves_pt = Vec::new();
-            self.params = p.clone();
-            self.layout.update_params(p);
+            // 同表 ⇒ 版面已按它分頁：跳過 `update_params`（整篇重排），快取原樣保留。
+            if p != self.params {
+                self.params = p.clone();
+                self.relayout_with_params(p);
+            }
             // lay.reserves＝本輪版面下「下一輪該套」的計算預留（純由排布算出）。
             let lay = self.footnote_pass(body_size, round);
             if footnotes::reserves_stable(&lay.reserves, &applied) {
@@ -1562,7 +1626,7 @@ impl Engine {
                 let mut p = self.params.clone();
                 p.endnote_reserves_pt = Vec::new();
                 self.params = p.clone();
-                self.layout.update_params(p);
+                self.relayout_with_params(p);
             }
             return;
         }
@@ -1585,12 +1649,19 @@ impl Engine {
         // 時**如實溢出多一頁**（不為頁數硬壓）。接排區頂由保留帶推得：
         // content_bottom 往上扣「頁底註腳區＋尾註保留帶」。
         let max_rounds = quire_layout::MAX_CONVERGE_ROUNDS;
+        // R1-b：`applied` 照舊空表起步（首輪「整頁可用」估接排容量的語義不動，
+        // 見下 `applied.is_empty()` 臂），但每輪的 `update_params` 加上「同表跳過」
+        // 守門：進入時版面已按 `params`（含註腳定案後的預留、尾註預留已被
+        // compute_footnotes 清空）分頁 ⇒ 首輪那次「清尾註預留」是**空寫**，
+        // 不該付整篇重排的錢。零尾註檔在上游已早退，本迴圈只在有尾註時跑。
         let mut applied: Vec<f32> = Vec::new();
         for _round in 1..=max_rounds {
             let mut p = self.params.clone();
             p.endnote_reserves_pt = applied.clone();
-            self.params = p.clone();
-            self.layout.update_params(p);
+            if p != self.params {
+                self.params = p.clone();
+                self.relayout_with_params(p);
+            }
             let pages = self.layout.pages();
             if pages.is_empty() {
                 self.end = footnotes::EndLayout::default();
@@ -1660,11 +1731,14 @@ impl Engine {
             let stable = footnotes::reserves_stable(&next, &applied);
             self.end = lay;
             if stable {
-                // 定案：把「計算值」寫回 params（與顯示同一份），分頁不變。
+                // 定案：把「計算值」寫回 params（與顯示同一份）。同表 ⇒ 版面已按
+                // 它分頁 ⇒ 免付整篇重排（R1-b；末輪寫回值常等於末輪套用值）。
                 let mut p = self.params.clone();
                 p.endnote_reserves_pt = next;
-                self.params = p.clone();
-                self.layout.update_params(p);
+                if p != self.params {
+                    self.params = p.clone();
+                    self.relayout_with_params(p);
+                }
                 return;
             }
             applied = next;
@@ -2913,6 +2987,17 @@ impl Engine {
     /// 版面是否已定案（無待排尾段）。
     pub fn is_settled(&self) -> bool {
         self.layout.is_settled()
+    }
+
+    /// R1-b 探針：自程序啟動以來 `LayoutEngine::update_params`（清斷行快取＋
+    /// 整篇重排）的累計次數。考卷用它鎖「零變動 recompute 必須零重排」。
+    pub fn relayout_calls() -> u64 {
+        R1B_RELAYOUT_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// R1-b 探針：把累計計數歸零（增量比對用）。
+    pub fn reset_relayout_calls() {
+        R1B_RELAYOUT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// 背景續排一步：`{"settled":bool,"events":[...]}` JSON。shell 在收到
