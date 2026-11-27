@@ -2440,10 +2440,14 @@ impl LayoutEngine {
     /// [`section_break_w_pt`]＝`page_w_pt` ∪ `margins_pt[LEFT/RIGHT]` ∪
     /// `font_size_pt` ∪ `line_spacing`（外加 `sections`／`grid`，兩者不在本函式
     /// 參數內、生命期內不動）；預留／推下只經 [`section_capacity`] 進**打包**層。
-    /// 故這四軸任一有變 ⇒ 退回 `update_params` 全清快取（正確性優先於增量速度，
+    /// 四軸任一有變 ⇒ 退回 `update_params` 全清快取（正確性優先於增量速度，
     /// 保守口徑比照 F2b-2 注）；四軸不變 ⇒ 快取逐條仍有效，零錯斷行風險。
+    /// 回塞鎖 `R1B_PACK_CACHE_BUGGY=1`：無條件退回全清快取路徑（燈 2 鑑別力
+    /// 來源——考卷證明快取保留路徑與全清路徑終態逐位相同，且回塞態更慢）。
     pub fn update_pack_params(&mut self, params: LayoutParams) {
-        if !break_width_axis_equal(&self.params, &params) {
+        let axes_equal = break_width_axis_equal(&self.params, &params);
+        // 回塞態＝四軸不變時也無條件全清快取（舊行為，慢路徑）。
+        if !axes_equal || std::env::var_os("R1B_PACK_CACHE_BUGGY").is_some() {
             self.update_params(params);
             return;
         }

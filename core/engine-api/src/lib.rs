@@ -3019,6 +3019,13 @@ impl Engine {
         R1B_RELAYOUT_COUNT.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// 收斂定案後的逐頁頁底註腳預留表（pt，索引＝頁序）。R1-b 考卷用它證明
+    /// workload 的預留表**非全零**——種子化快路徑只在非空表上才有鑑別力
+    /// （全零表時種子態與空表態同形，回塞鎖量不到東西）。
+    pub fn footnote_reserves_pt(&self) -> &[f32] {
+        &self.params.footnote_reserves_pt
+    }
+
     /// R1-b 探針：把累計計數歸零（增量比對用）。
     pub fn reset_relayout_calls() {
         R1B_RELAYOUT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
