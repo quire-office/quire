@@ -441,9 +441,11 @@ fn main() {
     println!(
         "R1-b rebuild_derived 效能基準｜profile=release(+debug info)｜rounds={rounds}｜模式＝{}",
         if buggy {
-            "R1B_BUGGY=1（全檔重開基線態）"
+            "R1B_BUGGY=1（回塞：收斂空表起步＋打包全清快取）"
         } else {
-            "正常態（局部重解析）"
+            // 誠實標籤：rebuild_derived 目前仍整包重開（局部重解析未落地），
+            // 加速來自 recompute_notes 種子化＋打包軸斷行快取保留。
+            "正常態（種子化收斂＋打包快路徑；rebuild 仍整包）"
         }
     );
 

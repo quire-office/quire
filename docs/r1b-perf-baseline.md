@@ -123,3 +123,30 @@ engine full open:      1481–1616 ms
 | InsertText p95 < 16ms | 1047.29ms | ❌ 差 65 倍（主因＝recompute_notes） |
 | SetParagraphStyle p95 < 50ms | 1960.48ms | ❌ 差 39 倍 |
 | undo() p95 < 50ms | 1877.70ms | ❌ 差 37 倍 |
+
+---
+
+# 改後實錄（run 323，commit 8d8d6c4 後態，rounds=8，同機同條件）
+
+**加速來源（誠實記帳）**：本卡目前落地的是**根因 2 止血**——
+`recompute_notes` 收斂種子化（2832ec4）＋ `LayoutEngine::update_pack_params`
+打包軸免斷行快取（8d8d6c4）。**`rebuild_derived()` 本身仍走整包重開**
+（save＋from_docx_bytes）；(a)(b)(d) 的降幅全部來自每次 rebuild 末端必跑的
+recompute_notes 從「無條件清快取 2 輪重排」收斂為「零變動零重排」。
+根因 1（局部重解析免 ZIP 往來）未落地，續工見卡面 block 記帳。
+
+| 動作 | 基線 p95（bug65649｜合成） | 改後 p95（bug65649｜合成） | 門檻 | 狀態 |
+|---|---|---|---|---|
+| (a) SetParagraphStyle | 1960｜1467 ms | **920｜420 ms** | <50ms | ❌ 未達（剩餘成本＝整包重開） |
+| (b) undo() | 1878｜1496 ms | **909｜448 ms** | <50ms | ❌ 未達（同上） |
+| (c) InsertText | 1047｜1042 ms | **172｜100 ms** | <16ms | ❌ 未達 10 倍（剩餘＝每 keystroke 的 compute_footnotes 全量 note_pass） |
+| (d) FormatTextRange | 1871｜1410 ms | **932｜449 ms** | <50ms | ❌ 未達 |
+| (e) 零編輯 save_docx() | 19.6｜0.67 ms | **13.6｜0.57 ms** | <1.5s | ✅ 綠 |
+
+- 降幅：(a)(b)(d) 約 **2.1×（bug）／3.5×（synth）**；(c) 約 **6×／10×**。
+- 完整性：零編輯 byte-identical＋Undo 全淨 byte-identical 斷言每輪通過。
+- 回塞鑑別（閘門 3）：`R1B_BUGGY=1` 復辟「收斂空表起步＋打包全清快取」，
+  (c) p95 退回基線級（172→1047 級），考卷測的就是這條路徑。
+- 紅燈考卷 `r1b_note_seed` 四盞：正常態全綠；`R1B_NOTE_SEED_BUGGY=1` 燈 1 必紅
+  （實錄 left: 2, right: 0）；`R1B_PACK_CACHE_BUGGY=1` 慢路徑終態不變。
+  回塞腳本 `scripts/r1b_note_seed_buggy_replay.sh`。
