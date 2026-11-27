@@ -25,7 +25,7 @@ pub use quire_layout::{FLAG_DIR_EAVERT, FLAG_DIR_VERT, FLAG_DIR_VERT270};
 // E-2：渲染端幾何底線需要與排版同尺的文字寬度（同一 TextMeasurer 真值源，
 // 渲染殼不直接 import quire-layout——分層鐵律唯一合法通道）。本 crate 內部
 // 的 `TextMeasurer` 即此 re-export（原私有 import 已併入，避免同名二義）。
-pub use quire_layout::{PageBreak, TextMeasurer};
+pub use quire_layout::{PageBreak, TextMeasurer, EMBEDDED_FONT, EMBEDDED_FONT_FAMILY};
 pub use quire_render_trait::{
     DrawItem, PageDisplayList, Renderer, Underline, FLAG_BOLD, FLAG_ITALIC, FLAG_STRIKE,
     FLAG_UNDERLINE,

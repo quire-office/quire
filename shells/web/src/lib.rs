@@ -89,6 +89,21 @@ impl WasmEngine {
         self.inner.caret_rect_json(para, cp)
     }
 
+    /// 內嵌排版字型（OFL 子集）位元組：JS 殼以此註冊 FontFace，讓 canvas
+    /// 渲染器與引擎排版共用**同一把尺**（消手機無 Noto Sans TC 落回系統
+    /// 字型時「caret 用引擎 advance、墨跡用系統字型寬」的雙尺漂移）。
+    #[wasm_bindgen(js_name = embeddedFontBytes)]
+    pub fn embedded_font_bytes() -> Vec<u8> {
+        quire_engine::EMBEDDED_FONT.to_vec()
+    }
+
+    /// 內嵌子集的家族名（OFL 保留名稱合規；FontFace 註冊與渲染器字型堆疊
+    /// 第一順位都用此值，兩端不得各寫一份字串）。
+    #[wasm_bindgen(js_name = embeddedFontFamily)]
+    pub fn embedded_font_family() -> String {
+        quire_engine::EMBEDDED_FONT_FAMILY.to_string()
+    }
+
     /// canvas 點擊 (page, x_pt, y_pt) → CaretPos JSON。
     pub fn caret_at_json(&self, page: usize, x_pt: f32, y_pt: f32) -> Option<String> {
         self.inner.caret_at_json(page, x_pt, y_pt)
