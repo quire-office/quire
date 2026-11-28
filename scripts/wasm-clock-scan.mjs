@@ -24,7 +24,7 @@
 //                                                 = "wasm32"))]` 護欄從掃描視圖中
 //                                                 移除（行號保留），掃描**必紅**；
 //                                                 若掃不出紅＝鎖失去鑑別力，同樣
-//                                                 exit 1 并报「鑑別失敗」。
+//                                                 exit 1 並報「鑑別失敗」。
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

@@ -135,7 +135,7 @@ fn r1b_now() -> Option<std::time::Instant> {
     Some(r1b_now_native())
 }
 
-/// 唯一准許直接呼叫 `std::time::Instant::now()` 的所在（掃描鎖認得這道護欄）。
+/// 唯一允許直接呼叫 `std::time::Instant::now()` 的所在（掃描鎖認得這道護欄）。
 #[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn r1b_now_native() -> std::time::Instant {
@@ -149,7 +149,7 @@ fn r1b_now() -> Option<std::time::Instant> {
     None
 }
 
-/// 對 `Option<Instant>` 起点取「經過毫秒」；wasm32 恆 `None` ⇒ 回 0.0
+/// 對 `Option<Instant>` 起點取「經過毫秒」；wasm32 恆 `None` ⇒ 回 0.0
 /// （呼叫端只在 `R1B_PROFILE` 開啟時才讀它，native 數值路徑與舊碼逐運算元同式）。
 #[inline]
 fn r1b_ms_since(t: Option<std::time::Instant>) -> f64 {
