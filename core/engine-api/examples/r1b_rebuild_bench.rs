@@ -438,14 +438,18 @@ fn main() {
     // workload 選擇（PM 驗收跑 both／預設 both；worker 分批時用 bug|synth 省時）。
     let which = std::env::var("R1B_WORKLOAD").unwrap_or_else(|_| "both".to_string());
     let buggy = std::env::var_os("R1B_BUGGY").is_some();
+    let seed_buggy = std::env::var_os("R1B_NOTE_SEED_BUGGY").is_some();
+    let pack_buggy = std::env::var_os("R1B_PACK_CACHE_BUGGY").is_some();
     println!(
         "R1-b rebuild_derived 效能基準｜profile=release(+debug info)｜rounds={rounds}｜模式＝{}",
         if buggy {
-            "R1B_BUGGY=1（回塞：收斂空表起步＋打包全清快取）"
+            "R1B_BUGGY=1（回塞：rebuild_derived 走「全檔 save＋from_docx_bytes 整包重開」舊路徑）"
+        } else if seed_buggy || pack_buggy {
+            "部分回塞（只刷收斂種子化或打包快路徑，rebuild 走局部 derive）"
         } else {
-            // 誠實標籤：rebuild_derived 目前仍整包重開（局部重解析未落地），
-            // 加速來自 recompute_notes 種子化＋打包軸斷行快取保留。
-            "正常態（種子化收斂＋打包快路徑；rebuild 仍整包）"
+            // 誠實標籤：三條刀都活著——派生層局部重建（免 ZIP 往來）、
+            // 收斂種子化、打包軸斷行快取保留。
+            "正常態（局部 derive＋種子化收斂＋打包快路徑）"
         }
     );
 

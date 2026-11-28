@@ -2461,6 +2461,12 @@ impl LayoutEngine {
         self.sync_budget = pages.map(|n| n.max(1));
     }
 
+    /// R1-b：目前同步預算（讀取端）。派生層重建時用它把預算**跨重建保留**
+    /// （舊路徑整包重開會靜默 reset 回 `None`，預算制軟分頁被清零）。
+    pub fn sync_budget(&self) -> Option<usize> {
+        self.sync_budget
+    }
+
     /// 版面是否已定案（無待排尾段）。shell 用於決定要不要排 `reflow_step`。
     pub fn is_settled(&self) -> bool {
         self.pending.is_none()

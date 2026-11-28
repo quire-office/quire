@@ -108,6 +108,80 @@ fn r1b_note_seed_buggy() -> bool {
     std::env::var_os("R1B_NOTE_SEED_BUGGY").is_some()
 }
 
+/// R1-b 計時插樁（`R1B_PROFILE=1` 才輸出；未設 env 時 `active=false`，
+/// `mark`／`sub` 只剩一次環境變數判斷＋一次 `Instant::elapsed`，零行為變動）。
+/// 開檔與派生層重建共用同一組標籤，bench 才能同口徑比對。
+struct R1bProf {
+    active: bool,
+    t: std::time::Instant,
+}
+
+impl R1bProf {
+    fn new() -> Self {
+        Self {
+            active: std::env::var_os("R1B_PROFILE").is_some(),
+            t: std::time::Instant::now(),
+        }
+    }
+
+    /// 未設 `R1B_PROFILE` 時末個 mark 之後累加器無可讀值＝unused 誤報來源，
+    /// 故本方法整體放行未使用警告（與旧 macro 版同一局部放行範圍）。
+    #[allow(unused_assignments)]
+    fn mark(&mut self, label: &str) {
+        if self.active {
+            eprintln!("[R1B] {:<14} {:8.1} ms", label, self.ms());
+        }
+        self.t = std::time::Instant::now();
+    }
+
+    #[allow(unused_assignments)]
+    fn sub(&mut self, label: &str) {
+        if self.active {
+            eprintln!("  [R1B·sub] {:<22} {:8.1} ms", label, self.ms());
+        }
+        self.t = std::time::Instant::now();
+    }
+
+    fn ms(&self) -> f64 {
+        self.t.elapsed().as_secs_f64() * 1000.0
+    }
+}
+
+/// R1-b：派生層建造者（`Engine::derive`）的產物——**全部是純讀取派生資料**，
+/// 不含 `original`／`touched`／Undo 書籤／`part_baselines` 這類「編輯面帳本」
+/// （那些由呼叫端原樣保留，見 `rebuild_derived`）。
+///
+/// 為何不是「直接把欄位寫回 self」：原子性。派生層中間任何一步失敗就早退，
+/// 此时 `self` 一個欄位都沒動＝保持呼叫前的完整可用態（卡面「全有或全無」）。
+struct Derived {
+    paragraphs: Vec<quire_ooxml::Paragraph>,
+    tables: Vec<quire_ooxml::BodyTable>,
+    notes: quire_ooxml::Notes,
+    layout: LayoutEngine,
+    params: LayoutParams,
+    paras_eff: Option<Vec<quire_ooxml::Paragraph>>,
+    part_baselines: BTreeMap<String, Vec<u8>>,
+    hf: HashMap<u32, SectionHf>,
+    hf_parts: HashMap<String, HfPart>,
+    even_odd: bool,
+    sec_geo: HashMap<u32, SectionGeometry>,
+    style_table: StyleTable,
+    sec_geo_all: HashMap<u32, SectionGeometry>,
+    para_sec: Vec<u32>,
+    shape_boxes: Vec<(usize, quire_ooxml::InlineImage)>,
+    image_pixels: Vec<PixelSource>,
+    line_ref_bands: u32,
+    charts: Vec<(quire_ooxml::ChartMount, quire_ooxml::ChartDoc)>,
+    paper_override_applied: bool,
+    first_sec_geo: SectionGeometry,
+}
+
+/// R1-b：重建態需要**跨重建保留**的引擎狀態（`derive` 讀不到、也不該重算的）。
+struct RebuildKeep {
+    /// 預算制軟分頁預算（整包重開舊路徑會把它靜默 reset 回 `None`）。
+    sync_budget: Option<usize>,
+}
+
 /// `LayoutEngine::update_params`（清斷行快取＋整篇重排）累計呼叫次數。
 /// 經 `Engine::relayout_calls()` 透出給考卷／bench；`reset` 後可增量比對。
 static R1B_RELAYOUT_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -194,6 +268,13 @@ pub struct Engine {
     charts: Vec<(quire_ooxml::ChartMount, quire_ooxml::ChartDoc)>,
     /// PG-PAPER-1：是否已套用自訂紙張覆寫。
     paper_override_applied: bool,
+    /// R1-b（卡面根因 1 副作用修復）：構造期注入的紙張覆寫**本體**。
+    ///
+    /// 舊路徑只存 `paper_override_applied` 旗標，派生層重建走
+    /// `from_docx_bytes(&saved)`（不帶 paper）⇒ 覆寫的 page_w/h 與邊距
+    /// 在第一次結構編輯時被靜默沖銷（使用者看到版面瞬間跳回文件原紙張）。
+    /// 存下本體後 `rebuild_derived()` 原樣重放同一個覆寫，語義與開檔一致。
+    paper_override: Option<PaperSpec>,
     /// PG-PAPER-1：首節生效幾何（供 paper_json 透出）。
     first_sec_geo: SectionGeometry,
 }
@@ -339,27 +420,97 @@ impl Engine {
     /// landscape／continuous／cols 一律不動。
     // R1-b 計時插樁（R1B_PROFILE）：末個 r1b_mark! 之後累加器無可讀值＝
     // unused_assignments 誤報，函式層局部放行（未設 env 時零行為變動）。
-    #[allow(unused_assignments)]
     pub fn from_docx_bytes_with_paper(
         bytes: &[u8],
         paper: Option<&PaperSpec>,
     ) -> Result<Self, EngineError> {
-        let r1b_prof = std::env::var_os("R1B_PROFILE").is_some();
-        let mut r1b_t = std::time::Instant::now();
-        macro_rules! r1b_mark {
-            ($label:expr) => {{
-                if r1b_prof {
-                    eprintln!(
-                        "[R1B] {:<14} {:8.1} ms",
-                        $label,
-                        r1b_t.elapsed().as_secs_f64() * 1000.0
-                    );
-                }
-                r1b_t = std::time::Instant::now();
-            }};
-        }
+        let mut prof = R1bProf::new();
         let doc = parse(bytes)?;
-        r1b_mark!("ooxml_parse");
+        prof.mark("ooxml_parse");
+        // R1-b：開檔＝「parse 產 canonical 投影」＋「derive 建派生層」兩段。
+        // 結構編輯後的 `rebuild_derived()` 共用同一個 derive（走記憶體 parts），
+        // 這是「局部重建 ≡ 整包重開」byte 級同形的結構性保證：派生層只有一個
+        // 建造者，不存在第二套口徑。
+        let OoxmlDoc {
+            paragraphs,
+            tables,
+            notes,
+            parts,
+            bundle,
+        } = doc;
+        let proj = quire_ooxml::DocProjection {
+            paragraphs,
+            tables,
+            notes,
+        };
+        let d = Self::derive(&parts, &proj, paper, None, &mut prof)?;
+        let engine = Self {
+            doc: OoxmlDoc {
+                paragraphs: d.paragraphs,
+                tables: d.tables,
+                notes: d.notes,
+                parts,
+                bundle,
+            },
+            layout: d.layout,
+            params: d.params,
+            paras_eff: d.paras_eff,
+            original: bytes.to_vec(),
+            touched: BTreeMap::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            part_baselines: d.part_baselines,
+            hf: d.hf,
+            hf_parts: d.hf_parts,
+            even_odd: d.even_odd,
+            sec_geo: d.sec_geo,
+            style_table: d.style_table,
+            foot: footnotes::NoteLayout::default(),
+            note_entries: Vec::new(),
+            note_anchors: Vec::new(),
+            note_of_anchor: Vec::new(),
+            mark_styles: Vec::new(),
+            end: footnotes::EndLayout::default(),
+            end_note_entries: Vec::new(),
+            end_note_anchors: Vec::new(),
+            end_note_of_anchor: Vec::new(),
+            end_mark_styles: Vec::new(),
+            sec_geo_all: d.sec_geo_all,
+            para_sec: d.para_sec,
+            shape_boxes: d.shape_boxes,
+            image_pixels: d.image_pixels,
+            line_ref_bands: d.line_ref_bands,
+            charts: d.charts,
+            paper_override: paper.cloned(),
+            paper_override_applied: d.paper_override_applied,
+            first_sec_geo: d.first_sec_geo,
+        };
+        prof.mark("engine_struct");
+        Ok(engine.with_footnotes())
+    }
+
+    /// R1-b（卡面根因 1 的解）：派生層建造者——**開檔與結構編輯重建共用**。
+    ///
+    /// 輸入只有「canonical 投影＋parts 明文」，**不碰 zip**：結構編輯後不再
+    /// `doc.save()` 全檔重壓縮＋`from_docx_bytes` 全檔重解壓，直接從記憶體
+    /// `parts` 走一次 derive。`bundle`（未觸碰 entry 逐位元組搬運的依據）
+    /// 由呼叫端原樣保留 ⇒ 開檔基準保真鐵律從「事後補 clone」升級為
+    /// 「結構上不可能被污染」。
+    ///
+    /// 原子性：本函數只**讀**呼叫端的 parts／投影，全部產物進區域 `Derived`；
+    /// 失敗（早退）時呼叫端的 `self` 一個欄位都沒動＝保持呼叫前完整可用態。
+    /// 成功後呼叫端才一次提交（見 `rebuild_derived`）。
+    ///
+    /// `prev＝Some(..)`＝重建態（保留跨重建的狀態：`sync_budget`；並免掉
+    /// 開檔才需要的 `part_baselines` 全量明文克隆——那是開檔基線，重建態由
+    /// 呼叫端沿用原基線，不重算）。
+    fn derive(
+        parts: &BTreeMap<String, Vec<u8>>,
+        proj: &quire_ooxml::DocProjection,
+        paper: Option<&PaperSpec>,
+        prev: Option<&RebuildKeep>,
+        prof: &mut R1bProf,
+    ) -> Result<Derived, EngineError> {
         // ---- 樣式級聯層（t_5dfc8ac7）----
         // 開啟文件時一次性解析 styles.xml：逐段級聯合成的 (斷行字級, 段行高)
         // 網格餵 `ParaGrid`，run 級有效樣式烘焙進發射用投影 `paras_eff`（見
@@ -373,19 +524,19 @@ impl Engine {
         // `w:themeColor` 查表用（ECMA-376 §17.3.2.25：主題色優先於 `w:val`
         // 回退值）。無 theme part → 空表＝老實退回 `w:val`（既有行為不變）。
         // 存檔路徑完全不經此層（parts passthrough，round-trip 零影響）。
-        let theme = ThemeColors::from_parts(&doc.parts);
+        let theme = ThemeColors::from_parts(&parts);
         // 主題字型表（theme1.xml 的 fontScheme）：純讀取派生資料，供 run 的
         // `w:asciiTheme`／`w:eastAsiaTheme` 引用查表（ECMA-376 §17.3.2.26）。
         // 無 theme part → 四欄全 None＝老實退回直接值（既有行為不變）。
-        let theme_fonts = ThemeFonts::from_parts(&doc.parts);
+        let theme_fonts = ThemeFonts::from_parts(&parts);
         // 無 styles.xml part 時仍建一張空表而非 None：級聯層除了套用樣式，
         // 還承載「超連結合成預設」的末端兜底（`RunStyle::with_hyperlink_default`）；
         // 若此處短路，無 styles.xml 的檔案連結會失去預設藍／底線。空表一切
         // 落後備值，與舊 None 路徑逐欄等價。
         // K6：styles.xml 必須經 `word/_rels/document.xml.rels` 的 styles 關聯
         // 才生效（校準報告 §3(2) 鐵證；無關聯時 LO 連 docDefaults 都忽略）。
-        let style_table = if styles_referenced(&doc.parts) {
-            doc.parts
+        let style_table = if styles_referenced(&parts) {
+            parts
                 .get("word/styles.xml")
                 .map(|s| StyleTable::parse_with_fonts(s.as_slice(), &theme, Some(&theme_fonts)))
                 .unwrap_or_else(|| StyleTable::parse_with_fonts(&[], &theme, Some(&theme_fonts)))
@@ -411,7 +562,7 @@ impl Engine {
         // 細尺承載，否則 12.65pt 粗帶的 ceil 會把 LO pitch 抬成整帶倍數。
         // 零宣告檔（doc_size/doc_line 皆無、段落亦無直接宣告）維持
         // 12pt×1.4＝16.8pt 粗尺——M1 零宣告守門樁逐位元組不變。
-        let any_para_declared = doc.paragraphs.iter().any(|p| {
+        let any_para_declared = proj.paragraphs.iter().any(|p| {
             (p.line.is_none()
                 && (p.prun.as_ref().and_then(|r| r.size_pt).is_some()
                     || p.runs
@@ -423,9 +574,8 @@ impl Engine {
         let doc_grid_h = resolve_line_h_pt(def_size, doc_line);
         // 佔位值供級聯前的可用寬／params 使用；級聯後以主要宣告行高重錨。
         let (grid_line_h, _) = refine_band_h(doc_grid_h, refine);
-        let n_paras = doc.paragraphs.len();
-        let sections: Vec<SectionSpec> = doc
-            .parts
+        let n_paras = proj.paragraphs.len();
+        let sections: Vec<SectionSpec> = parts
             .get("word/document.xml")
             .map(|xml| {
                 read_sections_per_paragraph(xml, n_paras)
@@ -534,11 +684,11 @@ impl Engine {
         // K2b：清單 marker 規劃。無 `w:numPr` 引用 ⇒ 空表（零變化：不插
         // marker、不動任何投影欄位、不解析 numbering.xml）。
         let list_markers = {
-            let refs = quire_ooxml::paragraph_numbering_from_parts(&doc.parts);
+            let refs = quire_ooxml::paragraph_numbering_from_parts(&parts);
             if refs.is_empty() {
                 Vec::new()
             } else {
-                let numbering = quire_ooxml::Numbering::from_parts(&doc.parts);
+                let numbering = quire_ooxml::Numbering::from_parts(&parts);
                 lists::compute_markers(&numbering, &refs, &para_sec_v, n_paras)
             }
         };
@@ -552,7 +702,7 @@ impl Engine {
         // K6：字型表可用性＝文件任何層宣告過字型。沒有字型宣告的檔案維持
         // 舊 1.4 粗尺（M1 零宣告守門／k5 Exact 防風暴樁逐位元組不變）。
         let font_metrics = style_table.has_fonts()
-            || doc.paragraphs.iter().any(|p| {
+            || proj.paragraphs.iter().any(|p| {
                 p.prun.as_ref().and_then(|r| r.fonts.as_ref()).is_some()
                     || p.runs.iter().any(|r| {
                         r.direct.as_ref().and_then(|d| d.fonts.as_ref()).is_some()
@@ -562,7 +712,7 @@ impl Engine {
         let auto_buggy = std::env::var_os("K6_AUTO_PITCH_BUGGY").is_some();
         let calibrated = font_metrics && !auto_buggy;
         let mut table_styles_of: HashMap<usize, String> = HashMap::new();
-        for bt in &doc.tables {
+        for bt in &proj.tables {
             collect_table_styles(&bt.table, None, &mut table_styles_of);
         }
         // K22：正文表 tblStylePr 條件字色查表（段落索引→生效色）。走已過
@@ -573,11 +723,11 @@ impl Engine {
                 styles: &style_table,
                 theme: &theme,
             };
-            table_map::cond_run_colors(&doc.tables, &ctx)
+            table_map::cond_run_colors(&proj.tables, &ctx)
         };
         let (eff_all, metrics, spacings, marker_chars) = cascade_paragraphs(
             &style_table,
-            &doc.paragraphs,
+            &proj.paragraphs,
             def_size,
             doc_mult,
             &widths,
@@ -588,7 +738,7 @@ impl Engine {
                 cond_color: &cond_color_of,
             },
         );
-        r1b_mark!("cascade");
+        prof.mark("cascade");
         // 顯式分頁旗標：直接 pPr **或** 級聯結果（樣式級 `pageBreakBefore`
         // 經 `effective_para` 流入投影段落；與上一步同一趟級聯，不另開）。
         let grid_break_v: Vec<bool> = eff_all.iter().map(|p| p.page_break).collect();
@@ -603,7 +753,7 @@ impl Engine {
             // 舊路徑（K6_AUTO_PITCH_BUGGY=1 或全檔無字型宣告）：保留
             // 51e2e71 的粗尺細化行為，供紅燈回塞鎖比對。零宣告但有字型的
             // 檔，舊徑的 ×1.4 行高就是帶尺（pitch 15.4，留下紅證據）。
-            if font_metrics && doc_line.is_none() && doc_size.is_none() && doc.tables.is_empty() {
+            if font_metrics && doc_line.is_none() && doc_size.is_none() && proj.tables.is_empty() {
                 let target = modal_line_h(&para_line_h_v, 0.0);
                 refine_band_h(target, true)
             } else {
@@ -613,7 +763,7 @@ impl Engine {
                     0.0
                 };
                 if refine {
-                    for (i, p) in doc.paragraphs.iter().enumerate() {
+                    for (i, p) in proj.paragraphs.iter().enumerate() {
                         let inline = ParaStyle {
                             run: p.prun.clone().unwrap_or_default(),
                             line: p.line,
@@ -636,7 +786,7 @@ impl Engine {
                     let r = anchor_h / doc_grid_h;
                     r.is_finite() && (r - r.round()).abs() * doc_grid_h <= 0.11
                 };
-                let keep_coarse = doc.tables.is_empty() && anchor_is_grid_multiple;
+                let keep_coarse = proj.tables.is_empty() && anchor_is_grid_multiple;
                 if refine && !keep_coarse {
                     refine_band_h(anchor_h, true)
                 } else {
@@ -689,8 +839,7 @@ impl Engine {
         let (default_before, default_after) = style_table.doc_default_spacing();
         let default_declared = default_before.is_some() || default_after.is_some();
         let merged_declared = doc_before.is_some() || doc_after.is_some();
-        let char_grid = doc
-            .parts
+        let char_grid = parts
             .get("word/document.xml")
             .is_some_and(|xml| doc_grid_has_char_space(xml));
         let bands_on = default_declared || (merged_declared && !char_grid);
@@ -707,11 +856,11 @@ impl Engine {
             //    HC031 正文曾多出一頁只含節末段的空頁（總頁數 9→10）。
             let mut spacings = spacings.clone();
             table_map::apply_html_autospacing(
-                doc.parts.get("word/document.xml").map(|v| v.as_slice()),
+                parts.get("word/document.xml").map(|v| v.as_slice()),
                 &mut spacings,
             );
             let mut chain_breaks: Vec<usize> = Vec::new();
-            for bt in &doc.tables {
+            for bt in &proj.tables {
                 let end = table_map::table_para_end(&bt.table, bt.para_start).min(spacings.len());
                 chain_breaks.push(end);
                 if let Some(prev) = bt.para_start.checked_sub(1) {
@@ -732,15 +881,18 @@ impl Engine {
                 .iter()
                 .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
                 .collect(),
-            None => doc.paragraph_texts(),
+            None => proj
+                .paragraphs
+                .iter()
+                .map(|p| p.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+                .collect(),
         };
         // 表格槽（Phase3-1b）：canonical 樹＋styles.xml 框線查表 → layout 幾何。
         // 圖片投影（t_a1397522）：純讀取（PM 補正 1）——格內圖注入 CellBlock，
         // 正文流圖走 ImageBand，浮動鎖點圖附掛錨定頁。
-        let styles = doc.parts.get("word/styles.xml").map(|s| s.as_slice());
+        let styles = parts.get("word/styles.xml").map(|s| s.as_slice());
         let k12_buggy = std::env::var_os("K12_SHAPE_FILL_BUGGY").is_some();
-        let mut images = doc
-            .parts
+        let mut images = parts
             .get("word/document.xml")
             .map(|xml| quire_ooxml::read_images_with_theme(xml, &theme))
             .unwrap_or_default();
@@ -748,11 +900,11 @@ impl Engine {
         // 極性由 LO 實測定案；取代 E1-2 的字面停損臂）。純發射投影——存檔路徑
         // （parts passthrough）完全不經此處，roundtrip 位元組不受影響。
         table_map::apply_txbx_databinding(
-            &doc.parts,
+            &parts,
             &mut images,
             paras_eff.as_mut().map_or(&mut [], Vec::as_mut_slice),
         );
-        let eff_refs: &[quire_ooxml::Paragraph] = paras_eff.as_deref().unwrap_or(&doc.paragraphs);
+        let eff_refs: &[quire_ooxml::Paragraph] = paras_eff.as_deref().unwrap_or(&proj.paragraphs);
         // K7-cal：逐段水平 advance 尺（級聯主宣告族→LO face 寬比查表；未宣告
         // 族＝1.0 零擾動）。`K7_WRAP_WIDTH_BUGGY=1` 或 `K7_ADVANCE_SCALE_BUGGY=1`
         // 整表回 1.0＝回塞舊斷行（fdo68607 頁數回 9；後者只退水平尺、幾何軸
@@ -785,7 +937,7 @@ impl Engine {
             theme: &theme,
         };
         let slots = table_map::build_slots(
-            &doc.tables,
+            &proj.tables,
             &texts,
             styles,
             &params,
@@ -805,15 +957,15 @@ impl Engine {
             params.line_h_pt(),
             &params,
             &sections,
-            &doc.tables,
+            &proj.tables,
             &slots,
         );
+        prof.sub("build_slots+images");
         // K4c-image：開檔期像素解析（純讀取）。正文流／浮動／格內圖一律沿
         // 候選 rId 走 `word/_rels/document.xml.rels` 查 media part；可渲染
         // 格式優先（PNG/JPEG/…）＞不可渲染（EMF/WMF/PDF）。解析成功才入池
         // ——查無像素的圖不入池，發射層自然退佔位框（零虛構）。
-        let doc_rels = doc
-            .parts
+        let doc_rels = parts
             .get("word/_rels/document.xml.rels")
             .map(|r| read_rels(r))
             .unwrap_or_default();
@@ -821,7 +973,7 @@ impl Engine {
             .iter()
             .filter_map(|im| {
                 let (path, mime, emf) =
-                    resolve_pixel_source(&doc.parts, &doc_rels, &image_rid_candidates(im))?;
+                    resolve_pixel_source(&parts, &doc_rels, &image_rid_candidates(im))?;
                 Some(PixelSource {
                     para: im.para_index,
                     w_pt: im.w_pt,
@@ -844,7 +996,7 @@ impl Engine {
         for im in &images {
             for td in &im.txbx_drawings {
                 if let Some((path, mime, emf)) =
-                    resolve_pixel_source(&doc.parts, &doc_rels, &[td.rid.as_str()])
+                    resolve_pixel_source(&parts, &doc_rels, &[td.rid.as_str()])
                 {
                     image_pixels.push(PixelSource {
                         para: im.para_index,
@@ -865,7 +1017,7 @@ impl Engine {
                 for cs in &im.group_shapes {
                     if let Some(rid) = &cs.stroke_dash {
                         if let Some((path, mime, emf)) =
-                            resolve_pixel_source(&doc.parts, &doc_rels, &[rid.as_str()])
+                            resolve_pixel_source(&parts, &doc_rels, &[rid.as_str()])
                         {
                             image_pixels.push(PixelSource {
                                 para: im.para_index,
@@ -885,7 +1037,7 @@ impl Engine {
         // 偏移直傳版面層（與 texts 逐段同標）。無 br 檔案＝全空清單＝舊行為。
         // K2b：投影插入 marker 後，原始 `w:br` 碼點偏移需右移 marker 前綴
         // 長度（無 marker＝0 ⇒ 與舊行為逐位元組相同）。
-        let breaks: Vec<Vec<usize>> = doc
+        let breaks: Vec<Vec<usize>> = proj
             .paragraphs
             .iter()
             .enumerate()
@@ -904,7 +1056,7 @@ impl Engine {
             advance_scale: grid_adv_v,
             punct_arm: grid_punct_v,
         };
-        r1b_mark!("grid+tablemap");
+        prof.mark("grid+tablemap");
         let layout = LayoutEngine::with_breaks_grid(
             &texts,
             params.clone(),
@@ -914,11 +1066,11 @@ impl Engine {
             breaks,
             grid,
         );
-        r1b_mark!("layout_build");
+        prof.mark("layout_build");
         // 頁首頁尾層（t_b39f108b）：sectPr 宣告＋rels 查表＋part 解析。
         // 全鏈純讀取派生——parts／bundle 一個位元組都不碰（round-trip 零影響）。
         let (hf, hf_parts, even_odd, sec_geo) =
-            build_hf_layer(&doc, &sections, Some(&style_table), &theme);
+            build_hf_layer(&parts, &sections, Some(&style_table), &theme);
         // 節幾何全表（尾註頁的末節幾何用）：`sec_geo` 只在檔案宣告頁首頁尾時
         // 才有值（`build_hf_layer` 在無宣告時回空表），尾註不能靠它——另存
         // 一份全表（純讀取派生）。
@@ -928,45 +1080,47 @@ impl Engine {
         }
         // F1（卡 t_f3acd271）：圖表採集——純讀取 parts（見 Engine::charts 註解）。
         // 開檔期一次解析、發射期零解析成本；無圖表檔＝空清單（零擾動）。
-        let mut charts = quire_ooxml::read_charts_from_parts(&doc.parts, &theme);
+        let mut charts = quire_ooxml::read_charts_from_parts(&parts, &theme);
         // 回塞鎖（燈 3 鑑別力）：`F1_CHART_BUGGY=1`＝刷回「圖表 part 從未被
         // 解析、遑論發射」的舊行為——考卷燈 2 必回紅，證明它抓得到本缺口。
         if std::env::var_os("F1_CHART_BUGGY").is_some() {
             charts.clear();
         }
-        let part_baselines = doc.parts.clone();
-        r1b_mark!("baselines");
-        let engine = Self {
-            doc,
+        // `part_baselines`＝**開檔時**各 part 明文快照（touched 自動退場比對
+        // 基準）。重建態（`prev=Some`）由呼叫端沿用原基線，這裡不重算——
+        // 15MB 級 document.xml 的全量明文克隆實測 35ms／常駐 14.6MiB（見
+        // docs/r1b-perf-baseline.md），重建態根本不該再付一次。
+        let part_baselines = if prev.is_some() {
+            BTreeMap::new()
+        } else {
+            parts.clone()
+        };
+        prof.mark("baselines");
+        let layout = match prev {
+            // 跨重建保留預算制軟分頁（卡面副作用：整包重開把 sync_budget
+            // 靜默 reset 回 None，紅燈考卷 r1b_local_isomorph 燈 2 鎖死）。
+            Some(k) if k.sync_budget.is_some() => {
+                let mut l = layout;
+                l.set_sync_budget(k.sync_budget);
+                l
+            }
+            _ => layout,
+        };
+        Ok(Derived {
+            paragraphs: proj.paragraphs.clone(),
+            tables: proj.tables.clone(),
+            notes: proj.notes.clone(),
             layout,
             params,
             paras_eff,
-            original: bytes.to_vec(),
-            touched: BTreeMap::new(),
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
             part_baselines,
             hf,
             hf_parts,
             even_odd,
             sec_geo,
             style_table,
-            foot: footnotes::NoteLayout::default(),
-            note_entries: Vec::new(),
-            note_anchors: Vec::new(),
-            note_of_anchor: Vec::new(),
-            mark_styles: Vec::new(),
-            end: footnotes::EndLayout::default(),
-            end_note_entries: Vec::new(),
-            end_note_anchors: Vec::new(),
-            end_note_of_anchor: Vec::new(),
-            end_mark_styles: Vec::new(),
             sec_geo_all,
             para_sec: para_sec_v,
-            // K4e2 / K12：文字框與形狀佔位投影——K12 放寬過濾條件：
-            // 除含文字外，凡具備 fill_argb（非佔位預設）或 stroke_argb
-            // 者一律保留進 shape_boxes，即使 txbx_texts 為空。
-            // K12_SHAPE_FILL_BUGGY=1 恢復舊口徑（只留 !txbx_texts.is_empty()）。
             shape_boxes: images
                 .iter()
                 .filter(|im| {
@@ -987,9 +1141,7 @@ impl Engine {
             charts,
             paper_override_applied,
             first_sec_geo,
-        };
-        r1b_mark!("engine_struct");
-        Ok(engine.with_footnotes())
+        })
     }
 
     // ---------------- 頁底註腳層（F2b-2）----------------
@@ -3010,6 +3162,13 @@ impl Engine {
         self.layout.set_sync_budget(pages);
     }
 
+    /// R1-b 探針（考卷 `r1b_local_isomorph` 燈 3 用）：目前預算制軟分頁預算。
+    /// 結構編輯走派生層重建時本值必須**跨重建保留**——舊的「全檔 save＋
+    /// `from_docx_bytes` 整包重開」路徑會把它靜默 reset 回 `None`。
+    pub fn sync_budget(&self) -> Option<usize> {
+        self.layout.sync_budget()
+    }
+
     /// 版面是否已定案（無待排尾段）。
     pub fn is_settled(&self) -> bool {
         self.layout.is_settled()
@@ -3063,7 +3222,86 @@ impl Engine {
     /// K29b：結構編輯（Δp≠0）或跨 part 樣式修補後，以當前 parts 重建全部
     /// 派生層（版面、級聯投影、`para_sec`、`shape_boxes`、`image_pixels`、
     /// 表格索引、清單 marker 等）。Undo／Redo 書籤與開檔基線原樣保留。
+    ///
+    /// R1-b（卡面根因 1）：**不再「全檔 save ＋ from_docx_bytes 整包重開」**。
+    /// 改為直接從記憶體 `doc.parts` 走一次 `derive()`（與開檔同一個派生層
+    /// 建造者）——免 ZIP 壓縮/解壓往來、免 `OoxmlDoc` 全量重建、免
+    /// `part_baselines` 再克隆一次 15MB 明文。`PaperSpec` 覆寫與
+    /// `sync_budget` 也不再被靜默沖銷（舊路徑的兩個副作用）。
+    ///
+    /// 三條鐵律如何落地：
+    /// 1. **bundle 基準保真**：本函數**結構上不碰** `doc.bundle`——派生層
+    ///    建造者只收 `parts` 明文＋canonical 投影，zip 快照根本不在它的
+    ///    輸入裡。舊寫法靠「事後 `fresh.doc.bundle = self.doc.bundle.clone()`」
+    ///    打補丁，現在補丁消失、污染路徑消失（K29 系列 `byte_identical`
+    ///    考卷＋`r1b_local_isomorph` 燈 4 續守）。
+    /// 2. **失敗原子性**：`project_parts`／`derive` 都只**讀** `self`，全部
+    ///    產物進區域 `Derived`；任一步 `?` 早退時 `self` 一個欄位都沒動＝
+    ///    保持呼叫前的完整可用態（全有或全無）。提交區（標了 COMMIT 之後）
+    ///    是純欄位搬移，不會失敗。
+    /// 3. **同形性**：派生層只有 `derive()` 一個建造者，開檔態與重建態共用
+    ///    同一套口徑；`r1b_local_isomorph` 燈 3／燈 3b 逐頁顯示列表
+    ///    byte-identical 鎖住它（K29 口徑）。
     pub(crate) fn rebuild_derived(&mut self) -> Result<(), EngineError> {
+        // 回塞鎖（完成閘門 3 鑑別）：`R1B_BUGGY=1` 把本函數刷回卡面描述的
+        // 舊路徑（全檔 save ＋ from_docx_bytes 整包重開）。bench 必須明顯
+        // 退回基線級別，證明考卷真的測到這條路徑。
+        if std::env::var_os("R1B_BUGGY").is_some() {
+            return self.rebuild_derived_full_reopen();
+        }
+        let mut prof = R1bProf::new();
+        // 跨重建要保留的編輯面狀態（`derive` 讀不到、也不該重算的）。
+        let keep = RebuildKeep {
+            sync_budget: self.layout.sync_budget(),
+        };
+        // ---- 只讀區（任何 `?` 早退 ⇒ self 完整保持呼叫前狀態）----
+        // ① canonical 投影：從記憶體 parts 重解析（免 ZIP 往來）。
+        let proj = quire_ooxml::project_parts(&self.doc.parts)?;
+        prof.mark("project_parts");
+        // ② 派生層：與開檔同一個 `derive()`（同一套級聯／表格槽／版面／
+        //    頁首頁尾／圖片池／圖表口徑）。
+        let d = Self::derive(
+            &self.doc.parts,
+            &proj,
+            self.paper_override.as_ref(),
+            Some(&keep),
+            &mut prof,
+        )?;
+        // ---- COMMIT（純欄位搬移，不失敗）----
+        // `doc.parts`／`doc.bundle` 一個位元組都不動：parts 是編輯器剛寫入的
+        // 工作副本（正是要據此重建的來源），bundle 是開檔基準 zip 結構。
+        self.doc.paragraphs = d.paragraphs;
+        self.doc.tables = d.tables;
+        self.doc.notes = d.notes;
+        self.layout = d.layout;
+        self.params = d.params;
+        self.paras_eff = d.paras_eff;
+        self.hf = d.hf;
+        self.hf_parts = d.hf_parts;
+        self.even_odd = d.even_odd;
+        self.sec_geo = d.sec_geo;
+        self.style_table = d.style_table;
+        self.sec_geo_all = d.sec_geo_all;
+        self.para_sec = d.para_sec;
+        self.shape_boxes = d.shape_boxes;
+        self.image_pixels = d.image_pixels;
+        self.line_ref_bands = d.line_ref_bands;
+        self.charts = d.charts;
+        self.paper_override_applied = d.paper_override_applied;
+        self.first_sec_geo = d.first_sec_geo;
+        // `original`／`touched`／`part_baselines`／`undo_stack`／`redo_stack`
+        // 五套帳單原樣保留（`derive` 在重建態回空 `part_baselines`，故這裡
+        // 刻意**不**賦值——開檔基線是唯一基準，重建不得覆寫）。
+        // 註腳／尾註／頁首推下三層依賴定案版面，必须在提交後收斂（開檔態
+        // 由 `with_footnotes()` 做同一件事，口徑一致）。
+        self.recompute_notes();
+        Ok(())
+    }
+
+    /// 回塞態（`R1B_BUGGY=1`）：卡面原始寫法——全檔 `save()` 重壓縮 ＋
+    /// `from_docx_bytes` 重解壓重解析，再逐欄搬回編輯面帳本。保留本體是為了
+    /// 讓效能回塞鑑別（完成閘門 3）能機械重現基線級成本；正常態永不走這裡。
+    fn rebuild_derived_full_reopen(&mut self) -> Result<(), EngineError> {
         let saved = self.doc.save()?;
         let mut fresh = Self::from_docx_bytes(&saved)?;
         // bundle 基準保真鐵律（K29d 探針實據）：`from_docx_bytes(&saved)` 的
@@ -3079,12 +3317,14 @@ impl Engine {
         let touched = std::mem::take(&mut self.touched);
         let undo_stack = std::mem::take(&mut self.undo_stack);
         let redo_stack = std::mem::take(&mut self.redo_stack);
+        let paper_override = self.paper_override.clone();
         *self = fresh;
         self.original = original;
         self.part_baselines = part_baselines;
         self.touched = touched;
         self.undo_stack = undo_stack;
         self.redo_stack = redo_stack;
+        self.paper_override = paper_override;
         Ok(())
     }
 
@@ -8015,32 +8255,32 @@ fn push_txbx_keys(
 
 /// 樣式級聯烘焙（t_5dfc8ac7：與正文同一條 `cascade_paragraphs` 路徑）。
 fn build_hf_layer(
-    doc: &OoxmlDoc,
+    // R1-b：收 parts 明文表（不再收 OoxmlDoc）——派生層重建從記憶體 parts
+    // 直入，本層不需要 zip bundle。呼叫端：開檔傳 `&doc.parts`、重建傳 `&parts`。
+    parts: &BTreeMap<String, Vec<u8>>,
     sections: &[SectionSpec],
     style_table: Option<&StyleTable>,
     theme: &ThemeColors,
 ) -> HfLayer {
     // 主題字型表：與正文同一份 fontScheme，供頁首頁尾 part 的 `w:rFonts`
     // theme 引用在解析當下查表落地（ECMA-376 §17.3.2.26）。
-    let theme_fonts = ThemeFonts::from_parts(&doc.parts);
+    let theme_fonts = ThemeFonts::from_parts(parts);
     let mut sec_geo: HashMap<u32, SectionGeometry> = HashMap::new();
     for s in sections {
         sec_geo.entry(s.id).or_insert(s.geo);
     }
-    let Some(doc_xml) = doc.parts.get("word/document.xml") else {
+    let Some(doc_xml) = parts.get("word/document.xml") else {
         return Default::default();
     };
     let decls = read_sections_header_footer(doc_xml);
     if decls.is_empty() {
         return Default::default();
     }
-    let even_odd = doc
-        .parts
+    let even_odd = parts
         .get("word/settings.xml")
         .map(|s| read_even_and_odd_headers(s))
         .unwrap_or(false);
-    let rels = doc
-        .parts
+    let rels = parts
         .get("word/_rels/document.xml.rels")
         .map(|r| read_rels(r))
         .unwrap_or_default();
@@ -8049,7 +8289,7 @@ fn build_hf_layer(
         let rid = rid.as_ref()?;
         let path = resolve_relationship(&rels, rid)?;
         // 指向不存在 part 的懸空 rId → None（容錯跳過，不虛構）。
-        doc.parts.contains_key(&path).then_some(path)
+        parts.contains_key(&path).then_some(path)
     };
     let paths_of = |sr: &SlotRefs| SlotPaths {
         default: resolve(&sr.default),
@@ -8090,7 +8330,7 @@ fn build_hf_layer(
     // 級聯基準字級：hf part 與正文共用同一文件基準（doc_grid；無級聯＝12）。
     let def_size = style_table.map_or(FALLBACK_SIZE_PT, |t| t.doc_grid().0.unwrap_or(12.0));
     for path in want {
-        if let Some(xml) = doc.parts.get(&path) {
+        if let Some(xml) = parts.get(&path) {
             if let Ok((paragraphs, tables)) =
                 parse_header_footer_part_with_fonts(xml, theme, Some(&theme_fonts))
             {
@@ -8101,14 +8341,13 @@ fn build_hf_layer(
                 // （word/_rels/header1.xml.rels——Bug51170 實測；不是
                 // document.xml.rels）。逐位對齊 images；查無／EMF 等不可渲染
                 // 格式＝None ⇒ 發射退佔位框。無圖 part＝空向量（零擾動）。
-                let hf_rels = doc
-                    .parts
+                let hf_rels = parts
                     .get(&rels_path_for(&path))
                     .map(|r| read_rels(r))
                     .unwrap_or_default();
                 let pixels: Vec<Option<ResolvedPixelSource>> = images
                     .iter()
-                    .map(|im| resolve_pixel_source(&doc.parts, &hf_rels, &image_rid_candidates(im)))
+                    .map(|im| resolve_pixel_source(parts, &hf_rels, &image_rid_candidates(im)))
                     .collect();
                 // D9b 欠債二：框內 `w:drawing` 內容圖的像素同口徑預解析（rId 走
                 // 本 part 自家 .rels；逐候選→逐 txbx_drawing 對齊）。無圖候選＝
@@ -8118,7 +8357,7 @@ fn build_hf_layer(
                     .map(|im| {
                         im.txbx_drawings
                             .iter()
-                            .map(|d| resolve_pixel_source(&doc.parts, &hf_rels, &[d.rid.as_str()]))
+                            .map(|d| resolve_pixel_source(parts, &hf_rels, &[d.rid.as_str()]))
                             .collect()
                     })
                     .collect();

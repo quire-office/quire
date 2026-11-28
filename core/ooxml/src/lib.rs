@@ -403,30 +403,58 @@ impl OoxmlDoc {
     }
 }
 
-/// 由 .docx 位元組解析（不碰檔案系統，wasm32 友善）。
-pub fn parse(bytes: &[u8]) -> Result<OoxmlDoc, OoxmlError> {
-    let bundle = ZipBundle::open(bytes)?;
-    let parts = bundle.decode_parts()?;
+/// canonical 投影（`word/document.xml` → 段落／表格／註腳彙總）。
+///
+/// R1-b：從 `parse()` 抽出的**唯一投影口徑**。開檔（`parse`，位元組進）與
+/// 結構編輯後的派生層重建（`project_parts`，記憶體 parts 進）共用同一支
+/// 投影，兩者產物逐欄同形——這是「局部重建 ≡ 整包重開」byte 級同形的地基：
+/// 口徑只有一份，就不可能各走一套。
+#[derive(Debug, Clone)]
+pub struct DocProjection {
+    pub paragraphs: Vec<Paragraph>,
+    pub tables: Vec<BodyTable>,
+    pub notes: Notes,
+}
+
+/// 由**已在記憶體中的 parts 明文**重建 canonical 投影（R1-b：免 ZIP 往返）。
+///
+/// `parse()` 的投影段就是本函數（同一支函式體，零分岔）；差別只在 zip：
+/// 本函數不碰 zip 結構，`bundle`（未觸碰 entry 逐位元組搬運的依據）由
+/// 呼叫端原樣保留——開檔基準保真鐵律因此由「事後補 clone」升級為
+/// 「結構上不可能被污染」。
+pub fn project_parts(parts: &BTreeMap<String, Vec<u8>>) -> Result<DocProjection, OoxmlError> {
     let xml = parts
         .get("word/document.xml")
         .ok_or(OoxmlError::MissingDocument)?;
     // 主題色表（theme1.xml 的 clrScheme）：純讀取，供 `w:themeColor` 查表
     // （ECMA-376 §17.3.2.25——主題色優先於 `w:val` 回退值）。無 theme part
     // → 空表（呼叫端老實退回 `w:val`，既有行為不變）。
-    let theme = ThemeColors::from_parts(&parts);
+    let theme = ThemeColors::from_parts(parts);
     // 主題字型表（theme1.xml 的 fontScheme）：與主題色表同處取得，供
     // `w:rFonts` 的 theme 引用在解析當下查表落地（ECMA-376 §17.3.2.26）。
     // 無 theme part → 四欄全 None＝保留直接值（既有行為不變）。
-    let theme_fonts = ThemeFonts::from_parts(&parts);
+    let theme_fonts = ThemeFonts::from_parts(parts);
     let paragraphs = parse_document_xml_with_fonts(xml, &theme, Some(&theme_fonts))?;
     // 表格投影：純讀入（PM 補正 1——唯讀來源隔離；無損寫回路徑完全不經此處）。
     let tables = table::read_body_tables(xml);
     // 註腳／尾註彙總（ECMA-376 §17.11）：純讀取；缺 part／壞 XML＝空彙總。
-    let notes = Notes::from_parts(&parts);
-    Ok(OoxmlDoc {
+    let notes = Notes::from_parts(parts);
+    Ok(DocProjection {
         paragraphs,
         tables,
         notes,
+    })
+}
+
+/// 由 .docx 位元組解析（不碰檔案系統，wasm32 友善）。
+pub fn parse(bytes: &[u8]) -> Result<OoxmlDoc, OoxmlError> {
+    let bundle = ZipBundle::open(bytes)?;
+    let parts = bundle.decode_parts()?;
+    let proj = project_parts(&parts)?;
+    Ok(OoxmlDoc {
+        paragraphs: proj.paragraphs,
+        tables: proj.tables,
+        notes: proj.notes,
         parts,
         bundle,
     })
