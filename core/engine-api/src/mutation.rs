@@ -1857,6 +1857,34 @@ fn r1_redo_buggy() -> bool {
     std::env::var_os("R1_REDO_BUGGY").is_some()
 }
 
+/// R1-a 續（t_ba9bff8f）：`R1A_SHIELD_BUGGY` 存在 ⇒ `redo()` 的**呼叫端重放護欄
+/// 失效**（不保管剩餘 redo 棧），除此之外不動任何路徑——主幹重放臂（`replay=true`）
+/// 照樣不誤清。本鎖把判別軸從「行為面」挪到「機制面」：現況護欄在行為面把全族
+/// 兜住，光看行為無法分辨「旗標已貫穿 K29c／K29d」與「純靠護欄兜底」；令護欄
+/// 失效後，若 `replay` 尚未貫穿進分流臂，K29c／K29d 家族重放必誤清剩餘棧
+/// （考卷 `r1a_replay_k29_family` 燈 3 據此鑑別）。
+///
+/// 與 `R1_REDO_BUGGY` 的分工：後者逐字復刻 R1-a 缺陷本體（重放臂照清＋護欄失效），
+/// 前者**只**撤除護欄的兜底角色、保留修好的主幹臂——兩鎖各自獨立，勿混用。
+/// 按呼叫當下讀 env（比照 `R1_REDO_BUGGY`／`SAVE_RT_BUGGY` 口徑）。
+fn r1a_shield_buggy() -> bool {
+    std::env::var_os("R1A_SHIELD_BUGGY").is_some()
+}
+
+/// R1-a 續（t_ba9bff8f）**鑑別鏡像**：存在 ⇒ K29c／K29d 分流臂退回「無條件
+/// `redo_stack.clear()`」的修前形態（無視 `replay`）。本鎖只服務考卷燈 4
+/// （`r1a_replay_k29_family`）：單靠 `R1A_SHIELD_BUGGY` 撤除護欄，在旗標已貫穿
+/// 的今日是好態、不會紅，無法證明考卷真的接得到缺陷路徑——兩鎖併翻才逐字復刻
+/// 「撤除兜底＋分流臂未貫穿」的修前世界，第 2 次 redo 必 `Ok(None)`。
+///
+/// 與 `R1A_SHIELD_BUGGY` 的分工：本鎖動**被呼叫端**（分流臂照清），前者動
+/// **呼叫端**（護欄不保管）。正常態兩者皆不存在 ⇒ 零行為變動。定義放本檔
+/// （與 `r1_redo_buggy` 同處），`mutation_k29c.rs`／`mutation_k29d.rs` 共用，
+/// 勿在別處複製第二份口徑。
+pub(crate) fn r1a_unthreaded_buggy() -> bool {
+    std::env::var_os("R1A_UNTHREADED_BUGGY").is_some()
+}
+
 /// 開標籤（非閉、非自閉合）的完整元素名（`w:fldSimple` 之類）；否則 `None`。
 fn open_tag_full_name(tag: &str) -> Option<&str> {
     if !tag.starts_with('<') || tag.starts_with("</") || tag.ends_with("/>") {
@@ -2783,8 +2811,10 @@ impl Engine {
     /// push `undo_stack`（重放後 Ctrl+Z 可再撤銷該筆，undo/redo 兩棧互不污染，
     /// 順序正確性由呼叫端 `redo()` 先 `pop()` 負責）。
     ///
-    /// 注意：K29c／K29d 分流臂（獨立實作檔）自行 `redo_stack.clear()`，本旗
-    /// 管不到它們；重放路徑的棧保護由 `redo()` 端的重放護欄統一兜底。
+    /// 注意：K29c／K29d 分流臂（獨立實作檔）自 R1-a 續（t_ba9bff8f）起**同樣
+    /// 吃本旗**——前置分派處把 `replay` 原樣傳給 `apply_k29c_mutation`／
+    /// `apply_k29d_mutation`，全族「新操作照清、重放不誤清」語意一致，不再靠
+    /// `redo()` 護欄兜底（護欄本身的原子性放回邏輯保留，見 `redo()` 註解）。
     fn apply_mutation_inner(
         &mut self,
         op: Mutation,
@@ -2807,12 +2837,12 @@ impl Engine {
         // K29c（M4＋M5）：表格與圖片家族走獨立實作檔，避免與 Slice 1/2 的
         // 單段落外科手術主幹糾纏；兩者共用同一 Undo／touched／rebuild 紀律。
         if crate::mutation_k29c::is_k29c_mutation(&op) {
-            return self.apply_k29c_mutation(op);
+            return self.apply_k29c_mutation(op, replay);
         }
         // K29d（Slice 4）：M6 節／分節／頁首頁尾／註腳尾註家族與非 Body 目標的
         // SubDocTarget 文字路由走獨立實作檔（共用同一 Undo／touched／rebuild 紀律）。
         if crate::mutation_k29d::is_k29d_mutation(&op) {
-            return self.apply_k29d_mutation(op);
+            return self.apply_k29d_mutation(op, replay);
         }
         let (
             part_name,
@@ -3893,11 +3923,17 @@ impl Engine {
     /// 結尾不再 `redo_stack.clear()`，棧頂之後尚未重放的 entries 得以存活，
     /// 多步 redo 才結構性可行；重放照舊 push `undo_stack`（重做完 Ctrl+Z 可
     /// 再撤銷，undo/redo 兩棧互不污染）。另設呼叫端**重放護欄**：重放前把
-    /// 剩餘棧移出保管、重放後（成功或失敗）放回——一則守住 iron rule 3 原子
-    /// 性（中途 `?` 失敗時未重放 entries 必須仍在棧上），二則兜住 K29c／K29d
-    /// 分流臂結尾的無條件 `redo_stack.clear()`（該兩檔屬平行卡禁區、本卡只准
-    /// 改 mutation.rs，replay 旗標傳不進去，護欄設在呼叫端是唯一合法位置）。
-    /// 回塞態 `R1_REDO_BUGGY=1`：護欄失效＋重放臂照清，逐字復刻修前缺陷。
+    /// 剩餘棧移出保管、重放後（成功或失敗）放回。
+    ///
+    /// R1-a 續（t_ba9bff8f）：K29c／K29d 分流臂已吃進 `replay` 旗標，護欄的
+    /// **兜底角色已撤**（不再需要靠它救分流臂）；但「重放期間保管剩餘棧、
+    /// 成功與失敗路徑皆放回」的**原子性放回邏輯永久保留**——它是 iron rule 3
+    /// （中途 `?` 失敗時未重放 entries 必須仍在棧上）的實作，撤了會掉原子性
+    /// 保證。護欄與旗標的分工自此明確：旗標負責「誰准清棧」的語意，護欄負責
+    /// 「重放中途炸了棧要無損」的原子性，兩層各司其職、不再疊影。
+    /// 回塞態 `R1_REDO_BUGGY=1`：護欄失效＋重放臂照清，逐字復刻 R1-a 修前缺陷；
+    /// `R1A_SHIELD_BUGGY=1`（R1-a 續）：只令護欄失效，判別「撤除兜底後行為是否
+    /// 仍正確」的機制面軸，考卷見 `tests/r1a_replay_k29_family.rs`。
     pub fn redo(&mut self) -> Result<Option<MutationOutcome>, MutationError> {
         let entry = match self.redo_stack.pop() {
             Some(e) => e,
@@ -3905,8 +3941,10 @@ impl Engine {
         };
 
         // 重放護欄：正常態先把尚未重放的剩餘 redo 棧取走保管；回塞態不保管
-        // （缺陷照犯，燈 3 據此翻紅）。
-        let shield = !r1_redo_buggy();
+        // （缺陷照犯，燈 3 據此翻紅）。`R1A_SHIELD_BUGGY`（R1-a 續 t_ba9bff8f）
+        // 同樣令護欄失效，但**不動**主幹重放臂——那是機制面判別軸：撤除兜底後
+        // K29c／K29d 重放是否仍正確，取決於 `replay` 旗標有無貫穿分流臂。
+        let shield = !r1_redo_buggy() && !r1a_shield_buggy();
         let preserved: Vec<UndoEntry> = if shield {
             std::mem::take(&mut self.redo_stack)
         } else {

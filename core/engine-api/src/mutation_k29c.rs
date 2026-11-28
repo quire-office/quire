@@ -10,10 +10,10 @@
 //! - 所有可逆操作只保存「整份 part 的舊明文」作為逆補丁（Undo 時完整還原）。
 
 use crate::mutation::{
-    BorderSpec, ByteSpan, DocPos, FloatingAxisSpec, InsertSide, InverseMutation,
-    IrreversibleReason, Mutation, MutationError, MutationOutcome, PartLifecycleInverse,
-    ReversibilityLevel, SemanticInverseOp, SubDocTarget, TableBordersPatch, TablePath,
-    TablePropsPatch, UndoEntry, VMergeState, WrapModeSpec, XmlReversePatch,
+    r1a_unthreaded_buggy, BorderSpec, ByteSpan, DocPos, FloatingAxisSpec, InsertSide,
+    InverseMutation, IrreversibleReason, Mutation, MutationError, MutationOutcome,
+    PartLifecycleInverse, ReversibilityLevel, SemanticInverseOp, SubDocTarget, TableBordersPatch,
+    TablePath, TablePropsPatch, UndoEntry, VMergeState, WrapModeSpec, XmlReversePatch,
 };
 use crate::Engine;
 use std::collections::BTreeMap;
@@ -1313,9 +1313,17 @@ fn replace_embed_xml(text: &str, span: (usize, usize), old: &str, new: &str) -> 
 // ---------------------------------------------------------------------------
 
 impl Engine {
+    /// K29c 分流入口（由 `apply_mutation_inner` 於**開頭**前置分派呼叫）。
+    ///
+    /// R1-a 續（t_ba9bff8f）：`replay` 自本版起**貫穿**至 `commit_k29c`——重放臂
+    /// （`replay=true`）不再誤清剩餘 redo 棧，語意與主幹 `apply_mutation_inner`
+    /// 一致，不再依賴 `redo()` 呼叫端護欄的**兜底角色**。新操作（`replay=false`）
+    /// 照清（iron rule 1）。公開發出新操作一律走 `apply_mutation`、重放一律走
+    /// `apply_mutation_inner(op, true)`，不得繞道本函式自行決定旗標。
     pub(crate) fn apply_k29c_mutation(
         &mut self,
         op: Mutation,
+        replay: bool,
     ) -> Result<MutationOutcome, MutationError> {
         match op.clone() {
             Mutation::InsertTable {
@@ -1324,22 +1332,22 @@ impl Engine {
                 rows,
                 cols,
                 col_widths_pt,
-            } => self.k29c_insert_table(op, target, after_para, rows, cols, col_widths_pt),
-            Mutation::DeleteTable { table } => self.k29c_delete_table(op, table),
+            } => self.k29c_insert_table(op, replay, target, after_para, rows, cols, col_widths_pt),
+            Mutation::DeleteTable { table } => self.k29c_delete_table(op, replay, table),
             Mutation::InsertTableRow {
                 table,
                 at_row,
                 position,
-            } => self.k29c_insert_row(op, table, at_row, position),
-            Mutation::DeleteTableRow { table, row } => self.k29c_delete_row(op, table, row),
+            } => self.k29c_insert_row(op, replay, table, at_row, position),
+            Mutation::DeleteTableRow { table, row } => self.k29c_delete_row(op, replay, table, row),
             Mutation::InsertTableColumn {
                 table,
                 at_grid_col,
                 position,
                 width_pt,
-            } => self.k29c_insert_column(op, table, at_grid_col, position, width_pt),
+            } => self.k29c_insert_column(op, replay, table, at_grid_col, position, width_pt),
             Mutation::DeleteTableColumn { table, grid_col } => {
-                self.k29c_delete_column(op, table, grid_col)
+                self.k29c_delete_column(op, replay, table, grid_col)
             }
             Mutation::MergeTableCells {
                 table,
@@ -1349,6 +1357,7 @@ impl Engine {
                 right_grid_col,
             } => self.k29c_merge_cells(
                 op,
+                replay,
                 table,
                 top_row,
                 bottom_row,
@@ -1361,17 +1370,19 @@ impl Engine {
                 cell,
                 into_rows,
                 into_cols,
-            } => self.k29c_split_cell(op, table, row, cell, into_rows, into_cols),
-            Mutation::SetTableProps { table, patch } => self.k29c_set_table_props(op, table, patch),
+            } => self.k29c_split_cell(op, replay, table, row, cell, into_rows, into_cols),
+            Mutation::SetTableProps { table, patch } => {
+                self.k29c_set_table_props(op, replay, table, patch)
+            }
             Mutation::SetRowProps { table, row, patch } => {
-                self.k29c_set_row_props(op, table, row, patch)
+                self.k29c_set_row_props(op, replay, table, row, patch)
             }
             Mutation::SetCellProps {
                 table,
                 row,
                 cell,
                 patch,
-            } => self.k29c_set_cell_props(op, table, row, cell, patch),
+            } => self.k29c_set_cell_props(op, replay, table, row, cell, patch),
             Mutation::InsertInlineImage {
                 target,
                 pos,
@@ -1382,6 +1393,7 @@ impl Engine {
                 alt_text,
             } => self.k29c_insert_image(
                 op,
+                replay,
                 target,
                 Some(pos),
                 None,
@@ -1405,6 +1417,7 @@ impl Engine {
                 behind_doc,
             } => self.k29c_insert_image(
                 op,
+                replay,
                 target,
                 None,
                 Some(host_para),
@@ -1426,6 +1439,7 @@ impl Engine {
                 new_wrap_mode,
             } => self.k29c_resize_image(
                 op,
+                replay,
                 target,
                 host_para,
                 drawing_index,
@@ -1443,6 +1457,7 @@ impl Engine {
                 new_mime_type,
             } => self.k29c_replace_image(
                 op,
+                replay,
                 target,
                 host_para,
                 drawing_index,
@@ -1454,9 +1469,14 @@ impl Engine {
                 host_para,
                 drawing_index,
                 gc_unreferenced_media,
-            } => {
-                self.k29c_delete_image(op, target, host_para, drawing_index, gc_unreferenced_media)
-            }
+            } => self.k29c_delete_image(
+                op,
+                replay,
+                target,
+                host_para,
+                drawing_index,
+                gc_unreferenced_media,
+            ),
             _ => Err(MutationError::XmlPatchRejected {
                 detail: "非 K29c Mutation 誤入 K29c 實作".to_string(),
             }),
@@ -1466,6 +1486,7 @@ impl Engine {
     fn commit_k29c(
         &mut self,
         op: Mutation,
+        replay: bool,
         mut commit: K29cCommit,
     ) -> Result<MutationOutcome, MutationError> {
         let mut patches = Vec::new();
@@ -1509,6 +1530,13 @@ impl Engine {
 
         if matches!(reversibility, ReversibilityLevel::Irreversible { .. }) {
             // 誠實紅線：媒體位元組已釋放，依賴它的歷史全部失效。
+            //
+            // R1-a 續（t_ba9bff8f）卡面明文：本態**成對清 `undo_stack`＋`redo_stack`
+            // 語意誠實、保持不動**——該筆刻意不 push `undo_stack`（下方 else 臂才
+            // push），結構上它永遠進不了 redo 棧 ⇒ 不存在「重放本筆時誤清剩餘棧」
+            // 這回事，`replay` 在此既無必要也無意義。勿順手把它「統一」成跟 else
+            // 臂一樣的条件清：那會把「媒體已釋放、歷史全失效」的誠實截斷改成選擇性
+            // 保留，是缺陷不是清理。
             self.undo_stack.clear();
             self.redo_stack.clear();
         } else {
@@ -1524,7 +1552,17 @@ impl Engine {
                 reversibility: reversibility.clone(),
             };
             self.undo_stack.push(entry);
-            self.redo_stack.clear();
+            // R1-a 續（t_ba9bff8f）：本行曾是**無條件** `redo_stack.clear()`——
+            // K29c 在 `apply_mutation_inner` 開頭就前置分派、`replay` 傳不進來，
+            // 於是 `redo()` 重放任何一筆 K29c 編輯都把整條 redo 棧抹平，多步重做
+            // 對表格／圖片族結構性不可能成功（行為面由呼叫端重放護欄兜住，語意
+            // 卻從未貫穿）。比照主幹 `apply_mutation_inner` 口徑：新操作（replay=
+            // false）照清＝iron rule 1 標準編輯器語義；重放（replay=true）保留
+            // 棧頂之後尚未重放的 entries。回塞鏡像 `R1A_UNTHREADED_BUGGY=1` 令本
+            // 行無條件復辟（考卷燈 4 據此鑑別），正常態零行為變動。
+            if !replay || r1a_unthreaded_buggy() {
+                self.redo_stack.clear();
+            }
         }
 
         self.rebuild_derived()
@@ -1656,9 +1694,11 @@ impl Engine {
 
     // ------------------------- M4.1 / M4.2 -------------------------
 
+    #[allow(clippy::too_many_arguments)] // 欄位逐筆來自 Mutation::InsertTable 原欄位；replay 屬 R1-a 續貫穿旗標，塞結構體反而模糊「分派處原樣傳旗標」的語意
     fn k29c_insert_table(
         &mut self,
         op: Mutation,
+        replay: bool,
         target: SubDocTarget,
         after_para: Option<usize>,
         rows: usize,
@@ -1739,12 +1779,13 @@ impl Engine {
             para: after_para.map(|p| p + 1).unwrap_or(0),
             cp: 0,
         });
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     fn k29c_delete_table(
         &mut self,
         op: Mutation,
+        replay: bool,
         table: TablePath,
     ) -> Result<MutationOutcome, MutationError> {
         let (_, xml) = self.body_part()?;
@@ -1753,7 +1794,7 @@ impl Engine {
         let new_xml = apply_replacements(&xml, &[(ByteSpan { start, end }, Vec::new())])?;
         let mut commit = K29cCommit::new();
         commit.update("word/document.xml", new_xml);
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     // ------------------------- M4.3 列 -------------------------
@@ -1761,6 +1802,7 @@ impl Engine {
     fn k29c_insert_row(
         &mut self,
         op: Mutation,
+        replay: bool,
         table: TablePath,
         at_row: usize,
         position: InsertSide,
@@ -1811,12 +1853,13 @@ impl Engine {
         )?;
         let mut commit = K29cCommit::new();
         commit.update("word/document.xml", new_xml);
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     fn k29c_delete_row(
         &mut self,
         op: Mutation,
+        replay: bool,
         table: TablePath,
         row_idx: usize,
     ) -> Result<MutationOutcome, MutationError> {
@@ -1887,7 +1930,7 @@ impl Engine {
         let new_xml = apply_replacements(&xml, &reps)?;
         let mut commit = K29cCommit::new();
         commit.update("word/document.xml", new_xml);
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     // ------------------------- M4.4 欄 -------------------------
@@ -1895,6 +1938,7 @@ impl Engine {
     fn k29c_insert_column(
         &mut self,
         op: Mutation,
+        replay: bool,
         table: TablePath,
         at_grid_col: usize,
         position: InsertSide,
@@ -2030,12 +2074,13 @@ impl Engine {
         let new_xml = apply_replacements(&xml, &reps)?;
         let mut commit = K29cCommit::new();
         commit.update("word/document.xml", new_xml);
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     fn k29c_delete_column(
         &mut self,
         op: Mutation,
+        replay: bool,
         table: TablePath,
         grid_col: usize,
     ) -> Result<MutationOutcome, MutationError> {
@@ -2102,14 +2147,16 @@ impl Engine {
         let new_xml = apply_replacements(&xml, &reps)?;
         let mut commit = K29cCommit::new();
         commit.update("word/document.xml", new_xml);
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     // ------------------------- M4.5 合併／分割 -------------------------
 
+    #[allow(clippy::too_many_arguments)] // 合併範圍四軸（上下列×左右網格欄）皆必要輸入；replay 屬 R1-a 續貫穿旗標
     fn k29c_merge_cells(
         &mut self,
         op: Mutation,
+        replay: bool,
         table: TablePath,
         top_row: usize,
         bottom_row: usize,
@@ -2269,12 +2316,14 @@ impl Engine {
         let new_xml = apply_replacements(&xml, &reps)?;
         let mut commit = K29cCommit::new();
         commit.update("word/document.xml", new_xml);
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
+    #[allow(clippy::too_many_arguments)] // 分割目標（表／列／格）＋into_rows／into_cols 兩軸皆必要；replay 屬 R1-a 續貫穿旗標
     fn k29c_split_cell(
         &mut self,
         op: Mutation,
+        replay: bool,
         table: TablePath,
         row_idx: usize,
         cell_idx: usize,
@@ -2368,7 +2417,7 @@ impl Engine {
         let new_xml = apply_replacements(&xml, &reps)?;
         let mut commit = K29cCommit::new();
         commit.update("word/document.xml", new_xml);
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     // ------------------------- M4.6 屬性 -------------------------
@@ -2376,6 +2425,7 @@ impl Engine {
     fn k29c_set_table_props(
         &mut self,
         op: Mutation,
+        replay: bool,
         table: TablePath,
         patch: TablePropsPatch,
     ) -> Result<MutationOutcome, MutationError> {
@@ -2429,12 +2479,13 @@ impl Engine {
         let new_xml = apply_replacements(&xml, &reps)?;
         let mut commit = K29cCommit::new();
         commit.update("word/document.xml", new_xml);
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     fn k29c_set_row_props(
         &mut self,
         op: Mutation,
+        replay: bool,
         table: TablePath,
         row_idx: usize,
         patch: crate::mutation::RowPropsPatch,
@@ -2482,12 +2533,13 @@ impl Engine {
         let new_xml = apply_replacements(&xml, &reps)?;
         let mut commit = K29cCommit::new();
         commit.update("word/document.xml", new_xml);
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     fn k29c_set_cell_props(
         &mut self,
         op: Mutation,
+        replay: bool,
         table: TablePath,
         row_idx: usize,
         cell_idx: usize,
@@ -2512,7 +2564,7 @@ impl Engine {
         let new_xml = apply_replacements(&xml, &[rep])?;
         let mut commit = K29cCommit::new();
         commit.update("word/document.xml", new_xml);
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     // ------------------------- M5：媒體 -------------------------
@@ -2671,6 +2723,7 @@ impl Engine {
     fn k29c_insert_image(
         &mut self,
         op: Mutation,
+        replay: bool,
         target: SubDocTarget,
         pos: Option<DocPos>,
         host_para: Option<usize>,
@@ -2754,7 +2807,7 @@ impl Engine {
             para,
             cp: analysis.total_cp,
         });
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     fn locate_drawing(
@@ -2827,6 +2880,7 @@ impl Engine {
     fn k29c_resize_image(
         &mut self,
         op: Mutation,
+        replay: bool,
         target: SubDocTarget,
         host_para: usize,
         drawing_index: usize,
@@ -2895,12 +2949,14 @@ impl Engine {
         let new_xml = apply_replacements(&xml, &reps)?;
         let mut commit = K29cCommit::new();
         commit.update("word/document.xml", new_xml);
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
+    #[allow(clippy::too_many_arguments)] // 媒體置換需同時帶定位（表／圖索引）與新媒體兩軸；replay 屬 R1-a 續貫穿旗標
     fn k29c_replace_image(
         &mut self,
         op: Mutation,
+        replay: bool,
         target: SubDocTarget,
         host_para: usize,
         drawing_index: usize,
@@ -2943,12 +2999,13 @@ impl Engine {
         commit.update(part.to_string(), new_text.into_bytes());
         self.apply_media_plan(&plan, &new_media_bytes, &mut commit);
         commit.irreversibility = irreversible;
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     fn k29c_delete_image(
         &mut self,
         op: Mutation,
+        replay: bool,
         target: SubDocTarget,
         host_para: usize,
         drawing_index: usize,
@@ -2987,7 +3044,7 @@ impl Engine {
         }
         commit.update(part.to_string(), new_xml);
         commit.irreversibility = irreversible;
-        self.commit_k29c(op, commit)
+        self.commit_k29c(op, replay, commit)
     }
 
     fn media_part_evictable(&self, part: &str) -> bool {

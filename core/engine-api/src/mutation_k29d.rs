@@ -1,7 +1,8 @@
 //! K29d（Slice 4）：M6 節屬性／分節符／頁首頁尾／註腳尾註家族＋`SubDocTarget` 完整寫入路由。
 //!
 //! 依 `docs/edit-api-design.md` §6.5 與 K29d 任務卡。沿用 K29c 分檔慣例：本檔只由
-//! `apply_mutation` 入口的 `is_k29d_mutation` 分流進入，不把 M6 實作塞回 Slice 1/2/3 主幹檔。
+//! `apply_mutation_inner` 入口的 `is_k29d_mutation` 分流進入（R1-a 續起 `replay`
+//! 旗標一併貫穿），不把 M6 實作塞回 Slice 1/2/3 主幹檔。
 //!
 //! 路由鐵律（設計書 §2.2.5／§2.3.6／§2.3.7／§6.5）：
 //! - 節／頁首頁尾綁定／註腳錨點一律按 body-level 段落座標尋址；子樹文字編輯以
@@ -20,10 +21,11 @@
 //!   位元組 100% 歸位（touched 自動退場＋存檔 byte_identical 由既有 Slice 1 機制負責）。
 
 use crate::mutation::{
-    analyze_paragraph, find_paragraph_span, xml_escape, ByteSpan, DocPos, HfBindAction, HfKind,
-    HfSlotKind, InverseMutation, Mutation, MutationError, MutationOutcome, NotePropsPatch,
-    PageOrientation, ParagraphSpan, PartLifecycleInverse, ReversibilityLevel, SectionPropsPatch,
-    SectionStartKind, SemanticInverseOp, SubDocTarget, UndoEntry, XmlReversePatch,
+    analyze_paragraph, find_paragraph_span, r1a_unthreaded_buggy, xml_escape, ByteSpan, DocPos,
+    HfBindAction, HfKind, HfSlotKind, InverseMutation, Mutation, MutationError, MutationOutcome,
+    NotePropsPatch, PageOrientation, ParagraphSpan, PartLifecycleInverse, ReversibilityLevel,
+    SectionPropsPatch, SectionStartKind, SemanticInverseOp, SubDocTarget, UndoEntry,
+    XmlReversePatch,
 };
 use crate::Engine;
 use quire_ooxml::{NoteKind2, NoteNumberFormat, NoteRestart};
@@ -56,35 +58,42 @@ pub(crate) fn is_k29d_mutation(op: &Mutation) -> bool {
 }
 
 impl Engine {
-    /// K29d 分流入口（由 `apply_mutation` 於 K29c 分流之後呼叫）。
+    /// K29d 分流入口（由 `apply_mutation_inner` 於 K29c 分流之後呼叫）。
+    ///
+    /// R1-a 續（t_ba9bff8f）：`replay` 自本版起**貫穿**至 `commit_k29d`——重放臂
+    /// 不再誤清剩餘 redo 棧，語意與主幹 `apply_mutation_inner` 一致，不再依賴
+    /// `redo()` 呼叫端護欄的**兜底角色**（新操作照清＝iron rule 1，重放保留）。
     pub(crate) fn apply_k29d_mutation(
         &mut self,
         op: Mutation,
+        replay: bool,
     ) -> Result<MutationOutcome, MutationError> {
         match op.clone() {
             Mutation::SetSectionProperties { section_id, patch } => {
-                self.k29d_set_section_properties(op, section_id, &patch)
+                self.k29d_set_section_properties(op, replay, section_id, &patch)
             }
             Mutation::InsertSectionBreak { para, kind } => {
-                self.k29d_insert_section_break(op, para, kind)
+                self.k29d_insert_section_break(op, replay, para, kind)
             }
             Mutation::DeleteSectionBreak { section_id } => {
-                self.k29d_delete_section_break(op, section_id)
+                self.k29d_delete_section_break(op, replay, section_id)
             }
             Mutation::ConfigureHeaderFooterSlot {
                 section_id: _,
                 title_pg,
                 even_and_odd_headers,
                 slot_bind,
-            } => self.k29d_configure_hf_slot(op, title_pg, even_and_odd_headers, slot_bind),
+            } => self.k29d_configure_hf_slot(op, replay, title_pg, even_and_odd_headers, slot_bind),
             Mutation::InsertNote {
                 kind,
                 pos,
                 initial_text,
-            } => self.k29d_insert_note(op, kind, pos, &initial_text),
-            Mutation::DeleteNote { kind, note_id } => self.k29d_delete_note(op, kind, note_id),
+            } => self.k29d_insert_note(op, replay, kind, pos, &initial_text),
+            Mutation::DeleteNote { kind, note_id } => {
+                self.k29d_delete_note(op, replay, kind, note_id)
+            }
             Mutation::SetNoteProperties { kind, patch } => {
-                self.k29d_set_note_properties(op, kind, &patch)
+                self.k29d_set_note_properties(op, replay, kind, &patch)
             }
             Mutation::InsertText {
                 target,
@@ -95,7 +104,7 @@ impl Engine {
                 if style_override.is_some() {
                     return Err(rejected("子樹插入暫不接受 style_override（K29d 範圍外）"));
                 }
-                self.k29d_subdoc_insert_text(op, &target, pos.para, pos.cp, &text)
+                self.k29d_subdoc_insert_text(op, replay, &target, pos.para, pos.cp, &text)
             }
             Mutation::DeleteRange { range } => {
                 if range.start.para != range.end.para {
@@ -106,6 +115,7 @@ impl Engine {
                 }
                 self.k29d_subdoc_delete_text(
                     op,
+                    replay,
                     &range.target,
                     range.start.para,
                     range.start.cp,
@@ -121,6 +131,7 @@ impl Engine {
     fn commit_k29d(
         &mut self,
         op: Mutation,
+        replay: bool,
         updates: Vec<(String, Vec<u8>)>,
         additions: Vec<(String, Vec<u8>)>,
     ) -> Result<MutationOutcome, MutationError> {
@@ -165,7 +176,14 @@ impl Engine {
             reversibility: ReversibilityLevel::StrictByteReversible,
         };
         self.undo_stack.push(entry);
-        self.redo_stack.clear();
+        // R1-a 續（t_ba9bff8f）：同 `commit_k29c`——本行曾是**無條件**
+        // `redo_stack.clear()`，K29d（節／分節／頁首頁尾／註腳族）在
+        // `apply_mutation_inner` 開頭前置分派、`replay` 傳不進來，重放任一筆
+        // K29d 編輯即抹平整條 redo 棧。比照主幹口徑：新操作照清（iron rule 1），
+        // 重放保留剩餘棧；回塞鏡像 `R1A_UNTHREADED_BUGGY=1` 令本行無條件復辟。
+        if !replay || r1a_unthreaded_buggy() {
+            self.redo_stack.clear();
+        }
         self.rebuild_derived()
             .map_err(|e| MutationError::Engine(e.to_string()))?;
         while !self.is_settled() {
@@ -424,6 +442,7 @@ impl Engine {
     fn k29d_set_section_properties(
         &mut self,
         op: Mutation,
+        replay: bool,
         section_id: u32,
         patch: &SectionPropsPatch,
     ) -> Result<MutationOutcome, MutationError> {
@@ -586,7 +605,12 @@ impl Engine {
                 out
             }
         };
-        self.commit_k29d(op, vec![(DOC.to_string(), out.into_bytes())], vec![])
+        self.commit_k29d(
+            op,
+            replay,
+            vec![(DOC.to_string(), out.into_bytes())],
+            vec![],
+        )
     }
 }
 
@@ -625,6 +649,7 @@ impl Engine {
     fn k29d_insert_section_break(
         &mut self,
         op: Mutation,
+        replay: bool,
         para: usize,
         kind: SectionStartKind,
     ) -> Result<MutationOutcome, MutationError> {
@@ -673,12 +698,18 @@ impl Engine {
             );
             out.replace_range(bs..be, &sect);
         }
-        self.commit_k29d(op, vec![(DOC.to_string(), out.into_bytes())], vec![])
+        self.commit_k29d(
+            op,
+            replay,
+            vec![(DOC.to_string(), out.into_bytes())],
+            vec![],
+        )
     }
 
     fn k29d_delete_section_break(
         &mut self,
         op: Mutation,
+        replay: bool,
         section_id: u32,
     ) -> Result<MutationOutcome, MutationError> {
         let doc = part_text(self, DOC)?;
@@ -733,7 +764,12 @@ impl Engine {
         } else {
             out.replace_range(s..e, "");
         }
-        self.commit_k29d(op, vec![(DOC.to_string(), out.into_bytes())], vec![])
+        self.commit_k29d(
+            op,
+            replay,
+            vec![(DOC.to_string(), out.into_bytes())],
+            vec![],
+        )
     }
 }
 
@@ -745,6 +781,7 @@ impl Engine {
     fn k29d_configure_hf_slot(
         &mut self,
         op: Mutation,
+        replay: bool,
         title_pg: Option<bool>,
         even_odd: Option<bool>,
         slot_bind: Option<(HfKind, HfSlotKind, HfBindAction)>,
@@ -896,7 +933,7 @@ impl Engine {
                 }
             }
         }
-        self.commit_k29d(op, updates, additions)
+        self.commit_k29d(op, replay, updates, additions)
     }
 }
 
@@ -1153,6 +1190,7 @@ impl Engine {
     fn k29d_insert_note(
         &mut self,
         op: Mutation,
+        replay: bool,
         kind: NoteKind2,
         pos: DocPos,
         initial_text: &str,
@@ -1260,6 +1298,7 @@ impl Engine {
 
         self.commit_k29d(
             op,
+            replay,
             vec![
                 (DOC.to_string(), out.into_bytes()),
                 (notes_name.to_string(), notes.into_bytes()),
@@ -1271,6 +1310,7 @@ impl Engine {
     fn k29d_delete_note(
         &mut self,
         op: Mutation,
+        replay: bool,
         kind: NoteKind2,
         note_id: i32,
     ) -> Result<MutationOutcome, MutationError> {
@@ -1335,6 +1375,7 @@ impl Engine {
         }
         self.commit_k29d(
             op,
+            replay,
             vec![
                 (DOC.to_string(), doc.into_bytes()),
                 (name.to_string(), notes.into_bytes()),
@@ -1346,6 +1387,7 @@ impl Engine {
     fn k29d_set_note_properties(
         &mut self,
         op: Mutation,
+        replay: bool,
         kind: NoteKind2,
         patch: &NotePropsPatch,
     ) -> Result<MutationOutcome, MutationError> {
@@ -1387,6 +1429,7 @@ impl Engine {
         settings.replace_range(ps..pe, &sect);
         self.commit_k29d(
             op,
+            replay,
             vec![(SETTINGS.to_string(), settings.into_bytes())],
             vec![],
         )
@@ -1436,6 +1479,7 @@ impl Engine {
     fn k29d_subdoc_insert_text(
         &mut self,
         op: Mutation,
+        replay: bool,
         target: &SubDocTarget,
         para: usize,
         cp: usize,
@@ -1494,12 +1538,13 @@ impl Engine {
             out.replace_range(at..at, &inject_run);
         }
         let final_xml = format!("{prefix}{out}{suffix}");
-        self.commit_k29d(op, vec![(part, final_xml.into_bytes())], vec![])
+        self.commit_k29d(op, replay, vec![(part, final_xml.into_bytes())], vec![])
     }
 
     fn k29d_subdoc_delete_text(
         &mut self,
         op: Mutation,
+        replay: bool,
         target: &SubDocTarget,
         para: usize,
         start: usize,
@@ -1539,7 +1584,7 @@ impl Engine {
             out.replace_range(n.text_span.start..n.text_span.end, &xml_escape(&kept));
         }
         let final_xml = format!("{prefix}{out}{suffix}");
-        self.commit_k29d(op, vec![(part, final_xml.into_bytes())], vec![])
+        self.commit_k29d(op, replay, vec![(part, final_xml.into_bytes())], vec![])
     }
 }
 
