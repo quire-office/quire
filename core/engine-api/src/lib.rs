@@ -112,19 +112,70 @@ fn r1b_note_seed_buggy() -> bool {
     std::env::var_os("R1B_NOTE_SEED_BUGGY").is_some()
 }
 
+// ---------------- HOTFIX-R1B：wasm32 時鐘護欄 ----------------
+//
+// wasm32-unknown-unknown 上 `std::time::Instant::now()` **直接 panic**
+// （std/src/sys/time/unsupported.rs：`time not implemented on this platform`
+// → wasm `unreachable`）。R1-b 插樁曾無條件構造 `Instant`——即使
+// `R1B_PROFILE` 未設、計時結果無人可讀，wasm 產物照樣在開檔瞬間炸掉
+// （CI run 46092813695 `wasm-size` job 死因）。教訓固化成鐵律：
+// **庫碼（會編進 wasm 產物的程式碼）不得直接呼叫 `std::time::Instant`／
+// `SystemTime`，一律經本抽象**；防再犯掃描鎖 `scripts/wasm-clock-scan.mjs`
+// （接進 CI wasm-size job）守這條邊。
+//
+// native 側護欄**不縮短任何計時**（`R1B_PROFILE` 口徑零變更，
+// docs/r1b-perf-baseline.md 的既有數字續用）；wasm32 側回 `None` 且零呼叫
+// Instant——計時在該平台本就無意義。
+
+/// 平台時鐘：native 回 `Some(now)`；wasm32 回 `None` 且**零呼叫 Instant**
+/// （panic 點自此根除，不是 try/catch 兜底）。
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn r1b_now() -> Option<std::time::Instant> {
+    Some(r1b_now_native())
+}
+
+/// 唯一准許直接呼叫 `std::time::Instant::now()` 的所在（掃描鎖認得這道護欄）。
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn r1b_now_native() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
+/// wasm32 臂：回 `None`，整條路徑與 Instant 類零關聯。
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn r1b_now() -> Option<std::time::Instant> {
+    None
+}
+
+/// 對 `Option<Instant>` 起点取「經過毫秒」；wasm32 恆 `None` ⇒ 回 0.0
+/// （呼叫端只在 `R1B_PROFILE` 開啟時才讀它，native 數值路徑與舊碼逐運算元同式）。
+#[inline]
+fn r1b_ms_since(t: Option<std::time::Instant>) -> f64 {
+    match t {
+        Some(t) => t.elapsed().as_secs_f64() * 1000.0,
+        None => 0.0,
+    }
+}
+
 /// R1-b 計時插樁（`R1B_PROFILE=1` 才輸出；未設 env 時 `active=false`，
-/// `mark`／`sub` 只剩一次環境變數判斷＋一次 `Instant::elapsed`，零行為變動）。
+/// `mark`／`sub` 只剩一次環境變數判斷＋一次 `elapsed`，零行為變動）。
 /// 開檔與派生層重建共用同一組標籤，bench 才能同口徑比對。
+///
+/// HOTFIX-R1B：時鐘一律經 `r1b_now()`，欄位改 `Option<Instant>`——wasm32 上
+/// 恆 `None`，構造期零呼叫 Instant。native 端 `unwrap_or` 恆命中 `Some`，
+/// 計時口徑與舊碼**逐運算元相同**。
 struct R1bProf {
     active: bool,
-    t: std::time::Instant,
+    t: Option<std::time::Instant>,
 }
 
 impl R1bProf {
     fn new() -> Self {
         Self {
             active: std::env::var_os("R1B_PROFILE").is_some(),
-            t: std::time::Instant::now(),
+            t: r1b_now(),
         }
     }
 
@@ -135,7 +186,7 @@ impl R1bProf {
         if self.active {
             eprintln!("[R1B] {:<14} {:8.1} ms", label, self.ms());
         }
-        self.t = std::time::Instant::now();
+        self.t = r1b_now();
     }
 
     #[allow(unused_assignments)]
@@ -143,11 +194,11 @@ impl R1bProf {
         if self.active {
             eprintln!("  [R1B·sub] {:<22} {:8.1} ms", label, self.ms());
         }
-        self.t = std::time::Instant::now();
+        self.t = r1b_now();
     }
 
     fn ms(&self) -> f64 {
-        self.t.elapsed().as_secs_f64() * 1000.0
+        r1b_ms_since(self.t)
     }
 }
 
@@ -1187,17 +1238,20 @@ impl Engine {
     /// 推下——表未變 ⇒ `set_header_pushes` 早退、零重排（常見路徑零成本）。
     fn recompute_notes(&mut self) {
         // R1-b 量測標記（未設 `R1B_PROFILE` 時零行為變動，見 from_docx_bytes_with_paper 注）。
+        // HOTFIX-R1B：時鐘改走 `r1b_now()`／`r1b_ms_since()`——wasm32 上恆 `None`
+        // ⇒ 零呼叫 Instant（panic 根除）；native 端 `Some` 恆命中，減法口徑與
+        // 舊碼逐運算元相同（hdr1／foot／end 的算法一個符號都沒動）。
         let prof = std::env::var_os("R1B_PROFILE").is_some();
-        let t0 = std::time::Instant::now();
+        let t0 = r1b_now();
         self.compute_header_push();
-        let hdr1 = t0.elapsed().as_secs_f64() * 1000.0;
+        let hdr1 = r1b_ms_since(t0);
         self.compute_footnotes();
-        let foot = t0.elapsed().as_secs_f64() * 1000.0 - hdr1;
+        let foot = r1b_ms_since(t0) - hdr1;
         self.compute_endnotes();
-        let end = t0.elapsed().as_secs_f64() * 1000.0 - hdr1 - foot;
+        let end = r1b_ms_since(t0) - hdr1 - foot;
         self.compute_header_push();
         if prof {
-            let total = t0.elapsed().as_secs_f64() * 1000.0;
+            let total = r1b_ms_since(t0);
             eprintln!(
                 "[R1B] recompute_notes: hdr1 {hdr1:.1} + foot {foot:.1} + end {end:.1} + hdr2 {:.1} = {total:.1} ms",
                 total - hdr1 - foot - end
@@ -1428,18 +1482,16 @@ impl Engine {
     /// 排布與實際分頁扣的預留永遠同一份。
     fn compute_footnotes(&mut self) {
         // R1-b 分相探針（未設 `R1B_PROFILE` 時零行為變動）。
+        // HOTFIX-R1B：時鐘改走 `r1b_now()`／`r1b_ms_since()`（wasm32 恆 `None`
+        // ⇒ 零呼叫 Instant；native 口徑與舊碼逐運算元相同）。
         let r1b_prof = std::env::var_os("R1B_PROFILE").is_some();
-        let mut r1b_t = std::time::Instant::now();
+        let mut r1b_t = r1b_now();
         macro_rules! r1b_sub {
             ($label:expr) => {{
                 if r1b_prof {
-                    eprintln!(
-                        "  [R1B·foot] {:<18} {:8.1} ms",
-                        $label,
-                        r1b_t.elapsed().as_secs_f64() * 1000.0
-                    );
+                    eprintln!("  [R1B·foot] {:<18} {:8.1} ms", $label, r1b_ms_since(r1b_t));
                 }
-                r1b_t = std::time::Instant::now();
+                r1b_t = r1b_now();
             }};
         }
         self.build_note_entries();

@@ -20,7 +20,29 @@ await initMain({ module_or_path: new Uint8Array(mainWasm) });
 ok("首包 wasm 初始化（Node, module_or_path 手動餵位元組）");
 
 const docBytes = fs.readFileSync(path.join(ROOT, "fixtures/sample.docx"));
-const engine = new WasmEngine(new Uint8Array(docBytes));
+// HOTFIX-R1B 顯式斷言：把「wasm 庫碼含無 cfg 的 Instant 呼叫」的 panic 型樣
+// 變成歸因明確的紅燈。wasm32-unknown-unknown 上 `std::time::Instant::now()`
+// 直接 panic（unsupported → unreachable），開檔路徑（from_docx_bytes →
+// recompute_notes）必炸——CI run 46092813695 的死因型樣。命中即印歸因提示，
+// 免日後從 `RuntimeError: unreachable` 逆向猜測。
+let engine;
+try {
+  engine = new WasmEngine(new Uint8Array(docBytes));
+} catch (e) {
+  const msg = String((e && e.message) || e);
+  const unsupportedClock =
+    /time not implemented on this platform|unsupported\.rs/.test(msg);
+  const stack = String((e && e.stack) || "");
+  if (unsupportedClock || (/unreachable/.test(msg) && /wasm-smoke/.test(stack))) {
+    fail(
+      "wasm 庫碼含無 cfg 的 Instant 呼叫：wasm32 上 std::time::Instant::now() " +
+        "直接 panic（time not implemented → unreachable）。" +
+        "庫碼計時一律經 cfg 隔離抽象（core/engine-api r1b_now()）——" +
+        "先跑 node scripts/wasm-clock-scan.mjs 定位違規點。原始錯誤：" + msg,
+    );
+  }
+  throw e;
+}
 if (engine.page_count() < 1) fail("首包開檔後頁數 < 1");
 if (engine.paragraph_count() < 3) fail("首包開檔後段落數 < 3");
 const dl = JSON.parse(engine.page_display_list_json(0));

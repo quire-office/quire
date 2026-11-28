@@ -186,6 +186,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      - name: ★ 時鐘護欄掃描——core 庫碼不得有無 cfg 的 Instant/SystemTime 呼叫（HOTFIX-R1B 防再犯鎖）
+        run: node scripts/wasm-clock-scan.mjs
       - name: 建置兩個 wasm 分塊（首包＋協作）
         run: |
           cd shells/web && npm ci
