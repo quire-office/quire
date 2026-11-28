@@ -524,18 +524,18 @@ impl Engine {
         // `w:themeColor` 查表用（ECMA-376 §17.3.2.25：主題色優先於 `w:val`
         // 回退值）。無 theme part → 空表＝老實退回 `w:val`（既有行為不變）。
         // 存檔路徑完全不經此層（parts passthrough，round-trip 零影響）。
-        let theme = ThemeColors::from_parts(&parts);
+        let theme = ThemeColors::from_parts(parts);
         // 主題字型表（theme1.xml 的 fontScheme）：純讀取派生資料，供 run 的
         // `w:asciiTheme`／`w:eastAsiaTheme` 引用查表（ECMA-376 §17.3.2.26）。
         // 無 theme part → 四欄全 None＝老實退回直接值（既有行為不變）。
-        let theme_fonts = ThemeFonts::from_parts(&parts);
+        let theme_fonts = ThemeFonts::from_parts(parts);
         // 無 styles.xml part 時仍建一張空表而非 None：級聯層除了套用樣式，
         // 還承載「超連結合成預設」的末端兜底（`RunStyle::with_hyperlink_default`）；
         // 若此處短路，無 styles.xml 的檔案連結會失去預設藍／底線。空表一切
         // 落後備值，與舊 None 路徑逐欄等價。
         // K6：styles.xml 必須經 `word/_rels/document.xml.rels` 的 styles 關聯
         // 才生效（校準報告 §3(2) 鐵證；無關聯時 LO 連 docDefaults 都忽略）。
-        let style_table = if styles_referenced(&parts) {
+        let style_table = if styles_referenced(parts) {
             parts
                 .get("word/styles.xml")
                 .map(|s| StyleTable::parse_with_fonts(s.as_slice(), &theme, Some(&theme_fonts)))
@@ -684,11 +684,11 @@ impl Engine {
         // K2b：清單 marker 規劃。無 `w:numPr` 引用 ⇒ 空表（零變化：不插
         // marker、不動任何投影欄位、不解析 numbering.xml）。
         let list_markers = {
-            let refs = quire_ooxml::paragraph_numbering_from_parts(&parts);
+            let refs = quire_ooxml::paragraph_numbering_from_parts(parts);
             if refs.is_empty() {
                 Vec::new()
             } else {
-                let numbering = quire_ooxml::Numbering::from_parts(&parts);
+                let numbering = quire_ooxml::Numbering::from_parts(parts);
                 lists::compute_markers(&numbering, &refs, &para_sec_v, n_paras)
             }
         };
@@ -900,7 +900,7 @@ impl Engine {
         // 極性由 LO 實測定案；取代 E1-2 的字面停損臂）。純發射投影——存檔路徑
         // （parts passthrough）完全不經此處，roundtrip 位元組不受影響。
         table_map::apply_txbx_databinding(
-            &parts,
+            parts,
             &mut images,
             paras_eff.as_mut().map_or(&mut [], Vec::as_mut_slice),
         );
@@ -973,7 +973,7 @@ impl Engine {
             .iter()
             .filter_map(|im| {
                 let (path, mime, emf) =
-                    resolve_pixel_source(&parts, &doc_rels, &image_rid_candidates(im))?;
+                    resolve_pixel_source(parts, &doc_rels, &image_rid_candidates(im))?;
                 Some(PixelSource {
                     para: im.para_index,
                     w_pt: im.w_pt,
@@ -996,7 +996,7 @@ impl Engine {
         for im in &images {
             for td in &im.txbx_drawings {
                 if let Some((path, mime, emf)) =
-                    resolve_pixel_source(&parts, &doc_rels, &[td.rid.as_str()])
+                    resolve_pixel_source(parts, &doc_rels, &[td.rid.as_str()])
                 {
                     image_pixels.push(PixelSource {
                         para: im.para_index,
@@ -1017,7 +1017,7 @@ impl Engine {
                 for cs in &im.group_shapes {
                     if let Some(rid) = &cs.stroke_dash {
                         if let Some((path, mime, emf)) =
-                            resolve_pixel_source(&parts, &doc_rels, &[rid.as_str()])
+                            resolve_pixel_source(parts, &doc_rels, &[rid.as_str()])
                         {
                             image_pixels.push(PixelSource {
                                 para: im.para_index,
@@ -1070,7 +1070,7 @@ impl Engine {
         // 頁首頁尾層（t_b39f108b）：sectPr 宣告＋rels 查表＋part 解析。
         // 全鏈純讀取派生——parts／bundle 一個位元組都不碰（round-trip 零影響）。
         let (hf, hf_parts, even_odd, sec_geo) =
-            build_hf_layer(&parts, &sections, Some(&style_table), &theme);
+            build_hf_layer(parts, &sections, Some(&style_table), &theme);
         // 節幾何全表（尾註頁的末節幾何用）：`sec_geo` 只在檔案宣告頁首頁尾時
         // 才有值（`build_hf_layer` 在無宣告時回空表），尾註不能靠它——另存
         // 一份全表（純讀取派生）。
@@ -1080,7 +1080,7 @@ impl Engine {
         }
         // F1（卡 t_f3acd271）：圖表採集——純讀取 parts（見 Engine::charts 註解）。
         // 開檔期一次解析、發射期零解析成本；無圖表檔＝空清單（零擾動）。
-        let mut charts = quire_ooxml::read_charts_from_parts(&parts, &theme);
+        let mut charts = quire_ooxml::read_charts_from_parts(parts, &theme);
         // 回塞鎖（燈 3 鑑別力）：`F1_CHART_BUGGY=1`＝刷回「圖表 part 從未被
         // 解析、遑論發射」的舊行為——考卷燈 2 必回紅，證明它抓得到本缺口。
         if std::env::var_os("F1_CHART_BUGGY").is_some() {
@@ -3317,7 +3317,7 @@ impl Engine {
         let touched = std::mem::take(&mut self.touched);
         let undo_stack = std::mem::take(&mut self.undo_stack);
         let redo_stack = std::mem::take(&mut self.redo_stack);
-        let paper_override = self.paper_override.clone();
+        let paper_override = self.paper_override;
         *self = fresh;
         self.original = original;
         self.part_baselines = part_baselines;
