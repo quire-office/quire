@@ -150,3 +150,65 @@ recompute_notes 從「無條件清快取 2 輪重排」收斂為「零變動零�
 - 紅燈考卷 `r1b_note_seed` 四盞：正常態全綠；`R1B_NOTE_SEED_BUGGY=1` 燈 1 必紅
   （實錄 left: 2, right: 0）；`R1B_PACK_CACHE_BUGGY=1` 慢路徑終態不變。
   回塞腳本 `scripts/r1b_note_seed_buggy_replay.sh`。
+
+---
+
+# 改後實錄 run 5（根因 1 落地：commit 60835a4＋b220e70，rounds=8，同機同條件）
+
+**加速來源（誠實記帳）**：根因 1 落地——`rebuild_derived()` 拆掉「全檔 `save()`
+＋`from_docx_bytes` 整包重開」，改走記憶體 `doc.parts` → `derive()`（60835a4）：
+- `core/ooxml`：`parse()` 的正典投影抽成 `DocProjection`＋`project_parts()`，
+  免 ZIP I/O 可達；
+- `core/engine-api`：`from_docx_bytes_with_paper` 拆 parse／derive 兩段，
+  `derive()` 成為派生層**唯一**建設者（開檔與 rebuild 共用同一口徑＝同形性由
+  構造保證，非由約定保證）；
+- `rebuild_derived` 免 ZIP 壓縮／解壓、免 `OoxmlDoc` 全量重建、免 `part_baselines`
+  全量明文克隆（rebuild 態直接建空表）；
+- 派生失敗原子性：全部產物先進區域 `Derived`，成功才一次提交 `self`；
+- `PaperSpec` 以 `paper_override: Option<PaperSpec>` 本體保留（舊整包路徑靜默
+  沖銷）、`sync_budget` 跨 rebuild 保留（舊整包路徑靜默 reset 為 `None`）——
+  兩條均由新考卷 `r1b_local_isomorph` 燈 1／燈 2 先紅後綠鎖死。
+
+## 決定性新結論：ZIP／整包重開不是大頭（量化坐實）
+
+run 5 用同機同 workload 直接 A/B 比對兩條路徑（`R1B_BUGGY=1` 回塞＝舊整包重開）：
+
+| 動作 p95 | 整包重開（BUGGY） | 局部 derive（正常） | ZIP／OoxmlDoc 重開的淨成本 |
+|---|---|---|---|
+| (a) bug65649 | 928.60 ms | 868.12 ms | **~60 ms** |
+| (b) bug65649 | 862.97 ms | 880.49 ms | ≦雜音 |
+| (d) bug65649 | 912.33 ms | 880.69 ms | ~32 ms |
+| (a) 合成503頁 | 423.09 ms | 450.35 ms | ≦雜音（局部態反慢） |
+
+**局部 derive 對 (a)(b)(d) 的實測增益只有 0–7%**（run 323 的 920ms → 868ms，
+再降的主要是 `part_baselines` 克隆而非 ZIP）。這與基線分相早已給出的信號一致
+（ZIP 往來僅 ~20-60ms）：根因 1 的**正確性價值**（原子性、PaperSpec／
+sync_budget 保留、bundle 鐵律構造性加固）全部到手，但**效能價值有限**——
+(a)(b)(d) 剩餘 ~850ms 的全部構成是派生層**全量重算**本身：
+`build_slots+images 240ms ＞ layout 205ms ＞ notes 147ms（note_pass 32ms×3 輪
+＋build_note_entries 43ms）＞ ooxml parse 111ms ＞ cascade 60ms`。
+要壓到卡面 50ms 門檻需要 layout 派生層的**增量收尾**（髒段局部重排／表格槽位
+增建／note_pass 增量化），那是超出本卡「止血」定位的獨立工程，續工清單見卡面
+block 記帳，由 PM 裁決另立卡。
+
+## run 5 五項數字（rounds=8；門檻判定歸 PM）
+
+| 動作 p95 | 基線（run 322） | run 323（根因2） | **run 5（根因1，本 commit）** | 門檻 | 狀態 |
+|---|---|---|---|---|---|
+| (a) SetParagraphStyle bug｜synth | 1960｜1467 | 920｜420 | **868｜450** | ≤50ms | ❌（17×／9×） |
+| (b) undo() bug｜synth | 1878｜1496 | 909｜448 | **880｜421** | ≤50ms | ❌（18×／8×） |
+| (c) InsertText bug｜synth | 1047｜1042 | 172｜100 | **169｜94** | ≤172ms 不劣化 | ✅ |
+| (d) FormatTextRange bug｜synth | 1871｜1410 | 932｜449 | **881｜441** | ≤50ms | ❌（18×／9×） |
+| (e) 零編輯存檔 bug｜synth | 19.6｜0.67 | 13.6｜0.57 | **11.8｜0.57** | <1.5s | ✅ |
+
+- 累計降幅（基線→run 5）：(a)(b)(d) **2.2-2.3×（bug）／3.3×（synth）**；
+  (c) **6.2×／11×**。門檻未達項目的剩余成本定性為派生層全量重算（見上表）。
+- 完整性（零回退鐵律）：`cargo test --workspace` **1164 passed／0 failed**
+  （基線 1154 一條不掉＋run 323 新 5 盞＋本 run 新 5 盞）；
+  `roundtrip corpus --check` **399/399 byte-identical**；bench 內建零編輯＋
+  Undo 全淨 byte-identical 斷言每輪綠。
+- 回塞鑑別（閘門 3）：`R1B_BUGGY=1`（整包重開復辟）(a)(b)(d) 回到 860-930ms 級
+  且燈 1／燈 2 必紅（`paper_override_applied` 沖銷、`sync_budget left:None
+  right:Some(3)` 實錄在案）；`R1B_NOTE_SEED_BUGGY`／`R1B_PACK_CACHE_BUGGY`
+  兩鎖不變。
+- wasm：首包 gzip **1723.8KB** ≤ 3MB；fmt／clippy `-D warnings`／分層全綠。
