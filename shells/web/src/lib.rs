@@ -380,7 +380,45 @@ impl WasmEngine {
     }
 
     /// 存檔為 DOCX 位元組陣列。
-    pub fn save_docx_bytes(&self) -> Vec<u8> {
-        self.inner.save_docx().unwrap_or_default()
+    ///
+    /// R1-c 缺陷本體的修復點：原實作 `unwrap_or_default()` 把存檔失敗吞成
+    /// 空 Vec——用戶下載到 0 字節檔案且完全不知道發生了什麼（擊穿「無損
+    /// 存檔」核心承諾）。改 `Result<Vec<u8>, JsError>`：失敗如實擲給 JS 端
+    /// （wasm-bindgen 把 `Err(e)` 拋成 JS exception），**存檔路徑零吞錯**。
+    /// 錯誤訊息帶 EngineError 原文＋種類（不壓扁成常數），前端可分種處理。
+    /// 舊簽名呼叫端（`js/engine-adapter.js` 的 `file:save`）：失敗變 throw，
+    /// 適配層須 try/catch——引擎側先修誠實性，JS 端接球由下游卡負責（卡面
+    /// 禁區：本卡不得改 editor repo；JS 端改動清單見交付報告）。
+    pub fn save_docx_bytes(&self) -> Result<Vec<u8>, JsError> {
+        self.inner.save_docx().map_err(|e| {
+            JsError::new(&format!(
+                "存檔失敗（{}）：{e}",
+                quire_engine::engine_error_kind(&e)
+            ))
+        })
+    }
+
+    /// 誠實存檔出口（R1-c 紅燈 1 的 JS 側消費形態）：
+    /// `{ok, bytes_len, error?, error_kind?}`。失敗時 `bytes_len:null`——
+    /// 任何情況下都不會出現「空 bytes 配 ok:true」。
+    /// 保留 `save_docx_bytes()` 供同步取位元組的消費端，本出口供「要不要
+    /// 告訴用戶存檔成功了」的決策端；兩者的錯誤皆同一來源（Engine）。
+    pub fn save_docx_checked_json(&self) -> String {
+        self.inner.save_docx_checked_json()
+    }
+
+    /// 無損證據出口（R1-c 紅燈 2／3）：本次存檔重寫了哪些 part、原封不動
+    /// 搬運了多少 entry、roundtrip 是否零失真。資料全部來自引擎事實
+    /// （touched 白名單／bundle 實數／diff.rs 結構級對照），本殼零計算。
+    /// 純觀察：呼叫不影響 `save_docx_bytes()` 輸出（紅燈 3 鎖死）。
+    pub fn save_docx_report_json(&self) -> String {
+        self.inner.save_docx_report_json()
+    }
+
+    /// 能力清單出口（R1-c 紅燈 4；供後續逐鈕真相卡消費）：只列有非
+    /// `#[ignore]` 考題實證的編輯操作。單源＝build 期掃描 `mutation.rs`
+    /// 列舉＋考卷 census（`engine-api/build.rs`），本殼零手寫清單。
+    pub fn supported_mutations_json() -> String {
+        quire_engine::Engine::supported_mutations_json()
     }
 }
